@@ -1,0 +1,32 @@
+{
+  "type": "object",
+  "properties": {
+    "action": {
+      "type": "string",
+      "enum": ["CONTINUE", "REPAIR", "DONE", "HUMAN_NEEDED"]
+    },
+    "reason": {
+      "type": "string"
+    },
+    "next_task": {
+      "type": "object",
+      "properties": {
+        "goal": { "type": "string" },
+        "constraints": {
+          "type": "array",
+          "items": { "type": "string" }
+        },
+        "acceptance": {
+          "type": "array",
+          "items": { "type": "string" }
+        },
+        "test_cmd": { "type": "string" }
+      },
+      "required": ["goal", "constraints", "acceptance", "test_cmd"],
+      "additionalProperties": false
+    }
+  },
+  "required": ["action", "reason"],
+  "additionalProperties": false
+}
+
