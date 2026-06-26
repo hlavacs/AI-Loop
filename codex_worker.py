@@ -1,169 +1,223 @@
-import json
-import os
-import pathlib
-import socket
+from __future__ import annotations
+
+import shutil
 import subprocess
 import time
+import uuid
 
-import redis
-from redis.exceptions import TimeoutError, ConnectionError
+from redis.exceptions import ConnectionError, TimeoutError
 
+from ai_loop import db
+from ai_loop.config import CLAUDE_REQUEST_STREAM, CODEX_TASK_STREAM, DEAD_STREAM, HUMAN_STREAM, load_settings
+from ai_loop.queues import consumer_name, decode, ensure_group, redis_client, read_group, xadd_json
 
-REDIS_URL = os.getenv("REDIS_URL", "redis://localhost:6379/0")
-
-TASK_STREAM = "ai:codex:tasks"
-RESULT_STREAM = "ai:codex:results"
-DEAD_STREAM = "ai:dead"
 
 GROUP = "codex-workers"
-CONSUMER = socket.gethostname() + "-codex"
-
-READ_BLOCK_MS = 5000
-
-
-r = redis.Redis.from_url(
-    REDIS_URL,
-    decode_responses=True,
-    socket_connect_timeout=5,
-    socket_timeout=10,
-    health_check_interval=30,
-    retry_on_timeout=True,
-)
+OUTPUT_LIMIT = 20000
+DIFF_LIMIT = 80000
 
 
-def ensure_group(stream: str, group: str) -> None:
+def run_command(cmd: list[str], cwd: str, timeout: int) -> dict[str, object]:
+    print(f"running: {' '.join(cmd)}")
+    print(f"cwd: {cwd}")
+    started = time.monotonic()
     try:
-        r.xgroup_create(stream, group, id="0", mkstream=True)
-    except redis.ResponseError as e:
-        if "BUSYGROUP" not in str(e):
-            raise
+        proc = subprocess.run(
+            cmd,
+            cwd=cwd,
+            text=True,
+            capture_output=True,
+            timeout=timeout,
+        )
+        output = (proc.stdout + "\n" + proc.stderr).strip()
+        return {"rc": proc.returncode, "output": output, "elapsed": round(time.monotonic() - started, 2)}
+    except subprocess.TimeoutExpired as exc:
+        output = ((exc.stdout or "") + "\n" + (exc.stderr or "")).strip()
+        return {"rc": 124, "output": f"command timed out after {timeout}s\n{output}", "elapsed": timeout}
 
 
-def run(cmd: list[str], cwd: str | None = None, timeout: int = 3600) -> dict:
-    print(f"\n--- running: {' '.join(cmd)}")
-    if cwd:
-        print(f"--- cwd: {cwd}")
-
-    p = subprocess.run(
-        cmd,
-        cwd=cwd,
-        text=True,
-        capture_output=True,
-        timeout=timeout,
-    )
-
-    return {
-        "rc": p.returncode,
-        "stdout": p.stdout[-20000:],
-        "stderr": p.stderr[-20000:],
-    }
+def run_shell(command: str, cwd: str, timeout: int) -> dict[str, object]:
+    return run_command(["bash", "-lc", command], cwd, timeout)
 
 
-def shell(cmd: str, cwd: str, timeout: int = 1800) -> dict:
-    return run(["bash", "-lc", cmd], cwd=cwd, timeout=timeout)
+def build_codex_command(codex_bin: str, cwd: str, prompt: str, bypass_sandbox: bool) -> list[str]:
+    cmd = [codex_bin, "exec", "--cd", cwd]
+    if bypass_sandbox:
+        cmd.append("--dangerously-bypass-approvals-and-sandbox")
+    else:
+        cmd.extend(["--sandbox", "workspace-write"])
+    cmd.append(prompt)
+    return cmd
 
 
-def process(task: dict) -> dict:
-    repo = pathlib.Path(task["repo_path"]).resolve()
+def codex_prompt(job: dict, task: dict) -> str:
+    return f"""You are Codex CLI, the implementation worker in a Claude-controlled loop.
 
-    if not repo.exists():
-        return {
-            "job_id": task.get("job_id", "unknown"),
-            "iteration": task.get("iteration", -1),
-            "repo_path": str(repo),
-            "status": "failed",
-            "error": f"repo_path does not exist: {repo}",
-        }
+Repository: {job["worktree_path"]}
+Job: {job["id"]}
+Iteration: {task["iteration"]}
 
-    job_id = task["job_id"]
-    iteration = task.get("iteration", 0)
-    test_cmd = task.get("test_cmd", "true")
+Overall goal:
+{job["goal"]}
 
-    prompt = f"""
-You are Codex, the implementation worker.
-
-Job: {job_id}
-Iteration: {iteration}
-
-Goal:
+This task:
 {task["goal"]}
 
-Constraints:
-{json.dumps(task.get("constraints", []), indent=2)}
+Task constraints:
+{db.to_json(task["constraints"])}
 
-Acceptance criteria:
-{json.dumps(task.get("acceptance", []), indent=2)}
+Task acceptance criteria:
+{db.to_json(task["acceptance"])}
 
 Rules:
 - Implement only this task.
-- Keep the change small.
-- Add or adjust tests if needed.
-- Do not commit.
-- Do not broaden the architecture.
-- If impossible, explain the blocker in the final response.
+- Keep changes small and directly relevant.
+- Add or update tests only when useful for this task.
+- Do not commit changes.
+- Do not merge branches.
+- If blocked by missing tools, sandboxing, permissions, or unclear requirements, stop and explain the blocker.
 """
 
-    codex = run(
-        [
-            "codex",
-            "exec",
-            "--cd",
-            str(repo),
-            "--dangerously-bypass-approvals-and-sandbox",
-            prompt,
-        ],
-        cwd=str(repo),
-        timeout=7200,
-    )
 
-    tests = shell(test_cmd, cwd=str(repo), timeout=1800)
-
-    diff = run(["git", "diff"], cwd=str(repo), timeout=300)
-    stat = run(["git", "diff", "--stat"], cwd=str(repo), timeout=300)
-    files = run(["git", "diff", "--name-only"], cwd=str(repo), timeout=300)
-    status = run(["git", "status", "--short"], cwd=str(repo), timeout=300)
-
+def git_snapshot(cwd: str) -> dict[str, object]:
+    status = run_command(["git", "status", "--short"], cwd, 300)
+    diff_stat = run_command(["git", "diff", "--stat"], cwd, 300)
+    diff = run_command(["git", "diff"], cwd, 300)
+    files = run_command(["git", "diff", "--name-only"], cwd, 300)
+    changed = [line for line in str(files["output"]).splitlines() if line.strip()]
     return {
-        "job_id": job_id,
-        "iteration": iteration,
-        "repo_path": str(repo),
-        
-        "global_goal": task.get("global_goal", task.get("goal", "")),
-        "loop_plan": task.get("loop_plan", []),
-        "current_step": task.get("current_step", 1),
-    
-        "goal": task["goal"],
-        "test_cmd": test_cmd,
-        "codex_rc": codex["rc"],
-        "codex_output": (codex["stdout"] + "\n" + codex["stderr"])[-12000:],
-        "test_rc": tests["rc"],
-        "test_output": (tests["stdout"] + "\n" + tests["stderr"])[-12000:],
-        "changed_files": files["stdout"].splitlines(),
-        "git_status": status["stdout"],
-        "diff_stat": stat["stdout"],
-        "diff": diff["stdout"][-50000:],
+        "git_status": str(status["output"])[-OUTPUT_LIMIT:],
+        "diff_stat": str(diff_stat["output"])[-OUTPUT_LIMIT:],
+        "diff": str(diff["output"])[-DIFF_LIMIT:],
+        "changed_files": changed,
     }
 
 
-def main() -> None:
-    ensure_group(TASK_STREAM, GROUP)
+def record_dead(settings, client, job_id: str | None, payload: dict) -> None:
+    with db.transaction(settings.db_path) as conn:
+        db.add_event(conn, job_id=job_id, kind="dead", payload=payload)
+        if job_id:
+            db.update_job_status(conn, job_id, "dead")
+    xadd_json(client, DEAD_STREAM, "event", payload)
 
-    print("Codex worker started.")
-    print(f"Listening on Redis stream: {TASK_STREAM}")
-    print(f"Consumer group: {GROUP}")
-    print(f"Consumer: {CONSUMER}")
+
+def process_task(settings, client, task_id: str) -> None:
+    started_at = db.utc_now()
+    run_id = uuid.uuid4().hex[:12]
+
+    with db.transaction(settings.db_path) as conn:
+        task = db.get_task(conn, task_id)
+        job = db.get_job(conn, task["job_id"])
+        db.update_task_status(conn, task_id, "running")
+        db.update_job_status(conn, job["id"], "implementing")
+
+    print(f"task {task_id}: job {job['id']} iteration {task['iteration']}")
+    print(f"goal: {task['goal']}")
+
+    codex_rc: int | None = None
+    codex_output = ""
+    test_rc: int | None = None
+    test_output = ""
+    error: str | None = None
+    status = "completed"
+    worktree_path = job["worktree_path"]
+
+    if shutil.which(settings.codex_bin) is None:
+        error = f"missing Codex binary: {settings.codex_bin}"
+        status = "human_needed"
+        print(error)
+    else:
+        prompt = codex_prompt(job, task)
+        codex_cmd = build_codex_command(
+            settings.codex_bin,
+            worktree_path,
+            prompt,
+            settings.codex_bypass_sandbox,
+        )
+        codex = run_command(codex_cmd, worktree_path, 7200)
+        codex_rc = int(codex["rc"])
+        codex_output = str(codex["output"])[-OUTPUT_LIMIT:]
+
+        tests = run_shell(task["test_cmd"], worktree_path, 1800)
+        test_rc = int(tests["rc"])
+        test_output = str(tests["output"])[-OUTPUT_LIMIT:]
+
+    snapshot = git_snapshot(worktree_path)
+    finished_at = db.utc_now()
+
+    with db.transaction(settings.db_path) as conn:
+        db.create_run(
+            conn,
+            run_id=run_id,
+            task_id=task_id,
+            job_id=job["id"],
+            iteration=int(task["iteration"]),
+            codex_rc=codex_rc,
+            codex_output=codex_output,
+            test_rc=test_rc,
+            test_output=test_output,
+            git_status=str(snapshot["git_status"]),
+            diff_stat=str(snapshot["diff_stat"]),
+            diff=str(snapshot["diff"]),
+            changed_files=list(snapshot["changed_files"]),
+            status=status,
+            error=error,
+            started_at=started_at,
+            finished_at=finished_at,
+        )
+        db.update_task_status(conn, task_id, status)
+        if status == "human_needed":
+            db.update_job_status(
+                conn,
+                job["id"],
+                "human_needed",
+                "Codex worker could not run the implementation task.",
+            )
+        db.add_event(
+            conn,
+            job_id=job["id"],
+            kind="codex_run_finished",
+            payload={"run_id": run_id, "task_id": task_id, "status": status, "error": error},
+        )
+
+    if status == "human_needed":
+        payload = {
+            "job_id": job["id"],
+            "task_id": task_id,
+            "run_id": run_id,
+            "action": "HUMAN_NEEDED",
+            "reason": error or "Codex worker could not complete the task.",
+        }
+        xadd_json(client, HUMAN_STREAM, "event", payload)
+        print(f"task {task_id}: reported HUMAN_NEEDED")
+        return
+
+    xadd_json(
+        client,
+        CLAUDE_REQUEST_STREAM,
+        "request",
+        {"type": "REVIEW", "job_id": job["id"], "task_id": task_id, "run_id": run_id},
+    )
+    print(f"task {task_id}: queued REVIEW for run {run_id}")
+
+
+def main() -> int:
+    settings = load_settings()
+    db.init_db(settings.db_path)
+    client = redis_client(settings.redis_url)
+    ensure_group(client, CODEX_TASK_STREAM, GROUP)
+    consumer = consumer_name("codex")
+
+    print("Codex worker started")
+    print(f"db: {settings.db_path}")
+    print(f"redis: {settings.redis_url}")
+    print(f"listening: {CODEX_TASK_STREAM} group={GROUP} consumer={consumer}")
 
     while True:
         try:
-            messages = r.xreadgroup(
-                GROUP,
-                CONSUMER,
-                {TASK_STREAM: ">"},
-                count=1,
-                block=READ_BLOCK_MS,
-            )
-        except (TimeoutError, ConnectionError) as e:
-            print(f"Redis read problem, retrying: {e}")
+            messages = read_group(client, GROUP, consumer, CODEX_TASK_STREAM)
+        except (TimeoutError, ConnectionError) as exc:
+            print(f"Redis read problem, retrying: {exc}")
             time.sleep(1)
             continue
 
@@ -171,43 +225,24 @@ def main() -> None:
             continue
 
         _, entries = messages[0]
-
         for message_id, fields in entries:
+            job_id = None
             try:
-                task = json.loads(fields["task"])
-
-                print()
-                print("=" * 80)
-                print(f"Received task {task.get('job_id')} iteration {task.get('iteration')}")
-                print(task.get("goal"))
-                print("=" * 80)
-
-                result = process(task)
-
-                r.xadd(RESULT_STREAM, {"result": json.dumps(result)})
-                r.xack(TASK_STREAM, GROUP, message_id)
-
-                print(f"Finished task {result.get('job_id')} iteration {result.get('iteration')}")
-                print(f"Codex rc: {result.get('codex_rc')}")
-                print(f"Test rc: {result.get('test_rc')}")
-
-            except Exception as e:
-                print(f"Worker error: {e}")
-
+                payload = decode(fields["task"])
+                task_id = payload["task_id"]
+                with db.transaction(settings.db_path) as conn:
+                    job_id = db.get_task(conn, task_id)["job_id"]
+                process_task(settings, client, task_id)
+                client.xack(CODEX_TASK_STREAM, GROUP, message_id)
+            except Exception as exc:
+                print(f"worker error: {exc}")
+                payload = {"where": "codex_worker", "error": repr(exc), "fields": fields}
                 try:
-                    r.xadd(
-                        DEAD_STREAM,
-                        {
-                            "where": "codex_worker",
-                            "error": repr(e),
-                            "fields": json.dumps(fields),
-                        },
-                    )
-                    r.xack(TASK_STREAM, GROUP, message_id)
+                    record_dead(settings, client, job_id, payload)
+                    client.xack(CODEX_TASK_STREAM, GROUP, message_id)
                 except Exception as inner:
-                    print(f"Could not write to dead stream: {inner}")
+                    print(f"could not record dead event: {inner}")
 
 
 if __name__ == "__main__":
-    main()
-
+    raise SystemExit(main())

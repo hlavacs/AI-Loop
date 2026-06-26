@@ -1,327 +1,302 @@
+from __future__ import annotations
+
 import json
-import os
-import socket
+import shutil
 import subprocess
 import time
+import uuid
+from typing import Any
 
-import redis
-from redis.exceptions import TimeoutError, ConnectionError
+from redis.exceptions import ConnectionError, TimeoutError
 
+from ai_loop import db
+from ai_loop.config import (
+    CLAUDE_REQUEST_STREAM,
+    CODEX_TASK_STREAM,
+    DEAD_STREAM,
+    DONE_STREAM,
+    HUMAN_STREAM,
+    load_settings,
+)
+from ai_loop.queues import consumer_name, decode, ensure_group, redis_client, read_group, xadd_json
 
-REDIS_URL = os.getenv("REDIS_URL", "redis://localhost:6379/0")
-
-RESULT_STREAM = "ai:codex:results"
-TASK_STREAM = "ai:codex:tasks"
-DONE_STREAM = "ai:done"
-HUMAN_STREAM = "ai:human"
-DEAD_STREAM = "ai:dead"
 
 GROUP = "claude-controllers"
-CONSUMER = socket.gethostname() + "-claude"
-
-READ_BLOCK_MS = 5000
-MAX_ITERATIONS = int(os.getenv("MAX_ITERATIONS", "20"))
+ACTIONS = {"CONTINUE", "REPAIR", "DONE", "HUMAN_NEEDED"}
+OUTPUT_LIMIT = 20000
 
 
-r = redis.Redis.from_url(
-    REDIS_URL,
-    decode_responses=True,
-    socket_connect_timeout=5,
-    socket_timeout=10,
-    health_check_interval=30,
-    retry_on_timeout=True,
-)
-
-
-def ensure_group(stream: str, group: str) -> None:
-    try:
-        r.xgroup_create(stream, group, id="0", mkstream=True)
-    except redis.ResponseError as e:
-        if "BUSYGROUP" not in str(e):
-            raise
-
-
-def extract_json(text: str) -> dict:
-    """
-    Claude CLI may return either:
-    1. plain JSON decision
-    2. a JSON wrapper containing a 'result' string
-    3. text that contains a JSON object
-
-    This function extracts the actual decision object.
-    """
-
+def extract_json(text: str) -> dict[str, Any]:
     text = text.strip()
-
     try:
-        return json.loads(text)
+        parsed = json.loads(text)
     except json.JSONDecodeError:
-        pass
+        start = text.find("{")
+        end = text.rfind("}")
+        if start < 0 or end <= start:
+            raise ValueError(f"Claude did not return JSON: {text[:1000]}")
+        parsed = json.loads(text[start : end + 1])
 
-    start = text.find("{")
-    end = text.rfind("}")
-
-    if start == -1 or end == -1 or end <= start:
-        raise ValueError(f"Could not find JSON object in Claude output:\n{text}")
-
-    return json.loads(text[start : end + 1])
+    if isinstance(parsed, dict) and isinstance(parsed.get("result"), str):
+        return extract_json(parsed["result"])
+    if not isinstance(parsed, dict):
+        raise ValueError("Claude output JSON is not an object")
+    return parsed
 
 
-def validate_decision(decision: dict) -> None:
-    if not isinstance(decision, dict):
-        raise ValueError("Claude decision is not a JSON object")
-
+def validate_decision(decision: dict[str, Any]) -> None:
     action = decision.get("action")
-
-    if action not in {"CONTINUE", "REPAIR", "DONE", "HUMAN_NEEDED"}:
-        raise ValueError(f"Invalid Claude action: {action}")
-
-    if "reason" not in decision:
-        raise ValueError("Claude decision has no reason")
-
+    if action not in ACTIONS:
+        raise ValueError(f"invalid action: {action}")
+    if not isinstance(decision.get("reason"), str):
+        raise ValueError("decision.reason must be a string")
+    if not isinstance(decision.get("history_summary"), str):
+        raise ValueError("decision.history_summary must be a string")
     if action in {"CONTINUE", "REPAIR"}:
         next_task = decision.get("next_task")
-
         if not isinstance(next_task, dict):
-            raise ValueError(f"Action {action} requires next_task")
-
-        required = ["goal", "constraints", "acceptance", "test_cmd"]
-
-        for key in required:
+            raise ValueError(f"{action} requires next_task")
+        for key in ("goal", "constraints", "acceptance", "test_cmd"):
             if key not in next_task:
-                raise ValueError(f"next_task is missing required field: {key}")
-
+                raise ValueError(f"next_task missing {key}")
         if not isinstance(next_task["constraints"], list):
             raise ValueError("next_task.constraints must be a list")
-
         if not isinstance(next_task["acceptance"], list):
             raise ValueError("next_task.acceptance must be a list")
 
 
-def get_planned_step(loop_plan: list, step_number: int) -> dict | None:
-    for step in loop_plan:
-        if int(step.get("step", -1)) == step_number:
-            return step
-    return None
-
-
-def normalize_decision_with_plan(result: dict, decision: dict) -> dict:
-    """
-    For staged demo jobs, enforce one planned milestone per iteration.
-
-    This keeps the loop predictable:
-    - failed tests => REPAIR same step
-    - passed non-final step => CONTINUE next step
-    - passed final step => DONE
-    """
-
-    loop_plan = result.get("loop_plan", [])
-    if not loop_plan:
-        return decision
-
-    current_step = int(result.get("current_step", 1))
-    final_step = max(int(step["step"]) for step in loop_plan)
-    test_rc = int(result.get("test_rc", 1))
-    codex_rc = int(result.get("codex_rc", 1))
-
-    if codex_rc != 0 or test_rc != 0:
-        step = get_planned_step(loop_plan, current_step)
-        if step is None:
-            return {
-                "action": "HUMAN_NEEDED",
-                "reason": f"Current step {current_step} is missing from loop_plan.",
-            }
-
-        return {
-            "action": "REPAIR",
-            "reason": (
-                f"Step {current_step} failed. Codex must repair the same milestone "
-                f"before the loop can continue. Claude reason was: {decision.get('reason', '')}"
-            ),
-            "next_task": {
-                "goal": step["goal"],
-                "constraints": step["constraints"],
-                "acceptance": step["acceptance"],
-                "test_cmd": step["test_cmd"],
-            },
-        }
-
-    if current_step >= final_step:
-        return {
-            "action": "DONE",
-            "reason": (
-                f"Final planned step {current_step} passed. "
-                f"Claude reason was: {decision.get('reason', '')}"
-            ),
-        }
-
-    next_step_number = current_step + 1
-    next_step = get_planned_step(loop_plan, next_step_number)
-
-    if next_step is None:
+def run_claude(claude_bin: str, prompt: str) -> dict[str, Any]:
+    if shutil.which(claude_bin) is None:
         return {
             "action": "HUMAN_NEEDED",
-            "reason": f"Next planned step {next_step_number} is missing from loop_plan.",
+            "reason": f"missing Claude binary: {claude_bin}",
+            "history_summary": "Claude controller could not run because the Claude CLI is missing.",
         }
 
-    return {
-        "action": "CONTINUE",
-        "reason": (
-            f"Step {current_step} passed. Continue with planned step {next_step_number}. "
-            f"Claude reason was: {decision.get('reason', '')}"
-        ),
-        "next_task": {
-            "goal": next_step["goal"],
-            "constraints": next_step["constraints"],
-            "acceptance": next_step["acceptance"],
-            "test_cmd": next_step["test_cmd"],
-        },
-    }
-
-
-def run_claude_review(result: dict) -> dict:
-    prompt = f"""
-You are Claude, the planner and reviewer in a continuous development loop.
-
-Codex has completed one implementation iteration.
-
-Your job:
-1. Review the changed files, diff, and test output.
-2. Decide whether the current step is correct.
-3. Return ONLY valid JSON.
-4. Do not wrap the JSON in Markdown.
-5. Do not add explanations outside the JSON.
-
-Allowed actions:
-- CONTINUE: current step is correct; Codex should do the next step.
-- REPAIR: current step failed or is suspicious; Codex should fix it.
-- DONE: all required work is complete.
-- HUMAN_NEEDED: the issue cannot safely be resolved automatically.
-
-Required JSON shape:
-
-{{
-  "action": "CONTINUE | REPAIR | DONE | HUMAN_NEEDED",
-  "reason": "short explanation",
-  "next_task": {{
-    "goal": "specific next implementation step",
-    "constraints": ["..."],
-    "acceptance": ["..."],
-    "test_cmd": "..."
-  }}
-}}
-
-Rules:
-- If action is CONTINUE or REPAIR, next_task is required.
-- If action is DONE or HUMAN_NEEDED, next_task may be omitted.
-- Prefer REPAIR if tests failed.
-- Prefer HUMAN_NEEDED for sandbox failures, missing tools, destructive changes, unclear requirements, or security risk.
-
-Global goal:
-{result.get("global_goal", result.get("goal", ""))}
-
-Loop plan:
-{json.dumps(result.get("loop_plan", []), indent=2)}
-
-Current step:
-{result.get("current_step", 1)}
-
-Loop-plan rules:
-- If loop_plan is non-empty, this is a staged multi-iteration demo.
-- If the current step's tests passed and current_step is less than the number of planned steps, return CONTINUE.
-- For CONTINUE, choose the next numbered step from loop_plan as next_task.
-- If the current step's tests failed, return REPAIR for the same step.
-- Only return DONE when the final planned step has passed.
-
-Current task goal:
-{result.get("goal", "")}
-
-Changed files:
-{json.dumps(result.get("changed_files", []), indent=2)}
-
-Git status:
-{result.get("git_status", "")}
-
-Diff stat:
-{result.get("diff_stat", "")}
-
-Test command:
-{result.get("test_cmd", "")}
-
-Test return code:
-{result.get("test_rc", "")}
-
-Test output:
-{result.get("test_output", "")}
-
-Codex return code:
-{result.get("codex_rc", "")}
-
-Codex output:
-{result.get("codex_output", "")}
-
-Diff:
-{result.get("diff", "")}
-"""
-
-    cmd = [
-        "claude",
-        "-p",
-        "--output-format",
-        "json",
-        prompt,
-    ]
-
-    print("\n--- running Claude reviewer")
-
-    p = subprocess.run(
-        cmd,
+    print("running Claude controller")
+    proc = subprocess.run(
+        [claude_bin, "-p", "--output-format", "json", prompt],
         text=True,
         capture_output=True,
         timeout=7200,
     )
+    output = (proc.stdout + "\n" + proc.stderr).strip()
+    if proc.returncode != 0:
+        return {
+            "action": "HUMAN_NEEDED",
+            "reason": f"Claude CLI failed with rc={proc.returncode}: {output[-4000:]}",
+            "history_summary": "Claude controller failed before producing a usable decision.",
+        }
+    decision = extract_json(proc.stdout)
+    validate_decision(decision)
+    return decision
 
-    if p.returncode != 0:
-        raise RuntimeError(
-            f"Claude failed:\nSTDOUT:\n{p.stdout}\nSTDERR:\n{p.stderr}"
+
+def schema_text() -> str:
+    return """Return JSON only with this schema:
+{
+  "action": "CONTINUE | REPAIR | DONE | HUMAN_NEEDED",
+  "reason": "string",
+  "history_summary": "string",
+  "next_task": {
+    "goal": "string",
+    "constraints": ["string"],
+    "acceptance": ["string"],
+    "test_cmd": "string"
+  }
+}
+
+Rules:
+- next_task is required for CONTINUE and REPAIR.
+- Claude is controller/planner/reviewer only, never a code editor.
+- Return HUMAN_NEEDED only when no useful automated task remains and human input or an external environment change is truly required.
+- Do not mark a job HUMAN_NEEDED merely because Codex found a runtime/environment symptom; first prefer CONTINUE or REPAIR with a concrete diagnostic or retry task when there are reasonable checks left.
+- For GUI/display/window tasks, ask Codex to verify DISPLAY, WAYLAND_DISPLAY, XDG_SESSION_TYPE, SDL video backends, Vulkan presentation support, and visible windows from the same process environment before deciding the display is unavailable.
+- If Codex failed because of sandboxing, a missing tool, or permissions that the loop cannot alter, return HUMAN_NEEDED.
+- If tests fail due to code, return REPAIR.
+- If tests pass but the goal is incomplete, return CONTINUE.
+- If the goal and acceptance criteria are satisfied, return DONE.
+- Return JSON only. Do not use Markdown."""
+
+
+def plan_prompt(job: dict[str, Any]) -> str:
+    return f"""You are Claude CLI, the controller/planner in a generic continuous development loop.
+
+Create exactly one small first Codex implementation task for this job.
+
+{schema_text()}
+
+Job state:
+{json.dumps(job, indent=2)}
+
+For PLAN, choose action CONTINUE unless the job is impossible or requires a human before any code work.
+The next_task must be small enough for one Codex iteration and must preserve the job's constraints and acceptance criteria.
+"""
+
+
+def review_prompt(job: dict[str, Any], task: dict[str, Any], run: dict[str, Any]) -> str:
+    review_state = {
+        "job": job,
+        "task": task,
+        "run": {
+            **run,
+            "codex_output": run["codex_output"][-OUTPUT_LIMIT:],
+            "test_output": run["test_output"][-OUTPUT_LIMIT:],
+            "diff": run["diff"][-80000:],
+        },
+    }
+    return f"""You are Claude CLI, the controller/reviewer in a generic continuous development loop.
+
+Review Codex output, test output, git diff, and durable job state. Decide the next loop action.
+
+{schema_text()}
+
+State to review:
+{json.dumps(review_state, indent=2)}
+"""
+
+
+def next_iteration(conn, job_id: str) -> int:
+    task = db.latest_task(conn, job_id)
+    return 0 if task is None else int(task["iteration"]) + 1
+
+
+def terminal_payload(job_id: str, decision: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "job_id": job_id,
+        "action": decision["action"],
+        "reason": decision["reason"],
+        "history_summary": decision.get("history_summary", ""),
+    }
+
+
+def create_next_task(settings, client, job: dict[str, Any], decision: dict[str, Any], created_by: str) -> str:
+    next_task = decision["next_task"]
+    task_id = uuid.uuid4().hex[:12]
+    with db.transaction(settings.db_path) as conn:
+        iteration = next_iteration(conn, job["id"])
+        db.create_task(
+            conn,
+            task_id=task_id,
+            job_id=job["id"],
+            iteration=iteration,
+            goal=str(next_task["goal"]),
+            constraints=[str(item) for item in next_task["constraints"]],
+            acceptance=[str(item) for item in next_task["acceptance"]],
+            test_cmd=str(next_task["test_cmd"]),
+            created_by=created_by,
+        )
+        db.update_job_status(conn, job["id"], "queued", decision["history_summary"])
+        db.add_event(
+            conn,
+            job_id=job["id"],
+            kind="task_queued",
+            payload={"task_id": task_id, "iteration": iteration, "action": decision["action"]},
+        )
+    xadd_json(client, CODEX_TASK_STREAM, "task", {"task_id": task_id})
+    print(f"queued Codex task {task_id} for job {job['id']}")
+    return task_id
+
+
+def finish_job(settings, client, job_id: str, stream: str, status: str, decision: dict[str, Any]) -> None:
+    payload = terminal_payload(job_id, decision)
+    with db.transaction(settings.db_path) as conn:
+        db.update_job_status(conn, job_id, status, decision.get("history_summary", ""))
+        db.add_event(conn, job_id=job_id, kind=status, payload=payload)
+    xadd_json(client, stream, "event", payload)
+    print(f"job {job_id}: {status} - {decision['reason']}")
+
+
+def handle_request(settings, client, request: dict[str, Any]) -> None:
+    request_type = request["type"]
+    job_id = request["job_id"]
+
+    with db.transaction(settings.db_path) as conn:
+        job = db.get_job(conn, job_id)
+        task = db.get_task(conn, request["task_id"]) if request_type == "REVIEW" else None
+        run = db.get_run(conn, request["run_id"]) if request_type == "REVIEW" else None
+
+    print(f"Claude request: {request_type} job={job_id}")
+
+    if request_type == "PLAN":
+        decision = run_claude(settings.claude_bin, plan_prompt(job))
+        task_id = None
+        run_id = None
+    elif request_type == "REVIEW":
+        if task is None or run is None:
+            raise ValueError("REVIEW requires task_id and run_id")
+        decision = run_claude(settings.claude_bin, review_prompt(job, task, run))
+        task_id = task["id"]
+        run_id = run["id"]
+    else:
+        raise ValueError(f"unknown Claude request type: {request_type}")
+
+    validate_decision(decision)
+
+    with db.transaction(settings.db_path) as conn:
+        db.create_decision(
+            conn,
+            decision_id=uuid.uuid4().hex[:12],
+            job_id=job_id,
+            task_id=task_id,
+            run_id=run_id,
+            request_type=request_type,
+            action=decision["action"],
+            reason=decision["reason"],
+            history_summary=decision["history_summary"],
+            decision=decision,
+        )
+        db.add_event(
+            conn,
+            job_id=job_id,
+            kind="claude_decision",
+            payload={"request_type": request_type, "action": decision["action"], "reason": decision["reason"]},
         )
 
-    raw = p.stdout.strip()
+    action = decision["action"]
+    if action in {"CONTINUE", "REPAIR"}:
+        with db.transaction(settings.db_path) as conn:
+            fresh_job = db.get_job(conn, job_id)
+            if next_iteration(conn, job_id) >= int(fresh_job["max_iterations"]):
+                human_decision = {
+                    "action": "HUMAN_NEEDED",
+                    "reason": "maximum iteration count reached",
+                    "history_summary": decision["history_summary"],
+                }
+                finish_job(settings, client, job_id, HUMAN_STREAM, "human_needed", human_decision)
+                return
+        create_next_task(settings, client, job, decision, f"claude:{request_type.lower()}")
+    elif action == "DONE":
+        finish_job(settings, client, job_id, DONE_STREAM, "done", decision)
+    elif action == "HUMAN_NEEDED":
+        finish_job(settings, client, job_id, HUMAN_STREAM, "human_needed", decision)
 
-    parsed = extract_json(raw)
 
-    # Claude CLI with --output-format json often wraps the real answer in "result".
-    if isinstance(parsed, dict) and "result" in parsed and isinstance(parsed["result"], str):
-        parsed = extract_json(parsed["result"])
-
-    # For staged demo jobs, make the loop deterministic.
-    parsed = normalize_decision_with_plan(result, parsed)
-
-    validate_decision(parsed)
-
-    return parsed
+def record_dead(settings, client, job_id: str | None, payload: dict[str, Any]) -> None:
+    with db.transaction(settings.db_path) as conn:
+        db.add_event(conn, job_id=job_id, kind="dead", payload=payload)
+        if job_id:
+            db.update_job_status(conn, job_id, "dead")
+    xadd_json(client, DEAD_STREAM, "event", payload)
 
 
-def main() -> None:
-    ensure_group(RESULT_STREAM, GROUP)
+def main() -> int:
+    settings = load_settings()
+    db.init_db(settings.db_path)
+    client = redis_client(settings.redis_url)
+    ensure_group(client, CLAUDE_REQUEST_STREAM, GROUP)
+    consumer = consumer_name("claude")
 
-    print("Claude controller started.")
-    print(f"Listening on Redis stream: {RESULT_STREAM}")
-    print(f"Consumer group: {GROUP}")
-    print(f"Consumer: {CONSUMER}")
-    print(f"Max iterations: {MAX_ITERATIONS}")
+    print("Claude controller started")
+    print(f"db: {settings.db_path}")
+    print(f"redis: {settings.redis_url}")
+    print(f"listening: {CLAUDE_REQUEST_STREAM} group={GROUP} consumer={consumer}")
 
     while True:
         try:
-            messages = r.xreadgroup(
-                GROUP,
-                CONSUMER,
-                {RESULT_STREAM: ">"},
-                count=1,
-                block=READ_BLOCK_MS,
-            )
-        except (TimeoutError, ConnectionError) as e:
-            print(f"Redis read problem, retrying: {e}")
+            messages = read_group(client, GROUP, consumer, CLAUDE_REQUEST_STREAM)
+        except (TimeoutError, ConnectionError) as exc:
+            print(f"Redis read problem, retrying: {exc}")
             time.sleep(1)
             continue
 
@@ -329,117 +304,23 @@ def main() -> None:
             continue
 
         _, entries = messages[0]
-
         for message_id, fields in entries:
+            job_id = None
             try:
-                result = json.loads(fields["result"])
-
-                print()
-                print("=" * 80)
-                print(
-                    f"Reviewing job {result.get('job_id')} "
-                    f"iteration {result.get('iteration')} "
-                    f"step {result.get('current_step', '?')}"
-                )
-                print(result.get("goal"))
-                print("=" * 80)
-
-                decision = run_claude_review(result)
-
-                action = decision["action"]
-                iteration = int(result.get("iteration", 0)) + 1
-                current_step = int(result.get("current_step", 1))
-
-                if action == "REPAIR":
-                    next_current_step = current_step
-                else:
-                    next_current_step = current_step + 1
-
-                envelope = {
-                    "job_id": result["job_id"],
-                    "iteration": iteration,
-                    "repo_path": result["repo_path"],
-                    "global_goal": result.get("global_goal", result.get("goal", "")),
-                    "loop_plan": result.get("loop_plan", []),
-                    "current_step": result.get("current_step", 1),
-                    "previous_result": {
-                        "test_rc": result.get("test_rc"),
-                        "codex_rc": result.get("codex_rc"),
-                        "changed_files": result.get("changed_files", []),
-                        "diff_stat": result.get("diff_stat", ""),
-                    },
-                    "claude_decision": decision,
-                }
-
-                print(f"Claude action: {action}")
-                print(f"Reason: {decision.get('reason')}")
-
-                if iteration >= MAX_ITERATIONS:
-                    r.xadd(
-                        HUMAN_STREAM,
-                        {
-                            "event": json.dumps(
-                                {
-                                    **envelope,
-                                    "reason": "maximum iteration count reached",
-                                }
-                            )
-                        },
-                    )
-                    print("Job requires human input: max iterations reached")
-
-                elif action in {"CONTINUE", "REPAIR"}:
-                    next_task = decision["next_task"]
-
-                    task = {
-                        "job_id": result["job_id"],
-                        "iteration": iteration,
-                        "repo_path": result["repo_path"],
-
-                        "global_goal": result.get("global_goal", result.get("goal", "")),
-                        "loop_plan": result.get("loop_plan", []),
-                        "current_step": next_current_step,
-
-                        "goal": next_task["goal"],
-                        "constraints": next_task["constraints"],
-                        "acceptance": next_task["acceptance"],
-                        "test_cmd": next_task["test_cmd"],
-                    }
-
-                    r.xadd(TASK_STREAM, {"task": json.dumps(task)})
-                    print(
-                        f"Queued next Codex task, iteration {iteration}, "
-                        f"step {next_current_step}"
-                    )
-
-                elif action == "DONE":
-                    r.xadd(DONE_STREAM, {"event": json.dumps(envelope)})
-                    print("Job marked DONE")
-
-                elif action == "HUMAN_NEEDED":
-                    r.xadd(HUMAN_STREAM, {"event": json.dumps(envelope)})
-                    print("Job requires human input")
-
-                r.xack(RESULT_STREAM, GROUP, message_id)
-
-            except Exception as e:
-                print(f"Controller error: {e}")
-
+                request = decode(fields["request"])
+                job_id = request.get("job_id")
+                handle_request(settings, client, request)
+                client.xack(CLAUDE_REQUEST_STREAM, GROUP, message_id)
+            except Exception as exc:
+                print(f"controller error: {exc}")
+                payload = {"where": "claude_controller", "error": repr(exc), "fields": fields}
                 try:
-                    r.xadd(
-                        DEAD_STREAM,
-                        {
-                            "where": "claude_controller",
-                            "error": repr(e),
-                            "fields": json.dumps(fields),
-                        },
-                    )
-                    r.xack(RESULT_STREAM, GROUP, message_id)
+                    record_dead(settings, client, job_id, payload)
+                    client.xack(CLAUDE_REQUEST_STREAM, GROUP, message_id)
                 except Exception as inner:
-                    print(f"Could not write to dead stream: {inner}")
+                    print(f"could not record dead event: {inner}")
 
 
 if __name__ == "__main__":
-    main()
-    
-    
+    raise SystemExit(main())
+

@@ -1,58 +1,47 @@
+from __future__ import annotations
+
 import json
 import time
 
-import redis
-from redis.exceptions import TimeoutError, ConnectionError
+from redis.exceptions import ConnectionError, TimeoutError
+
+from ai_loop.config import DEAD_STREAM, DONE_STREAM, HUMAN_STREAM, READ_BLOCK_MS, load_settings
+from ai_loop.queues import redis_client
 
 
-REDIS_URL = "redis://localhost:6379/0"
-READ_BLOCK_MS = 5000
+def main() -> int:
+    settings = load_settings()
+    client = redis_client(settings.redis_url)
+    streams = {DONE_STREAM: "$", HUMAN_STREAM: "$", DEAD_STREAM: "$"}
 
-r = redis.Redis.from_url(
-    REDIS_URL,
-    decode_responses=True,
-    socket_connect_timeout=5,
-    socket_timeout=10,
-    health_check_interval=30,
-    retry_on_timeout=True,
-)
+    print("AI loop watcher started")
+    print(f"redis: {settings.redis_url}")
+    print(f"watching: {', '.join(streams)}")
 
-streams = {
-    "ai:done": "$",
-    "ai:human": "$",
-    "ai:dead": "$",
-}
+    while True:
+        try:
+            messages = client.xread(streams, block=READ_BLOCK_MS, count=1)
+        except (TimeoutError, ConnectionError) as exc:
+            print(f"Redis read problem, retrying: {exc}")
+            time.sleep(1)
+            continue
 
-print("Watching ai:done, ai:human, ai:dead...")
+        if not messages:
+            continue
 
-while True:
-    try:
-        messages = r.xread(
-            streams,
-            block=READ_BLOCK_MS,
-            count=1,
-        )
-    except (TimeoutError, ConnectionError) as e:
-        print(f"Redis read problem, retrying: {e}")
-        time.sleep(1)
-        continue
+        for stream, entries in messages:
+            for message_id, fields in entries:
+                print()
+                print("=" * 80)
+                print(f"{stream} {message_id}")
+                for key, value in fields.items():
+                    try:
+                        print(json.dumps(json.loads(value), indent=2))
+                    except json.JSONDecodeError:
+                        print(f"{key}: {value}")
+                streams[stream] = message_id
 
-    if not messages:
-        continue
 
-    for stream, entries in messages:
-        for message_id, fields in entries:
-            print()
-            print("=" * 80)
-            print(f"STREAM: {stream}")
-            print(f"ID: {message_id}")
-
-            for key, value in fields.items():
-                try:
-                    parsed = json.loads(value)
-                    print(json.dumps(parsed, indent=2))
-                except Exception:
-                    print(f"{key}: {value}")
-
-            streams[stream] = message_id
+if __name__ == "__main__":
+    raise SystemExit(main())
 
