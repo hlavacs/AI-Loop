@@ -1,0 +1,81 @@
+Complete Worker System
+======================
+
+The system is a small Claude + Codex development loop with durable state in SQLite and activation messages in Redis Streams.
+
+Main Components
+---------------
+
+start_job.py
+Creates a job. It writes the job to SQLite, optionally creates a Git worktree and branch, then sends a PLAN message to Redis stream ai:claude:requests.
+
+claude_controller.py
+Acts as planner/reviewer. It consumes PLAN and REVIEW messages from ai:claude:requests. For PLAN, it creates one small Codex task. For REVIEW, it inspects Codex output, test output, git diff, and job history, then decides CONTINUE, REPAIR, DONE, or HUMAN_NEEDED.
+
+codex_worker.py
+Acts as implementation worker. It consumes tasks from ai:codex:tasks, runs codex exec in the job worktree, runs the task's test command, captures git status/diff/output, writes a run record to SQLite, then sends a REVIEW request back to Claude.
+
+watcher.py
+Watches terminal streams: ai:done, ai:human, and ai:dead. It prints final outcomes and errors.
+
+Storage
+-------
+
+ai_loop.sqlite3
+Durable database. It stores jobs, tasks, runs, Claude decisions, and events.
+
+Tables:
+- jobs: overall job goal, repo/worktree paths, status, history
+- tasks: individual Codex tasks
+- runs: Codex execution results, test output, git diff
+- decisions: Claude planning/review decisions
+- events: audit trail
+
+Message Queue
+-------------
+
+Redis Streams are used for coordination:
+
+ai:claude:requests  PLAN and REVIEW messages for Claude
+ai:codex:tasks      implementation tasks for Codex
+ai:done             completed jobs
+ai:human            jobs needing human intervention
+ai:dead             worker/controller failures
+
+Flow
+----
+
+1. User creates a job with job.bash or start_job.py.
+2. Job is stored in SQLite.
+3. PLAN is queued on ai:claude:requests.
+4. Claude controller creates the first task.
+5. Task is stored in SQLite and queued on ai:codex:tasks.
+6. Codex worker runs the task in the worktree.
+7. Worker stores run output, tests, git status, diff.
+8. Worker queues REVIEW for Claude.
+9. Claude decides:
+   - CONTINUE: create next task
+   - REPAIR: create corrective task
+   - DONE: publish to ai:done
+   - HUMAN_NEEDED: publish to ai:human
+
+Run Scripts
+-----------
+
+run_claude.bash
+Starts the Claude controller.
+
+run_codex.bash
+Starts the Codex worker with sandbox bypass enabled by default.
+
+run_watcher.bash
+Starts terminal event watcher.
+
+Important Detail
+----------------
+
+run_codex.bash sets CODEX_BYPASS_SANDBOX=1 by default.
+
+That means Codex runs with --dangerously-bypass-approvals-and-sandbox unless overridden:
+
+CODEX_BYPASS_SANDBOX=0 ./run_codex.bash
