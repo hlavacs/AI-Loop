@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import time
 import subprocess
 import sys
 import uuid
@@ -37,6 +38,9 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--max-iterations", type=int, default=10, help="Maximum Codex iterations.")
     parser.add_argument("--base-ref", default="HEAD", help="Git ref used for the isolated worktree.")
     parser.add_argument("--no-worktree", action="store_true", help="Run directly in --repo instead of a Git worktree.")
+    parser.add_argument("--wait", action="store_true", help="Wait for the job to reach a terminal status.")
+    parser.add_argument("--poll-interval", type=float, default=5.0, help="Seconds between status checks with --wait.")
+    parser.add_argument("--timeout", type=int, default=900, help="Maximum seconds to wait with --wait.")
     return parser.parse_args()
 
 
@@ -59,6 +63,47 @@ def create_worktree(repo: Path, runs_dir: Path, job_id: str, base_ref: str) -> t
     branch = f"ai/{job_id}"
     run_git(["worktree", "add", "-b", branch, str(worktree), base_ref], cwd=repo)
     return worktree, branch
+
+
+def job_status(db_path: Path, job_id: str) -> str:
+    with db.transaction(db_path) as conn:
+        return str(db.get_job(conn, job_id)["status"])
+
+
+def print_inspect_commands(job_id: str) -> None:
+    print()
+    print("Inspect with:")
+    print(f"./check_job.bash {job_id}")
+    print(f"./print_log.bash --job {job_id} --limit 120")
+
+
+def wait_for_job(db_path: Path, job_id: str, worktree: Path, timeout: int, poll_interval: float) -> int:
+    print(f"waiting for job {job_id}")
+    deadline = time.monotonic() + timeout
+    status = ""
+
+    while time.monotonic() < deadline:
+        status = job_status(db_path, job_id)
+        print(f"job {job_id} status: {status}")
+        if status == "done":
+            print()
+            print("AI loop job done")
+            print(f"job: {job_id}")
+            print(f"worktree: {worktree}")
+            print_inspect_commands(job_id)
+            return 0
+        if status in {"human_needed", "dead"}:
+            print()
+            print(f"AI loop job {status}")
+            print(f"job: {job_id}")
+            print(f"worktree: {worktree}")
+            print_inspect_commands(job_id)
+            return 1
+        time.sleep(poll_interval)
+
+    print(f"timed out waiting for job {job_id}; last status: {status}", file=sys.stderr)
+    print_inspect_commands(job_id)
+    return 1
 
 
 def main() -> int:
@@ -124,6 +169,9 @@ def main() -> int:
     print(f"worktree: {worktree}")
     print(f"db: {settings.db_path}")
     print(f"queued PLAN on {CLAUDE_REQUEST_STREAM}")
+    if args.wait:
+        return wait_for_job(settings.db_path, job_id, worktree, args.timeout, args.poll_interval)
+    print_inspect_commands(job_id)
     return 0
 
 

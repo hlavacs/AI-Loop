@@ -21,4 +21,5 @@ python start_job.py \
   --constraint "Keep changes small and reviewable." \
   --constraint "Do not modify unrelated files." \
   --acceptance "The requested feature works." \
-  --acceptance "The test command passes."
+  --acceptance "The test command passes." \
+  --wait

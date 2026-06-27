@@ -115,8 +115,11 @@ python start_job.py \
   --constraint "Preserve public APIs unless the task requires changing them." \
   --acceptance "The feature is documented where users would expect it." \
   --max-iterations 8 \
-  --base-ref HEAD
+  --base-ref HEAD \
+  --wait
 ```
+
+With `--wait`, the command prints status updates until the job reaches `done`, `human_needed`, or `dead`, then prints inspect commands. Omit `--wait` to submit the job asynchronously.
 
 By default this creates:
 
