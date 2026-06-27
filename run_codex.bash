@@ -2,12 +2,16 @@
 set -euo pipefail
 
 cd "$(dirname "${BASH_SOURCE[0]}")"
-source .venv/bin/activate
+if [ -f .venv/bin/activate ]; then
+  source .venv/bin/activate
+fi
+
+python_bin="${AI_LOOP_PYTHON:-python}"
 
 log_dir="${AI_LOOP_LOG_DIR:-./logs}"
 mkdir -p "$log_dir"
-exec > >(tee -a "$log_dir/codex_worker.log") 2>&1
+exec >> "$log_dir/codex_worker.log" 2>&1
 
 export PYTHONUNBUFFERED="${PYTHONUNBUFFERED:-1}"
 export CODEX_BYPASS_SANDBOX="${CODEX_BYPASS_SANDBOX:-1}"
-exec python codex_worker.py
+exec "$python_bin" codex_worker.py

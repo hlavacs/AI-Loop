@@ -32,6 +32,16 @@ read_pid() {
   fi
 }
 
+launch_background() {
+  local wrapper="$1"
+
+  if command -v setsid >/dev/null 2>&1; then
+    setsid "$wrapper" >/dev/null 2>&1 &
+  else
+    "$wrapper" >/dev/null 2>&1 &
+  fi
+}
+
 start_one() {
   local name="$1"
   local wrapper="$2"
@@ -51,7 +61,7 @@ start_one() {
     return
   fi
 
-  setsid "$wrapper" >/dev/null 2>&1 &
+  launch_background "$wrapper"
   pid="$!"
   echo "$pid" > "$(pid_file "$name")"
   echo "started $name pid=$pid"

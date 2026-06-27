@@ -12,12 +12,16 @@ shift
 job_description="$*"
 
 cd "$(dirname "${BASH_SOURCE[0]}")"
-source .venv/bin/activate
+if [ -f .venv/bin/activate ]; then
+  source .venv/bin/activate
+fi
 
-python start_job.py \
+python_bin="${AI_LOOP_PYTHON:-python}"
+
+"$python_bin" start_job.py \
   --repo "$repo_path" \
   --goal "$job_description" \
-  --test-cmd "python -m pytest -q" \
+  --test-cmd "${AI_LOOP_TEST_CMD:-python -m pytest -q}" \
   --constraint "Keep changes small and reviewable." \
   --constraint "Do not modify unrelated files." \
   --acceptance "The requested feature works." \
