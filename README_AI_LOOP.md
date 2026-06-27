@@ -78,7 +78,16 @@ codex exec --dangerously-bypass-approvals-and-sandbox
 
 ## Start the Loop Processes
 
-Run each command in a separate terminal from this directory:
+Use the control script to run the loop in the background:
+
+```bash
+./loopctl.bash start
+./loopctl.bash status
+./loopctl.bash stop
+./loopctl.bash restart
+```
+
+Or run each command in a separate terminal from this directory:
 
 ```bash
 python claude_controller.py
@@ -137,6 +146,22 @@ List all known jobs:
 ```bash
 ./check_job.bash
 ```
+
+Print the durable loop log from SQLite and tail process log files from `./logs`:
+
+```bash
+./print_log.bash
+./print_log.bash --job <job_id> --limit 50
+```
+
+Clear run, decision, and event log rows, and truncate process log files, while keeping jobs and tasks:
+
+```bash
+./clear_log.bash --dry-run
+./clear_log.bash --yes
+```
+
+The process log files are created by `./run_claude.bash`, `./run_codex.bash`, and `./run_watcher.bash`. Restart already-running workers with those wrappers to begin writing `./logs/*.log`. To wipe the entire job database, use `./clear_db.bash --yes` instead.
 
 ## Loop Behavior
 
