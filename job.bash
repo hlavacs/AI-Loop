@@ -15,13 +15,28 @@ cd "$(dirname "${BASH_SOURCE[0]}")"
 if [ -f .venv/bin/activate ]; then
   source .venv/bin/activate
 fi
+source ./ai_loop_python.bash
 
-python_bin="${AI_LOOP_PYTHON:-python}"
+python_bin="$(choose_ai_loop_python)"
+ensure_ai_loop_python_redis "$python_bin"
+
+if [ "${AI_LOOP_TEST_CMD:-}" = "" ]; then
+  test_python_bin="$(resolve_ai_loop_python "$python_bin")"
+  quoted_test_python_bin="$(quote_ai_loop_shell_word "$test_python_bin")"
+  if [ "${PYTHONPATH:-}" != "" ]; then
+    quoted_pythonpath="$(quote_ai_loop_shell_word "$PYTHONPATH")"
+    test_cmd="PYTHONPATH=$quoted_pythonpath $quoted_test_python_bin -m pytest -q"
+  else
+    test_cmd="$quoted_test_python_bin -m pytest -q"
+  fi
+else
+  test_cmd="$AI_LOOP_TEST_CMD"
+fi
 
 "$python_bin" start_job.py \
   --repo "$repo_path" \
   --goal "$job_description" \
-  --test-cmd "${AI_LOOP_TEST_CMD:-python -m pytest -q}" \
+  --test-cmd "$test_cmd" \
   --constraint "Keep changes small and reviewable." \
   --constraint "Do not modify unrelated files." \
   --acceptance "The requested feature works." \

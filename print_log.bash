@@ -78,6 +78,42 @@ def load_json(value, default):
 def short(value, width=220):
     return shorten(str(value).replace("\n", " "), width=width, placeholder="...")
 
+def describe_status(status, index=0):
+    descriptions = {
+        "planning": [
+            "Claude is choosing the next implementation task.",
+            "Planner is reading the job history and constraints.",
+            "Planning pass is deciding what Codex should change next.",
+        ],
+        "implementing": [
+            "Codex is applying the current task in the worktree.",
+            "Implementation worker is editing and validating the task.",
+            "Worker is turning the plan into a concrete code change.",
+        ],
+        "queued": [
+            "The next Codex task is waiting for the worker.",
+            "Task is ready and pending worker pickup.",
+            "Queue has the next implementation request.",
+        ],
+        "done": [
+            "The job met its acceptance criteria.",
+            "Review accepted the latest implementation.",
+            "The loop has reached a successful terminal state.",
+        ],
+        "human_needed": [
+            "The loop needs a person to resolve the next step.",
+            "Automation paused because manual input is required.",
+            "A human decision is needed before continuing.",
+        ],
+        "dead": [
+            "The loop stopped after an unrecoverable error.",
+            "Worker/controller flow reached a failed terminal state.",
+            "The job cannot continue without repair.",
+        ],
+    }
+    variants = descriptions.get(status, ["The loop is moving through this job state."])
+    return variants[index % len(variants)]
+
 where = "WHERE job_id = ?" if job_id else ""
 params = (job_id,) if job_id else ()
 
@@ -88,7 +124,7 @@ if job_id:
         sys.exit(1)
     print(f"database: {db_path}")
     print(f"job: {job['id']}")
-    print(f"status: {job['status']}")
+    print(f"status: {job['status']} - {describe_status(job['status'])}")
     print(f"updated_at: {job['updated_at']}")
     print(f"goal: {job['goal']}")
     print()

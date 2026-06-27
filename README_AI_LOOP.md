@@ -55,8 +55,26 @@ Optional settings:
 ```bash
 export AI_LOOP_DB="$PWD/ai_loop.sqlite3"
 export AI_LOOP_RUNS_DIR="$(dirname "$PWD")/ai-runs"
+export AI_LOOP_PYTHON=python3
 export CODEX_BIN=codex
 ```
+
+The shell wrappers prefer `AI_LOOP_PYTHON` when set, then local virtualenv
+interpreters, then versioned `python3` commands. They do not require a bare
+`python` executable.
+
+`./job.bash` also uses that selected interpreter for its default validation
+command, so the implicit test command is equivalent to:
+
+```bash
+/absolute/path/to/selected/python -m pytest -q
+```
+
+If the selected interpreter needs the loop virtualenv packages through
+`PYTHONPATH`, `./job.bash` stores that absolute `PYTHONPATH` prefix in the
+test command as well.
+
+Set `AI_LOOP_TEST_CMD` to override that default for a target repository.
 
 By default Codex runs with:
 
@@ -157,6 +175,26 @@ Print the durable loop log from SQLite and tail process log files from `./logs`:
 ./print_log.bash --job <job_id> --limit 50
 ```
 
+Resume a job that reached `human_needed` because the test command was wrong:
+
+```bash
+python resume_job.py <job_id> \
+  --test-cmd "ctest --test-dir build/debug-macos -C Debug --output-on-failure" \
+  --wait
+```
+
+Resume a job with a corrected target path or goal:
+
+```bash
+python resume_job.py <job_id> \
+  --goal "Implement the simple engine under src/versions/simple." \
+  --constraint "Do not implement this in src/versions/v4 or src/versions/v5." \
+  --acceptance "The implementation lives under src/versions/simple." \
+  --wait
+```
+
+This updates the stored job fields, marks the job as `planning`, and queues a new `PLAN` request.
+
 Clear run, decision, and event log rows, and truncate process log files, while keeping jobs and tasks:
 
 ```bash
@@ -180,4 +218,4 @@ The process log files are created by `./run_claude.bash`, `./run_codex.bash`, an
 10. Terminal outcomes are published to `ai:done`, `ai:human`, or `ai:dead`.
 
 The loop never commits or merges automatically.
-
+The controller should split work into small tasklets: one narrow objective, one clear stop point, and no bundled audit-plus-implementation milestones. Restart the workers after changing prompt code so running processes pick up the new tasklet policy.

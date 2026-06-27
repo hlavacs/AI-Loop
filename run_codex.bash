@@ -5,8 +5,10 @@ cd "$(dirname "${BASH_SOURCE[0]}")"
 if [ -f .venv/bin/activate ]; then
   source .venv/bin/activate
 fi
+source ./ai_loop_python.bash
 
-python_bin="${AI_LOOP_PYTHON:-python}"
+python_bin="$(choose_ai_loop_python)"
+ensure_ai_loop_python_redis "$python_bin"
 
 log_dir="${AI_LOOP_LOG_DIR:-./logs}"
 mkdir -p "$log_dir"

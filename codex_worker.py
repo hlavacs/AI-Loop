@@ -40,6 +40,10 @@ def run_shell(command: str, cwd: str, timeout: int) -> dict[str, object]:
     return run_command(["bash", "-lc", command], cwd, timeout)
 
 
+def log_worker_stage(job_id: str, task_id: str, stage: str, detail: str) -> None:
+    print(f"job {job_id} task {task_id}: {stage} - {detail}")
+
+
 def build_codex_command(codex_bin: str, cwd: str, prompt: str, bypass_sandbox: bool) -> list[str]:
     cmd = [codex_bin, "exec", "--cd", cwd]
     if bypass_sandbox:
@@ -71,7 +75,9 @@ Task acceptance criteria:
 
 Rules:
 - Implement only this task.
-- Keep changes small and directly relevant.
+- Treat this as a tasklet: keep changes as small and specific as possible.
+- Do not expand the task into adjacent cleanup, broad audits, or follow-up milestones.
+- Stop once this tasklet's acceptance criteria are met.
 - Add or update tests only when useful for this task.
 - Do not commit changes.
 - Do not merge branches.
@@ -134,15 +140,25 @@ def process_task(settings, client, task_id: str) -> None:
             prompt,
             settings.codex_bypass_sandbox,
         )
+        log_worker_stage(job["id"], task_id, "implementing", "Codex process started; source changes may not exist until it finishes")
         codex = run_command(codex_cmd, worktree_path, 7200)
         codex_rc = int(codex["rc"])
         codex_output = str(codex["output"])[-OUTPUT_LIMIT:]
+        log_worker_stage(job["id"], task_id, "codex_done", f"Codex finished rc={codex_rc}; running task test command")
 
         tests = run_shell(task["test_cmd"], worktree_path, 1800)
         test_rc = int(tests["rc"])
         test_output = str(tests["output"])[-OUTPUT_LIMIT:]
+        log_worker_stage(job["id"], task_id, "tests_done", f"test command finished rc={test_rc}; capturing git diff")
 
     snapshot = git_snapshot(worktree_path)
+    changed_files = list(snapshot["changed_files"])
+    log_worker_stage(
+        job["id"],
+        task_id,
+        "snapshot",
+        f"changed_files={changed_files if changed_files else 'none'}",
+    )
     finished_at = db.utc_now()
 
     with db.transaction(settings.db_path) as conn:
@@ -159,7 +175,7 @@ def process_task(settings, client, task_id: str) -> None:
             git_status=str(snapshot["git_status"]),
             diff_stat=str(snapshot["diff_stat"]),
             diff=str(snapshot["diff"]),
-            changed_files=list(snapshot["changed_files"]),
+            changed_files=changed_files,
             status=status,
             error=error,
             started_at=started_at,

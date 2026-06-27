@@ -109,6 +109,12 @@ def schema_text() -> str:
 Rules:
 - next_task is required for CONTINUE and REPAIR.
 - Claude is controller/planner/reviewer only, never a code editor.
+- Prefer more tasklets over fewer broad tasks. Each next_task should be the smallest independently useful step.
+- A next_task must have one concrete objective, one primary file or tightly related file cluster, and a clear stop point.
+- Do not combine discovery, scaffolding, implementation, broad refactoring, and full verification in one task unless the change is truly trivial.
+- If the next useful work has multiple parts, return only the first tasklet now and leave the rest for later CONTINUE decisions.
+- Write next_task.goal as a specific imperative, not a project summary. Name the exact directory, file, symbol, or test target when known.
+- Keep next_task.acceptance narrow enough that Codex can prove it in one short run.
 - Return HUMAN_NEEDED only when no useful automated task remains and human input or an external environment change is truly required.
 - Do not mark a job HUMAN_NEEDED merely because Codex found a runtime/environment symptom; first prefer CONTINUE or REPAIR with a concrete diagnostic or retry task when there are reasonable checks left.
 - For GUI/display/window tasks, ask Codex to verify DISPLAY, WAYLAND_DISPLAY, XDG_SESSION_TYPE, SDL video backends, Vulkan presentation support, and visible windows from the same process environment before deciding the display is unavailable.
@@ -122,7 +128,7 @@ Rules:
 def plan_prompt(job: dict[str, Any]) -> str:
     return f"""You are Claude CLI, the controller/planner in a generic continuous development loop.
 
-Create exactly one small first Codex implementation task for this job.
+Create exactly one tiny first Codex tasklet for this job.
 
 {schema_text()}
 
@@ -130,7 +136,9 @@ Job state:
 {json.dumps(job, indent=2)}
 
 For PLAN, choose action CONTINUE unless the job is impossible or requires a human before any code work.
-The next_task must be small enough for one Codex iteration and must preserve the job's constraints and acceptance criteria.
+The next_task must be smaller than a normal development task: one tasklet, one narrow output, then stop.
+If discovery is needed, make the first tasklet discovery-only or scaffold-only; do not ask for a broad audit plus implementation.
+Preserve the job's constraints and acceptance criteria, but narrow the tasklet's own acceptance to what this one small step can prove.
 """
 
 
@@ -148,6 +156,8 @@ def review_prompt(job: dict[str, Any], task: dict[str, Any], run: dict[str, Any]
     return f"""You are Claude CLI, the controller/reviewer in a generic continuous development loop.
 
 Review Codex output, test output, git diff, and durable job state. Decide the next loop action.
+When continuing, send Codex the next smallest tasklet, not the next broad milestone.
+Prefer several precise CONTINUE tasklets over one large mixed task.
 
 {schema_text()}
 
@@ -323,4 +333,3 @@ def main() -> int:
 
 if __name__ == "__main__":
     raise SystemExit(main())
-
