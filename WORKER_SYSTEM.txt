@@ -62,14 +62,55 @@ Flow
 Run Scripts
 -----------
 
+loopctl.bash
+Controls the loop processes in the background. Supported commands:
+
+./loopctl.bash start
+./loopctl.bash stop
+./loopctl.bash restart
+./loopctl.bash status
+
+It starts the Claude controller, Codex worker, and watcher through the wrapper scripts. It stores PID files in ./run by default, or in AI_LOOP_RUNTIME_DIR if set. It can also detect direct python claude_controller.py, codex_worker.py, and watcher.py processes when reporting status or stopping.
+
 run_claude.bash
-Starts the Claude controller.
+Starts the Claude controller. It appends stdout/stderr to ./logs/claude_controller.log by default, or AI_LOOP_LOG_DIR/claude_controller.log if AI_LOOP_LOG_DIR is set.
 
 run_codex.bash
-Starts the Codex worker with sandbox bypass enabled by default.
+Starts the Codex worker with sandbox bypass enabled by default. It appends stdout/stderr to ./logs/codex_worker.log by default, or AI_LOOP_LOG_DIR/codex_worker.log if AI_LOOP_LOG_DIR is set.
 
 run_watcher.bash
-Starts terminal event watcher.
+Starts terminal event watcher. It appends stdout/stderr to ./logs/watcher.log by default, or AI_LOOP_LOG_DIR/watcher.log if AI_LOOP_LOG_DIR is set.
+
+Log and Status Helpers
+----------------------
+
+print_log.bash
+Prints durable SQLite history and tails process log files:
+
+./print_log.bash
+./print_log.bash --job <job_id> --limit 50
+
+It reads jobs, runs, decisions, and events from ai_loop.sqlite3, then tails ./logs/*.log.
+
+clear_log.bash
+Clears log-like history while keeping job/task records:
+
+./clear_log.bash --dry-run
+./clear_log.bash --yes
+
+It deletes rows from runs, decisions, and events, and truncates ./logs/*.log. It does not delete jobs or tasks.
+
+check_job.bash
+Checks whether jobs exist and prints job status:
+
+./check_job.bash
+./check_job.bash <job_id>
+
+clear_db.bash
+Clears the full database, including jobs and tasks:
+
+./clear_db.bash --dry-run
+./clear_db.bash --yes
 
 Important Detail
 ----------------
@@ -79,3 +120,24 @@ run_codex.bash sets CODEX_BYPASS_SANDBOX=1 by default.
 That means Codex runs with --dangerously-bypass-approvals-and-sandbox unless overridden:
 
 CODEX_BYPASS_SANDBOX=0 ./run_codex.bash
+
+Operational Proof
+-----------------
+
+To prove the loop is up:
+
+./loopctl.bash status
+./print_log.bash --limit 50
+
+A healthy status shows:
+
+claude_controller running pid=<pid>
+codex_worker running pid=<pid>
+watcher running pid=<pid>
+
+To prove end-to-end behavior, create a small throwaway Git repo, start the loop with ./loopctl.bash start, submit a job with start_job.py, and check that:
+
+- ./check_job.bash shows the job progressing or done
+- ./print_log.bash shows controller/worker/watcher activity
+- the job worktree contains the requested change
+- the configured test command passes
