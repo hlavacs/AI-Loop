@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import shutil
 import time
 import subprocess
 import sys
@@ -61,12 +62,73 @@ def run_git(args: list[str], cwd: Path) -> str:
     return result.stdout.strip()
 
 
+def run_git_raw(args: list[str], cwd: Path) -> str:
+    result = subprocess.run(
+        ["git", *args],
+        cwd=str(cwd),
+        text=True,
+        capture_output=True,
+        timeout=120,
+    )
+    if result.returncode != 0:
+        raise RuntimeError(result.stderr.strip() or result.stdout.strip())
+    return result.stdout
+
+
 def create_worktree(repo: Path, runs_dir: Path, job_id: str, base_ref: str) -> tuple[Path, str]:
     runs_dir.mkdir(parents=True, exist_ok=True)
     worktree = runs_dir / job_id
     branch = f"ai/{job_id}"
     run_git(["worktree", "add", "-b", branch, str(worktree), base_ref], cwd=repo)
     return worktree, branch
+
+
+def dirty_paths(repo: Path) -> list[tuple[str, str]]:
+    output = run_git_raw(["status", "--porcelain=v1", "-z", "--untracked-files=all"], cwd=repo)
+    entries = output.split("\0")
+    paths: list[tuple[str, str]] = []
+    index = 0
+    while index < len(entries):
+        entry = entries[index]
+        index += 1
+        if not entry:
+            continue
+        code = entry[:2]
+        path = entry[3:]
+        if code[0] in {"R", "C"} or code[1] in {"R", "C"}:
+            if index < len(entries):
+                path = entries[index]
+                index += 1
+        paths.append((code, path))
+    return paths
+
+
+def copy_checkout_overlay(repo: Path, worktree: Path) -> list[str]:
+    copied: list[str] = []
+    for code, relative_path in dirty_paths(repo):
+        if not relative_path:
+            continue
+        source = repo / relative_path
+        target = worktree / relative_path
+        if "D" in code and not source.exists():
+            if target.exists():
+                if target.is_dir():
+                    shutil.rmtree(target)
+                else:
+                    target.unlink()
+            copied.append(relative_path)
+            continue
+        if not source.exists():
+            continue
+        target.parent.mkdir(parents=True, exist_ok=True)
+        if source.is_dir():
+            if target.exists():
+                shutil.rmtree(target)
+            shutil.copytree(source, target)
+        else:
+            shutil.copy2(source, target)
+        copied.append(relative_path)
+    return sorted(set(copied))
 
 
 def job_status(db_path: Path, job_id: str) -> str:
@@ -230,10 +292,12 @@ def main() -> int:
     use_worktree = not args.no_worktree
     branch: str | None = None
     worktree = repo
+    overlay_files: list[str] = []
 
     try:
         if use_worktree:
             worktree, branch = create_worktree(repo, settings.runs_dir, job_id, args.base_ref)
+            overlay_files = copy_checkout_overlay(repo, worktree)
 
         with db.transaction(settings.db_path) as conn:
             db.create_job(
@@ -254,7 +318,12 @@ def main() -> int:
                 conn,
                 job_id=job_id,
                 kind="job_created",
-                payload={"job_id": job_id, "worktree_path": str(worktree), "goal": args.goal},
+                payload={
+                    "job_id": job_id,
+                    "worktree_path": str(worktree),
+                    "goal": args.goal,
+                    "checkout_overlay_files": overlay_files,
+                },
             )
 
         client = redis_client(settings.redis_url)
@@ -274,6 +343,8 @@ def main() -> int:
     print(f"created job {job_id}")
     print(f"repo: {repo}")
     print(f"worktree: {worktree}")
+    if use_worktree:
+        print(f"checkout overlay files: {len(overlay_files)}")
     print(f"db: {settings.db_path}")
     print(f"queued PLAN on {CLAUDE_REQUEST_STREAM}")
     if args.wait:
