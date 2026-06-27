@@ -5,6 +5,7 @@ import shutil
 import subprocess
 import time
 import uuid
+from pathlib import Path
 from typing import Any
 
 from redis.exceptions import ConnectionError, TimeoutError
@@ -24,6 +25,10 @@ from ai_loop.queues import consumer_name, decode, ensure_group, redis_client, re
 GROUP = "claude-controllers"
 ACTIONS = {"CONTINUE", "REPAIR", "DONE", "HUMAN_NEEDED"}
 OUTPUT_LIMIT = 20000
+
+
+class PromotionError(RuntimeError):
+    pass
 
 
 def extract_json(text: str) -> dict[str, Any]:
@@ -180,6 +185,102 @@ def terminal_payload(job_id: str, decision: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def run_git(args: list[str], cwd: Path) -> subprocess.CompletedProcess[str]:
+    return subprocess.run(
+        ["git", *args],
+        cwd=cwd,
+        text=True,
+        capture_output=True,
+        timeout=300,
+    )
+
+
+def status_paths(worktree: Path) -> list[tuple[str, str | None]]:
+    proc = run_git(["status", "--porcelain=v1", "-z"], worktree)
+    if proc.returncode != 0:
+        raise PromotionError(f"could not inspect worktree git status: {proc.stderr.strip()}")
+
+    paths: list[tuple[str, str | None]] = []
+    items = proc.stdout.split("\0")
+    index = 0
+    while index < len(items):
+        item = items[index]
+        index += 1
+        if not item:
+            continue
+        code = item[:2]
+        path = item[3:]
+        if code[0] in {"R", "C"} or code[1] in {"R", "C"}:
+            if index >= len(items):
+                raise PromotionError(f"malformed rename/copy status entry for {path}")
+            new_path = items[index]
+            index += 1
+            paths.append((code, new_path))
+        else:
+            paths.append((code, path))
+    return paths
+
+
+def repo_has_local_change(repo: Path, relative_path: str) -> bool:
+    proc = run_git(["status", "--porcelain=v1", "--", relative_path], repo)
+    if proc.returncode != 0:
+        raise PromotionError(f"could not inspect target repo status: {proc.stderr.strip()}")
+    return bool(proc.stdout.strip())
+
+
+def promote_successful_worktree(job: dict[str, Any]) -> dict[str, Any]:
+    repo = Path(str(job["repo_path"]))
+    worktree = Path(str(job["worktree_path"]))
+    if not bool(job["use_worktree"]) or repo.resolve() == worktree.resolve():
+        return {"promoted": False, "reason": "job already ran in the target repository", "files": []}
+
+    changes = status_paths(worktree)
+    changed_paths = sorted({path for _code, path in changes if path})
+    if not changed_paths:
+        return {"promoted": False, "reason": "job worktree had no changed files", "files": []}
+
+    conflicting = [path for path in changed_paths if repo_has_local_change(repo, path)]
+    if conflicting:
+        preview = ", ".join(conflicting[:20])
+        extra = "" if len(conflicting) <= 20 else f", ... and {len(conflicting) - 20} more"
+        raise PromotionError(f"target repo has local changes in promoted paths: {preview}{extra}")
+
+    copied: list[str] = []
+    removed: list[str] = []
+    for code, relative_path in changes:
+        if relative_path is None:
+            continue
+        source = worktree / relative_path
+        target = repo / relative_path
+        if "D" in code and not source.exists():
+            if target.exists():
+                if target.is_dir():
+                    shutil.rmtree(target)
+                else:
+                    target.unlink()
+            removed.append(relative_path)
+            continue
+
+        if not source.exists():
+            continue
+        target.parent.mkdir(parents=True, exist_ok=True)
+        if source.is_dir():
+            if target.exists():
+                shutil.rmtree(target)
+            shutil.copytree(source, target)
+        else:
+            shutil.copy2(source, target)
+        copied.append(relative_path)
+
+    return {
+        "promoted": True,
+        "reason": "copied successful worktree changes to target repository",
+        "files": sorted(copied + removed),
+        "copied": sorted(copied),
+        "removed": sorted(removed),
+    }
+
+
 def create_next_task(settings, client, job: dict[str, Any], decision: dict[str, Any], created_by: str) -> str:
     next_task = decision["next_task"]
     task_id = uuid.uuid4().hex[:12]
@@ -215,6 +316,39 @@ def finish_job(settings, client, job_id: str, stream: str, status: str, decision
         db.add_event(conn, job_id=job_id, kind=status, payload=payload)
     xadd_json(client, stream, "event", payload)
     print(f"job {job_id}: {status} - {decision['reason']}")
+
+
+def finish_done_job(settings, client, job: dict[str, Any], decision: dict[str, Any]) -> None:
+    try:
+        promotion = promote_successful_worktree(job)
+    except PromotionError as exc:
+        human_decision = {
+            "action": "HUMAN_NEEDED",
+            "reason": f"job completed, but promotion to target repository failed: {exc}",
+            "history_summary": decision.get("history_summary", ""),
+        }
+        with db.transaction(settings.db_path) as conn:
+            db.add_event(
+                conn,
+                job_id=job["id"],
+                kind="promotion_failed",
+                payload={"job_id": job["id"], "error": str(exc)},
+            )
+        finish_job(settings, client, job["id"], HUMAN_STREAM, "human_needed", human_decision)
+        return
+
+    done_payload = {
+        **terminal_payload(job["id"], decision),
+        "promotion": promotion,
+    }
+    with db.transaction(settings.db_path) as conn:
+        db.update_job_status(conn, job["id"], "done", decision.get("history_summary", ""))
+        db.add_event(conn, job_id=job["id"], kind="promotion_completed", payload=promotion)
+        db.add_event(conn, job_id=job["id"], kind="done", payload=done_payload)
+    xadd_json(client, DONE_STREAM, "event", done_payload)
+    print(f"job {job['id']}: done - {decision['reason']}")
+    if promotion["promoted"]:
+        print(f"job {job['id']}: promoted {len(promotion['files'])} changed files to {job['repo_path']}")
 
 
 def handle_request(settings, client, request: dict[str, Any]) -> None:
@@ -277,7 +411,7 @@ def handle_request(settings, client, request: dict[str, Any]) -> None:
                 return
         create_next_task(settings, client, job, decision, f"claude:{request_type.lower()}")
     elif action == "DONE":
-        finish_job(settings, client, job_id, DONE_STREAM, "done", decision)
+        finish_done_job(settings, client, job, decision)
     elif action == "HUMAN_NEEDED":
         finish_job(settings, client, job_id, HUMAN_STREAM, "human_needed", decision)
 

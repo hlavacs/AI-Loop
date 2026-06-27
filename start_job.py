@@ -39,7 +39,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--test-cmd", default="pytest -q", help="Command run after each Codex task.")
     parser.add_argument("--constraint", action="append", default=[], help="Additional job constraint.")
     parser.add_argument("--acceptance", action="append", default=[], help="Additional acceptance criterion.")
-    parser.add_argument("--max-iterations", type=int, default=10, help="Maximum Codex iterations.")
+    parser.add_argument("--max-iterations", type=int, default=1000, help="Maximum Codex iterations.")
     parser.add_argument("--base-ref", default="HEAD", help="Git ref used for the isolated worktree.")
     parser.add_argument("--no-worktree", action="store_true", help="Run directly in --repo instead of a Git worktree.")
     parser.add_argument("--wait", action="store_true", help="Wait for the job to reach a terminal status.")
@@ -111,19 +111,17 @@ def print_status_update(
     status_note: str,
 ) -> None:
     print(f"job {job_id} status update")
-    print(f"  - status: {state['status']}")
-    print(f"  - status_step: {status_count}")
-    print(f"  - status_note: {status_note}")
+    print(f"  - status: {state['status']} step {status_count} - {status_note}")
 
     task_id = state.get("task_id")
     if task_id is None:
         print("  - task: none queued yet")
         return
 
-    print(f"  - task: {task_id}")
-    print(f"  - task_iteration: {state.get('task_iteration')}")
-    print(f"  - task_status: {state.get('task_status')}")
-    print(f"  - task_age: {age_text(state.get('task_updated_at'))}")
+    print(
+        f"  - task: {task_id} iter {state.get('task_iteration')} "
+        f"{state.get('task_status')} age {age_text(state.get('task_updated_at'))}"
+    )
     goal_lines = wrap(str(state.get("task_goal", "")), width=88)
     if not goal_lines:
         print("  - task_goal:")

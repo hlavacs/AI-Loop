@@ -132,7 +132,7 @@ python start_job.py \
   --test-cmd "pytest -q" \
   --constraint "Preserve public APIs unless the task requires changing them." \
   --acceptance "The feature is documented where users would expect it." \
-  --max-iterations 8 \
+  --max-iterations 1000 \
   --base-ref HEAD \
   --wait
 ```
@@ -175,18 +175,30 @@ Print the durable loop log from SQLite and tail process log files from `./logs`:
 ./print_log.bash --job <job_id> --limit 50
 ```
 
+Watch an active job periodically:
+
+```bash
+./watch_job.bash
+```
+
+The watcher picks the newest `planning`, `queued`, or `implementing` job automatically.
+
 Resume a job that reached `human_needed` because the test command was wrong:
 
 ```bash
-python resume_job.py <job_id> \
+./resume_job.bash
+./resume_job.bash <job_id> \
   --test-cmd "ctest --test-dir build/debug-macos -C Debug --output-on-failure" \
   --wait
 ```
 
+With no arguments, `./resume_job.bash` resumes the newest `human_needed` job and sets `--max-iterations` to `1000`.
+Override that default with `AI_LOOP_RESUME_MAX_ITERATIONS`.
+
 Resume a job with a corrected target path or goal:
 
 ```bash
-python resume_job.py <job_id> \
+./resume_job.bash <job_id> \
   --goal "Implement the simple engine under src/versions/simple." \
   --constraint "Do not implement this in src/versions/v4 or src/versions/v5." \
   --acceptance "The implementation lives under src/versions/simple." \

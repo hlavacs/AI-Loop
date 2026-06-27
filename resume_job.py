@@ -11,6 +11,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--constraint", action="append", default=[], help="Additional constraint for future tasks.")
     parser.add_argument("--acceptance", action="append", default=[], help="Additional acceptance criterion.")
     parser.add_argument("--test-cmd", help="Replacement test command for future tasks.")
+    parser.add_argument("--max-iterations", type=int, help="Replacement maximum Codex iteration count.")
     parser.add_argument("--wait", action="store_true", help="Wait for the job to reach a terminal status.")
     parser.add_argument("--poll-interval", type=float, default=5.0, help="Seconds between status checks with --wait.")
     parser.add_argument("--timeout", type=int, default=7200, help="Maximum seconds to wait with --wait.")
@@ -35,13 +36,14 @@ def main() -> int:
             job = db.get_job(conn, args.job_id)
             goal = args.goal if args.goal is not None else job["goal"]
             test_cmd = args.test_cmd if args.test_cmd is not None else job["test_cmd"]
+            max_iterations = args.max_iterations if args.max_iterations is not None else int(job["max_iterations"])
             constraints = [*job["constraints"], *args.constraint]
             acceptance = [*job["acceptance"], *args.acceptance]
             conn.execute(
                 """
                 UPDATE jobs
                 SET goal = ?, constraints_json = ?, acceptance_json = ?,
-                    test_cmd = ?, status = ?, updated_at = ?
+                    test_cmd = ?, max_iterations = ?, status = ?, updated_at = ?
                 WHERE id = ?
                 """,
                 (
@@ -49,6 +51,7 @@ def main() -> int:
                     db.to_json(constraints),
                     db.to_json(acceptance),
                     test_cmd,
+                    max_iterations,
                     "planning",
                     db.utc_now(),
                     args.job_id,
@@ -62,6 +65,7 @@ def main() -> int:
                     "job_id": args.job_id,
                     "goal": goal,
                     "test_cmd": test_cmd,
+                    "max_iterations": max_iterations,
                     "added_constraints": args.constraint,
                     "added_acceptance": args.acceptance,
                     "previous_status": job["status"],
@@ -84,6 +88,7 @@ def main() -> int:
     print(f"status: planning - Claude is choosing the next implementation task.")
     print(f"goal: {goal}")
     print(f"test_cmd: {test_cmd}")
+    print(f"max_iterations: {max_iterations}")
     print(f"queued PLAN on {CLAUDE_REQUEST_STREAM}")
     if args.wait:
         return wait_for_job(settings.db_path, args.job_id, job["worktree_path"], args.timeout, args.poll_interval)

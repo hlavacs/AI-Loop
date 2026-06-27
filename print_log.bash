@@ -7,12 +7,13 @@ db_path="${AI_LOOP_DB:-./ai_loop.sqlite3}"
 log_dir="${AI_LOOP_LOG_DIR:-./logs}"
 
 usage() {
-  echo "usage: $0 [--job JOB_ID] [--limit N]" >&2
-  echo "       AI_LOOP_DB=/path/to/ai_loop.sqlite3 $0 [--job JOB_ID] [--limit N]" >&2
+  echo "usage: $0 [--job JOB_ID] [--limit N] [--no-process-logs]" >&2
+  echo "       AI_LOOP_DB=/path/to/ai_loop.sqlite3 $0 [--job JOB_ID] [--limit N] [--no-process-logs]" >&2
 }
 
 job_id=""
 limit="100"
+process_logs=1
 
 while [ "$#" -gt 0 ]; do
   case "$1" in
@@ -31,6 +32,10 @@ while [ "$#" -gt 0 ]; do
       fi
       limit="$2"
       shift 2
+      ;;
+    --no-process-logs)
+      process_logs=0
+      shift
       ;;
     -h|--help)
       usage
@@ -185,6 +190,10 @@ for row in reversed(events):
         print(f"  {short(detail)}")
     print()
 PY
+
+if [ "$process_logs" -eq 0 ]; then
+  exit 0
+fi
 
 echo "process log files: $log_dir"
 if [ ! -d "$log_dir" ]; then
