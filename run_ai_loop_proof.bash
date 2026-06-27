@@ -360,34 +360,6 @@ ensure_git_repo() {
   fi
 }
 
-job_status() {
-  local job_id="$1"
-  "$python_bin" - "$AI_LOOP_DB_PATH" "$job_id" <<'PY'
-import sqlite3
-import sys
-
-db_path, job_id = sys.argv[1], sys.argv[2]
-conn = sqlite3.connect(db_path)
-row = conn.execute("SELECT status FROM jobs WHERE id = ?", (job_id,)).fetchone()
-print(row[0] if row else "missing")
-PY
-}
-
-extract_worktree() {
-  local job_id="$1"
-  "$python_bin" - "$AI_LOOP_DB_PATH" "$job_id" <<'PY'
-import sqlite3
-import sys
-
-db_path, job_id = sys.argv[1], sys.argv[2]
-conn = sqlite3.connect(db_path)
-row = conn.execute("SELECT worktree_path FROM jobs WHERE id = ?", (job_id,)).fetchone()
-if not row:
-    raise SystemExit(1)
-print(row[0])
-PY
-}
-
 echo "proof repo: $repo"
 write_fixture
 ensure_git_repo
@@ -399,8 +371,6 @@ echo "checking loop processes"
 ./loopctl.bash start
 ./loopctl.bash status
 
-export AI_LOOP_DB_PATH="${AI_LOOP_DB:-$PWD/ai_loop.sqlite3}"
-
 echo "submitting AI loop proof job"
 job_output="$("$python_bin" start_job.py \
   --repo "$repo" \
@@ -409,7 +379,10 @@ job_output="$("$python_bin" start_job.py \
   --constraint "Keep the existing C++ fixture compiling and running." \
   --acceptance "make test passes in the job worktree." \
   --acceptance "LOOP_PROOF.txt exists and contains ai-loop proof passed." \
-  --max-iterations 3)"
+  --max-iterations 3 \
+  --wait \
+  --poll-interval 5 \
+  --timeout 900)"
 printf '%s\n' "$job_output"
 
 job_id="$(sed -n 's/^created job //p' <<<"$job_output")"
@@ -418,31 +391,11 @@ if [ -z "$job_id" ]; then
   exit 1
 fi
 
-echo "waiting for job $job_id"
-deadline=$((SECONDS + 900))
-status=""
-while [ "$SECONDS" -lt "$deadline" ]; do
-  status="$(job_status "$job_id")"
-  echo "job $job_id status: $status"
-  case "$status" in
-    done)
-      break
-      ;;
-    human_needed|dead|missing)
-      ./print_log.bash --job "$job_id" --limit 120
-      exit 1
-      ;;
-  esac
-  sleep 5
-done
-
-if [ "$status" != "done" ]; then
-  echo "timed out waiting for job $job_id" >&2
-  ./print_log.bash --job "$job_id" --limit 120
+worktree="$(sed -n 's/^worktree: //p' <<<"$job_output" | tail -n 1)"
+if [ -z "$worktree" ]; then
+  echo "could not parse worktree from start_job.py output" >&2
   exit 1
 fi
-
-worktree="$(extract_worktree "$job_id")"
 echo "verifying worktree: $worktree"
 make -C "$worktree" test
 test -f "$worktree/LOOP_PROOF.txt"
