@@ -68,7 +68,7 @@ claude --version
 codex --version
 redis-cli ping
 
-Target project dependencies are separate. For example, a C++ project may need CMake, Ninja, a compiler, Vulkan SDK, or vcpkg; a JavaScript project may need Node.js and npm; a Python project may need pytest and project-specific packages. The job's test command must use the target project's actual test runner.
+Target project dependencies are separate from ai-loop dependencies. Install whatever compiler, runtime, package manager, SDK, test framework, or external service the selected target project requires. The job's test command must use that target project's actual validation command.
 
 Main Components
 ---------------
@@ -80,7 +80,7 @@ claude_controller.py
 Acts as planner/reviewer. It consumes PLAN and REVIEW messages from ai:claude:requests. For PLAN, it creates one tiny Codex tasklet. For REVIEW, it inspects Codex output, test output, git diff, job history, code quality, project guideline compliance, local architecture/style patterns, scope control, maintainability, and proportional test coverage, then decides CONTINUE, REPAIR, DONE, or HUMAN_NEEDED. HUMAN_NEEDED is a last resort: Claude should first analyze the blocker, identify solution paths, and choose REPAIR whenever a safe automated diagnostic or fix exists. Task ids use the form TYYYYMMDD-HHMMSS-ffffff. The controller stores the job's current test command on each new task; Claude may discuss tests in its JSON, but the persisted validation command is the job-level command. If Claude echoes stale test acceptance text from an earlier command, the controller replaces it with the current job test command. On DONE, it promotes the successful worktree changes back to the target repo before marking the job done.
 
 codex_worker.py
-Acts as implementation worker. It consumes tasks from ai:codex:tasks, runs codex exec in the job worktree, re-reads the task row immediately before validation, runs the current task test command, captures git status/diff/output, writes a run record to SQLite, then sends a REVIEW request back to Claude. The captured diff includes untracked new files so Claude can review newly created code. Git porcelain output is parsed without stripping significant leading spaces, so changed-file paths remain accurate. Codex should follow project instruction files when present, but missing instruction files such as AGENTS.md are not a blocker unless the job explicitly requires them. If the original job text mentions file-like guidance paths, Codex is given the currently existing paths and must re-read them at task start.
+Acts as implementation worker. It consumes tasks from ai:codex:tasks, runs codex exec in the job worktree, re-reads the task row immediately before validation, runs the current task test command, captures git status/diff/output, writes a run record to SQLite, then sends a REVIEW request back to Claude. The captured diff includes untracked new files so Claude can review newly created code. Git porcelain output is parsed without stripping significant leading spaces, so changed-file paths remain accurate. Codex should follow project instruction files when present, but missing instruction files are not a blocker unless the job explicitly requires them. If the original job text mentions file-like guidance paths, Codex is given the currently existing paths and must re-read them at task start.
 
 watcher.py
 Watches terminal streams: ai:done, ai:human, and ai:dead. It prints final outcomes and errors.
@@ -154,18 +154,18 @@ Jobs normally run in isolated Git worktrees under:
 
 The main repo tracks these linked worktrees through Git metadata. Use ai_remove_worktrees.bash to clean them up instead of deleting folders manually.
 
-AI-loop scripts must be project-agnostic. They must not depend on ViennaVulkanEngine, AGENTS.md, src/versions/simple, or any other target-project-specific path or file. Project instruction files are optional inputs, not ai-loop requirements.
+AI-loop scripts must be project-agnostic. They must not depend on any concrete target repository name, instruction-file name, source directory layout, or project-specific path. Project instruction files are optional inputs, not ai-loop requirements.
 
 Referenced Guidance Refresh
 ---------------------------
 
-The initial job description, constraints, and acceptance criteria may name guidance files. In one project those files may be AGENTS.md; in another project they may be named differently. The loop treats these as generic file-like paths, not hardcoded project concepts.
+The initial job description, constraints, and acceptance criteria may name guidance files. Different target projects may use different names for these files. The loop treats them as generic file-like paths, not hardcoded project concepts.
 
 On every Claude PLAN and REVIEW request, claude_controller.py extracts mentioned file-like paths, resolves existing files inside the job worktree, and includes a refreshed snapshot with path, modification time, size, truncation flag, and current text content. This lets Claude notice updated guidance while the job is still running and prefer current instructions over older summaries.
 
 On every Codex task, codex_worker.py provides the current list of existing referenced guidance files and tells Codex to re-read them at task start. For long tasklets, Codex is also instructed to check modification times and re-read before finalizing when the task depends on those files.
 
-This refresh mechanism is generic. It is triggered by mentioned file paths and existing files in the worktree, not by a hardcoded name such as AGENTS.md.
+This refresh mechanism is generic. It is triggered by mentioned file paths and existing files in the worktree, not by hardcoded names.
 
 Run Scripts
 -----------
