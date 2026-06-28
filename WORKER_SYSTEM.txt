@@ -7,10 +7,10 @@ Main Components
 ---------------
 
 start_job.py
-Creates a job. It writes the job to SQLite, optionally creates a Git worktree and branch, then sends a PLAN message to Redis stream ai:claude:requests.
+Creates a job. Job ids use the form JYYYYMMDD-HHMMSS-ffffff. Before submitting the job, it stages and commits all current changes in the target repo with a message like "AI loop snapshot before job <job_id>" when there is anything to commit. It then writes the job to SQLite, optionally creates a Git worktree and branch, overlays any remaining checkout changes into the worktree, and sends a PLAN message to Redis stream ai:claude:requests.
 
 claude_controller.py
-Acts as planner/reviewer. It consumes PLAN and REVIEW messages from ai:claude:requests. For PLAN, it creates one small Codex task. For REVIEW, it inspects Codex output, test output, git diff, and job history, then decides CONTINUE, REPAIR, DONE, or HUMAN_NEEDED.
+Acts as planner/reviewer. It consumes PLAN and REVIEW messages from ai:claude:requests. For PLAN, it creates one tiny Codex tasklet. For REVIEW, it inspects Codex output, test output, git diff, and job history, then decides CONTINUE, REPAIR, DONE, or HUMAN_NEEDED. Task ids use the form TYYYYMMDD-HHMMSS-ffffff. On DONE, it promotes the successful worktree changes back to the target repo before marking the job done.
 
 codex_worker.py
 Acts as implementation worker. It consumes tasks from ai:codex:tasks, runs codex exec in the job worktree, runs the task's test command, captures git status/diff/output, writes a run record to SQLite, then sends a REVIEW request back to Claude.
@@ -46,18 +46,39 @@ Flow
 ----
 
 1. User creates a job with job.bash or start_job.py.
-2. Job is stored in SQLite.
-3. PLAN is queued on ai:claude:requests.
-4. Claude controller creates the first task.
-5. Task is stored in SQLite and queued on ai:codex:tasks.
-6. Codex worker runs the task in the worktree.
-7. Worker stores run output, tests, git status, diff.
-8. Worker queues REVIEW for Claude.
-9. Claude decides:
+2. start_job.py commits all current target repo changes if needed.
+3. Job is stored in SQLite.
+4. PLAN is queued on ai:claude:requests.
+5. Claude controller creates the first tiny tasklet.
+6. Task is stored in SQLite and queued on ai:codex:tasks.
+7. Codex worker runs the task in the worktree.
+8. Worker stores run output, tests, git status, diff.
+9. Worker queues REVIEW for Claude.
+10. Claude decides:
    - CONTINUE: create next task
    - REPAIR: create corrective task
-   - DONE: publish to ai:done
+   - DONE: promote worktree changes to the target repo, then publish to ai:done
    - HUMAN_NEEDED: publish to ai:human
+
+Promotion
+---------
+
+Successful jobs are not left only in /Users/hlavacs/GitHub/ai-runs/<job_id>. When Claude returns DONE, claude_controller.py reads git status in the job worktree and copies changed, untracked, and deleted paths back to the original repo_path.
+
+If the target repo already has local changes in the same promoted paths, promotion is rejected. The controller records promotion_failed and marks the job human_needed instead of overwriting local work. When promotion succeeds, it records promotion_completed and then marks the job done.
+
+This means a completed job that creates PLAN.md should leave the promoted copy at:
+
+/Users/hlavacs/GitHub/ViennaVulkanEngine/PLAN.md
+
+Git Worktrees
+-------------
+
+Jobs normally run in isolated Git worktrees under:
+
+/Users/hlavacs/GitHub/ai-runs/<job_id>
+
+The main repo tracks these linked worktrees through Git metadata. Use remove_ai_worktrees.bash to clean them up instead of deleting folders manually.
 
 Run Scripts
 -----------
@@ -89,8 +110,9 @@ Prints durable SQLite history and tails process log files:
 
 ./print_log.bash
 ./print_log.bash --job <job_id> --limit 50
+./print_log.bash --job <job_id> --limit 50 --no-process-logs
 
-It reads jobs, runs, decisions, and events from ai_loop.sqlite3, then tails ./logs/*.log.
+It reads jobs, runs, decisions, and events from ai_loop.sqlite3, then tails ./logs/*.log unless --no-process-logs is supplied.
 
 clear_log.bash
 Clears log-like history while keeping job/task records:
@@ -101,10 +123,31 @@ Clears log-like history while keeping job/task records:
 It deletes rows from runs, decisions, and events, and truncates ./logs/*.log. It does not delete jobs or tasks.
 
 check_job.bash
-Checks whether jobs exist and prints job status:
+Checks whether jobs exist and prints job status, latest task diagnostics, and active job details:
 
 ./check_job.bash
 ./check_job.bash <job_id>
+
+watch_job.bash
+Periodically refreshes the active job state with compact, itemized status output:
+
+./watch_job.bash
+
+It auto-selects the newest active job. AI_LOOP_WATCH_INTERVAL controls the refresh interval and AI_LOOP_WATCH_LOG_LIMIT controls the number of log entries.
+
+resume_job.bash
+Resumes the newest human_needed job without parameters:
+
+./resume_job.bash
+
+It uses AI_LOOP_RESUME_MAX_ITERATIONS, defaulting to 1000.
+
+remove_ai_worktrees.bash
+Removes registered AI worktrees under /Users/hlavacs/GitHub/ai-runs and deletes leftover job folders:
+
+./remove_ai_worktrees.bash
+
+Force removal is enabled by default. Set AI_LOOP_FORCE_REMOVE_WORKTREES=0 to ask Git to refuse dirty worktrees.
 
 clear_db.bash
 Clears the full database, including jobs and tasks:
@@ -120,6 +163,8 @@ run_codex.bash sets CODEX_BYPASS_SANDBOX=1 by default.
 That means Codex runs with --dangerously-bypass-approvals-and-sandbox unless overridden:
 
 CODEX_BYPASS_SANDBOX=0 ./run_codex.bash
+
+Jobs and tasklets are intentionally small. Claude should create many precise tasklets instead of broad mixed tasks. Each status line includes a counter and a short same-line description so progress can be read immediately.
 
 Operational Proof
 -----------------
@@ -140,4 +185,5 @@ To prove end-to-end behavior, create a small throwaway Git repo, start the loop 
 - ./check_job.bash shows the job progressing or done
 - ./print_log.bash shows controller/worker/watcher activity
 - the job worktree contains the requested change
+- the target repo contains the promoted change after DONE
 - the configured test command passes
