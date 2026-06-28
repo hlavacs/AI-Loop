@@ -5,6 +5,7 @@ import shutil
 import subprocess
 import time
 import uuid
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
@@ -29,6 +30,10 @@ OUTPUT_LIMIT = 20000
 
 class PromotionError(RuntimeError):
     pass
+
+
+def timestamp_id(prefix: str) -> str:
+    return f"{prefix}{datetime.now(timezone.utc).strftime('%Y%m%d-%H%M%S-%f')}"
 
 
 def extract_json(text: str) -> dict[str, Any]:
@@ -283,7 +288,7 @@ def promote_successful_worktree(job: dict[str, Any]) -> dict[str, Any]:
 
 def create_next_task(settings, client, job: dict[str, Any], decision: dict[str, Any], created_by: str) -> str:
     next_task = decision["next_task"]
-    task_id = uuid.uuid4().hex[:12]
+    task_id = timestamp_id("T")
     with db.transaction(settings.db_path) as conn:
         iteration = next_iteration(conn, job["id"])
         db.create_task(

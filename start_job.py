@@ -5,7 +5,6 @@ import shutil
 import time
 import subprocess
 import sys
-import uuid
 from datetime import datetime, timezone
 from pathlib import Path
 from textwrap import wrap
@@ -31,6 +30,10 @@ DEFAULT_ACCEPTANCE = [
     "The requested test command passes.",
     "No unrelated files are changed.",
 ]
+
+
+def timestamp_id(prefix: str) -> str:
+    return f"{prefix}{datetime.now(timezone.utc).strftime('%Y%m%d-%H%M%S-%f')}"
 
 
 def parse_args() -> argparse.Namespace:
@@ -73,6 +76,41 @@ def run_git_raw(args: list[str], cwd: Path) -> str:
     if result.returncode != 0:
         raise RuntimeError(result.stderr.strip() or result.stdout.strip())
     return result.stdout
+
+
+def git_quiet(args: list[str], cwd: Path) -> int:
+    result = subprocess.run(
+        ["git", *args],
+        cwd=str(cwd),
+        text=True,
+        capture_output=True,
+        timeout=120,
+    )
+    if result.returncode not in {0, 1}:
+        raise RuntimeError(result.stderr.strip() or result.stdout.strip())
+    return result.returncode
+
+
+def create_pre_job_commit(repo: Path, job_id: str) -> dict[str, str | bool | None]:
+    before = run_git(["rev-parse", "HEAD"], cwd=repo)
+    run_git(["add", "-A"], cwd=repo)
+    if git_quiet(["diff", "--cached", "--quiet"], cwd=repo) == 0:
+        return {
+            "created": False,
+            "before": before,
+            "after": before,
+            "message": None,
+        }
+
+    message = f"AI loop snapshot before job {job_id}"
+    run_git(["commit", "-m", message], cwd=repo)
+    after = run_git(["rev-parse", "HEAD"], cwd=repo)
+    return {
+        "created": True,
+        "before": before,
+        "after": after,
+        "message": message,
+    }
 
 
 def create_worktree(repo: Path, runs_dir: Path, job_id: str, base_ref: str) -> tuple[Path, str]:
@@ -285,7 +323,7 @@ def main() -> int:
         return 2
 
     db.init_db(settings.db_path)
-    job_id = uuid.uuid4().hex[:12]
+    job_id = timestamp_id("J")
     constraints = [*DEFAULT_CONSTRAINTS, *args.constraint]
     acceptance = [*DEFAULT_ACCEPTANCE, *args.acceptance]
 
@@ -293,8 +331,11 @@ def main() -> int:
     branch: str | None = None
     worktree = repo
     overlay_files: list[str] = []
+    pre_job_commit: dict[str, str | bool | None] = {}
 
     try:
+        pre_job_commit = create_pre_job_commit(repo, job_id)
+
         if use_worktree:
             worktree, branch = create_worktree(repo, settings.runs_dir, job_id, args.base_ref)
             overlay_files = copy_checkout_overlay(repo, worktree)
@@ -322,6 +363,7 @@ def main() -> int:
                     "job_id": job_id,
                     "worktree_path": str(worktree),
                     "goal": args.goal,
+                    "pre_job_commit": pre_job_commit,
                     "checkout_overlay_files": overlay_files,
                 },
             )
@@ -342,6 +384,10 @@ def main() -> int:
 
     print(f"created job {job_id}")
     print(f"repo: {repo}")
+    if pre_job_commit.get("created"):
+        print(f"pre-job commit: {pre_job_commit.get('after')}")
+    else:
+        print("pre-job commit: none needed")
     print(f"worktree: {worktree}")
     if use_worktree:
         print(f"checkout overlay files: {len(overlay_files)}")
