@@ -3,6 +3,73 @@ Complete Worker System
 
 The system is a small Claude + Codex development loop with durable state in SQLite and activation messages in Redis Streams.
 
+Fresh Machine Dependencies
+--------------------------
+
+ai-loop itself is project-agnostic. A fresh machine needs the loop runtime tools plus whatever build/test tools the target project requires.
+
+Common required software:
+- Git, including git worktree support
+- Python 3.10 or newer
+- Python venv and pip support
+- redis-py Python package
+- Redis server
+- Bash
+- Claude CLI, available as claude
+- Codex CLI, available as codex or configured with CODEX_BIN
+- Standard command-line utilities such as awk, sed, find, tail, and chmod
+
+Ubuntu setup:
+
+sudo apt update
+sudo apt install -y git python3 python3-venv python3-pip redis-server bash coreutils findutils gawk sed procps ca-certificates curl build-essential
+
+Then create or refresh the ai-loop Python environment:
+
+python3 -m venv .venv
+. .venv/bin/activate
+python -m pip install --upgrade pip
+python -m pip install redis
+
+Start Redis, or enable it as a service:
+
+redis-server --save "" --appendonly no
+
+or:
+
+sudo systemctl enable --now redis-server
+
+macOS setup:
+
+xcode-select --install
+
+Install Homebrew if it is not already installed, then:
+
+brew install git python redis bash coreutils gawk gnu-sed
+
+Then create or refresh the ai-loop Python environment:
+
+python3 -m venv .venv
+. .venv/bin/activate
+python -m pip install --upgrade pip
+python -m pip install redis
+
+Start Redis for the current shell:
+
+redis-server --save "" --appendonly no
+
+or start it as a Homebrew service:
+
+brew services start redis
+
+Claude CLI and Codex CLI should be installed and authenticated according to their current vendor instructions. Verify them before starting the loop:
+
+claude --version
+codex --version
+redis-cli ping
+
+Target project dependencies are separate. For example, a C++ project may need CMake, Ninja, a compiler, Vulkan SDK, or vcpkg; a JavaScript project may need Node.js and npm; a Python project may need pytest and project-specific packages. The job's test command must use the target project's actual test runner.
+
 Main Components
 ---------------
 
