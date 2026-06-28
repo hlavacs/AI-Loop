@@ -57,6 +57,7 @@ python3 - "$db_path" "$job_id" "$limit" <<'PY'
 import json
 import sqlite3
 import sys
+from datetime import datetime, timezone
 from textwrap import shorten
 
 db_path = sys.argv[1]
@@ -95,6 +96,11 @@ def describe_status(status, index=0):
             "Implementation worker is editing and validating the task.",
             "Worker is turning the plan into a concrete code change.",
         ],
+        "fixing": [
+            "Codex is fixing a reviewed problem in the worktree.",
+            "Repair task is applying a focused correction.",
+            "Worker is resolving the current blocker one step at a time.",
+        ],
         "queued": [
             "The next Codex task is waiting for the worker.",
             "Task is ready and pending worker pickup.",
@@ -119,18 +125,90 @@ def describe_status(status, index=0):
     variants = descriptions.get(status, ["The loop is moving through this job state."])
     return variants[index % len(variants)]
 
+def parse_time(value):
+    if not value:
+        return None
+    return datetime.fromisoformat(value)
+
+def duration_text(seconds):
+    if seconds is None:
+        return "unknown"
+    seconds = max(0, int(seconds))
+    if seconds < 90:
+        return f"{seconds}s"
+    minutes = seconds // 60
+    if minutes < 90:
+        return f"{minutes}m"
+    hours = minutes // 60
+    if hours < 48:
+        return f"{hours}h {minutes % 60}m"
+    days = hours // 24
+    return f"{days}d {hours % 24}h"
+
+def latest_task(target_job_id):
+    return conn.execute(
+        """
+        SELECT id, status
+        FROM tasks
+        WHERE job_id = ?
+        ORDER BY iteration DESC, created_at DESC
+        LIMIT 1
+        """,
+        (target_job_id,),
+    ).fetchone()
+
+def estimate_progress(job):
+    if job["status"] == "done":
+        return 100, 0
+    task = latest_task(job["id"])
+    active_credit = 0.5 if task is not None and task["status"] in {"queued", "running"} and job["task_count"] > job["run_count"] else 0.0
+    work_units = int(job["run_count"]) + active_credit
+    percent = max(1, min(95, round(100 * work_units / (work_units + 3))))
+    if job["status"] in {"human_needed", "dead"}:
+        percent = min(percent, 95)
+    created_at = parse_time(job["created_at"])
+    if created_at is None:
+        return percent, None
+    elapsed = max(0, int((datetime.now(timezone.utc) - created_at).total_seconds()))
+    remaining = round(elapsed * (100 - percent) / percent)
+    return percent, remaining
+
 where = "WHERE job_id = ?" if job_id else ""
 params = (job_id,) if job_id else ()
 
 if job_id:
-    job = conn.execute("SELECT id, status, updated_at, goal FROM jobs WHERE id = ?", (job_id,)).fetchone()
+    job = conn.execute(
+        """
+        SELECT
+            j.id,
+            j.status,
+            j.created_at,
+            j.updated_at,
+            j.goal,
+            (
+                SELECT COUNT(*)
+                FROM tasks t
+                WHERE t.job_id = j.id
+            ) AS task_count,
+            (
+                SELECT COUNT(*)
+                FROM runs r
+                WHERE r.job_id = j.id
+            ) AS run_count
+        FROM jobs j
+        WHERE j.id = ?
+        """,
+        (job_id,),
+    ).fetchone()
     if job is None:
         print(f"job {job_id} is not in the system", file=sys.stderr)
         sys.exit(1)
+    percent, remaining = estimate_progress(job)
     print(f"database: {db_path}")
     print(f"job: {job['id']}")
     print(f"status: {job['status']} - {describe_status(job['status'])}")
     print(f"updated_at: {job['updated_at']}")
+    print(f"estimate: {percent}% done, about {duration_text(remaining)} remaining")
     print(f"goal: {job['goal']}")
     print()
 else:

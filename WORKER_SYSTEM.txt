@@ -182,7 +182,7 @@ Log and Status Helpers
 ----------------------
 
 ai_print_log.bash
-Prints durable SQLite history and tails process log files:
+Prints durable SQLite history, the job progress/time estimate when a job is selected, and tails process log files:
 
 ./ai_print_log.bash
 ./ai_print_log.bash --job <job_id> --limit 50
@@ -199,7 +199,7 @@ Clears log-like history while keeping job/task records:
 It deletes rows from runs, decisions, and events, and truncates ./logs/*.log. It does not delete jobs or tasks.
 
 ai_check_job.bash
-Checks whether jobs exist and prints job status, latest task diagnostics, and active job details:
+Checks whether jobs exist and prints job status, latest task diagnostics, active job details, a rough percent-complete estimate, and an estimated remaining time:
 
 ./ai_check_job.bash
 ./ai_check_job.bash <job_id>
@@ -240,7 +240,7 @@ That means Codex runs with --dangerously-bypass-approvals-and-sandbox unless ove
 
 CODEX_BYPASS_SANDBOX=0 ./ai_run_codex.bash
 
-Jobs and tasklets are intentionally small. Claude should create many precise tasklets instead of broad mixed tasks. Each status line includes a counter and a short same-line description so progress can be read immediately.
+Jobs and tasklets are intentionally small. Claude should create many precise tasklets instead of broad mixed tasks. Each status line includes a counter and a short same-line description so progress can be read immediately. Status output also includes a simple heuristic estimate of percent complete and remaining time. The estimate is based on completed runs, active queued/running work, and elapsed job time; it is intentionally approximate.
 
 Claude review is a quality gate. It should return REPAIR when Codex visibly violates coding guidelines, ignores existing project patterns, changes unrelated behavior, leaves brittle or duplicated code without cause, omits necessary tests for risky changes, or satisfies the task only superficially. It should avoid HUMAN_NEEDED unless the remaining action truly requires a person, credentials, paid installation, physical device/display access, or a destructive choice that cannot be safely automated.
 

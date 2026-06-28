@@ -102,6 +102,41 @@ def age_text(value):
         return f"{minutes}m old"
     return f"{minutes // 60}h {minutes % 60}m old"
 
+def duration_text(seconds):
+    if seconds is None:
+        return "unknown"
+    seconds = max(0, int(seconds))
+    if seconds < 90:
+        return f"{seconds}s"
+    minutes = seconds // 60
+    if minutes < 90:
+        return f"{minutes}m"
+    hours = minutes // 60
+    if hours < 48:
+        return f"{hours}h {minutes % 60}m"
+    days = hours // 24
+    return f"{days}d {hours % 24}h"
+
+def estimate_progress(job, task=None):
+    status = job["status"]
+    if status == "done":
+        return 100, 0
+
+    run_count = int(job["run_count"])
+    task_count = int(job["task_count"])
+    active_credit = 0.5 if task is not None and task["status"] in {"queued", "running"} and task_count > run_count else 0.0
+    work_units = run_count + active_credit
+    percent = max(1, min(95, round(100 * work_units / (work_units + 3))))
+    if status in {"human_needed", "dead"}:
+        percent = min(percent, 95)
+
+    created_at = parse_time(job["created_at"])
+    if created_at is None or percent <= 0:
+        return percent, None
+    elapsed = max(0, int((datetime.now(timezone.utc) - created_at).total_seconds()))
+    remaining = round(elapsed * (100 - percent) / percent)
+    return percent, remaining
+
 def latest_task(job_id):
     return conn.execute(
         """
@@ -144,6 +179,7 @@ if job_id:
         SELECT
             j.id,
             j.status,
+            j.created_at,
             j.updated_at,
             j.worktree_path,
             j.goal,
@@ -172,6 +208,9 @@ if job_id:
     print(f"updated_at: {job['updated_at']}")
     print(f"tasks: {job['task_count']}")
     print(f"runs: {job['run_count']}")
+    task = latest_task(job["id"])
+    percent, remaining = estimate_progress(job, task)
+    print(f"estimate: {percent}% done, about {duration_text(remaining)} remaining")
     print(f"worktree: {job['worktree_path']}")
     print(f"goal: {job['goal']}")
     print_task_diagnosis(job["id"], job["status"])
@@ -179,8 +218,23 @@ if job_id:
 
 rows = conn.execute(
     """
-    SELECT id, status, updated_at, goal
-    FROM jobs
+    SELECT
+        j.id,
+        j.status,
+        j.created_at,
+        j.updated_at,
+        j.goal,
+        (
+            SELECT COUNT(*)
+            FROM tasks t
+            WHERE t.job_id = j.id
+        ) AS task_count,
+        (
+            SELECT COUNT(*)
+            FROM runs r
+            WHERE r.job_id = j.id
+        ) AS run_count
+    FROM jobs j
     ORDER BY updated_at DESC
     """
 ).fetchall()
@@ -194,6 +248,9 @@ for index, row in enumerate(rows):
     print(f"job {row['id']}")
     print(f"status: {row['status']} - {describe_status(row['status'], index)}")
     print(f"updated_at: {row['updated_at']}")
+    task = latest_task(row["id"])
+    percent, remaining = estimate_progress(row, task)
+    print(f"estimate: {percent}% done, about {duration_text(remaining)} remaining")
     print(f"goal: {row['goal']}")
     print()
 PY

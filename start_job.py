@@ -178,7 +178,14 @@ def job_state(db_path: Path, job_id: str) -> dict[str, str | int | None]:
     with db.transaction(db_path) as conn:
         job = db.get_job(conn, job_id)
         task = db.latest_task(conn, job_id)
-    state: dict[str, str | int | None] = {"status": str(job["status"])}
+        task_count = conn.execute("SELECT COUNT(*) FROM tasks WHERE job_id = ?", (job_id,)).fetchone()[0]
+        run_count = conn.execute("SELECT COUNT(*) FROM runs WHERE job_id = ?", (job_id,)).fetchone()[0]
+    state: dict[str, str | int | None] = {
+        "status": str(job["status"]),
+        "created_at": str(job["created_at"]),
+        "task_count": int(task_count),
+        "run_count": int(run_count),
+    }
     if task is not None:
         state.update(
             {
@@ -204,6 +211,43 @@ def age_text(value: str | None) -> str:
     return f"{minutes // 60}h{minutes % 60}m"
 
 
+def duration_text(seconds: int | None) -> str:
+    if seconds is None:
+        return "unknown"
+    seconds = max(0, seconds)
+    if seconds < 90:
+        return f"{seconds}s"
+    minutes = seconds // 60
+    if minutes < 90:
+        return f"{minutes}m"
+    hours = minutes // 60
+    if hours < 48:
+        return f"{hours}h{minutes % 60}m"
+    days = hours // 24
+    return f"{days}d{hours % 24}h"
+
+
+def estimate_progress(state: dict[str, str | int | None]) -> tuple[int, int | None]:
+    status = str(state["status"])
+    if status == "done":
+        return 100, 0
+
+    run_count = int(state.get("run_count") or 0)
+    task_count = int(state.get("task_count") or 0)
+    active_credit = 0.5 if task_count > run_count else 0.0
+    work_units = run_count + active_credit
+    percent = max(1, min(95, round(100 * work_units / (work_units + 3))))
+    if status in {"human_needed", "dead"}:
+        percent = min(percent, 95)
+
+    created_at = state.get("created_at")
+    if not created_at or percent <= 0:
+        return percent, None
+    elapsed = max(0, int((datetime.now(timezone.utc) - datetime.fromisoformat(str(created_at))).total_seconds()))
+    remaining = round(elapsed * (100 - percent) / percent)
+    return percent, remaining
+
+
 def print_status_update(
     job_id: str,
     state: dict[str, str | int | None],
@@ -212,6 +256,8 @@ def print_status_update(
 ) -> None:
     print(f"job {job_id} status update")
     print(f"  - status: {state['status']} step {status_count} - {status_note}")
+    percent, remaining = estimate_progress(state)
+    print(f"  - estimate: {percent}% done, about {duration_text(remaining)} remaining")
 
     task_id = state.get("task_id")
     if task_id is None:
