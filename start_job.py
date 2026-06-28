@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import argparse
+import json
+import platform
 import shutil
 import time
 import subprocess
@@ -40,7 +42,7 @@ def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Create a generic AI loop job.")
     parser.add_argument("--repo", required=True, help="Repository path to modify.")
     parser.add_argument("--goal", required=True, help="Overall development goal.")
-    parser.add_argument("--test-cmd", default="pytest -q", help="Command run after each Codex task.")
+    parser.add_argument("--test-cmd", default="auto", help="Command run after each Codex task, or 'auto' to infer one.")
     parser.add_argument("--constraint", action="append", default=[], help="Additional job constraint.")
     parser.add_argument("--acceptance", action="append", default=[], help="Additional acceptance criterion.")
     parser.add_argument("--max-iterations", type=int, default=50000, help="Maximum Codex iterations.")
@@ -119,6 +121,126 @@ def create_worktree(repo: Path, runs_dir: Path, job_id: str, base_ref: str) -> t
     branch = f"ai/{job_id}"
     run_git(["worktree", "add", "-b", branch, str(worktree), base_ref], cwd=repo)
     return worktree, branch
+
+
+def shell_quote(value: str) -> str:
+    return "'" + value.replace("'", "'\"'\"'") + "'"
+
+
+def load_cmake_preset_data(presets_path: Path, seen: set[Path] | None = None) -> dict:
+    seen = seen or set()
+    try:
+        resolved = presets_path.resolve()
+    except OSError:
+        resolved = presets_path
+    if resolved in seen:
+        return {}
+    seen.add(resolved)
+
+    try:
+        data = json.loads(presets_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return {}
+
+    merged: dict = {}
+    includes = data.get("include", [])
+    if isinstance(includes, str):
+        includes = [includes]
+    if isinstance(includes, list):
+        for include in includes:
+            if not isinstance(include, str):
+                continue
+            child = presets_path.parent / include
+            child_data = load_cmake_preset_data(child, seen)
+            for key, value in child_data.items():
+                if isinstance(value, list):
+                    merged.setdefault(key, [])
+                    merged[key].extend(value)
+                elif key not in merged:
+                    merged[key] = value
+
+    for key, value in data.items():
+        if isinstance(value, list):
+            merged.setdefault(key, [])
+            merged[key].extend(value)
+        else:
+            merged[key] = value
+
+    return merged
+
+
+def visible_named_presets(data: dict, key: str) -> list[dict]:
+    presets = data.get(key)
+    if not isinstance(presets, list):
+        return []
+    return [
+        preset
+        for preset in presets
+        if isinstance(preset, dict)
+        and isinstance(preset.get("name"), str)
+        and not bool(preset.get("hidden"))
+    ]
+
+
+def preset_score(name: str) -> tuple[int, int, int]:
+    lowered = name.lower()
+    machine = platform.machine().lower()
+    if sys.platform == "darwin":
+        platform_score = 0 if "macos" in lowered or "darwin" in lowered or "osx" in lowered else 1
+    elif sys.platform.startswith("linux"):
+        platform_score = 0 if "linux" in lowered else 1
+    elif sys.platform.startswith(("win32", "cygwin", "msys")):
+        platform_score = 0 if "windows" in lowered or "win" in lowered else 1
+    else:
+        platform_score = 1
+    arch_score = 0 if machine and machine in lowered else 1
+    build_type_score = 0 if "debug" in lowered else 1 if "release" in lowered else 2
+    return (platform_score, arch_score, build_type_score, len(name))
+
+
+def select_cmake_presets(presets_path: Path) -> tuple[str | None, str | None]:
+    data = load_cmake_preset_data(presets_path)
+    configure_presets = visible_named_presets(data, "configurePresets")
+    if not configure_presets:
+        return None, None
+
+    configure_name = str(sorted(configure_presets, key=lambda item: preset_score(str(item["name"])))[0]["name"])
+    build_name = None
+    build_presets = visible_named_presets(data, "buildPresets")
+    matching_builds = [
+        preset
+        for preset in build_presets
+        if preset.get("configurePreset") == configure_name
+    ]
+    if matching_builds:
+        build_name = str(sorted(matching_builds, key=lambda item: preset_score(str(item["name"])))[0]["name"])
+    elif build_presets:
+        build_name = str(sorted(build_presets, key=lambda item: preset_score(str(item["name"])))[0]["name"])
+    return configure_name, build_name
+
+
+def detect_test_cmd(repo: Path, requested: str) -> str:
+    if requested != "auto":
+        return requested
+
+    presets = repo / "CMakePresets.json"
+    if presets.is_file():
+        configure, build = select_cmake_presets(presets)
+        if configure and build:
+            return f"cmake --preset {shell_quote(configure)} && cmake --build --preset {shell_quote(build)}"
+        if configure:
+            return f"cmake --preset {shell_quote(configure)} && cmake --build --preset {shell_quote(configure)}"
+
+    if (repo / "CMakeLists.txt").is_file():
+        return "cmake -S . -B build/ai-loop && cmake --build build/ai-loop"
+
+    if (repo / "package.json").is_file():
+        return "npm test"
+
+    if any((repo / name).is_file() for name in ("pyproject.toml", "pytest.ini", "setup.cfg", "setup.py")):
+        return "pytest -q"
+
+    return "true"
 
 
 def dirty_paths(repo: Path) -> list[tuple[str, str]]:
@@ -372,6 +494,7 @@ def main() -> int:
     if not repo.exists():
         print(f"repo does not exist: {repo}", file=sys.stderr)
         return 2
+    test_cmd = detect_test_cmd(repo, args.test_cmd)
 
     db.init_db(settings.db_path)
     job_id = timestamp_id("J")
@@ -402,7 +525,7 @@ def main() -> int:
                 goal=args.goal,
                 constraints=constraints,
                 acceptance=acceptance,
-                test_cmd=args.test_cmd,
+                test_cmd=test_cmd,
                 max_iterations=args.max_iterations,
                 use_worktree=use_worktree,
             )
@@ -414,6 +537,7 @@ def main() -> int:
                     "job_id": job_id,
                     "worktree_path": str(worktree),
                     "goal": args.goal,
+                    "test_cmd": test_cmd,
                     "pre_job_commit": pre_job_commit,
                     "checkout_overlay_files": overlay_files,
                 },

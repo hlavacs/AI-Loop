@@ -404,6 +404,23 @@ def create_next_task(settings, client, job: dict[str, Any], decision: dict[str, 
     task_id = timestamp_id("T")
     action = str(decision["action"])
     next_status = "fixing" if action == "REPAIR" else "queued"
+    job_test_cmd = str(job["test_cmd"])
+    proposed_test_cmd = str(next_task["test_cmd"])
+    acceptance: list[str] = []
+    replaced_test_acceptance = False
+    for item in next_task["acceptance"]:
+        text = str(item)
+        lowered = text.lower()
+        if proposed_test_cmd != job_test_cmd and (
+            "test command" in lowered or "pytest" in lowered or "rc=5" in lowered or "no tests ran" in lowered
+        ):
+            if not replaced_test_acceptance:
+                acceptance.append(f"The job test command passes: {job_test_cmd}")
+                replaced_test_acceptance = True
+            continue
+        acceptance.append(text)
+    if not replaced_test_acceptance and proposed_test_cmd != job_test_cmd:
+        acceptance.append(f"The job test command passes: {job_test_cmd}")
     with db.transaction(settings.db_path) as conn:
         iteration = next_iteration(conn, job["id"])
         db.create_task(
@@ -413,8 +430,8 @@ def create_next_task(settings, client, job: dict[str, Any], decision: dict[str, 
             iteration=iteration,
             goal=str(next_task["goal"]),
             constraints=[str(item) for item in next_task["constraints"]],
-            acceptance=[str(item) for item in next_task["acceptance"]],
-            test_cmd=str(next_task["test_cmd"]),
+            acceptance=acceptance,
+            test_cmd=job_test_cmd,
             created_by=created_by,
         )
         db.update_job_status(conn, job["id"], next_status, decision["history_summary"])
@@ -429,6 +446,7 @@ def create_next_task(settings, client, job: dict[str, Any], decision: dict[str, 
                 "status": next_status,
                 "reason": decision["reason"],
                 "goal": str(next_task["goal"]),
+                "test_cmd": str(job["test_cmd"]),
             },
         )
     xadd_json(client, CODEX_TASK_STREAM, "task", {"task_id": task_id})
@@ -541,7 +559,7 @@ def handle_request(settings, client, request: dict[str, Any]) -> None:
                 finish_job(settings, client, job_id, HUMAN_STREAM, "human_needed", human_decision)
                 return
         task_creator = "claude:repair" if action == "REPAIR" else f"claude:{request_type.lower()}"
-        create_next_task(settings, client, job, decision, task_creator)
+        create_next_task(settings, client, fresh_job, decision, task_creator)
     elif action == "DONE":
         finish_done_job(settings, client, job, decision)
     elif action == "HUMAN_NEEDED":

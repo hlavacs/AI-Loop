@@ -63,18 +63,13 @@ The shell wrappers prefer `AI_LOOP_PYTHON` when set, then local virtualenv
 interpreters, then versioned `python3` commands. They do not require a bare
 `python` executable.
 
-`./ai_job.bash` also uses that selected interpreter for its default validation
-command, so the implicit test command is equivalent to:
+`./ai_job.bash` uses the selected interpreter to submit the job, but it does
+not force every target project through pytest. If `AI_LOOP_TEST_CMD` is unset,
+`start_job.py` infers a generic validation command from the target repository:
+CMake presets first, then plain CMake, then `npm test`, then `pytest -q` for
+Python projects, and finally `true` when no known runner is detected.
 
-```bash
-/absolute/path/to/selected/python -m pytest -q
-```
-
-If the selected interpreter needs the loop virtualenv packages through
-`PYTHONPATH`, `./ai_job.bash` stores that absolute `PYTHONPATH` prefix in the
-test command as well.
-
-Set `AI_LOOP_TEST_CMD` to override that default for a target repository.
+Set `AI_LOOP_TEST_CMD` to override that detection for a target repository.
 
 By default Codex runs with:
 

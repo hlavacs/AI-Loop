@@ -185,11 +185,21 @@ def git_snapshot(cwd: str) -> dict[str, object]:
     status = run_command(["git", "status", "--short"], cwd, 300)
     diff_stat = run_command(["git", "diff", "--stat"], cwd, 300)
     diff = run_command(["git", "diff"], cwd, 300)
-    porcelain = run_command(["git", "status", "--porcelain=v1", "-z", "--untracked-files=all"], cwd, 300)
+    porcelain = subprocess.run(
+        ["git", "status", "--porcelain=v1", "-z", "--untracked-files=all"],
+        cwd=cwd,
+        text=True,
+        capture_output=True,
+        timeout=300,
+    )
+    if porcelain.returncode != 0:
+        porcelain_output = (porcelain.stdout + "\n" + porcelain.stderr).strip()
+    else:
+        porcelain_output = porcelain.stdout
 
     changed: list[str] = []
     untracked: list[str] = []
-    entries = str(porcelain["output"]).split("\0")
+    entries = porcelain_output.split("\0")
     index = 0
     while index < len(entries):
         entry = entries[index]
@@ -224,9 +234,11 @@ def git_snapshot(cwd: str) -> dict[str, object]:
     }
 
 
-def record_dead(settings, client, job_id: str | None, payload: dict) -> None:
+def record_dead(settings, client, job_id: str | None, payload: dict, task_id: str | None = None) -> None:
     with db.transaction(settings.db_path) as conn:
         db.add_event(conn, job_id=job_id, kind="dead", payload=payload)
+        if task_id:
+            db.update_task_status(conn, task_id, "dead")
         if job_id:
             db.update_job_status(conn, job_id, "dead")
     xadd_json(client, DEAD_STREAM, "event", payload)
@@ -273,7 +285,10 @@ def process_task(settings, client, task_id: str) -> None:
         codex_output = str(codex["output"])[-OUTPUT_LIMIT:]
         log_worker_stage(job["id"], task_id, "codex_done", f"Codex finished rc={codex_rc}; running task test command")
 
-        tests = run_shell(task["test_cmd"], worktree_path, 1800)
+        with db.transaction(settings.db_path) as conn:
+            refreshed_task = db.get_task(conn, task_id)
+        task_test_cmd = str(refreshed_task["test_cmd"])
+        tests = run_shell(task_test_cmd, worktree_path, 1800)
         test_rc = int(tests["rc"])
         test_output = str(tests["output"])[-OUTPUT_LIMIT:]
         log_worker_stage(job["id"], task_id, "tests_done", f"test command finished rc={test_rc}; capturing git diff")
@@ -370,6 +385,7 @@ def main() -> int:
         _, entries = messages[0]
         for message_id, fields in entries:
             job_id = None
+            task_id = None
             try:
                 payload = decode(fields["task"])
                 task_id = payload["task_id"]
@@ -381,7 +397,7 @@ def main() -> int:
                 print(f"worker error: {exc}")
                 payload = {"where": "codex_worker", "error": repr(exc), "fields": fields}
                 try:
-                    record_dead(settings, client, job_id, payload)
+                    record_dead(settings, client, job_id, payload, task_id)
                     client.xack(CODEX_TASK_STREAM, GROUP, message_id)
                 except Exception as inner:
                     print(f"could not record dead event: {inner}")
