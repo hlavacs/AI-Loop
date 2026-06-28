@@ -181,7 +181,7 @@ Watch an active job periodically:
 ./ai_watch_job.bash
 ```
 
-The watcher picks the newest `planning`, `queued`, or `implementing` job automatically.
+The watcher picks the newest `planning`, `queued`, `implementing`, or `fixing` job automatically.
 
 Resume a job that reached `human_needed` because the test command was wrong:
 
@@ -234,5 +234,7 @@ Before creating a job, `start_job.py` commits current target-repo changes when n
 Project instruction files such as `AGENTS.md` are optional. When present and relevant, Claude and Codex should follow them. When absent, the loop should continue from the job goal, constraints, local code patterns, and tests instead of treating the missing file as a blocker.
 
 Claude reviews more than task completion. It should reject or repair visible violations of project guidelines, local architecture, naming/style patterns, scope control, maintainability, proportional test coverage, and unrelated refactors.
+
+`HUMAN_NEEDED` is a last resort. Claude should first analyze the blocker, identify concrete solution paths, and create a `REPAIR` task whenever the loop can safely diagnose or fix the problem automatically. Such jobs are shown as `fixing` while the repair task is queued or running.
 
 The controller should split work into small tasklets: one narrow objective, one clear stop point, and no bundled audit-plus-implementation milestones. Restart the workers after changing prompt code so running processes pick up the new tasklet policy.

@@ -243,6 +243,11 @@ def describe_status(status: str, index: int) -> str:
             "Implementation worker is editing and validating the task.",
             "Worker is turning the plan into a concrete code change.",
         ],
+        "fixing": [
+            "Codex is fixing a reviewed problem in the worktree.",
+            "Repair task is applying a focused correction.",
+            "Worker is resolving the current blocker one step at a time.",
+        ],
         "queued": [
             "The next Codex task is waiting for the worker.",
             "Task is ready and pending worker pickup.",

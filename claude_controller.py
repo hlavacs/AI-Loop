@@ -127,11 +127,14 @@ Rules:
 - Keep next_task.acceptance narrow enough that Codex can prove it in one short run.
 - Project instruction files such as AGENTS.md are optional. If they exist and are relevant, require Codex to follow them; if they are absent, continue using the job goal, constraints, local code patterns, and tests.
 - During REVIEW, assess code quality and guideline compliance, not just whether files changed. Check visible changes against project instructions when present, local architecture, naming/style patterns, scope control, maintainability, test coverage proportional to risk, and avoidance of unrelated refactors.
+- Avoid HUMAN_NEEDED at all costs. Treat it as the last resort, not a normal blocker state.
+- Before HUMAN_NEEDED, analyze the problem, identify concrete solution paths, and choose an automated diagnostic or fix task whenever any safe one exists.
+- Return REPAIR when the next task is meant to fix a known problem, including code defects, guideline violations, missing build wiring, bad test commands, fixable environment/tool configuration, or recoverable promotion/build failures.
+- For REPAIR, write next_task.goal so it says exactly what is being fixed and why; include acceptance that proves the problem is gone or narrowed.
 - Return REPAIR when Codex visibly violates coding guidelines, ignores existing project patterns, changes unrelated behavior, leaves brittle or duplicated code without cause, omits necessary tests for risky changes, or satisfies the task only superficially.
-- Return HUMAN_NEEDED only when no useful automated task remains and human input or an external environment change is truly required.
-- Do not mark a job HUMAN_NEEDED merely because Codex found a runtime/environment symptom; first prefer CONTINUE or REPAIR with a concrete diagnostic or retry task when there are reasonable checks left.
+- Return HUMAN_NEEDED only after at least one concrete automated diagnostic/fix path has been tried or ruled out, and only when the remaining action truly requires a person, credentials, paid installation, physical device/display access, or a destructive choice that cannot be safely automated.
 - For GUI/display/window tasks, ask Codex to verify DISPLAY, WAYLAND_DISPLAY, XDG_SESSION_TYPE, SDL video backends, Vulkan presentation support, and visible windows from the same process environment before deciding the display is unavailable.
-- If Codex failed because of sandboxing, a missing tool, or permissions that the loop cannot alter, return HUMAN_NEEDED.
+- If Codex failed because of sandboxing, a missing tool, or permissions, first prefer REPAIR with a precise command, install step, configuration change, or diagnostic unless the loop demonstrably cannot perform it.
 - If tests fail due to code, return REPAIR.
 - If tests pass but the goal is incomplete, return CONTINUE.
 - If the goal and acceptance criteria are satisfied, return DONE.
@@ -292,6 +295,8 @@ def promote_successful_worktree(job: dict[str, Any]) -> dict[str, Any]:
 def create_next_task(settings, client, job: dict[str, Any], decision: dict[str, Any], created_by: str) -> str:
     next_task = decision["next_task"]
     task_id = timestamp_id("T")
+    action = str(decision["action"])
+    next_status = "fixing" if action == "REPAIR" else "queued"
     with db.transaction(settings.db_path) as conn:
         iteration = next_iteration(conn, job["id"])
         db.create_task(
@@ -305,15 +310,26 @@ def create_next_task(settings, client, job: dict[str, Any], decision: dict[str, 
             test_cmd=str(next_task["test_cmd"]),
             created_by=created_by,
         )
-        db.update_job_status(conn, job["id"], "queued", decision["history_summary"])
+        db.update_job_status(conn, job["id"], next_status, decision["history_summary"])
         db.add_event(
             conn,
             job_id=job["id"],
             kind="task_queued",
-            payload={"task_id": task_id, "iteration": iteration, "action": decision["action"]},
+            payload={
+                "task_id": task_id,
+                "iteration": iteration,
+                "action": action,
+                "status": next_status,
+                "reason": decision["reason"],
+                "goal": str(next_task["goal"]),
+            },
         )
     xadd_json(client, CODEX_TASK_STREAM, "task", {"task_id": task_id})
-    print(f"queued Codex task {task_id} for job {job['id']}")
+    if next_status == "fixing":
+        print(f"job {job['id']}: fixing - {decision['reason']}")
+        print(f"job {job['id']}: fixing task {task_id} - {next_task['goal']}")
+    else:
+        print(f"queued Codex task {task_id} for job {job['id']}")
     return task_id
 
 
@@ -417,7 +433,8 @@ def handle_request(settings, client, request: dict[str, Any]) -> None:
                 }
                 finish_job(settings, client, job_id, HUMAN_STREAM, "human_needed", human_decision)
                 return
-        create_next_task(settings, client, job, decision, f"claude:{request_type.lower()}")
+        task_creator = "claude:repair" if action == "REPAIR" else f"claude:{request_type.lower()}"
+        create_next_task(settings, client, job, decision, task_creator)
     elif action == "DONE":
         finish_done_job(settings, client, job, decision)
     elif action == "HUMAN_NEEDED":

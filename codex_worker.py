@@ -154,7 +154,8 @@ def process_task(settings, client, task_id: str) -> None:
         task = db.get_task(conn, task_id)
         job = db.get_job(conn, task["job_id"])
         db.update_task_status(conn, task_id, "running")
-        db.update_job_status(conn, job["id"], "implementing")
+        running_status = "fixing" if str(task["created_by"]) == "claude:repair" else "implementing"
+        db.update_job_status(conn, job["id"], running_status)
 
     print(f"task {task_id}: job {job['id']} iteration {task['iteration']}")
     print(f"goal: {task['goal']}")
@@ -179,7 +180,8 @@ def process_task(settings, client, task_id: str) -> None:
             prompt,
             settings.codex_bypass_sandbox,
         )
-        log_worker_stage(job["id"], task_id, "implementing", "Codex process started; source changes may not exist until it finishes")
+        worker_stage = "fixing" if str(task["created_by"]) == "claude:repair" else "implementing"
+        log_worker_stage(job["id"], task_id, worker_stage, "Codex process started; source changes may not exist until it finishes")
         codex = run_command(codex_cmd, worktree_path, 7200)
         codex_rc = int(codex["rc"])
         codex_output = str(codex["output"])[-OUTPUT_LIMIT:]

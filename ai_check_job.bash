@@ -56,6 +56,11 @@ def describe_status(status, index=0):
             "Implementation worker is editing and validating the task.",
             "Worker is turning the plan into a concrete code change.",
         ],
+        "fixing": [
+            "Codex is fixing a reviewed problem in the worktree.",
+            "Repair task is applying a focused correction.",
+            "Worker is resolving the current blocker one step at a time.",
+        ],
         "queued": [
             "The next Codex task is waiting for the worker.",
             "Task is ready and pending worker pickup.",
@@ -126,6 +131,8 @@ def print_task_diagnosis(job_id, job_status):
         print("diagnosis: task is queued; worker has not picked it up yet")
     elif job_status == "implementing" and task["status"] == "running":
         print("diagnosis: worker picked up the task and is running Codex or tests")
+    elif job_status == "fixing" and task["status"] == "running":
+        print("diagnosis: worker picked up a repair task and is running Codex or tests")
     elif job_status == "queued" and task["status"] == "running":
         print("diagnosis: task says running but job says queued; status is inconsistent")
     elif job_status == "implementing" and task["status"] == "queued":
