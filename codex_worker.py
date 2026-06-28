@@ -40,6 +40,13 @@ def run_shell(command: str, cwd: str, timeout: int) -> dict[str, object]:
     return run_command(["bash", "-lc", command], cwd, timeout)
 
 
+def run_command_allow_rc(cmd: list[str], cwd: str, timeout: int, allowed_rc: set[int]) -> dict[str, object]:
+    result = run_command(cmd, cwd, timeout)
+    if int(result["rc"]) not in allowed_rc:
+        return result
+    return result
+
+
 def log_worker_stage(job_id: str, task_id: str, stage: str, detail: str) -> None:
     print(f"job {job_id} task {task_id}: {stage} - {detail}")
 
@@ -78,6 +85,9 @@ Rules:
 - Treat this as a tasklet: keep changes as small and specific as possible.
 - Do not expand the task into adjacent cleanup, broad audits, or follow-up milestones.
 - Stop once this tasklet's acceptance criteria are met.
+- Follow project instruction files when they exist, such as AGENTS.md or equivalent local guidelines. If no such files exist, infer style and architecture from nearby code instead of treating their absence as a blocker.
+- Match existing project patterns, naming, module boundaries, error handling, formatting, and test style unless the task explicitly asks for a change.
+- Keep code maintainable: avoid unrelated refactors, avoid unnecessary abstractions, and avoid duplicated logic when a local helper or established pattern exists.
 - Add or update tests only when useful for this task.
 - Do not commit changes.
 - Do not merge branches.
@@ -89,13 +99,42 @@ def git_snapshot(cwd: str) -> dict[str, object]:
     status = run_command(["git", "status", "--short"], cwd, 300)
     diff_stat = run_command(["git", "diff", "--stat"], cwd, 300)
     diff = run_command(["git", "diff"], cwd, 300)
-    files = run_command(["git", "diff", "--name-only"], cwd, 300)
-    changed = [line for line in str(files["output"]).splitlines() if line.strip()]
+    porcelain = run_command(["git", "status", "--porcelain=v1", "-z", "--untracked-files=all"], cwd, 300)
+
+    changed: list[str] = []
+    untracked: list[str] = []
+    entries = str(porcelain["output"]).split("\0")
+    index = 0
+    while index < len(entries):
+        entry = entries[index]
+        index += 1
+        if not entry:
+            continue
+        code = entry[:2]
+        path = entry[3:]
+        if code[0] in {"R", "C"} or code[1] in {"R", "C"}:
+            if index < len(entries):
+                path = entries[index]
+                index += 1
+        changed.append(path)
+        if code == "??":
+            untracked.append(path)
+
+    extra_diffs: list[str] = []
+    for path in untracked:
+        untracked_diff = run_command_allow_rc(["git", "diff", "--no-index", "--", "/dev/null", path], cwd, 300, {0, 1})
+        output = str(untracked_diff["output"]).strip()
+        if output:
+            extra_diffs.append(output)
+
+    combined_diff = str(diff["output"])
+    if extra_diffs:
+        combined_diff = "\n\n".join([combined_diff, *extra_diffs]).strip()
     return {
         "git_status": str(status["output"])[-OUTPUT_LIMIT:],
         "diff_stat": str(diff_stat["output"])[-OUTPUT_LIMIT:],
-        "diff": str(diff["output"])[-DIFF_LIMIT:],
-        "changed_files": changed,
+        "diff": combined_diff[-DIFF_LIMIT:],
+        "changed_files": sorted(set(changed)),
     }
 
 

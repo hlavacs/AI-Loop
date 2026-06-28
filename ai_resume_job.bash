@@ -83,7 +83,7 @@ PY
     exit 0
   fi
 
-  max_iterations="${AI_LOOP_RESUME_MAX_ITERATIONS:-1000}"
+  max_iterations="${AI_LOOP_RESUME_MAX_ITERATIONS:-50000}"
   echo "resuming latest resumable job: $job_id"
   set -- "$job_id" --max-iterations "$max_iterations"
 fi

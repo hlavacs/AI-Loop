@@ -57,13 +57,13 @@ while true; do
     echo
     echo "no active job found"
     echo
-    ./check_job.bash || true
+    ./ai_check_job.bash || true
   else
     echo "watching job: $job_id"
     echo
-    ./check_job.bash "$job_id"
+    ./ai_check_job.bash "$job_id"
     echo
-    ./print_log.bash --job "$job_id" --limit "$limit" --no-process-logs
+    ./ai_print_log.bash --job "$job_id" --limit "$limit" --no-process-logs
   fi
   sleep "$interval"
 done

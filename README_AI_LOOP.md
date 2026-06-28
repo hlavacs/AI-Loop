@@ -63,7 +63,7 @@ The shell wrappers prefer `AI_LOOP_PYTHON` when set, then local virtualenv
 interpreters, then versioned `python3` commands. They do not require a bare
 `python` executable.
 
-`./job.bash` also uses that selected interpreter for its default validation
+`./ai_job.bash` also uses that selected interpreter for its default validation
 command, so the implicit test command is equivalent to:
 
 ```bash
@@ -71,7 +71,7 @@ command, so the implicit test command is equivalent to:
 ```
 
 If the selected interpreter needs the loop virtualenv packages through
-`PYTHONPATH`, `./job.bash` stores that absolute `PYTHONPATH` prefix in the
+`PYTHONPATH`, `./ai_job.bash` stores that absolute `PYTHONPATH` prefix in the
 test command as well.
 
 Set `AI_LOOP_TEST_CMD` to override that default for a target repository.
@@ -99,10 +99,10 @@ codex exec --dangerously-bypass-approvals-and-sandbox
 Use the control script to run the loop in the background:
 
 ```bash
-./loopctl.bash start
-./loopctl.bash status
-./loopctl.bash stop
-./loopctl.bash restart
+./ai_loopctl.bash start
+./ai_loopctl.bash status
+./ai_loopctl.bash stop
+./ai_loopctl.bash restart
 ```
 
 Or run each command in a separate terminal from this directory:
@@ -132,7 +132,7 @@ python start_job.py \
   --test-cmd "pytest -q" \
   --constraint "Preserve public APIs unless the task requires changing them." \
   --acceptance "The feature is documented where users would expect it." \
-  --max-iterations 1000 \
+  --max-iterations 50000 \
   --base-ref HEAD \
   --wait
 ```
@@ -159,26 +159,26 @@ python start_job.py \
 Check whether a job exists in the system:
 
 ```bash
-./check_job.bash <job_id>
+./ai_check_job.bash <job_id>
 ```
 
 List all known jobs:
 
 ```bash
-./check_job.bash
+./ai_check_job.bash
 ```
 
 Print the durable loop log from SQLite and tail process log files from `./logs`:
 
 ```bash
-./print_log.bash
-./print_log.bash --job <job_id> --limit 50
+./ai_print_log.bash
+./ai_print_log.bash --job <job_id> --limit 50
 ```
 
 Watch an active job periodically:
 
 ```bash
-./watch_job.bash
+./ai_watch_job.bash
 ```
 
 The watcher picks the newest `planning`, `queued`, or `implementing` job automatically.
@@ -186,22 +186,22 @@ The watcher picks the newest `planning`, `queued`, or `implementing` job automat
 Resume a job that reached `human_needed` because the test command was wrong:
 
 ```bash
-./resume_job.bash
-./resume_job.bash <job_id> \
+./ai_resume_job.bash
+./ai_resume_job.bash <job_id> \
   --test-cmd "ctest --test-dir build/debug-macos -C Debug --output-on-failure" \
   --wait
 ```
 
-With no arguments, `./resume_job.bash` resumes the newest `human_needed` job and sets `--max-iterations` to `1000`.
+With no arguments, `./ai_resume_job.bash` resumes the newest `human_needed` job and sets `--max-iterations` to `50000`.
 Override that default with `AI_LOOP_RESUME_MAX_ITERATIONS`.
 
 Resume a job with a corrected target path or goal:
 
 ```bash
-./resume_job.bash <job_id> \
-  --goal "Implement the simple engine under src/versions/simple." \
-  --constraint "Do not implement this in src/versions/v4 or src/versions/v5." \
-  --acceptance "The implementation lives under src/versions/simple." \
+./ai_resume_job.bash <job_id> \
+  --goal "Implement the requested feature under the intended target directory." \
+  --constraint "Do not modify unrelated packages or generated files." \
+  --acceptance "The implementation lives in the requested target area." \
   --wait
 ```
 
@@ -210,11 +210,11 @@ This updates the stored job fields, marks the job as `planning`, and queues a ne
 Clear run, decision, and event log rows, and truncate process log files, while keeping jobs and tasks:
 
 ```bash
-./clear_log.bash --dry-run
-./clear_log.bash --yes
+./ai_clear_log.bash --dry-run
+./ai_clear_log.bash --yes
 ```
 
-The process log files are created by `./run_claude.bash`, `./run_codex.bash`, and `./run_watcher.bash`. Restart already-running workers with those wrappers to begin writing `./logs/*.log`. To wipe the entire job database, use `./clear_db.bash --yes` instead.
+The process log files are created by `./ai_run_claude.bash`, `./ai_run_codex.bash`, and `./ai_run_watcher.bash`. Restart already-running workers with those wrappers to begin writing `./logs/*.log`. To wipe the entire job database, use `./ai_clear_db.bash --yes` instead.
 
 ## Loop Behavior
 
@@ -229,5 +229,10 @@ The process log files are created by `./run_claude.bash`, `./run_codex.bash`, an
 9. Claude reviews state and returns `CONTINUE`, `REPAIR`, `DONE`, or `HUMAN_NEEDED`.
 10. Terminal outcomes are published to `ai:done`, `ai:human`, or `ai:dead`.
 
-The loop never commits or merges automatically.
+Before creating a job, `start_job.py` commits current target-repo changes when needed so new worktrees include the user's latest files. The loop does not commit Codex task changes or merge branches automatically.
+
+Project instruction files such as `AGENTS.md` are optional. When present and relevant, Claude and Codex should follow them. When absent, the loop should continue from the job goal, constraints, local code patterns, and tests instead of treating the missing file as a blocker.
+
+Claude reviews more than task completion. It should reject or repair visible violations of project guidelines, local architecture, naming/style patterns, scope control, maintainability, proportional test coverage, and unrelated refactors.
+
 The controller should split work into small tasklets: one narrow objective, one clear stop point, and no bundled audit-plus-implementation milestones. Restart the workers after changing prompt code so running processes pick up the new tasklet policy.

@@ -16,8 +16,8 @@ if [ "$#" -gt 1 ]; then
 fi
 
 if [ "${1:-}" = "--yes" ] || [ "${1:-}" = "--dry-run" ]; then
-  echo "'$1' is for ./clear_db.bash, not ./check_job.bash" >&2
-  echo "to clear the database, run: ./clear_db.bash $1" >&2
+  echo "'$1' is for ./ai_clear_db.bash, not ./ai_check_job.bash" >&2
+  echo "to clear the database, run: ./ai_clear_db.bash $1" >&2
   exit 2
 fi
 

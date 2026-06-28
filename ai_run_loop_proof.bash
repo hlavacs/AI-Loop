@@ -13,7 +13,7 @@ export AI_LOOP_PYTHON="$python_bin"
 
 usage() {
   cat >&2 <<'EOF'
-usage: ./run_ai_loop_proof.bash
+usage: ./ai_run_loop_proof.bash
 
 Environment:
   AI_LOOP_PROOF_REPO=/tmp/ai-loop-test   fixture repo path
@@ -370,8 +370,8 @@ echo "running fixture test"
 make -C "$repo" test
 
 echo "checking loop processes"
-./loopctl.bash start
-./loopctl.bash status
+./ai_loopctl.bash start
+./ai_loopctl.bash status
 
 echo "submitting AI loop proof job"
 job_output="$("$python_bin" start_job.py \
@@ -409,5 +409,5 @@ echo "job: $job_id"
 echo "worktree: $worktree"
 echo
 echo "Inspect with:"
-echo "./check_job.bash $job_id"
-echo "./print_log.bash --job $job_id --limit 120"
+echo "./ai_check_job.bash $job_id"
+echo "./ai_print_log.bash --job $job_id --limit 120"

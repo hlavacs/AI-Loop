@@ -127,9 +127,9 @@ status_one() {
 }
 
 start_all() {
-  start_one claude_controller ./run_claude.bash claude_controller.py
-  start_one codex_worker ./run_codex.bash codex_worker.py
-  start_one watcher ./run_watcher.bash watcher.py
+  start_one claude_controller ./ai_run_claude.bash claude_controller.py
+  start_one codex_worker ./ai_run_codex.bash codex_worker.py
+  start_one watcher ./ai_run_watcher.bash watcher.py
 }
 
 stop_all() {

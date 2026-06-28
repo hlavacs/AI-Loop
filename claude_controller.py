@@ -125,6 +125,9 @@ Rules:
 - If the next useful work has multiple parts, return only the first tasklet now and leave the rest for later CONTINUE decisions.
 - Write next_task.goal as a specific imperative, not a project summary. Name the exact directory, file, symbol, or test target when known.
 - Keep next_task.acceptance narrow enough that Codex can prove it in one short run.
+- Project instruction files such as AGENTS.md are optional. If they exist and are relevant, require Codex to follow them; if they are absent, continue using the job goal, constraints, local code patterns, and tests.
+- During REVIEW, assess code quality and guideline compliance, not just whether files changed. Check visible changes against project instructions when present, local architecture, naming/style patterns, scope control, maintainability, test coverage proportional to risk, and avoidance of unrelated refactors.
+- Return REPAIR when Codex visibly violates coding guidelines, ignores existing project patterns, changes unrelated behavior, leaves brittle or duplicated code without cause, omits necessary tests for risky changes, or satisfies the task only superficially.
 - Return HUMAN_NEEDED only when no useful automated task remains and human input or an external environment change is truly required.
 - Do not mark a job HUMAN_NEEDED merely because Codex found a runtime/environment symptom; first prefer CONTINUE or REPAIR with a concrete diagnostic or retry task when there are reasonable checks left.
 - For GUI/display/window tasks, ask Codex to verify DISPLAY, WAYLAND_DISPLAY, XDG_SESSION_TYPE, SDL video backends, Vulkan presentation support, and visible windows from the same process environment before deciding the display is unavailable.
