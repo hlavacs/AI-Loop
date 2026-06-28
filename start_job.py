@@ -50,7 +50,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--no-worktree", action="store_true", help="Run directly in --repo instead of a Git worktree.")
     parser.add_argument("--wait", action="store_true", help="Wait for the job to reach a terminal status.")
     parser.add_argument("--poll-interval", type=float, default=5.0, help="Seconds between status checks with --wait.")
-    parser.add_argument("--timeout", type=int, default=7200, help="Maximum seconds to wait with --wait.")
+    parser.add_argument("--timeout", type=int, default=0, help="Maximum seconds to wait with --wait; 0 waits forever.")
     return parser.parse_args()
 
 
@@ -450,12 +450,12 @@ def print_inspect_commands(job_id: str) -> None:
 
 def wait_for_job(db_path: Path, job_id: str, worktree: Path, timeout: int, poll_interval: float) -> int:
     print(f"waiting for job {job_id}")
-    deadline = time.monotonic() + timeout
+    deadline = None if timeout <= 0 else time.monotonic() + timeout
     status = ""
     status_line = 0
     status_counts: dict[str, int] = {}
 
-    while time.monotonic() < deadline:
+    while deadline is None or time.monotonic() < deadline:
         state = job_state(db_path, job_id)
         status = str(state["status"])
         status_counts[status] = status_counts.get(status, 0) + 1

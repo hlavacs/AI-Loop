@@ -132,7 +132,7 @@ python start_job.py \
   --wait
 ```
 
-With `--wait`, the command prints status updates until the job reaches `done`, `human_needed`, or `dead`, then prints inspect commands. Omit `--wait` to submit the job asynchronously.
+With `--wait`, the command prints status updates until the job reaches `done`, `human_needed`, or `dead`, then prints inspect commands. It waits indefinitely by default; pass `--timeout <seconds>` with a positive value to impose a foreground wait limit. Omit `--wait` to submit the job asynchronously.
 
 By default this creates:
 
@@ -189,6 +189,7 @@ Resume a job that reached `human_needed` because the test command was wrong:
 
 With no arguments, `./ai_resume_job.bash` resumes the newest `human_needed` job and sets `--max-iterations` to `50000`.
 Override that default with `AI_LOOP_RESUME_MAX_ITERATIONS`.
+With `--wait`, resume waits indefinitely by default; pass `--timeout <seconds>` with a positive value to impose a foreground wait limit.
 
 Resume a job with a corrected target path or goal:
 

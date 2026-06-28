@@ -14,7 +14,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--max-iterations", type=int, help="Replacement maximum Codex iteration count.")
     parser.add_argument("--wait", action="store_true", help="Wait for the job to reach a terminal status.")
     parser.add_argument("--poll-interval", type=float, default=5.0, help="Seconds between status checks with --wait.")
-    parser.add_argument("--timeout", type=int, default=7200, help="Maximum seconds to wait with --wait.")
+    parser.add_argument("--timeout", type=int, default=0, help="Maximum seconds to wait with --wait; 0 waits forever.")
     return parser.parse_args()
 
 
