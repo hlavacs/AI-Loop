@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import re
 import shutil
 import subprocess
 import time
@@ -26,6 +27,8 @@ from ai_loop.queues import consumer_name, decode, ensure_group, redis_client, re
 GROUP = "claude-controllers"
 ACTIONS = {"CONTINUE", "REPAIR", "DONE", "HUMAN_NEEDED"}
 OUTPUT_LIMIT = 20000
+INSTRUCTION_FILE_LIMIT = 10
+INSTRUCTION_FILE_BYTES = 12000
 
 
 class PromotionError(RuntimeError):
@@ -73,6 +76,103 @@ def validate_decision(decision: dict[str, Any]) -> None:
             raise ValueError("next_task.constraints must be a list")
         if not isinstance(next_task["acceptance"], list):
             raise ValueError("next_task.acceptance must be a list")
+
+
+def text_fields(*items: Any) -> str:
+    parts: list[str] = []
+    for item in items:
+        if item is None:
+            continue
+        if isinstance(item, dict):
+            parts.extend(str(value) for value in item.values())
+        elif isinstance(item, list):
+            parts.extend(str(value) for value in item)
+        else:
+            parts.append(str(item))
+    return "\n".join(parts)
+
+
+def referenced_file_candidates(job: dict[str, Any], task: dict[str, Any] | None = None) -> list[str]:
+    text = text_fields(
+        job.get("goal"),
+        job.get("constraints"),
+        job.get("acceptance"),
+    )
+    candidates: list[str] = []
+    patterns = [
+        r"`([^`\n]+\.[A-Za-z0-9_+-]+)`",
+        r"['\"]([^'\"\n]+\.[A-Za-z0-9_+-]+)['\"]",
+        r"\b([A-Za-z0-9_./@+-]+\.(?:md|txt|rst|adoc|toml|ya?ml|json|ini|cfg|cmake|cmakelists|ixx|cpp|hpp|h|c|cc|hh))\b",
+        r"\b(CMakeLists\.txt|Makefile|AGENTS\.md)\b",
+    ]
+    for pattern in patterns:
+        for match in re.findall(pattern, text, flags=re.IGNORECASE):
+            value = match.strip().strip(".,;:)")
+            if value.startswith(("http://", "https://")):
+                continue
+            if value and value not in candidates:
+                candidates.append(value)
+    return candidates
+
+
+def safe_relative_path(worktree: Path, value: str) -> Path | None:
+    raw = Path(value).expanduser()
+    if raw.is_absolute():
+        try:
+            raw.relative_to(worktree)
+            return raw
+        except ValueError:
+            return None
+    if any(part == ".." for part in raw.parts):
+        return None
+    return worktree / raw
+
+
+def refreshed_instruction_files(job: dict[str, Any], task: dict[str, Any] | None = None) -> list[dict[str, Any]]:
+    worktree = Path(str(job["worktree_path"]))
+    found: list[Path] = []
+    for candidate in referenced_file_candidates(job, task):
+        path = safe_relative_path(worktree, candidate)
+        if path is None:
+            continue
+        matches: list[Path] = []
+        if path.is_file():
+            matches = [path]
+        elif "/" not in candidate and "\\" not in candidate:
+            matches = [item for item in worktree.rglob(candidate) if item.is_file()]
+        for match in matches:
+            resolved = match.resolve()
+            try:
+                resolved.relative_to(worktree.resolve())
+            except ValueError:
+                continue
+            if resolved not in found:
+                found.append(resolved)
+            if len(found) >= INSTRUCTION_FILE_LIMIT:
+                break
+        if len(found) >= INSTRUCTION_FILE_LIMIT:
+            break
+
+    snapshots: list[dict[str, Any]] = []
+    for path in found:
+        relative = str(path.relative_to(worktree.resolve()))
+        stat = path.stat()
+        try:
+            content = path.read_text(encoding="utf-8")[:INSTRUCTION_FILE_BYTES]
+            truncated = stat.st_size > INSTRUCTION_FILE_BYTES
+        except UnicodeDecodeError:
+            content = "<binary or non-UTF-8 file not included>"
+            truncated = True
+        snapshots.append(
+            {
+                "path": relative,
+                "mtime": datetime.fromtimestamp(stat.st_mtime, timezone.utc).isoformat(timespec="seconds"),
+                "size": stat.st_size,
+                "truncated": truncated,
+                "content": content,
+            }
+        )
+    return snapshots
 
 
 def run_claude(claude_bin: str, prompt: str) -> dict[str, Any]:
@@ -126,6 +226,8 @@ Rules:
 - Write next_task.goal as a specific imperative, not a project summary. Name the exact directory, file, symbol, or test target when known.
 - Keep next_task.acceptance narrow enough that Codex can prove it in one short run.
 - Project instruction files such as AGENTS.md are optional. If they exist and are relevant, require Codex to follow them; if they are absent, continue using the job goal, constraints, local code patterns, and tests.
+- File-like paths mentioned in the original job description, job constraints, or job acceptance criteria may be live guidance files. The prompt includes a refreshed snapshot of those files when they exist. Treat that snapshot as current guidance and prefer it over earlier summaries if it changed.
+- If a next_task depends on a mentioned guidance file, tell Codex to re-read that file at the start of the task and again before finalizing if the task runs long.
 - During REVIEW, assess code quality and guideline compliance, not just whether files changed. Check visible changes against project instructions when present, local architecture, naming/style patterns, scope control, maintainability, test coverage proportional to risk, and avoidance of unrelated refactors.
 - Avoid HUMAN_NEEDED at all costs. Treat it as the last resort, not a normal blocker state.
 - Before HUMAN_NEEDED, analyze the problem, identify concrete solution paths, and choose an automated diagnostic or fix task whenever any safe one exists.
@@ -142,6 +244,7 @@ Rules:
 
 
 def plan_prompt(job: dict[str, Any]) -> str:
+    instruction_files = refreshed_instruction_files(job)
     return f"""You are Claude CLI, the controller/planner in a generic continuous development loop.
 
 Create exactly one tiny first Codex tasklet for this job.
@@ -150,6 +253,9 @@ Create exactly one tiny first Codex tasklet for this job.
 
 Job state:
 {json.dumps(job, indent=2)}
+
+Refreshed referenced guidance files:
+{json.dumps(instruction_files, indent=2)}
 
 For PLAN, choose action CONTINUE unless the job is impossible or requires a human before any code work.
 The next_task must be smaller than a normal development task: one tasklet, one narrow output, then stop.
@@ -162,6 +268,7 @@ def review_prompt(job: dict[str, Any], task: dict[str, Any], run: dict[str, Any]
     review_state = {
         "job": job,
         "task": task,
+        "refreshed_referenced_guidance_files": refreshed_instruction_files(job, task),
         "run": {
             **run,
             "codex_output": run["codex_output"][-OUTPUT_LIMIT:],

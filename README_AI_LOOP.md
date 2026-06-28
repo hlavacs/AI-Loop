@@ -233,6 +233,8 @@ Before creating a job, `start_job.py` commits current target-repo changes when n
 
 Project instruction files such as `AGENTS.md` are optional. When present and relevant, Claude and Codex should follow them. When absent, the loop should continue from the job goal, constraints, local code patterns, and tests instead of treating the missing file as a blocker.
 
+File-like paths mentioned in the job goal, constraints, or acceptance criteria are treated as possible live guidance files. On each PLAN/REVIEW, Claude receives refreshed content and modification times for existing referenced files in the worktree. On each task, Codex is told to re-read the current versions before working. This is generic and does not depend on a particular filename.
+
 Claude reviews more than task completion. It should reject or repair visible violations of project guidelines, local architecture, naming/style patterns, scope control, maintainability, proportional test coverage, and unrelated refactors.
 
 `HUMAN_NEEDED` is a last resort. Claude should first analyze the blocker, identify concrete solution paths, and create a `REPAIR` task whenever the loop can safely diagnose or fix the problem automatically. Such jobs are shown as `fixing` while the repair task is queued or running.

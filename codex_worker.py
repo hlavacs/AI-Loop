@@ -1,9 +1,11 @@
 from __future__ import annotations
 
+import re
 import shutil
 import subprocess
 import time
 import uuid
+from pathlib import Path
 
 from redis.exceptions import ConnectionError, TimeoutError
 
@@ -15,6 +17,7 @@ from ai_loop.queues import consumer_name, decode, ensure_group, redis_client, re
 GROUP = "codex-workers"
 OUTPUT_LIMIT = 20000
 DIFF_LIMIT = 80000
+INSTRUCTION_FILE_LIMIT = 10
 
 
 def run_command(cmd: list[str], cwd: str, timeout: int) -> dict[str, object]:
@@ -61,7 +64,85 @@ def build_codex_command(codex_bin: str, cwd: str, prompt: str, bypass_sandbox: b
     return cmd
 
 
+def text_fields(*items: object) -> str:
+    parts: list[str] = []
+    for item in items:
+        if item is None:
+            continue
+        if isinstance(item, dict):
+            parts.extend(str(value) for value in item.values())
+        elif isinstance(item, list):
+            parts.extend(str(value) for value in item)
+        else:
+            parts.append(str(item))
+    return "\n".join(parts)
+
+
+def referenced_file_candidates(job: dict, task: dict) -> list[str]:
+    text = text_fields(
+        job.get("goal"),
+        job.get("constraints"),
+        job.get("acceptance"),
+    )
+    candidates: list[str] = []
+    patterns = [
+        r"`([^`\n]+\.[A-Za-z0-9_+-]+)`",
+        r"['\"]([^'\"\n]+\.[A-Za-z0-9_+-]+)['\"]",
+        r"\b([A-Za-z0-9_./@+-]+\.(?:md|txt|rst|adoc|toml|ya?ml|json|ini|cfg|cmake|cmakelists|ixx|cpp|hpp|h|c|cc|hh))\b",
+        r"\b(CMakeLists\.txt|Makefile|AGENTS\.md)\b",
+    ]
+    for pattern in patterns:
+        for match in re.findall(pattern, text, flags=re.IGNORECASE):
+            value = match.strip().strip(".,;:)")
+            if value.startswith(("http://", "https://")):
+                continue
+            if value and value not in candidates:
+                candidates.append(value)
+    return candidates
+
+
+def safe_relative_path(worktree: Path, value: str) -> Path | None:
+    raw = Path(value).expanduser()
+    if raw.is_absolute():
+        try:
+            raw.relative_to(worktree)
+            return raw
+        except ValueError:
+            return None
+    if any(part == ".." for part in raw.parts):
+        return None
+    return worktree / raw
+
+
+def referenced_existing_files(job: dict, task: dict) -> list[str]:
+    worktree = Path(str(job["worktree_path"]))
+    found: list[Path] = []
+    for candidate in referenced_file_candidates(job, task):
+        path = safe_relative_path(worktree, candidate)
+        if path is None:
+            continue
+        matches: list[Path] = []
+        if path.is_file():
+            matches = [path]
+        elif "/" not in candidate and "\\" not in candidate:
+            matches = [item for item in worktree.rglob(candidate) if item.is_file()]
+        for match in matches:
+            resolved = match.resolve()
+            try:
+                resolved.relative_to(worktree.resolve())
+            except ValueError:
+                continue
+            if resolved not in found:
+                found.append(resolved)
+            if len(found) >= INSTRUCTION_FILE_LIMIT:
+                break
+        if len(found) >= INSTRUCTION_FILE_LIMIT:
+            break
+    return [str(path.relative_to(worktree.resolve())) for path in found]
+
+
 def codex_prompt(job: dict, task: dict) -> str:
+    guidance_files = referenced_existing_files(job, task)
     return f"""You are Codex CLI, the implementation worker in a Claude-controlled loop.
 
 Repository: {job["worktree_path"]}
@@ -80,12 +161,17 @@ Task constraints:
 Task acceptance criteria:
 {db.to_json(task["acceptance"])}
 
+Referenced guidance files to refresh before work:
+{db.to_json(guidance_files)}
+
 Rules:
 - Implement only this task.
 - Treat this as a tasklet: keep changes as small and specific as possible.
 - Do not expand the task into adjacent cleanup, broad audits, or follow-up milestones.
 - Stop once this tasklet's acceptance criteria are met.
 - Follow project instruction files when they exist, such as AGENTS.md or equivalent local guidelines. If no such files exist, infer style and architecture from nearby code instead of treating their absence as a blocker.
+- The listed referenced guidance files may have changed since the job started. Re-read each existing listed file at the start of the task and use the current content, not stale summaries.
+- If the task runs long or your plan depends on those files, check their modification time and re-read them before finalizing.
 - Match existing project patterns, naming, module boundaries, error handling, formatting, and test style unless the task explicitly asks for a change.
 - Keep code maintainable: avoid unrelated refactors, avoid unnecessary abstractions, and avoid duplicated logic when a local helper or established pattern exists.
 - Add or update tests only when useful for this task.
