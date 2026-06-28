@@ -143,6 +143,7 @@ def referenced_existing_files(job: dict, task: dict) -> list[str]:
 
 def codex_prompt(job: dict, task: dict) -> str:
     guidance_files = referenced_existing_files(job, task)
+    crash_safe_runner = Path(__file__).resolve().parent / "ai_run_crash_safe.bash"
     return f"""You are Codex CLI, the implementation worker in a Claude-controlled loop.
 
 Repository: {job["worktree_path"]}
@@ -175,6 +176,7 @@ Rules:
 - Match existing project patterns, naming, module boundaries, error handling, formatting, and test style unless the task explicitly asks for a change.
 - Keep code maintainable: avoid unrelated refactors, avoid unnecessary abstractions, and avoid duplicated logic when a local helper or established pattern exists.
 - Add or update tests only when useful for this task.
+- When running a target-project executable that may crash or open a platform crash dialog, run it through the ai-loop crash-safe wrapper when available: {crash_safe_runner} -- <executable> [args...]. Treat crashes as normal diagnostic output to fix, not as a reason for the user to click through an OS crash dialog.
 - Do not commit changes.
 - Do not merge branches.
 - If blocked by missing tools, sandboxing, permissions, or unclear requirements, stop and explain the blocker.

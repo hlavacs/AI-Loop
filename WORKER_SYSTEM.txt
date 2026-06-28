@@ -82,6 +82,8 @@ Acts as planner/reviewer. It consumes PLAN and REVIEW messages from ai:claude:re
 codex_worker.py
 Acts as implementation worker. It consumes tasks from ai:codex:tasks, runs codex exec in the job worktree, re-reads the task row immediately before validation, runs the current task test command, captures git status/diff/output, writes a run record to SQLite, then sends a REVIEW request back to Claude. The captured diff includes untracked new files so Claude can review newly created code. Git porcelain output is parsed without stripping significant leading spaces, so changed-file paths remain accurate. Codex should follow project instruction files when present, but missing instruction files are not a blocker unless the job explicitly requires them. If the original job text mentions file-like guidance paths, Codex is given the currently existing paths and must re-read them at task start.
 
+When Codex needs to run a target-project executable that may crash, hang, or open a platform crash dialog, it should use ai_run_crash_safe.bash. The wrapper applies a timeout, disables core dumps where possible, and on macOS runs the executable under batch lldb when available so crashes are captured as terminal diagnostics and backtraces. A crashing target executable is treated as diagnostic input for REPAIR, not as a manual action for the user.
+
 watcher.py
 Watches terminal streams: ai:done, ai:human, and ai:dead. It prints final outcomes and errors.
 
@@ -188,6 +190,14 @@ Starts the Codex worker with sandbox bypass enabled by default. It appends stdou
 
 ai_run_watcher.bash
 Starts terminal event watcher. It appends stdout/stderr to ./logs/watcher.log by default, or AI_LOOP_LOG_DIR/watcher.log if AI_LOOP_LOG_DIR is set.
+
+ai_run_crash_safe.bash
+Runs a target-project executable in a crash-safe way:
+
+./ai_run_crash_safe.bash -- <executable> [args...]
+./ai_run_crash_safe.bash --timeout 120 -- <executable> [args...]
+
+It is intended for runtime validation steps where the target program may crash or hang. On macOS, it uses batch lldb when available to capture crashes without requiring a user to dismiss a crash dialog. On other systems it still applies timeout/core-dump safeguards when available.
 
 Log and Status Helpers
 ----------------------
