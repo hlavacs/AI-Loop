@@ -256,4 +256,6 @@ Claude reviews more than task completion. It should reject or repair visible vio
 
 Transient Claude CLI transport/service failures are retried indefinitely by the controller instead of emitting `HUMAN_NEEDED`. This covers connection resets, timeouts, overload/rate-limit responses, and similar temporary service failures. Configure the wait behavior with `AI_LOOP_CLAUDE_TRANSIENT_BACKOFF_SECONDS` (default `5`) and `AI_LOOP_CLAUDE_TRANSIENT_MAX_BACKOFF_SECONDS` (default `60`). Missing binaries, promotion conflicts, non-transient CLI failures, and real Claude `HUMAN_NEEDED` decisions still surface to the human stream.
 
+Executable scene or asset load errors such as `scene load failed: error=io_error` are treated as likely working-directory or asset-path issues first. Claude should ask Codex to reproduce from the repository/worktree root, compare the failing launch directory, inspect expected asset paths, and repair path resolution or launch documentation before considering `HUMAN_NEEDED`.
+
 The controller should split work into small tasklets: one narrow objective, one clear stop point, and no bundled audit-plus-implementation milestones. Restart the workers after changing prompt code so running processes pick up the new tasklet policy.

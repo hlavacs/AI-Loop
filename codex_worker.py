@@ -177,6 +177,7 @@ Rules:
 - Keep code maintainable: avoid unrelated refactors, avoid unnecessary abstractions, and avoid duplicated logic when a local helper or established pattern exists.
 - Add or update tests only when useful for this task.
 - When running a target-project executable that may crash or open a platform crash dialog, run it through the ai-loop crash-safe wrapper when available: {crash_safe_runner} -- <executable> [args...]. Treat crashes as normal diagnostic output to fix, not as a reason for the user to click through an OS crash dialog.
+- If an executable reports a scene or asset load failure such as "scene load failed: error=io_error", compare behavior from the repository/worktree root and from the failing launch directory before assuming the asset is missing. Treat relative working-directory and asset path bugs as fixable code or launch-command issues.
 - Do not commit changes.
 - Do not merge branches.
 - If blocked by missing tools, sandboxing, permissions, or unclear requirements, stop and explain the blocker.

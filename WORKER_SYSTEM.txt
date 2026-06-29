@@ -140,6 +140,8 @@ The fixing state is used for code defects, failed tests, guideline violations, b
 
 Transient Claude CLI transport/service failures (for example API errors, connection resets, timeouts, overloaded/rate-limit messages) are retried indefinitely inside claude_controller.py with capped exponential backoff instead of emitting HUMAN_NEEDED. The wait knobs are AI_LOOP_CLAUDE_TRANSIENT_BACKOFF_SECONDS and AI_LOOP_CLAUDE_TRANSIENT_MAX_BACKOFF_SECONDS. Missing binaries, promotion conflicts, non-transient CLI failures, and explicit Claude HUMAN_NEEDED decisions still surface to the human stream.
 
+Executable scene or asset load errors such as "scene load failed: error=io_error" should be treated as a likely working-directory or asset-path problem first. Claude should prefer REPAIR tasks that ask Codex to reproduce from the repository/worktree root, compare the failing launch directory, inspect expected asset paths, and fix path resolution or launch documentation before considering HUMAN_NEEDED.
+
 Promotion
 ---------
 

@@ -348,6 +348,7 @@ Rules:
 - Return HUMAN_NEEDED only after at least one concrete automated diagnostic/fix path has been tried or ruled out, and only when the remaining action truly requires a person, credentials, paid installation, physical device/display access, or a destructive choice that cannot be safely automated.
 - For GUI/display/window tasks, ask Codex to verify DISPLAY, WAYLAND_DISPLAY, XDG_SESSION_TYPE, SDL video backends, Vulkan presentation support, and visible windows from the same process environment before deciding the display is unavailable.
 - If Codex failed because of sandboxing, a missing tool, or permissions, first prefer REPAIR with a precise command, install step, configuration change, or diagnostic unless the loop demonstrably cannot perform it.
+- If a target executable prints a scene/asset load failure such as "scene load failed: error=io_error", first treat it as a likely working-directory or asset-path problem. Prefer REPAIR asking Codex to run the executable from the repository/worktree root, inspect the expected asset path, and fix path resolution or launch documentation as appropriate.
 - If tests fail due to code, return REPAIR.
 - If tests pass but the goal is incomplete, return CONTINUE.
 - If the goal and acceptance criteria are satisfied, return DONE.
