@@ -138,6 +138,8 @@ When Claude returns REPAIR, the controller sets the job status to fixing, record
 
 The fixing state is used for code defects, failed tests, guideline violations, bad build wiring, fixable environment/configuration problems, recoverable promotion failures, and other blockers the loop can safely address. HUMAN_NEEDED should appear only after automated repair paths are exhausted or ruled out.
 
+Transient Claude CLI transport/service failures (for example API errors, connection resets, timeouts, overloaded/rate-limit messages) are retried indefinitely inside claude_controller.py with capped exponential backoff instead of emitting HUMAN_NEEDED. The wait knobs are AI_LOOP_CLAUDE_TRANSIENT_BACKOFF_SECONDS and AI_LOOP_CLAUDE_TRANSIENT_MAX_BACKOFF_SECONDS. Missing binaries, promotion conflicts, non-transient CLI failures, and explicit Claude HUMAN_NEEDED decisions still surface to the human stream.
+
 Promotion
 ---------
 

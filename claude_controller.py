@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import os
 import re
 import shutil
 import subprocess
@@ -30,6 +31,31 @@ OUTPUT_LIMIT = 20000
 INSTRUCTION_FILE_LIMIT = 10
 INSTRUCTION_FILE_BYTES = 12000
 CLAUDE_JSON_REMAKE_ATTEMPTS = 2
+CLAUDE_TRANSIENT_RETRY_BACKOFF_SECONDS = float(os.getenv("AI_LOOP_CLAUDE_TRANSIENT_BACKOFF_SECONDS", "5"))
+CLAUDE_TRANSIENT_RETRY_MAX_BACKOFF_SECONDS = float(
+    os.getenv("AI_LOOP_CLAUDE_TRANSIENT_MAX_BACKOFF_SECONDS", "60")
+)
+CLAUDE_TRANSIENT_FAILURE_PATTERNS = (
+    "api error",
+    "connection closed",
+    "connection lost",
+    "connection reset",
+    "econnreset",
+    "econnaborted",
+    "enotfound",
+    "etimedout",
+    "network",
+    "offline",
+    "socket hang up",
+    "temporary failure",
+    "temporarily unavailable",
+    "tls",
+    "timeout",
+    "timed out",
+    "overloaded",
+    "rate limit",
+    "try again",
+)
 
 
 class PromotionError(RuntimeError):
@@ -91,6 +117,16 @@ def parse_and_validate_decision(text: str) -> dict[str, Any]:
     validate_decision(decision)
     validate_json_round_trip(decision)
     return decision
+
+
+def is_transient_claude_cli_failure(output: str) -> bool:
+    lowered = output.lower()
+    return any(pattern in lowered for pattern in CLAUDE_TRANSIENT_FAILURE_PATTERNS)
+
+
+def claude_transient_retry_delay(attempt: int) -> float:
+    delay = CLAUDE_TRANSIENT_RETRY_BACKOFF_SECONDS * (2**attempt)
+    return min(delay, CLAUDE_TRANSIENT_RETRY_MAX_BACKOFF_SECONDS)
 
 
 def json_remake_prompt(original_prompt: str, invalid_output: str, error: Exception) -> str:
@@ -222,14 +258,41 @@ def run_claude(claude_bin: str, prompt: str) -> dict[str, Any]:
     for attempt in range(CLAUDE_JSON_REMAKE_ATTEMPTS + 1):
         label = "running Claude controller" if attempt == 0 else f"remaking Claude JSON decision attempt {attempt}"
         print(label)
-        proc = subprocess.run(
-            [claude_bin, "-p", "--output-format", "json", current_prompt],
-            text=True,
-            capture_output=True,
-            timeout=7200,
-        )
-        output = (proc.stdout + "\n" + proc.stderr).strip()
-        last_output = output
+        proc: subprocess.CompletedProcess[str] | None = None
+        output = ""
+        cli_attempt = 0
+        while True:
+            try:
+                proc = subprocess.run(
+                    [claude_bin, "-p", "--output-format", "json", current_prompt],
+                    text=True,
+                    capture_output=True,
+                    timeout=7200,
+                )
+                output = (proc.stdout + "\n" + proc.stderr).strip()
+                last_output = output
+                if proc.returncode == 0:
+                    break
+                if not is_transient_claude_cli_failure(output):
+                    break
+            except subprocess.TimeoutExpired as exc:
+                stdout = exc.stdout or ""
+                stderr = exc.stderr or ""
+                output = f"Claude CLI timed out after {exc.timeout:g}s\n{stdout}\n{stderr}".strip()
+                last_output = output
+                proc = None
+
+            delay = claude_transient_retry_delay(cli_attempt)
+            print(
+                "Claude CLI transient failure "
+                f"rc={proc.returncode if proc else 'timeout'}; retry {cli_attempt + 1} "
+                f"in {delay:g}s"
+            )
+            time.sleep(delay)
+            cli_attempt += 1
+
+        if proc is None:
+            raise RuntimeError("Claude CLI subprocess was not started")
         if proc.returncode != 0:
             return {
                 "action": "HUMAN_NEEDED",
