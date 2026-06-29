@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import platform
 import shutil
 import time
@@ -32,6 +33,7 @@ DEFAULT_ACCEPTANCE = [
     "The requested test command passes.",
     "No unrelated files are changed.",
 ]
+ACTIVE_STATUSES = {"planning", "queued", "implementing", "fixing"}
 
 
 def timestamp_id(prefix: str) -> str:
@@ -48,6 +50,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--max-iterations", type=int, default=50000, help="Maximum Codex iterations.")
     parser.add_argument("--base-ref", default="HEAD", help="Git ref used for the isolated worktree.")
     parser.add_argument("--no-worktree", action="store_true", help="Run directly in --repo instead of a Git worktree.")
+    parser.add_argument("--allow-parallel", action="store_true", help="Allow creating this job while another job is active.")
     parser.add_argument("--wait", action="store_true", help="Wait for the job to reach a terminal status.")
     parser.add_argument("--poll-interval", type=float, default=5.0, help="Seconds between status checks with --wait.")
     parser.add_argument("--timeout", type=int, default=0, help="Maximum seconds to wait with --wait; 0 waits forever.")
@@ -241,6 +244,55 @@ def detect_test_cmd(repo: Path, requested: str) -> str:
         return "pytest -q"
 
     return "true"
+
+
+def allow_parallel_jobs(args: argparse.Namespace) -> bool:
+    return bool(args.allow_parallel or os.environ.get("AI_LOOP_ALLOW_PARALLEL_JOBS") == "1")
+
+
+def active_jobs(db_path: Path) -> list[dict[str, str]]:
+    placeholders = ", ".join("?" for _ in ACTIVE_STATUSES)
+    with db.transaction(db_path) as conn:
+        rows = conn.execute(
+            f"""
+            SELECT id, status, updated_at, goal
+            FROM jobs
+            WHERE status IN ({placeholders})
+            ORDER BY updated_at DESC
+            """,
+            tuple(sorted(ACTIVE_STATUSES)),
+        ).fetchall()
+    return [
+        {
+            "id": str(row["id"]),
+            "status": str(row["status"]),
+            "updated_at": str(row["updated_at"]),
+            "goal": str(row["goal"]),
+        }
+        for row in rows
+    ]
+
+
+def print_active_job_warning(jobs: list[dict[str, str]]) -> None:
+    print("warning: an AI loop job is already active; refusing to start another job by default", file=sys.stderr)
+    print("active jobs:", file=sys.stderr)
+    for job in jobs[:10]:
+        goal = job["goal"].replace("\n", " ")
+        if len(goal) > 140:
+            goal = goal[:137] + "..."
+        print(
+            f"  - {job['id']}: {job['status']} updated_at={job['updated_at']} goal={goal}",
+            file=sys.stderr,
+        )
+    if len(jobs) > 10:
+        print(f"  - ... and {len(jobs) - 10} more", file=sys.stderr)
+    print("options:", file=sys.stderr)
+    print("  - inspect active jobs: ./ai_check_job.bash", file=sys.stderr)
+    print("  - watch the active job: ./ai_watch_job.bash", file=sys.stderr)
+    print("  - start anyway once: AI_LOOP_ALLOW_PARALLEL_JOBS=1 ./ai_job.bash <repo-path> \"<job-description>\"", file=sys.stderr)
+    print("  - start anyway with Python: python3 start_job.py --allow-parallel --repo <repo-path> --goal \"<job-description>\"", file=sys.stderr)
+    print("  - delete an old job record: ./ai_delete_job.bash <job-id>", file=sys.stderr)
+    print("  - clear all job records: ./ai_clear_db.bash --yes", file=sys.stderr)
 
 
 def dirty_paths(repo: Path) -> list[tuple[str, str]]:
@@ -497,6 +549,11 @@ def main() -> int:
     test_cmd = detect_test_cmd(repo, args.test_cmd)
 
     db.init_db(settings.db_path)
+    current_active_jobs = active_jobs(settings.db_path)
+    if current_active_jobs and not allow_parallel_jobs(args):
+        print_active_job_warning(current_active_jobs)
+        return 2
+
     job_id = timestamp_id("J")
     constraints = [*DEFAULT_CONSTRAINTS, *args.constraint]
     acceptance = [*DEFAULT_ACCEPTANCE, *args.acceptance]

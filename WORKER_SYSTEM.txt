@@ -74,10 +74,10 @@ Main Components
 ---------------
 
 start_job.py
-Creates a job. Job ids use the form JYYYYMMDD-HHMMSS-ffffff. Before submitting the job, it stages and commits all current changes in the target repo with a message like "AI loop snapshot before job <job_id>" when there is anything to commit. It then writes the job to SQLite, optionally creates a Git worktree and branch, overlays any remaining checkout changes into the worktree, and sends a PLAN message to Redis stream ai:claude:requests. The default maximum iteration count is 50000. With --wait, it waits indefinitely by default; pass --timeout with a positive number of seconds to impose a foreground wait limit. If no test command is supplied, it infers a generic project command: CMake presets first, then plain CMake, then npm test, then pytest for Python projects, and finally true when no known runner is detected.
+Creates a job. Job ids use the form JYYYYMMDD-HHMMSS-ffffff. By default only one active job is allowed in the system. Active statuses are planning, queued, implementing, and fixing. If any active job exists, start_job.py refuses to create another job before making a target-repo snapshot commit or worktree, prints the active job id/status/goal, and shows options for watching the active job, starting in parallel with --allow-parallel or AI_LOOP_ALLOW_PARALLEL_JOBS=1, deleting one old job with ai_delete_job.bash, or clearing all jobs with ai_clear_db.bash --yes. When job creation is allowed, it stages and commits all current changes in the target repo with a message like "AI loop snapshot before job <job_id>" when there is anything to commit. It then writes the job to SQLite, optionally creates a Git worktree and branch, overlays any remaining checkout changes into the worktree, and sends a PLAN message to Redis stream ai:claude:requests. The default maximum iteration count is 50000. With --wait, it waits indefinitely by default; pass --timeout with a positive number of seconds to impose a foreground wait limit. If no test command is supplied, it infers a generic project command: CMake presets first, then plain CMake, then npm test, then pytest for Python projects, and finally true when no known runner is detected.
 
 claude_controller.py
-Acts as planner/reviewer. It consumes PLAN and REVIEW messages from ai:claude:requests. For PLAN, it creates one tiny Codex tasklet. For REVIEW, it inspects Codex output, test output, git diff, job history, code quality, project guideline compliance, local architecture/style patterns, scope control, maintainability, and proportional test coverage, then decides CONTINUE, REPAIR, DONE, or HUMAN_NEEDED. HUMAN_NEEDED is a last resort: Claude should first analyze the blocker, identify solution paths, and choose REPAIR whenever a safe automated diagnostic or fix exists. Task ids use the form TYYYYMMDD-HHMMSS-ffffff. The controller stores the job's current test command on each new task; Claude may discuss tests in its JSON, but the persisted validation command is the job-level command. If Claude echoes stale test acceptance text from an earlier command, the controller replaces it with the current job test command. On DONE, it promotes the successful worktree changes back to the target repo before marking the job done.
+Acts as planner/reviewer. It consumes PLAN and REVIEW messages from ai:claude:requests. For PLAN, it creates one tiny Codex tasklet. For REVIEW, it inspects Codex output, test output, git diff, job history, code quality, project guideline compliance, local architecture/style patterns, scope control, maintainability, and proportional test coverage, then decides CONTINUE, REPAIR, DONE, or HUMAN_NEEDED. HUMAN_NEEDED is a last resort: Claude should first analyze the blocker, identify solution paths, and choose REPAIR whenever a safe automated diagnostic or fix exists. Task ids use the form TYYYYMMDD-HHMMSS-ffffff. The controller stores the job's current test command on each new task; Claude may discuss tests in its JSON, but the persisted validation command is the job-level command. If Claude echoes stale test acceptance text from an earlier command, the controller replaces it with the current job test command. Claude decision JSON is checked before it is accepted: the controller extracts the decision object, validates the required fields, serializes/parses it again as a round-trip guard, and if parsing or validation fails it asks Claude to remake the same decision as valid JSON only. On DONE, it promotes the successful worktree changes back to the target repo before marking the job done.
 
 codex_worker.py
 Acts as implementation worker. It consumes tasks from ai:codex:tasks, runs codex exec in the job worktree, re-reads the task row immediately before validation, runs the current task test command, captures git status/diff/output, writes a run record to SQLite, then sends a REVIEW request back to Claude. The captured diff includes untracked new files so Claude can review newly created code. Git porcelain output is parsed without stripping significant leading spaces, so changed-file paths remain accurate. Codex should follow project instruction files when present, but missing instruction files are not a blocker unless the job explicitly requires them. If the original job text mentions file-like guidance paths, Codex is given the currently existing paths and must re-read them at task start.
@@ -110,6 +110,8 @@ ai:codex:tasks      implementation tasks for Codex
 ai:done             completed jobs
 ai:human            jobs needing human intervention
 ai:dead             worker/controller failures
+
+Every Redis message payload is JSON-encoded through ai_loop/queues.py. Before a payload is published, the sender serializes it, parses it back, and rejects it if the round trip changes the value. When a receiver reads a payload, it parses and verifies that the payload is a JSON object before using it. This guards both directions of the Claude/Codex queue boundary against malformed JSON.
 
 Flow
 ----
@@ -218,6 +220,13 @@ Clears log-like history while keeping job/task records:
 ./ai_clear_log.bash --yes
 
 It deletes rows from runs, decisions, and events, and truncates ./logs/*.log. It does not delete jobs or tasks.
+
+ai_delete_job.bash
+Deletes one job record and its dependent task/run/decision rows from SQLite:
+
+./ai_delete_job.bash <job-id>
+
+It prints the previous status and worktree path. It does not delete worktree folders; use ai_remove_worktrees.bash for worktree cleanup.
 
 ai_check_job.bash
 Checks whether jobs exist and prints job status, latest task diagnostics, active job details, a rough percent-complete estimate, and an estimated remaining time:

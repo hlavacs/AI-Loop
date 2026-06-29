@@ -29,6 +29,7 @@ ACTIONS = {"CONTINUE", "REPAIR", "DONE", "HUMAN_NEEDED"}
 OUTPUT_LIMIT = 20000
 INSTRUCTION_FILE_LIMIT = 10
 INSTRUCTION_FILE_BYTES = 12000
+CLAUDE_JSON_REMAKE_ATTEMPTS = 2
 
 
 class PromotionError(RuntimeError):
@@ -76,6 +77,38 @@ def validate_decision(decision: dict[str, Any]) -> None:
             raise ValueError("next_task.constraints must be a list")
         if not isinstance(next_task["acceptance"], list):
             raise ValueError("next_task.acceptance must be a list")
+
+
+def validate_json_round_trip(payload: dict[str, Any]) -> None:
+    text = json.dumps(payload, sort_keys=True)
+    parsed = json.loads(text)
+    if parsed != payload:
+        raise ValueError("decision JSON failed round-trip validation")
+
+
+def parse_and_validate_decision(text: str) -> dict[str, Any]:
+    decision = extract_json(text)
+    validate_decision(decision)
+    validate_json_round_trip(decision)
+    return decision
+
+
+def json_remake_prompt(original_prompt: str, invalid_output: str, error: Exception) -> str:
+    return f"""Your previous response could not be accepted because it was not valid decision JSON.
+
+JSON/parser/schema error:
+{error}
+
+Invalid response tail:
+{invalid_output[-6000:]}
+
+Remake the response now. Return one valid JSON object only, with no prose before or after it.
+The JSON must parse with json.loads and must satisfy this schema:
+{schema_text()}
+
+Use the same planning/review context as before:
+{original_prompt}
+"""
 
 
 def text_fields(*items: Any) -> str:
@@ -183,23 +216,38 @@ def run_claude(claude_bin: str, prompt: str) -> dict[str, Any]:
             "history_summary": "Claude controller could not run because the Claude CLI is missing.",
         }
 
-    print("running Claude controller")
-    proc = subprocess.run(
-        [claude_bin, "-p", "--output-format", "json", prompt],
-        text=True,
-        capture_output=True,
-        timeout=7200,
+    current_prompt = prompt
+    last_output = ""
+    last_error: Exception | None = None
+    for attempt in range(CLAUDE_JSON_REMAKE_ATTEMPTS + 1):
+        label = "running Claude controller" if attempt == 0 else f"remaking Claude JSON decision attempt {attempt}"
+        print(label)
+        proc = subprocess.run(
+            [claude_bin, "-p", "--output-format", "json", current_prompt],
+            text=True,
+            capture_output=True,
+            timeout=7200,
+        )
+        output = (proc.stdout + "\n" + proc.stderr).strip()
+        last_output = output
+        if proc.returncode != 0:
+            return {
+                "action": "HUMAN_NEEDED",
+                "reason": f"Claude CLI failed with rc={proc.returncode}: {output[-4000:]}",
+                "history_summary": "Claude controller failed before producing a usable decision.",
+            }
+        try:
+            return parse_and_validate_decision(proc.stdout)
+        except (json.JSONDecodeError, ValueError) as exc:
+            last_error = exc
+            if attempt >= CLAUDE_JSON_REMAKE_ATTEMPTS:
+                break
+            current_prompt = json_remake_prompt(prompt, output, exc)
+
+    raise ValueError(
+        "Claude did not produce valid decision JSON after "
+        f"{CLAUDE_JSON_REMAKE_ATTEMPTS + 1} attempts: {last_error}; output tail={last_output[-4000:]!r}"
     )
-    output = (proc.stdout + "\n" + proc.stderr).strip()
-    if proc.returncode != 0:
-        return {
-            "action": "HUMAN_NEEDED",
-            "reason": f"Claude CLI failed with rc={proc.returncode}: {output[-4000:]}",
-            "history_summary": "Claude controller failed before producing a usable decision.",
-        }
-    decision = extract_json(proc.stdout)
-    validate_decision(decision)
-    return decision
 
 
 def schema_text() -> str:

@@ -35,15 +35,28 @@ def ensure_group(client: redis.Redis, stream: str, group: str) -> None:
 
 
 def encode(payload: dict[str, Any]) -> str:
-    return json.dumps(payload, sort_keys=True)
+    text = json.dumps(payload, sort_keys=True)
+    parsed = json.loads(text)
+    if parsed != payload:
+        raise ValueError("outbound JSON payload failed round-trip validation")
+    return text
 
 
 def decode(value: str) -> dict[str, Any]:
-    return json.loads(value)
+    try:
+        payload = json.loads(value)
+    except json.JSONDecodeError as exc:
+        preview = value[:1000]
+        raise ValueError(f"inbound JSON payload is invalid: {exc}; payload prefix={preview!r}") from exc
+    if not isinstance(payload, dict):
+        raise ValueError(f"inbound JSON payload must be an object, got {type(payload).__name__}")
+    return payload
 
 
 def xadd_json(client: redis.Redis, stream: str, field: str, payload: dict[str, Any]) -> str:
-    return client.xadd(stream, {field: encode(payload)})
+    encoded = encode(payload)
+    decode(encoded)
+    return client.xadd(stream, {field: encoded})
 
 
 def read_group(client: redis.Redis, group: str, consumer: str, stream: str):
@@ -54,4 +67,3 @@ def read_group(client: redis.Redis, group: str, consumer: str, stream: str):
         count=1,
         block=READ_BLOCK_MS,
     )
-

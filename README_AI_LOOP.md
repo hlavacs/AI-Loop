@@ -134,6 +134,17 @@ python start_job.py \
 
 With `--wait`, the command prints status updates until the job reaches `done`, `human_needed`, or `dead`, then prints inspect commands. It waits indefinitely by default; pass `--timeout <seconds>` with a positive value to impose a foreground wait limit. Omit `--wait` to submit the job asynchronously.
 
+By default, ai-loop allows only one active job in the system. Active means `planning`, `queued`, `implementing`, or `fixing`. If another active job exists, `start_job.py` refuses to create a new one before making any target-repo snapshot commit or worktree, prints the active job id/status/goal, and shows options:
+
+```bash
+./ai_check_job.bash
+./ai_watch_job.bash
+AI_LOOP_ALLOW_PARALLEL_JOBS=1 ./ai_job.bash /path/to/repo "Second job"
+python3 start_job.py --allow-parallel --repo /path/to/repo --goal "Second job"
+./ai_delete_job.bash <job-id>
+./ai_clear_db.bash --yes
+```
+
 By default this creates:
 
 - SQLite job state in `./ai_loop.sqlite3`
@@ -211,6 +222,14 @@ Clear run, decision, and event log rows, and truncate process log files, while k
 ```
 
 The process log files are created by `./ai_run_claude.bash`, `./ai_run_codex.bash`, and `./ai_run_watcher.bash`. Restart already-running workers with those wrappers to begin writing `./logs/*.log`. To wipe the entire job database, use `./ai_clear_db.bash --yes` instead.
+
+Delete one job record from SQLite:
+
+```bash
+./ai_delete_job.bash <job-id>
+```
+
+This removes the durable job/task/run/decision rows for that job. It does not delete worktree folders; use `./ai_remove_worktrees.bash` for worktree cleanup.
 
 ## Loop Behavior
 

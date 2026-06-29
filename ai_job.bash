@@ -35,4 +35,8 @@ if [ "${AI_LOOP_TEST_CMD:-}" != "" ]; then
   cmd+=(--test-cmd "$AI_LOOP_TEST_CMD")
 fi
 
+if [ "${AI_LOOP_ALLOW_PARALLEL_JOBS:-}" = "1" ]; then
+  cmd+=(--allow-parallel)
+fi
+
 "${cmd[@]}"
