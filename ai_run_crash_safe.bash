@@ -60,9 +60,8 @@ if [ "$(uname -s)" = "Darwin" ] && command -v lldb >/dev/null 2>&1; then
   lldb_cmd=(
     lldb
     --batch
-    -o "settings set target.process.disable-aslr false"
     -o "run"
-    -o "thread backtrace all"
+    -k "thread backtrace all"
     -- "$exe"
   )
   if [ "${#timeout_cmd[@]}" -gt 0 ]; then
