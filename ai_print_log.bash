@@ -57,8 +57,8 @@ python3 - "$db_path" "$job_id" "$limit" <<'PY'
 import json
 import sqlite3
 import sys
-from datetime import datetime, timezone
 from textwrap import shorten
+from ai_loop.progress import estimate_progress
 
 db_path = sys.argv[1]
 job_id = sys.argv[2] or None
@@ -125,11 +125,6 @@ def describe_status(status, index=0):
     variants = descriptions.get(status, ["The loop is moving through this job state."])
     return variants[index % len(variants)]
 
-def parse_time(value):
-    if not value:
-        return None
-    return datetime.fromisoformat(value)
-
 def duration_text(seconds):
     if seconds is None:
         return "unknown"
@@ -157,21 +152,19 @@ def latest_task(target_job_id):
         (target_job_id,),
     ).fetchone()
 
-def estimate_progress(job):
-    if job["status"] == "done":
-        return 100, 0
+def job_progress(job):
     task = latest_task(job["id"])
-    active_credit = 0.5 if task is not None and task["status"] in {"queued", "running"} and job["task_count"] > job["run_count"] else 0.0
-    work_units = int(job["run_count"]) + active_credit
-    percent = max(1, min(95, round(100 * work_units / (work_units + 3))))
-    if job["status"] in {"human_needed", "dead"}:
-        percent = min(percent, 95)
-    created_at = parse_time(job["created_at"])
-    if created_at is None:
-        return percent, None
-    elapsed = max(0, int((datetime.now(timezone.utc) - created_at).total_seconds()))
-    remaining = round(elapsed * (100 - percent) / percent)
-    return percent, remaining
+    result = estimate_progress(
+        conn,
+        job_id=job["id"],
+        status=job["status"],
+        created_at=job["created_at"],
+        run_count=int(job["run_count"]),
+        task_count=int(job["task_count"]),
+        has_active_task=task is not None and task["status"] in {"queued", "running"},
+    )
+    conn.commit()
+    return result
 
 where = "WHERE job_id = ?" if job_id else ""
 params = (job_id,) if job_id else ()
@@ -203,7 +196,7 @@ if job_id:
     if job is None:
         print(f"job {job_id} is not in the system", file=sys.stderr)
         sys.exit(1)
-    percent, remaining = estimate_progress(job)
+    percent, remaining = job_progress(job)
     print(f"database: {db_path}")
     print(f"job: {job['id']}")
     print(f"status: {job['status']} - {describe_status(job['status'])}")

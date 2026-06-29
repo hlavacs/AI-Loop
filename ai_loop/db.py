@@ -127,6 +127,15 @@ def init_db(db_path: str | Path) -> None:
                 created_at TEXT NOT NULL
             );
 
+            CREATE TABLE IF NOT EXISTS progress_estimates (
+                job_id TEXT PRIMARY KEY REFERENCES jobs(id) ON DELETE CASCADE,
+                last_percent INTEGER NOT NULL,
+                last_progress_at TEXT NOT NULL,
+                smoothed_rate REAL,
+                predicted_end_at TEXT,
+                updated_at TEXT NOT NULL
+            );
+
             CREATE INDEX IF NOT EXISTS idx_tasks_job_iteration ON tasks(job_id, iteration);
             CREATE INDEX IF NOT EXISTS idx_runs_job_iteration ON runs(job_id, iteration);
             CREATE INDEX IF NOT EXISTS idx_events_job ON events(job_id, created_at);
@@ -393,4 +402,3 @@ def add_event(
         "INSERT INTO events (job_id, kind, payload_json, created_at) VALUES (?, ?, ?, ?)",
         (job_id, kind, to_json(payload), utc_now()),
     )
-

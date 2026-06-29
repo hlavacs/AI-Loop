@@ -16,6 +16,7 @@ from redis.exceptions import ConnectionError, TimeoutError
 
 from ai_loop import db
 from ai_loop.config import CLAUDE_REQUEST_STREAM, load_settings
+from ai_loop.progress import estimate_progress
 from ai_loop.queues import redis_client, xadd_json
 
 
@@ -354,11 +355,22 @@ def job_state(db_path: Path, job_id: str) -> dict[str, str | int | None]:
         task = db.latest_task(conn, job_id)
         task_count = conn.execute("SELECT COUNT(*) FROM tasks WHERE job_id = ?", (job_id,)).fetchone()[0]
         run_count = conn.execute("SELECT COUNT(*) FROM runs WHERE job_id = ?", (job_id,)).fetchone()[0]
+        percent, remaining = estimate_progress(
+            conn,
+            job_id=job_id,
+            status=str(job["status"]),
+            created_at=str(job["created_at"]),
+            run_count=int(run_count),
+            task_count=int(task_count),
+            has_active_task=task is not None and str(task["status"]) in {"queued", "running"},
+        )
     state: dict[str, str | int | None] = {
         "status": str(job["status"]),
         "created_at": str(job["created_at"]),
         "task_count": int(task_count),
         "run_count": int(run_count),
+        "percent": percent,
+        "remaining": remaining,
     }
     if task is not None:
         state.update(
@@ -401,27 +413,6 @@ def duration_text(seconds: int | None) -> str:
     return f"{days}d{hours % 24}h"
 
 
-def estimate_progress(state: dict[str, str | int | None]) -> tuple[int, int | None]:
-    status = str(state["status"])
-    if status == "done":
-        return 100, 0
-
-    run_count = int(state.get("run_count") or 0)
-    task_count = int(state.get("task_count") or 0)
-    active_credit = 0.5 if task_count > run_count else 0.0
-    work_units = run_count + active_credit
-    percent = max(1, min(95, round(100 * work_units / (work_units + 3))))
-    if status in {"human_needed", "dead"}:
-        percent = min(percent, 95)
-
-    created_at = state.get("created_at")
-    if not created_at or percent <= 0:
-        return percent, None
-    elapsed = max(0, int((datetime.now(timezone.utc) - datetime.fromisoformat(str(created_at))).total_seconds()))
-    remaining = round(elapsed * (100 - percent) / percent)
-    return percent, remaining
-
-
 def print_status_update(
     job_id: str,
     state: dict[str, str | int | None],
@@ -430,7 +421,8 @@ def print_status_update(
 ) -> None:
     print(f"job {job_id} status update")
     print(f"  - status: {state['status']} step {status_count} - {status_note}")
-    percent, remaining = estimate_progress(state)
+    percent = int(state["percent"] or 0)
+    remaining = int(state["remaining"]) if state["remaining"] is not None else None
     print(f"  - estimate: {percent}% done, about {duration_text(remaining)} remaining")
 
     task_id = state.get("task_id")

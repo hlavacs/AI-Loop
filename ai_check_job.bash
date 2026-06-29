@@ -37,6 +37,7 @@ python3 - "$db_path" "$job_id" <<'PY'
 import sqlite3
 import sys
 from datetime import datetime, timezone
+from ai_loop.progress import estimate_progress
 
 db_path = sys.argv[1]
 job_id = sys.argv[2]
@@ -117,25 +118,18 @@ def duration_text(seconds):
     days = hours // 24
     return f"{days}d {hours % 24}h"
 
-def estimate_progress(job, task=None):
-    status = job["status"]
-    if status == "done":
-        return 100, 0
-
-    run_count = int(job["run_count"])
-    task_count = int(job["task_count"])
-    active_credit = 0.5 if task is not None and task["status"] in {"queued", "running"} and task_count > run_count else 0.0
-    work_units = run_count + active_credit
-    percent = max(1, min(95, round(100 * work_units / (work_units + 3))))
-    if status in {"human_needed", "dead"}:
-        percent = min(percent, 95)
-
-    created_at = parse_time(job["created_at"])
-    if created_at is None or percent <= 0:
-        return percent, None
-    elapsed = max(0, int((datetime.now(timezone.utc) - created_at).total_seconds()))
-    remaining = round(elapsed * (100 - percent) / percent)
-    return percent, remaining
+def job_progress(job, task=None):
+    result = estimate_progress(
+        conn,
+        job_id=job["id"],
+        status=job["status"],
+        created_at=job["created_at"],
+        run_count=int(job["run_count"]),
+        task_count=int(job["task_count"]),
+        has_active_task=task is not None and task["status"] in {"queued", "running"},
+    )
+    conn.commit()
+    return result
 
 def latest_task(job_id):
     return conn.execute(
@@ -209,7 +203,7 @@ if job_id:
     print(f"tasks: {job['task_count']}")
     print(f"runs: {job['run_count']}")
     task = latest_task(job["id"])
-    percent, remaining = estimate_progress(job, task)
+    percent, remaining = job_progress(job, task)
     print(f"estimate: {percent}% done, about {duration_text(remaining)} remaining")
     print(f"worktree: {job['worktree_path']}")
     print(f"goal: {job['goal']}")
@@ -249,7 +243,7 @@ for index, row in enumerate(rows):
     print(f"status: {row['status']} - {describe_status(row['status'], index)}")
     print(f"updated_at: {row['updated_at']}")
     task = latest_task(row["id"])
-    percent, remaining = estimate_progress(row, task)
+    percent, remaining = job_progress(row, task)
     print(f"estimate: {percent}% done, about {duration_text(remaining)} remaining")
     print(f"goal: {row['goal']}")
     print()
