@@ -69,6 +69,15 @@ not force every target project through pytest. If `AI_LOOP_TEST_CMD` is unset,
 CMake presets first, then plain CMake, then `npm test`, then `pytest -q` for
 Python projects, and finally `true` when no known runner is detected.
 
+The wrapper accepts either an explicit repository plus job description, or a
+single text file. With the text-file form, the file contents are used as the job
+description and the file's containing directory is used as the target repository:
+
+```bash
+./ai_job.bash /path/to/repo "Implement the requested feature."
+./ai_job.bash /path/to/repo/job.txt
+```
+
 Set `AI_LOOP_TEST_CMD` to override that detection for a target repository.
 
 By default Codex runs with:
