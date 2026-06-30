@@ -1,12 +1,12 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-if [ "$#" -ne 1 ]; then
-  echo "usage: $0 <job-id>" >&2
+if [ "$#" -gt 1 ]; then
+  echo "usage: $0 [job-id]" >&2
   exit 2
 fi
 
-job_id="$1"
+job_id="${1:-}"
 
 cd "$(dirname "${BASH_SOURCE[0]}")"
 source ./ai_loop_python.bash
@@ -26,15 +26,34 @@ import sys
 
 db_path = sys.argv[1]
 job_id = sys.argv[2]
+active_statuses = ("implementing", "fixing", "queued", "planning")
 
 conn = sqlite3.connect(db_path)
 conn.row_factory = sqlite3.Row
 conn.execute("PRAGMA foreign_keys=ON")
 
-job = conn.execute(
-    "SELECT id, status, worktree_path, goal FROM jobs WHERE id = ?",
-    (job_id,),
-).fetchone()
+if not job_id:
+    placeholders = ", ".join("?" for _ in active_statuses)
+    job = conn.execute(
+        f"""
+        SELECT id, status, worktree_path, goal
+        FROM jobs
+        WHERE status IN ({placeholders})
+        ORDER BY updated_at DESC
+        LIMIT 1
+        """,
+        active_statuses,
+    ).fetchone()
+    if job is None:
+        print("no active job is in the system", file=sys.stderr)
+        sys.exit(1)
+    job_id = str(job["id"])
+else:
+    job = conn.execute(
+        "SELECT id, status, worktree_path, goal FROM jobs WHERE id = ?",
+        (job_id,),
+    ).fetchone()
+
 if job is None:
     print(f"job {job_id} is not in the system", file=sys.stderr)
     sys.exit(1)

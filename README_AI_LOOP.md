@@ -141,7 +141,7 @@ By default, ai-loop allows only one active job in the system. Active means `plan
 ./ai_watch_job.bash
 AI_LOOP_ALLOW_PARALLEL_JOBS=1 ./ai_job.bash /path/to/repo "Second job"
 python3 start_job.py --allow-parallel --repo /path/to/repo --goal "Second job"
-./ai_delete_job.bash <job-id>
+./ai_delete_job.bash [job-id]
 ./ai_clear_db.bash --yes
 ```
 
@@ -226,10 +226,17 @@ The process log files are created by `./ai_run_claude.bash`, `./ai_run_codex.bas
 Delete one job record from SQLite:
 
 ```bash
-./ai_delete_job.bash <job-id>
+./ai_delete_job.bash [job-id]
 ```
 
-This removes the durable job/task/run/decision rows for that job. It does not delete worktree folders; use `./ai_remove_worktrees.bash` for worktree cleanup.
+This removes the durable job/task/run/decision rows for that job. If no job id is given, it deletes the newest active job (`planning`, `queued`, `implementing`, or `fixing`). It does not delete worktree folders; use `./ai_remove_worktrees.bash` for worktree cleanup.
+
+Reset the local loop by deleting active job records, clearing the database, and restarting the controller, worker, and watcher:
+
+```bash
+./ai_reset_loop.bash --dry-run
+./ai_reset_loop.bash --yes
+```
 
 ## Loop Behavior
 

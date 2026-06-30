@@ -228,9 +228,15 @@ It deletes rows from runs, decisions, and events, and truncates ./logs/*.log. It
 ai_delete_job.bash
 Deletes one job record and its dependent task/run/decision rows from SQLite:
 
-./ai_delete_job.bash <job-id>
+./ai_delete_job.bash [job-id]
 
-It prints the previous status and worktree path. It does not delete worktree folders; use ai_remove_worktrees.bash for worktree cleanup.
+If no job id is given, it deletes the newest active job: planning, queued, implementing, or fixing. It prints the previous status and worktree path. It does not delete worktree folders; use ai_remove_worktrees.bash for worktree cleanup.
+
+ai_reset_loop.bash
+Stops controller, worker, and watcher; deletes active job records; clears the database; and starts controller, worker, and watcher again:
+
+./ai_reset_loop.bash --dry-run
+./ai_reset_loop.bash --yes
 
 ai_check_job.bash
 Checks whether jobs exist and prints job status, latest task diagnostics, active job details, a rough percent-complete estimate, and an estimated remaining time:
