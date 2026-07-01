@@ -74,7 +74,7 @@ Main Components
 ---------------
 
 start_job.py
-Creates a job. ai_job.bash can submit either ./ai_job.bash <repo-path> <job-description> or ./ai_job.bash <job-description-file>; with the one-file form it reads the file contents as the goal and uses the file's containing directory as the target repo. Job ids use the form JYYYYMMDD-HHMMSS-ffffff. By default only one active job is allowed in the system. Active statuses are planning, queued, implementing, and fixing. If any active job exists, start_job.py refuses to create another job before making a target-repo snapshot commit or worktree, prints the active job id/status/goal, and shows options for watching the active job, starting in parallel with --allow-parallel or AI_LOOP_ALLOW_PARALLEL_JOBS=1, deleting one old job with ai_delete_job.bash, or clearing all jobs with ai_clear_db.bash --yes. When job creation is allowed, it stages and commits all current changes in the target repo with a message like "AI loop snapshot before job <job_id>" when there is anything to commit. It then writes the job to SQLite, optionally creates a Git worktree and branch, overlays any remaining checkout changes into the worktree, and sends a PLAN message to Redis stream ai:claude:requests. The default maximum iteration count is 50000. With --wait, it waits indefinitely by default; pass --timeout with a positive number of seconds to impose a foreground wait limit. If no test command is supplied, it infers a generic project command: CMake presets first, then plain CMake, then npm test, then pytest for Python projects, and finally true when no known runner is detected.
+Creates a job. ai_job.bash can submit either ./ai_job.bash <repo-path> <job-description> or ./ai_job.bash <job-description-file>; with the one-file form it reads the file contents as the goal and uses the file's containing directory as the target repo. Job ids use the form JYYYYMMDD-HHMMSS-ffffff. By default each job gets its own Claude controller, Codex worker, and watcher, with per-job Redis consumer groups, PID files under ./run/jobs/<job_id>, and process logs under ./logs/jobs/<job_id>. Multiple active jobs can therefore run concurrently. Set AI_LOOP_SINGLE_ACTIVE_JOB=1 to restore the old single-active-job guard; with that guard enabled, --allow-parallel or AI_LOOP_ALLOW_PARALLEL_JOBS=1 starts another job anyway. When job creation is allowed, it stages and commits all current changes in the target repo with a message like "AI loop snapshot before job <job_id>" when there is anything to commit. It then writes the job to SQLite, optionally creates a Git worktree and branch, overlays any remaining checkout changes into the worktree, creates the job-scoped consumer groups, starts the job-scoped process trio, and sends a scoped PLAN message to Redis stream ai:claude:requests. The default maximum iteration count is 50000. With --wait, it waits indefinitely by default; pass --timeout with a positive number of seconds to impose a foreground wait limit. If no test command is supplied, it infers a generic project command: CMake presets first, then plain CMake, then npm test, then pytest for Python projects, and finally true when no known runner is detected.
 
 claude_controller.py
 Acts as planner/reviewer. It consumes PLAN and REVIEW messages from ai:claude:requests. For PLAN, it creates one tiny Codex tasklet. For REVIEW, it inspects Codex output, test output, git diff, job history, code quality, project guideline compliance, local architecture/style patterns, scope control, maintainability, and proportional test coverage, then decides CONTINUE, REPAIR, DONE, or HUMAN_NEEDED. HUMAN_NEEDED is a last resort: Claude should first analyze the blocker, identify solution paths, and choose REPAIR whenever a safe automated diagnostic or fix exists. Task ids use the form TYYYYMMDD-HHMMSS-ffffff. The controller stores the job's current test command on each new task; Claude may discuss tests in its JSON, but the persisted validation command is the job-level command. If Claude echoes stale test acceptance text from an earlier command, the controller replaces it with the current job test command. Claude decision JSON is checked before it is accepted: the controller extracts the decision object, validates the required fields, serializes/parses it again as a round-trip guard, and if parsing or validation fails it asks Claude to remake the same decision as valid JSON only. On DONE, it promotes the successful worktree changes back to the target repo before marking the job done.
@@ -178,98 +178,217 @@ This refresh mechanism is generic. It is triggered by mentioned file paths and e
 Run Scripts
 -----------
 
-ai_loopctl.bash
-Controls the loop processes in the background. Supported commands:
+All Bash scripts in the repository are listed below. Scripts are run from the ai-loop repository root unless otherwise noted.
 
-./ai_loopctl.bash start
-./ai_loopctl.bash stop
-./ai_loopctl.bash restart
-./ai_loopctl.bash status
+ai_job.bash
+Submits a new job through start_job.py and waits for completion. It accepts either a repo path plus inline goal text, or a single job-description file. In the file form, the file's directory is used as the repo and the file contents become the goal. It adds default constraints and acceptance criteria, uses AI_LOOP_TEST_CMD when set, and passes --allow-parallel when AI_LOOP_ALLOW_PARALLEL_JOBS=1.
 
-It starts the Claude controller, Codex worker, and watcher through the wrapper scripts. It stores PID files in ./run by default, or in AI_LOOP_RUNTIME_DIR if set. It can also detect direct python claude_controller.py, codex_worker.py, and watcher.py processes when reporting status or stopping.
+Parameters:
+./ai_job.bash <repo-path> <job-description>
+./ai_job.bash <job-description-file>
 
-ai_run_claude.bash
-Starts the Claude controller. It appends stdout/stderr to ./logs/claude_controller.log by default, or AI_LOOP_LOG_DIR/claude_controller.log if AI_LOOP_LOG_DIR is set.
-
-ai_run_codex.bash
-Starts the Codex worker with sandbox bypass enabled by default. It appends stdout/stderr to ./logs/codex_worker.log by default, or AI_LOOP_LOG_DIR/codex_worker.log if AI_LOOP_LOG_DIR is set.
-
-ai_run_watcher.bash
-Starts terminal event watcher. It appends stdout/stderr to ./logs/watcher.log by default, or AI_LOOP_LOG_DIR/watcher.log if AI_LOOP_LOG_DIR is set.
-
-ai_run_crash_safe.bash
-Runs a target-project executable in a crash-safe way:
-
-./ai_run_crash_safe.bash -- <executable> [args...]
-./ai_run_crash_safe.bash --timeout 120 -- <executable> [args...]
-
-It is intended for runtime validation steps where the target program may crash or hang. On macOS, it uses batch lldb when available to capture crashes without requiring a user to dismiss a crash dialog. On other systems it still applies timeout/core-dump safeguards when available.
-
-Log and Status Helpers
-----------------------
-
-ai_print_log.bash
-Prints durable SQLite history, the job progress/time estimate when a job is selected, and tails process log files:
-
-./ai_print_log.bash
-./ai_print_log.bash --job <job_id> --limit 50
-./ai_print_log.bash --job <job_id> --limit 50 --no-process-logs
-
-It reads jobs, runs, decisions, and events from ai_loop.sqlite3, then tails ./logs/*.log unless --no-process-logs is supplied.
-
-ai_clear_log.bash
-Clears log-like history while keeping job/task records:
-
-./ai_clear_log.bash --dry-run
-./ai_clear_log.bash --yes
-
-It deletes rows from runs, decisions, and events, and truncates ./logs/*.log. It does not delete jobs or tasks.
-
-ai_delete_job.bash
-Deletes one job record and its dependent task/run/decision rows from SQLite:
-
-./ai_delete_job.bash [job-id]
-
-If no job id is given, it deletes the newest active job: planning, queued, implementing, or fixing. It prints the previous status and worktree path. It does not delete worktree folders; use ai_remove_worktrees.bash for worktree cleanup.
-
-ai_reset_loop.bash
-Stops controller, worker, and watcher; deletes active job records; clears the database; and starts controller, worker, and watcher again:
-
-./ai_reset_loop.bash --dry-run
-./ai_reset_loop.bash --yes
+Examples:
+./ai_job.bash /path/to/project "Add FPS to the ImGui overlay."
+AI_LOOP_TEST_CMD="ctest --test-dir build/debug" ./ai_job.bash /path/to/project "Fix the failing renderer tests."
+AI_LOOP_ALLOW_PARALLEL_JOBS=1 ./ai_job.bash /path/to/project "Run an independent cleanup job."
+./ai_job.bash /path/to/project/job.txt
 
 ai_check_job.bash
-Checks whether jobs exist and prints job status, latest task diagnostics, active job details, a rough percent-complete estimate, and an estimated remaining time:
+Prints job status, updated time, task/run counts, worktree path, goal, latest task diagnostics, and a rough percent-complete/time-remaining estimate. With no job id it lists all jobs ordered by most recent update.
 
+Parameters:
 ./ai_check_job.bash
 ./ai_check_job.bash <job_id>
 
-ai_watch_job.bash
-Periodically refreshes the active job state with compact, itemized status output:
-
-./ai_watch_job.bash
-
-It auto-selects the newest active job, including fixing jobs. AI_LOOP_WATCH_INTERVAL controls the refresh interval and AI_LOOP_WATCH_LOG_LIMIT controls the number of log entries.
-
-ai_resume_job.bash
-Resumes the newest human_needed job without parameters:
-
-./ai_resume_job.bash
-
-It uses AI_LOOP_RESUME_MAX_ITERATIONS, defaulting to 50000. With --wait, resume waits indefinitely by default; pass --timeout with a positive number of seconds to impose a foreground wait limit.
-
-ai_remove_worktrees.bash
-Removes registered AI worktrees under AI_LOOP_RUNS_DIR and deletes leftover job folders:
-
-./ai_remove_worktrees.bash
-
-By default it discovers target repos from the SQLite jobs table. Set AI_LOOP_TARGET_REPO to force a single repo. Force removal is enabled by default. Set AI_LOOP_FORCE_REMOVE_WORKTREES=0 to ask Git to refuse dirty worktrees.
+Examples:
+./ai_check_job.bash
+./ai_check_job.bash J20260701-101500-123456
+AI_LOOP_DB=/tmp/ai_loop.sqlite3 ./ai_check_job.bash
 
 ai_clear_db.bash
-Clears the full database, including jobs and tasks:
+Clears the full SQLite database, including jobs, tasks, runs, decisions, and events. It does not stop processes or remove worktrees by itself; use ai_reset_loop.bash or ai_loopctl.bash when process cleanup is also needed.
 
+Parameters:
 ./ai_clear_db.bash --dry-run
 ./ai_clear_db.bash --yes
+
+Examples:
+./ai_clear_db.bash --dry-run
+./ai_clear_db.bash --yes
+AI_LOOP_DB=/tmp/ai_loop.sqlite3 ./ai_clear_db.bash --yes
+
+ai_clear_log.bash
+Clears log-like history while keeping job and task records. It deletes rows from runs, decisions, and events, then truncates process log files under ./logs, including nested per-job logs under ./logs/jobs/<job_id>. It supports dry-run output showing counts and log sizes.
+
+Parameters:
+./ai_clear_log.bash --dry-run
+./ai_clear_log.bash --yes
+
+Examples:
+./ai_clear_log.bash --dry-run
+./ai_clear_log.bash --yes
+AI_LOOP_LOG_DIR=/tmp/ai-loop-logs ./ai_clear_log.bash --dry-run
+
+ai_delete_job.bash
+Deletes one job record and dependent rows from SQLite. If no job id is supplied, it deletes the newest active job in planning, queued, implementing, or fixing state. It also stops PID-file-tracked per-job controller, worker, and watcher processes for that job. It does not remove worktree folders; use ai_remove_worktrees.bash for worktree cleanup.
+
+Parameters:
+./ai_delete_job.bash
+./ai_delete_job.bash <job_id>
+
+Examples:
+./ai_delete_job.bash
+./ai_delete_job.bash J20260701-101500-123456
+
+ai_hibernation.bash
+macOS-only helper for reading or changing pmset hibernatemode. It is useful when long jobs should not be interrupted by deep hibernation. The enable and disable commands call sudo pmset.
+
+Parameters:
+./ai_hibernation.bash status
+./ai_hibernation.bash disable
+./ai_hibernation.bash enable
+
+Examples:
+./ai_hibernation.bash status
+./ai_hibernation.bash disable
+./ai_hibernation.bash enable
+
+ai_loop_python.bash
+Shared helper sourced by other scripts. It chooses a runnable Python interpreter, honors AI_LOOP_PYTHON, resolves Python paths, shell-quotes words, and checks that the selected Python can import redis. It is not normally run directly.
+
+Parameters:
+No command-line interface for direct use.
+
+Examples:
+source ./ai_loop_python.bash
+python_bin="$(choose_ai_loop_python)"
+ensure_ai_loop_python_redis "$python_bin"
+
+ai_loopctl.bash
+Controls background loop processes for operations. Normal jobs start their own per-job controller, worker, and watcher through start_job.py or resume_job.py. stop stops PID-file-tracked per-job processes first, then stops any directly launched controller, worker, or watcher processes. status reports directly launched processes and per-job PID files under ./run/jobs/<job_id>.
+
+Parameters:
+./ai_loopctl.bash stop
+./ai_loopctl.bash status
+
+Examples:
+./ai_loopctl.bash stop
+./ai_loopctl.bash status
+AI_LOOP_RUNTIME_DIR=/tmp/ai-loop-run ./ai_loopctl.bash status
+
+It stores PID files in ./run by default, or in AI_LOOP_RUNTIME_DIR if set. Per-job jobs use ./run/jobs/<job_id> by default.
+
+ai_print_log.bash
+Prints durable SQLite history and tails process logs. With --job, it prints the selected job's progress estimate and filters history to that job. If ./logs/jobs/<job_id> exists, --job tails that job's process logs instead of the global logs. --no-process-logs suppresses tail output.
+
+Parameters:
+./ai_print_log.bash [--job JOB_ID] [--limit N] [--no-process-logs]
+
+Examples:
+./ai_print_log.bash
+./ai_print_log.bash --limit 50
+./ai_print_log.bash --job J20260701-101500-123456 --limit 120
+./ai_print_log.bash --job J20260701-101500-123456 --limit 50 --no-process-logs
+
+ai_remove_worktrees.bash
+Removes registered AI worktrees under AI_LOOP_RUNS_DIR and deletes leftover job folders. By default it discovers target repos from the SQLite jobs table. Set AI_LOOP_TARGET_REPO to force a single repo. Force removal is enabled by default; set AI_LOOP_FORCE_REMOVE_WORKTREES=0 to ask Git to refuse dirty worktrees.
+
+Parameters:
+./ai_remove_worktrees.bash
+
+Examples:
+./ai_remove_worktrees.bash
+AI_LOOP_TARGET_REPO=/path/to/project ./ai_remove_worktrees.bash
+AI_LOOP_FORCE_REMOVE_WORKTREES=0 ./ai_remove_worktrees.bash
+
+ai_reset_loop.bash
+Stops controller, worker, and watcher processes, deletes active job records, and clears the database. It does not start workers afterward because new jobs spawn their own per-job controller, worker, and watcher.
+
+Parameters:
+./ai_reset_loop.bash --dry-run
+./ai_reset_loop.bash --yes
+
+Examples:
+./ai_reset_loop.bash --dry-run
+./ai_reset_loop.bash --yes
+
+ai_resume_job.bash
+Resumes a paused/planning job through resume_job.py. With no arguments it picks the newest human_needed job, falling back to the newest planning job. It applies AI_LOOP_RESUME_MAX_ITERATIONS, defaulting to 50000. Extra arguments are passed to resume_job.py, so explicit job id, --goal, --constraint, --acceptance, --test-cmd, --max-iterations, --wait, --poll-interval, and --timeout are supported. Resume starts a fresh per-job controller, worker, and watcher.
+
+Parameters:
+./ai_resume_job.bash
+./ai_resume_job.bash <job_id> [resume_job.py options]
+
+Examples:
+./ai_resume_job.bash
+./ai_resume_job.bash J20260701-101500-123456 --constraint "Do not touch renderer setup."
+./ai_resume_job.bash J20260701-101500-123456 --test-cmd "ctest --test-dir build/debug" --wait --timeout 900
+AI_LOOP_RESUME_MAX_ITERATIONS=10 ./ai_resume_job.bash
+
+ai_run_claude.bash
+Starts claude_controller.py and appends stdout/stderr to ./logs/claude_controller.log, or AI_LOOP_LOG_DIR/claude_controller.log if set. When AI_LOOP_JOB_ID is set, the controller uses a job-scoped Redis consumer group, ignores messages for other jobs, and exits after that job reaches a terminal state.
+
+Parameters:
+./ai_run_claude.bash
+
+Examples:
+./ai_run_claude.bash
+AI_LOOP_JOB_ID=J20260701-101500-123456 AI_LOOP_LOG_DIR=./logs/jobs/J20260701-101500-123456 AI_LOOP_RUNTIME_DIR=./run/jobs/J20260701-101500-123456 ./ai_run_claude.bash
+
+ai_run_codex.bash
+Starts codex_worker.py and appends stdout/stderr to ./logs/codex_worker.log, or AI_LOOP_LOG_DIR/codex_worker.log if set. It sets CODEX_BYPASS_SANDBOX=1 by default. When AI_LOOP_JOB_ID is set, the worker uses a job-scoped Redis consumer group, ignores messages for other jobs, and exits after that job reaches a terminal state.
+
+Parameters:
+./ai_run_codex.bash
+
+Examples:
+./ai_run_codex.bash
+CODEX_BYPASS_SANDBOX=0 ./ai_run_codex.bash
+AI_LOOP_JOB_ID=J20260701-101500-123456 AI_LOOP_LOG_DIR=./logs/jobs/J20260701-101500-123456 AI_LOOP_RUNTIME_DIR=./run/jobs/J20260701-101500-123456 ./ai_run_codex.bash
+
+ai_run_watcher.bash
+Starts watcher.py and appends stdout/stderr to ./logs/watcher.log, or AI_LOOP_LOG_DIR/watcher.log if set. When AI_LOOP_JOB_ID is set, it prints only terminal events for that job and exits after the matching event.
+
+Parameters:
+./ai_run_watcher.bash
+
+Examples:
+./ai_run_watcher.bash
+AI_LOOP_JOB_ID=J20260701-101500-123456 AI_LOOP_LOG_DIR=./logs/jobs/J20260701-101500-123456 AI_LOOP_RUNTIME_DIR=./run/jobs/J20260701-101500-123456 ./ai_run_watcher.bash
+
+ai_run_crash_safe.bash
+Runs a target-project executable in a crash-safe way. It applies AI_LOOP_CRASH_SAFE_TIMEOUT or --timeout, disables core dumps where possible, and on macOS uses batch lldb when available so crashes produce terminal diagnostics and backtraces.
+
+Parameters:
+./ai_run_crash_safe.bash -- <executable> [args...]
+./ai_run_crash_safe.bash --timeout 120 -- <executable> [args...]
+
+Examples:
+./ai_run_crash_safe.bash -- ./bin/debug/exe/game
+./ai_run_crash_safe.bash --timeout 120 -- ./bin/debug/exe/light_shadow_debug --headless
+AI_LOOP_CRASH_SAFE_TIMEOUT=10 ./ai_run_crash_safe.bash -- ./build/test_binary
+
+ai_run_loop_proof.bash
+Creates or refreshes a small C++ fixture repo, verifies its local test, submits an end-to-end proof job, waits for completion, and verifies the promoted result. It uses AI_LOOP_PROOF_REPO for the fixture path, defaulting to /tmp/ai-loop-test, and AI_LOOP_PYTHON for the Python interpreter when set.
+
+Parameters:
+./ai_run_loop_proof.bash
+./ai_run_loop_proof.bash -h
+./ai_run_loop_proof.bash --help
+
+Examples:
+./ai_run_loop_proof.bash
+AI_LOOP_PROOF_REPO=/tmp/my-ai-loop-proof ./ai_run_loop_proof.bash
+
+ai_watch_job.bash
+Periodically refreshes the newest active job with compact status output and recent durable log entries. It auto-selects the newest planning, queued, implementing, or fixing job. AI_LOOP_WATCH_INTERVAL controls the refresh interval, defaulting to 10 seconds. AI_LOOP_WATCH_LOG_LIMIT controls the number of durable log entries, defaulting to 20.
+
+Parameters:
+./ai_watch_job.bash
+
+Examples:
+./ai_watch_job.bash
+AI_LOOP_WATCH_INTERVAL=2 AI_LOOP_WATCH_LOG_LIMIT=50 ./ai_watch_job.bash
 
 Important Detail
 ----------------
@@ -292,16 +411,27 @@ To prove the loop is up:
 ./ai_loopctl.bash status
 ./ai_print_log.bash --limit 50
 
-A healthy status shows:
+A healthy idle status may show no directly launched processes and no per-job processes:
 
-claude_controller running pid=<pid>
-codex_worker running pid=<pid>
-watcher running pid=<pid>
+claude_controller stopped
+codex_worker stopped
+watcher stopped
+per-job processes: none
 
-To prove end-to-end behavior, create a small throwaway Git repo, start the loop with ./ai_loopctl.bash start, submit a job with start_job.py, and check that:
+That is normal. New jobs start their own controller, worker, and watcher. While a job is active, ./ai_loopctl.bash status should show entries like:
+
+job <job_id> claude_controller running pid=<pid>
+job <job_id> codex_worker running pid=<pid>
+job <job_id> watcher running pid=<pid>
+
+To prove end-to-end behavior, run:
+
+./ai_run_loop_proof.bash
+
+Or create a small throwaway Git repo, submit a job with ai_job.bash or start_job.py, and check that:
 
 - ./ai_check_job.bash shows the job progressing or done
-- ./ai_print_log.bash shows controller/worker/watcher activity
+- ./ai_print_log.bash --job <job_id> shows controller/worker/watcher activity
 - the job worktree contains the requested change
 - the target repo contains the promoted change after DONE
 - the configured test command passes

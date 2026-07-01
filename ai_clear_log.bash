@@ -63,7 +63,7 @@ PY
 
 if [ -d "$log_dir" ]; then
   echo "process log files: $log_dir"
-  for file in "$log_dir"/*.log; do
+  while IFS= read -r file; do
     if [ ! -f "$file" ]; then
       continue
     fi
@@ -74,7 +74,7 @@ if [ -d "$log_dir" ]; then
       : > "$file"
       echo "cleared $file"
     fi
-  done
+  done < <(find "$log_dir" -type f -name '*.log' | sort)
 elif [ "$mode" = "--dry-run" ]; then
   echo "process log directory not found: $log_dir"
 fi

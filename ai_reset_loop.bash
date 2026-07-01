@@ -55,7 +55,6 @@ if [ "$mode" = "--dry-run" ]; then
   echo "dry run: would stop controller, worker, and watcher"
   echo "dry run: would delete active job records"
   echo "dry run: would clear the database"
-  echo "dry run: would start controller, worker, and watcher"
   exit 0
 fi
 
@@ -77,8 +76,5 @@ echo "clearing database"
 ./ai_clear_db.bash --yes
 
 echo
-echo "starting controller, worker, and watcher"
-./ai_loopctl.bash start
-
-echo
+echo "reset complete; new jobs start their own controller, worker, and watcher"
 ./ai_loopctl.bash status

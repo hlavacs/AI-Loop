@@ -26,9 +26,9 @@ def consumer_name(role: str) -> str:
     return f"{socket.gethostname()}-{role}"
 
 
-def ensure_group(client: redis.Redis, stream: str, group: str) -> None:
+def ensure_group(client: redis.Redis, stream: str, group: str, start_id: str = "0") -> None:
     try:
-        client.xgroup_create(stream, group, id="0", mkstream=True)
+        client.xgroup_create(stream, group, id=start_id, mkstream=True)
     except redis.ResponseError as exc:
         if "BUSYGROUP" not in str(exc):
             raise

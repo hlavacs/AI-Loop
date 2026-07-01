@@ -30,6 +30,7 @@ ACTIONS = {"CONTINUE", "REPAIR", "DONE", "HUMAN_NEEDED"}
 OUTPUT_LIMIT = 20000
 INSTRUCTION_FILE_LIMIT = 10
 INSTRUCTION_FILE_BYTES = 12000
+TERMINAL_STATUSES = {"done", "human_needed", "dead"}
 CLAUDE_JSON_REMAKE_ATTEMPTS = 2
 CLAUDE_TRANSIENT_RETRY_BACKOFF_SECONDS = float(os.getenv("AI_LOOP_CLAUDE_TRANSIENT_BACKOFF_SECONDS", "5"))
 CLAUDE_TRANSIENT_RETRY_MAX_BACKOFF_SECONDS = float(
@@ -56,6 +57,21 @@ CLAUDE_TRANSIENT_FAILURE_PATTERNS = (
     "rate limit",
     "try again",
 )
+
+
+def scoped_job_id() -> str | None:
+    value = os.getenv("AI_LOOP_JOB_ID")
+    return value if value else None
+
+
+def scoped_group(base_group: str, job_id: str | None) -> str:
+    return f"{base_group}:{job_id}" if job_id else base_group
+
+
+def is_terminal_job(settings, job_id: str) -> bool:
+    with db.transaction(settings.db_path) as conn:
+        job = db.get_job(conn, job_id)
+        return str(job["status"]) in TERMINAL_STATUSES
 
 
 class PromotionError(RuntimeError):
@@ -561,7 +577,10 @@ def create_next_task(settings, client, job: dict[str, Any], decision: dict[str, 
                 "test_cmd": str(job["test_cmd"]),
             },
         )
-    xadd_json(client, CODEX_TASK_STREAM, "task", {"task_id": task_id})
+    task_payload = {"task_id": task_id, "job_id": job["id"]}
+    if scoped_job_id():
+        task_payload["scope"] = "job"
+    xadd_json(client, CODEX_TASK_STREAM, "task", task_payload)
     if next_status == "fixing":
         print(f"job {job['id']}: fixing - {decision['reason']}")
         print(f"job {job['id']}: fixing task {task_id} - {next_task['goal']}")
@@ -690,23 +709,30 @@ def main() -> int:
     settings = load_settings()
     db.init_db(settings.db_path)
     client = redis_client(settings.redis_url)
-    ensure_group(client, CLAUDE_REQUEST_STREAM, GROUP)
+    job_scope = scoped_job_id()
+    group = scoped_group(GROUP, job_scope)
+    ensure_group(client, CLAUDE_REQUEST_STREAM, group, start_id="$" if job_scope else "0")
     consumer = consumer_name("claude")
 
     print("Claude controller started")
     print(f"db: {settings.db_path}")
     print(f"redis: {settings.redis_url}")
-    print(f"listening: {CLAUDE_REQUEST_STREAM} group={GROUP} consumer={consumer}")
+    if job_scope:
+        print(f"job_scope: {job_scope}")
+    print(f"listening: {CLAUDE_REQUEST_STREAM} group={group} consumer={consumer}")
 
     while True:
         try:
-            messages = read_group(client, GROUP, consumer, CLAUDE_REQUEST_STREAM)
+            messages = read_group(client, group, consumer, CLAUDE_REQUEST_STREAM)
         except (TimeoutError, ConnectionError) as exc:
             print(f"Redis read problem, retrying: {exc}")
             time.sleep(1)
             continue
 
         if not messages:
+            if job_scope and is_terminal_job(settings, job_scope):
+                print(f"job {job_scope}: terminal; Claude controller exiting")
+                return 0
             continue
 
         _, entries = messages[0]
@@ -715,14 +741,23 @@ def main() -> int:
             try:
                 request = decode(fields["request"])
                 job_id = request.get("job_id")
+                if not job_scope and request.get("scope") == "job":
+                    client.xack(CLAUDE_REQUEST_STREAM, group, message_id)
+                    continue
+                if job_scope and job_id != job_scope:
+                    client.xack(CLAUDE_REQUEST_STREAM, group, message_id)
+                    continue
                 handle_request(settings, client, request)
-                client.xack(CLAUDE_REQUEST_STREAM, GROUP, message_id)
+                client.xack(CLAUDE_REQUEST_STREAM, group, message_id)
+                if job_scope and is_terminal_job(settings, job_scope):
+                    print(f"job {job_scope}: terminal; Claude controller exiting")
+                    return 0
             except Exception as exc:
                 print(f"controller error: {exc}")
                 payload = {"where": "claude_controller", "error": repr(exc), "fields": fields}
                 try:
                     record_dead(settings, client, job_id, payload)
-                    client.xack(CLAUDE_REQUEST_STREAM, GROUP, message_id)
+                    client.xack(CLAUDE_REQUEST_STREAM, group, message_id)
                 except Exception as inner:
                     print(f"could not record dead event: {inner}")
 

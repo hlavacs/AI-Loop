@@ -7,16 +7,20 @@ runtime_dir="${AI_LOOP_RUNTIME_DIR:-./run}"
 mkdir -p "$runtime_dir"
 
 usage() {
-  echo "usage: $0 start|stop|restart|status" >&2
+  echo "usage: $0 stop|status" >&2
 }
 
 pid_file() {
   echo "$runtime_dir/$1.pid"
 }
 
+job_runtime_root() {
+  echo "$runtime_dir/jobs"
+}
+
 find_pids() {
   local script="$1"
-  pgrep -f "python[0-9.]* ${script}" || true
+  pgrep -f "python[0-9.]* ${script}" 2>/dev/null || true
 }
 
 is_running() {
@@ -32,39 +36,31 @@ read_pid() {
   fi
 }
 
-launch_background() {
-  local wrapper="$1"
-
-  if command -v setsid >/dev/null 2>&1; then
-    setsid "$wrapper" >/dev/null 2>&1 &
-  else
-    "$wrapper" >/dev/null 2>&1 &
-  fi
-}
-
-start_one() {
-  local name="$1"
-  local wrapper="$2"
-  local process_script="$3"
+stop_pid_file() {
+  local file="$1"
+  local label="$2"
   local pid
-  pid="$(read_pid "$name")"
+  pid="$(cat "$file" 2>/dev/null || true)"
 
-  if is_running "$pid"; then
-    echo "$name already running pid=$pid"
+  if ! is_running "$pid"; then
+    echo "$label not running"
+    rm -f "$file"
     return
   fi
 
-  pid="$(find_pids "$process_script" | head -n 1)"
-  if is_running "$pid"; then
-    echo "$pid" > "$(pid_file "$name")"
-    echo "$name already running pid=$pid"
-    return
-  fi
+  kill "$pid"
+  for _ in $(seq 1 20); do
+    if ! is_running "$pid"; then
+      rm -f "$file"
+      echo "stopped $label pid=$pid"
+      return
+    fi
+    sleep 0.25
+  done
 
-  launch_background "$wrapper"
-  pid="$!"
-  echo "$pid" > "$(pid_file "$name")"
-  echo "started $name pid=$pid"
+  kill -KILL "$pid"
+  rm -f "$file"
+  echo "killed $label pid=$pid"
 }
 
 stop_one() {
@@ -126,13 +122,63 @@ status_one() {
   fi
 }
 
-start_all() {
-  start_one claude_controller ./ai_run_claude.bash claude_controller.py
-  start_one codex_worker ./ai_run_codex.bash codex_worker.py
-  start_one watcher ./ai_run_watcher.bash watcher.py
+stop_job_processes() {
+  local root
+  root="$(job_runtime_root)"
+  if [ ! -d "$root" ]; then
+    echo "no per-job processes"
+    return
+  fi
+
+  local found=0
+  local job_dir job_id name file
+  for job_dir in "$root"/*; do
+    [ -d "$job_dir" ] || continue
+    job_id="$(basename "$job_dir")"
+    for name in watcher codex_worker claude_controller; do
+      file="$job_dir/$name.pid"
+      [ -f "$file" ] || continue
+      found=1
+      stop_pid_file "$file" "job $job_id $name"
+    done
+  done
+  if [ "$found" -eq 0 ]; then
+    echo "no per-job processes"
+  fi
+}
+
+status_job_processes() {
+  local root
+  root="$(job_runtime_root)"
+  if [ ! -d "$root" ]; then
+    echo "per-job processes: none"
+    return
+  fi
+
+  local found=0
+  local job_dir job_id name file pid
+  for job_dir in "$root"/*; do
+    [ -d "$job_dir" ] || continue
+    job_id="$(basename "$job_dir")"
+    for name in claude_controller codex_worker watcher; do
+      file="$job_dir/$name.pid"
+      [ -f "$file" ] || continue
+      found=1
+      pid="$(cat "$file" 2>/dev/null || true)"
+      if is_running "$pid"; then
+        echo "job $job_id $name running pid=$pid"
+      else
+        echo "job $job_id $name stopped stale_pid=$pid"
+      fi
+    done
+  done
+  if [ "$found" -eq 0 ]; then
+    echo "per-job processes: none"
+  fi
 }
 
 stop_all() {
+  stop_job_processes
   stop_one watcher watcher.py
   stop_one codex_worker codex_worker.py
   stop_one claude_controller claude_controller.py
@@ -142,18 +188,12 @@ status_all() {
   status_one claude_controller claude_controller.py
   status_one codex_worker codex_worker.py
   status_one watcher watcher.py
+  status_job_processes
 }
 
 case "${1:-}" in
-  start)
-    start_all
-    ;;
   stop)
     stop_all
-    ;;
-  restart)
-    stop_all
-    start_all
     ;;
   status)
     status_all

@@ -266,6 +266,10 @@ if [ "$process_logs" -eq 0 ]; then
   exit 0
 fi
 
+if [ "$job_id" != "" ] && [ -d "$log_dir/jobs/$job_id" ]; then
+  log_dir="$log_dir/jobs/$job_id"
+fi
+
 echo "process log files: $log_dir"
 if [ ! -d "$log_dir" ]; then
   echo "no process log directory"

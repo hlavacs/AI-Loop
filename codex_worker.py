@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import re
+import os
 import shutil
 import subprocess
 import time
@@ -18,6 +19,22 @@ GROUP = "codex-workers"
 OUTPUT_LIMIT = 20000
 DIFF_LIMIT = 80000
 INSTRUCTION_FILE_LIMIT = 10
+TERMINAL_STATUSES = {"done", "human_needed", "dead"}
+
+
+def scoped_job_id() -> str | None:
+    value = os.getenv("AI_LOOP_JOB_ID")
+    return value if value else None
+
+
+def scoped_group(base_group: str, job_id: str | None) -> str:
+    return f"{base_group}:{job_id}" if job_id else base_group
+
+
+def is_terminal_job(settings, job_id: str) -> bool:
+    with db.transaction(settings.db_path) as conn:
+        job = db.get_job(conn, job_id)
+        return str(job["status"]) in TERMINAL_STATUSES
 
 
 def run_command(cmd: list[str], cwd: str, timeout: int) -> dict[str, object]:
@@ -353,12 +370,10 @@ def process_task(settings, client, task_id: str) -> None:
         print(f"task {task_id}: reported HUMAN_NEEDED")
         return
 
-    xadd_json(
-        client,
-        CLAUDE_REQUEST_STREAM,
-        "request",
-        {"type": "REVIEW", "job_id": job["id"], "task_id": task_id, "run_id": run_id},
-    )
+    review_payload = {"type": "REVIEW", "job_id": job["id"], "task_id": task_id, "run_id": run_id}
+    if scoped_job_id():
+        review_payload["scope"] = "job"
+    xadd_json(client, CLAUDE_REQUEST_STREAM, "request", review_payload)
     print(f"task {task_id}: queued REVIEW for run {run_id}")
 
 
@@ -366,23 +381,30 @@ def main() -> int:
     settings = load_settings()
     db.init_db(settings.db_path)
     client = redis_client(settings.redis_url)
-    ensure_group(client, CODEX_TASK_STREAM, GROUP)
+    job_scope = scoped_job_id()
+    group = scoped_group(GROUP, job_scope)
+    ensure_group(client, CODEX_TASK_STREAM, group, start_id="$" if job_scope else "0")
     consumer = consumer_name("codex")
 
     print("Codex worker started")
     print(f"db: {settings.db_path}")
     print(f"redis: {settings.redis_url}")
-    print(f"listening: {CODEX_TASK_STREAM} group={GROUP} consumer={consumer}")
+    if job_scope:
+        print(f"job_scope: {job_scope}")
+    print(f"listening: {CODEX_TASK_STREAM} group={group} consumer={consumer}")
 
     while True:
         try:
-            messages = read_group(client, GROUP, consumer, CODEX_TASK_STREAM)
+            messages = read_group(client, group, consumer, CODEX_TASK_STREAM)
         except (TimeoutError, ConnectionError) as exc:
             print(f"Redis read problem, retrying: {exc}")
             time.sleep(1)
             continue
 
         if not messages:
+            if job_scope and is_terminal_job(settings, job_scope):
+                print(f"job {job_scope}: terminal; Codex worker exiting")
+                return 0
             continue
 
         _, entries = messages[0]
@@ -394,14 +416,23 @@ def main() -> int:
                 task_id = payload["task_id"]
                 with db.transaction(settings.db_path) as conn:
                     job_id = db.get_task(conn, task_id)["job_id"]
+                if not job_scope and payload.get("scope") == "job":
+                    client.xack(CODEX_TASK_STREAM, group, message_id)
+                    continue
+                if job_scope and job_id != job_scope:
+                    client.xack(CODEX_TASK_STREAM, group, message_id)
+                    continue
                 process_task(settings, client, task_id)
-                client.xack(CODEX_TASK_STREAM, GROUP, message_id)
+                client.xack(CODEX_TASK_STREAM, group, message_id)
+                if job_scope and is_terminal_job(settings, job_scope):
+                    print(f"job {job_scope}: terminal; Codex worker exiting")
+                    return 0
             except Exception as exc:
                 print(f"worker error: {exc}")
                 payload = {"where": "codex_worker", "error": repr(exc), "fields": fields}
                 try:
                     record_dead(settings, client, job_id, payload, task_id)
-                    client.xack(CODEX_TASK_STREAM, GROUP, message_id)
+                    client.xack(CODEX_TASK_STREAM, group, message_id)
                 except Exception as inner:
                     print(f"could not record dead event: {inner}")
 

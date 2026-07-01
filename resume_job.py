@@ -26,7 +26,7 @@ def main() -> int:
     from ai_loop import db
     from ai_loop.config import CLAUDE_REQUEST_STREAM, load_settings
     from ai_loop.queues import redis_client, xadd_json
-    from start_job import wait_for_job
+    from start_job import launch_job_processes, prepare_job_consumer_groups, wait_for_job
 
     settings = load_settings()
     db.init_db(settings.db_path)
@@ -73,7 +73,22 @@ def main() -> int:
             )
 
         client = redis_client(settings.redis_url)
-        xadd_json(client, CLAUDE_REQUEST_STREAM, "request", {"type": "PLAN", "job_id": args.job_id})
+        prepare_job_consumer_groups(client, args.job_id)
+        job_processes = launch_job_processes(settings.root_dir, args.job_id)
+        with db.transaction(settings.db_path) as conn:
+            db.add_event(
+                conn,
+                job_id=args.job_id,
+                kind="job_processes_started",
+                payload={
+                    "job_id": args.job_id,
+                    "resumed": True,
+                    "pids": job_processes,
+                    "runtime_dir": str(settings.root_dir / "run" / "jobs" / args.job_id),
+                    "log_dir": str(settings.root_dir / "logs" / "jobs" / args.job_id),
+                },
+            )
+        xadd_json(client, CLAUDE_REQUEST_STREAM, "request", {"type": "PLAN", "job_id": args.job_id, "scope": "job"})
     except KeyError:
         print(f"job {args.job_id} is not in the system", file=sys.stderr)
         return 1
@@ -89,6 +104,7 @@ def main() -> int:
     print(f"goal: {goal}")
     print(f"test_cmd: {test_cmd}")
     print(f"max_iterations: {max_iterations}")
+    print(f"processes: {job_processes}")
     print(f"queued PLAN on {CLAUDE_REQUEST_STREAM}")
     if args.wait:
         return wait_for_job(settings.db_path, args.job_id, job["worktree_path"], args.timeout, args.poll_interval)

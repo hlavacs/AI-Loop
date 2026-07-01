@@ -369,8 +369,7 @@ ensure_git_repo
 echo "running fixture test"
 make -C "$repo" test
 
-echo "checking loop processes"
-./ai_loopctl.bash start
+echo "checking loop process status"
 ./ai_loopctl.bash status
 
 echo "submitting AI loop proof job"

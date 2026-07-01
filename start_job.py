@@ -15,9 +15,9 @@ from textwrap import wrap
 from redis.exceptions import ConnectionError, TimeoutError
 
 from ai_loop import db
-from ai_loop.config import CLAUDE_REQUEST_STREAM, load_settings
+from ai_loop.config import CLAUDE_REQUEST_STREAM, CODEX_TASK_STREAM, load_settings
 from ai_loop.progress import estimate_progress
-from ai_loop.queues import redis_client, xadd_json
+from ai_loop.queues import ensure_group, redis_client, xadd_json
 
 
 DEFAULT_CONSTRAINTS = [
@@ -35,6 +35,8 @@ DEFAULT_ACCEPTANCE = [
     "No unrelated files are changed.",
 ]
 ACTIVE_STATUSES = {"planning", "queued", "implementing", "fixing"}
+CLAUDE_GROUP = "claude-controllers"
+CODEX_GROUP = "codex-workers"
 
 
 def timestamp_id(prefix: str) -> str:
@@ -248,7 +250,49 @@ def detect_test_cmd(repo: Path, requested: str) -> str:
 
 
 def allow_parallel_jobs(args: argparse.Namespace) -> bool:
-    return bool(args.allow_parallel or os.environ.get("AI_LOOP_ALLOW_PARALLEL_JOBS") == "1")
+    if os.environ.get("AI_LOOP_SINGLE_ACTIVE_JOB") == "1":
+        return bool(args.allow_parallel or os.environ.get("AI_LOOP_ALLOW_PARALLEL_JOBS") == "1")
+    return True
+
+
+def scoped_group(base_group: str, job_id: str) -> str:
+    return f"{base_group}:{job_id}"
+
+
+def prepare_job_consumer_groups(client, job_id: str) -> None:
+    ensure_group(client, CLAUDE_REQUEST_STREAM, scoped_group(CLAUDE_GROUP, job_id), start_id="$")
+    ensure_group(client, CODEX_TASK_STREAM, scoped_group(CODEX_GROUP, job_id), start_id="$")
+
+
+def launch_job_processes(root_dir: Path, job_id: str) -> dict[str, int]:
+    runtime_dir = root_dir / "run" / "jobs" / job_id
+    log_dir = root_dir / "logs" / "jobs" / job_id
+    runtime_dir.mkdir(parents=True, exist_ok=True)
+    log_dir.mkdir(parents=True, exist_ok=True)
+
+    env = os.environ.copy()
+    env["AI_LOOP_JOB_ID"] = job_id
+    env["AI_LOOP_RUNTIME_DIR"] = str(runtime_dir)
+    env["AI_LOOP_LOG_DIR"] = str(log_dir)
+
+    processes = {
+        "claude_controller": "./ai_run_claude.bash",
+        "codex_worker": "./ai_run_codex.bash",
+        "watcher": "./ai_run_watcher.bash",
+    }
+    pids: dict[str, int] = {}
+    for name, wrapper in processes.items():
+        proc = subprocess.Popen(
+            [wrapper],
+            cwd=str(root_dir),
+            env=env,
+            start_new_session=True,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+        )
+        pids[name] = proc.pid
+        (runtime_dir / f"{name}.pid").write_text(f"{proc.pid}\n", encoding="utf-8")
+    return pids
 
 
 def active_jobs(db_path: Path) -> list[dict[str, str]]:
@@ -555,6 +599,7 @@ def main() -> int:
     worktree = repo
     overlay_files: list[str] = []
     pre_job_commit: dict[str, str | bool | None] = {}
+    job_processes: dict[str, int] = {}
 
     try:
         pre_job_commit = create_pre_job_commit(repo, job_id)
@@ -593,11 +638,25 @@ def main() -> int:
             )
 
         client = redis_client(settings.redis_url)
+        prepare_job_consumer_groups(client, job_id)
+        job_processes = launch_job_processes(settings.root_dir, job_id)
+        with db.transaction(settings.db_path) as conn:
+            db.add_event(
+                conn,
+                job_id=job_id,
+                kind="job_processes_started",
+                payload={
+                    "job_id": job_id,
+                    "pids": job_processes,
+                    "runtime_dir": str(settings.root_dir / "run" / "jobs" / job_id),
+                    "log_dir": str(settings.root_dir / "logs" / "jobs" / job_id),
+                },
+            )
         xadd_json(
             client,
             CLAUDE_REQUEST_STREAM,
             "request",
-            {"type": "PLAN", "job_id": job_id},
+            {"type": "PLAN", "job_id": job_id, "scope": "job"},
         )
     except (ConnectionError, TimeoutError) as exc:
         print(f"job {job_id} created, but Redis activation failed: {exc}", file=sys.stderr)
@@ -616,6 +675,7 @@ def main() -> int:
     if use_worktree:
         print(f"checkout overlay files: {len(overlay_files)}")
     print(f"db: {settings.db_path}")
+    print(f"processes: {job_processes}")
     print(f"queued PLAN on {CLAUDE_REQUEST_STREAM}")
     if args.wait:
         return wait_for_job(settings.db_path, job_id, worktree, args.timeout, args.poll_interval)
