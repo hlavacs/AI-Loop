@@ -98,18 +98,18 @@ That changes Codex execution to use:
 codex exec --dangerously-bypass-approvals-and-sandbox
 ```
 
-## Start the Loop Processes
+## Loop Process Operations
 
-Use the control script to run the loop in the background:
+Normal jobs start their own Claude controller, Codex worker, and watcher. You do not need to start global loop processes before creating a job.
+
+Use the control script for status and emergency stop:
 
 ```bash
-./ai_loopctl.bash start
 ./ai_loopctl.bash status
 ./ai_loopctl.bash stop
-./ai_loopctl.bash restart
 ```
 
-Or run each command in a separate terminal from this directory:
+For legacy/manual debugging, each process can still be run in a separate terminal from this directory:
 
 ```bash
 python claude_controller.py
@@ -143,13 +143,12 @@ python start_job.py \
 
 With `--wait`, the command prints status updates until the job reaches `done`, `human_needed`, or `dead`, then prints inspect commands. It waits indefinitely by default; pass `--timeout <seconds>` with a positive value to impose a foreground wait limit. Omit `--wait` to submit the job asynchronously.
 
-By default, ai-loop allows only one active job in the system. Active means `planning`, `queued`, `implementing`, or `fixing`. If another active job exists, `start_job.py` refuses to create a new one before making any target-repo snapshot commit or worktree, prints the active job id/status/goal, and shows options:
+By default, each ai-loop job gets its own Claude controller, Codex worker, and terminal watcher. Active jobs can run concurrently because every job uses its own Redis consumer groups, PID directory, and process log directory. Set `AI_LOOP_SINGLE_ACTIVE_JOB=1` to restore the old single-active-job guard; with that guard enabled, `--allow-parallel` or `AI_LOOP_ALLOW_PARALLEL_JOBS=1` starts another job anyway.
 
 ```bash
 ./ai_check_job.bash
 ./ai_watch_job.bash
-AI_LOOP_ALLOW_PARALLEL_JOBS=1 ./ai_job.bash /path/to/repo "Second job"
-python3 start_job.py --allow-parallel --repo /path/to/repo --goal "Second job"
+./ai_job.bash /path/to/repo "Second job"
 ./ai_delete_job.bash [job-id]
 ./ai_clear_db.bash --yes
 ```
@@ -159,6 +158,8 @@ By default this creates:
 - SQLite job state in `./ai_loop.sqlite3`
 - Git branch `ai/<job_id>`
 - Git worktree `../ai-runs/<job_id>`
+- Per-job PID files in `./run/jobs/<job_id>`
+- Per-job process logs in `./logs/jobs/<job_id>`
 - A `PLAN` request on `ai:claude:requests`
 
 To work directly in the repository instead of a worktree:
