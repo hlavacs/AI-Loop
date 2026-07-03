@@ -1,7 +1,7 @@
 ++Complete Worker System
 ======================
 
-The system is a small Claude + Codex development loop with durable state in SQLite and activation messages in Redis Streams.
+The system is a small controller + worker development loop with durable state in SQLite and activation messages in Redis Streams. By default Claude plans and reviews and Codex implements, but each job can select its own controller and worker.
 
 Fresh Machine Dependencies
 --------------------------
@@ -74,18 +74,46 @@ Main Components
 ---------------
 
 start_job.py
-Creates a job. ai_job.bash can submit either ./ai_job.bash <repo-path> <job-description> or ./ai_job.bash <job-description-file>; with the one-file form it reads the file contents as the goal and uses the file's containing directory as the target repo. Job ids use the form JYYYYMMDD-HHMMSS-ffffff. By default each job gets its own Claude controller, Codex worker, and watcher, with per-job Redis consumer groups, PID files under ./run/jobs/<job_id>, and process logs under ./logs/jobs/<job_id>. Multiple active jobs can therefore run concurrently. Set AI_LOOP_SINGLE_ACTIVE_JOB=1 to restore the old single-active-job guard; with that guard enabled, --allow-parallel or AI_LOOP_ALLOW_PARALLEL_JOBS=1 starts another job anyway. When job creation is allowed, it stages and commits all current changes in the target repo with a message like "AI loop snapshot before job <job_id>" when there is anything to commit. It then writes the job to SQLite, optionally creates a Git worktree and branch, overlays any remaining checkout changes into the worktree, creates the job-scoped consumer groups, starts the job-scoped process trio, and sends a scoped PLAN message to Redis stream ai:claude:requests. The default maximum iteration count is 50000. With --wait, it waits indefinitely by default; pass --timeout with a positive number of seconds to impose a foreground wait limit. If no test command is supplied, it infers a generic project command: CMake presets first, then plain CMake, then npm test, then pytest for Python projects, and finally true when no known runner is detected.
+Creates a job. ai_job.bash can submit either ./ai_job.bash <repo-path> <job-description> or ./ai_job.bash <job-description-file>; with the one-file form it reads the file contents as the goal and uses the file's containing directory as the target repo. Job ids use the form JYYYYMMDD-HHMMSS-ffffff. By default each job gets its own Claude controller, Codex worker, and watcher, with per-job Redis consumer groups, PID files under ./run/jobs/<job_id>, and process logs under ./logs/jobs/<job_id>. Multiple active jobs can therefore run concurrently. Set AI_LOOP_SINGLE_ACTIVE_JOB=1 to restore the old single-active-job guard; with that guard enabled, --allow-parallel or AI_LOOP_ALLOW_PARALLEL_JOBS=1 starts another job anyway. When job creation is allowed, it stages and commits all current changes in the target repo with a message like "AI loop snapshot before job <job_id>" when there is anything to commit. It then writes the job to SQLite, optionally creates a Git worktree and branch, overlays any remaining checkout changes into the worktree, creates the job-scoped consumer groups, starts the job-scoped process trio, and sends a scoped PLAN message to Redis stream ai:claude:requests. The default maximum iteration count is 50000. With --wait, it waits indefinitely by default; pass --timeout with a positive number of seconds to impose a foreground wait limit. If no test command is supplied, it infers a generic project command: CMake presets first, then plain CMake, then npm test, then pytest for Python projects, and finally true when no known runner is detected. Each job also stores its worker and controller selection, set with --worker and --controller or the AI_LOOP_WORKER and AI_LOOP_CONTROLLER environment variables; see Worker and Controller Selection below. Default job constraints depend on the worker: capable workers (fable, opus) get "prefer coherent, self-contained tasks" constraints, while codex gets "many tiny tasklets" constraints.
 
 claude_controller.py
-Acts as planner/reviewer. It consumes PLAN and REVIEW messages from ai:claude:requests. For PLAN, it creates one tiny Codex tasklet. For REVIEW, it inspects Codex output, test output, git diff, job history, code quality, project guideline compliance, local architecture/style patterns, scope control, maintainability, and proportional test coverage, then decides CONTINUE, REPAIR, DONE, or HUMAN_NEEDED. HUMAN_NEEDED is a last resort: Claude should first analyze the blocker, identify solution paths, and choose REPAIR whenever a safe automated diagnostic or fix exists. Task ids use the form TYYYYMMDD-HHMMSS-ffffff. The controller stores the job's current test command on each new task; Claude may discuss tests in its JSON, but the persisted validation command is the job-level command. If Claude echoes stale test acceptance text from an earlier command, the controller replaces it with the current job test command. Claude decision JSON is checked before it is accepted: the controller extracts the decision object, validates the required fields, serializes/parses it again as a round-trip guard, and if parsing or validation fails it asks Claude to remake the same decision as valid JSON only. On DONE, it promotes the successful worktree changes back to the target repo before marking the job done.
+Acts as planner/reviewer. It runs the job's selected controller backend: claude (Claude CLI default model or AI_LOOP_CONTROLLER_MODEL), fable, opus, or codex (codex exec --sandbox read-only --output-last-message, parsing the decision JSON from the last agent message). It consumes PLAN and REVIEW messages from ai:claude:requests. For PLAN, it creates one first task sized to the job's worker: a tiny tasklet for codex, or a larger coherent task for fable/opus. For REVIEW, it inspects worker output, test output, git diff, job history, code quality, project guideline compliance, local architecture/style patterns, scope control, maintainability, and proportional test coverage, then decides CONTINUE, REPAIR, DONE, or HUMAN_NEEDED. HUMAN_NEEDED is a last resort: Claude should first analyze the blocker, identify solution paths, and choose REPAIR whenever a safe automated diagnostic or fix exists. Task ids use the form TYYYYMMDD-HHMMSS-ffffff. The controller stores the job's current test command on each new task; Claude may discuss tests in its JSON, but the persisted validation command is the job-level command. If Claude echoes stale test acceptance text from an earlier command, the controller replaces it with the current job test command. Claude decision JSON is checked before it is accepted: the controller extracts the decision object, validates the required fields, serializes/parses it again as a round-trip guard, and if parsing or validation fails it asks Claude to remake the same decision as valid JSON only. On DONE, it promotes the successful worktree changes back to the target repo before marking the job done.
 
 codex_worker.py
-Acts as implementation worker. It consumes tasks from ai:codex:tasks, runs codex exec in the job worktree, re-reads the task row immediately before validation, runs the current task test command, captures git status/diff/output, writes a run record to SQLite, then sends a REVIEW request back to Claude. The captured diff includes untracked new files so Claude can review newly created code. Git porcelain output is parsed without stripping significant leading spaces, so changed-file paths remain accurate. Codex should follow project instruction files when present, but missing instruction files are not a blocker unless the job explicitly requires them. If the original job text mentions file-like guidance paths, Codex is given the currently existing paths and must re-read them at task start.
+Acts as implementation worker. It consumes tasks from ai:codex:tasks and runs the job's selected worker in the job worktree: codex exec for the codex worker, or claude -p --model <model> for the fable/opus workers (with --permission-mode acceptEdits and an allowed-tools list, or --dangerously-skip-permissions when CODEX_BYPASS_SANDBOX=1). The worker prompt scales scope rules to the worker: tasklet-sized for codex, coherent multi-file tasks for fable/opus. It re-reads the task row immediately before validation, runs the current task test command, captures git status/diff/output, writes a run record to SQLite, then sends a REVIEW request back to Claude. The captured diff includes untracked new files so Claude can review newly created code. Git porcelain output is parsed without stripping significant leading spaces, so changed-file paths remain accurate. Codex should follow project instruction files when present, but missing instruction files are not a blocker unless the job explicitly requires them. If the original job text mentions file-like guidance paths, Codex is given the currently existing paths and must re-read them at task start.
 
 When Codex needs to run a target-project executable that may crash, hang, or open a platform crash dialog, it should use ai_run_crash_safe.bash. The wrapper applies a timeout, disables core dumps where possible, and on macOS runs the executable under batch lldb when available so crashes are captured as terminal diagnostics and backtraces. A crashing target executable is treated as diagnostic input for REPAIR, not as a manual action for the user.
 
 watcher.py
 Watches terminal streams: ai:done, ai:human, and ai:dead. It prints final outcomes and errors.
+
+Worker and Controller Selection
+-------------------------------
+
+Each job stores which implementation worker and which controller it uses.
+
+Workers: codex (default), fable (Claude Fable via the Claude CLI; "claude" is accepted as an alias), opus (Claude Opus via the Claude CLI).
+Controllers: claude (default), fable, opus, codex.
+
+Selection, highest precedence first: --worker/--controller flags on ai_job.bash or start_job.py, then the AI_LOOP_WORKER and AI_LOOP_CONTROLLER environment variables, then the built-in defaults.
+
+./ai_job.bash --worker fable --controller fable /path/to/repo "Implement feature X."
+python3 start_job.py --worker opus --controller claude --repo /path/to/repo --goal "..."
+export AI_LOOP_WORKER=fable
+
+Models are configured with AI_LOOP_FABLE_MODEL (default claude-fable-5), AI_LOOP_OPUS_MODEL (default opus), and AI_LOOP_CONTROLLER_MODEL (default: Claude CLI default model, for the claude controller).
+
+The fable/opus workers run:
+
+claude -p --model "$MODEL" --permission-mode acceptEdits --allowedTools Bash,Edit,Write,MultiEdit,NotebookEdit
+
+With CODEX_BYPASS_SANDBOX=1 they instead use --dangerously-skip-permissions. The Claude CLI has no filesystem sandbox comparable to Codex's workspace-write; Git worktree isolation is the main guardrail.
+
+The codex controller runs codex exec --sandbox read-only --output-last-message and parses the decision JSON from the last agent message.
+
+Task sizing follows the worker. With the codex worker, the controller plans many tiny tasklets: one narrow objective, one file cluster, a short stop point. With fable or opus workers, the controller plans larger coherent tasks that may span several related files and include their own discovery and verification, cutting controller round-trips. Default job constraints, the decision schema rules, and the worker prompt all adjust accordingly.
+
+The database schema auto-migrates existing databases to add the worker and controller columns.
 
 Storage
 -------
@@ -94,7 +122,7 @@ ai_loop.sqlite3
 Durable database. It stores jobs, tasks, runs, Claude decisions, and events.
 
 Tables:
-- jobs: overall job goal, repo/worktree paths, status, history
+- jobs: overall job goal, repo/worktree paths, worker/controller selection, status, history
 - tasks: individual Codex tasks
 - runs: Codex execution results, test output, git diff
 - decisions: Claude planning/review decisions
@@ -181,14 +209,15 @@ Run Scripts
 All Bash scripts in the repository are listed below. Scripts are run from the ai-loop repository root unless otherwise noted.
 
 ai_job.bash
-Submits a new job through start_job.py and waits for completion. It accepts either a repo path plus inline goal text, or a single job-description file. In the file form, the file's directory is used as the repo and the file contents become the goal. It adds default constraints and acceptance criteria, uses AI_LOOP_TEST_CMD when set, and passes --allow-parallel when AI_LOOP_ALLOW_PARALLEL_JOBS=1.
+Submits a new job through start_job.py and waits for completion. It accepts either a repo path plus inline goal text, or a single job-description file. In the file form, the file's directory is used as the repo and the file contents become the goal. It adds default constraints and acceptance criteria (sized to the selected worker), uses AI_LOOP_TEST_CMD when set, passes --worker/--controller through (defaulting from AI_LOOP_WORKER/AI_LOOP_CONTROLLER), and passes --allow-parallel when AI_LOOP_ALLOW_PARALLEL_JOBS=1.
 
 Parameters:
-./ai_job.bash <repo-path> <job-description>
-./ai_job.bash <job-description-file>
+./ai_job.bash [--worker codex|fable|opus] [--controller claude|fable|opus|codex] <repo-path> <job-description>
+./ai_job.bash [--worker codex|fable|opus] [--controller claude|fable|opus|codex] <job-description-file>
 
 Examples:
 ./ai_job.bash /path/to/project "Add FPS to the ImGui overlay."
+./ai_job.bash --worker fable --controller fable /path/to/project/job.txt
 AI_LOOP_TEST_CMD="ctest --test-dir build/debug" ./ai_job.bash /path/to/project "Fix the failing renderer tests."
 AI_LOOP_ALLOW_PARALLEL_JOBS=1 ./ai_job.bash /path/to/project "Run an independent cleanup job."
 ./ai_job.bash /path/to/project/job.txt
@@ -336,7 +365,7 @@ Examples:
 AI_LOOP_JOB_ID=J20260701-101500-123456 AI_LOOP_LOG_DIR=./logs/jobs/J20260701-101500-123456 AI_LOOP_RUNTIME_DIR=./run/jobs/J20260701-101500-123456 ./ai_run_claude.bash
 
 ai_run_codex.bash
-Starts codex_worker.py and appends stdout/stderr to ./logs/codex_worker.log, or AI_LOOP_LOG_DIR/codex_worker.log if set. It sets CODEX_BYPASS_SANDBOX=1 by default. When AI_LOOP_JOB_ID is set, the worker uses a job-scoped Redis consumer group, ignores messages for other jobs, and exits after that job reaches a terminal state.
+Starts codex_worker.py (which runs the job's selected worker: codex, fable, or opus) and appends stdout/stderr to ./logs/codex_worker.log, or AI_LOOP_LOG_DIR/codex_worker.log if set. It sets CODEX_BYPASS_SANDBOX=1 by default. When AI_LOOP_JOB_ID is set, the worker uses a job-scoped Redis consumer group, ignores messages for other jobs, and exits after that job reaches a terminal state.
 
 Parameters:
 ./ai_run_codex.bash
@@ -395,13 +424,13 @@ Important Detail
 
 ai_run_codex.bash sets CODEX_BYPASS_SANDBOX=1 by default.
 
-That means Codex runs with --dangerously-bypass-approvals-and-sandbox unless overridden:
+That means Codex runs with --dangerously-bypass-approvals-and-sandbox, and the fable/opus workers run with --dangerously-skip-permissions, unless overridden:
 
 CODEX_BYPASS_SANDBOX=0 ./ai_run_codex.bash
 
-Jobs and tasklets are intentionally small. Claude should create many precise tasklets instead of broad mixed tasks. Each status line includes a counter and a short same-line description so progress can be read immediately. Status output also includes a simple heuristic estimate of percent complete and remaining time. The estimate is based on completed runs, active queued/running work, and elapsed job time; it is intentionally approximate.
+Task size follows the worker. With the codex worker, jobs and tasklets are intentionally small and Claude should create many precise tasklets instead of broad mixed tasks. With fable/opus workers, the controller plans larger coherent tasks with a testable stop point. Each status line includes a counter and a short same-line description so progress can be read immediately. Status output also includes a simple heuristic estimate of percent complete and remaining time. The estimate is based on completed runs, active queued/running work, and elapsed job time; it is intentionally approximate.
 
-Claude review is a quality gate. It should return REPAIR when Codex visibly violates coding guidelines, ignores existing project patterns, changes unrelated behavior, leaves brittle or duplicated code without cause, omits necessary tests for risky changes, or satisfies the task only superficially. It should avoid HUMAN_NEEDED unless the remaining action truly requires a person, credentials, paid installation, physical device/display access, or a destructive choice that cannot be safely automated.
+Claude review is a quality gate. It should return REPAIR when the worker visibly violates coding guidelines, ignores existing project patterns, changes unrelated behavior, leaves brittle or duplicated code without cause, omits necessary tests for risky changes, or satisfies the task only superficially. It should avoid HUMAN_NEEDED unless the remaining action truly requires a person, credentials, paid installation, physical device/display access, or a destructive choice that cannot be safely automated.
 
 Operational Proof
 -----------------
