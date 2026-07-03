@@ -59,11 +59,20 @@ source ./ai_loop_python.bash
 python_bin="$(choose_ai_loop_python)"
 ensure_ai_loop_python_redis "$python_bin"
 
+case "$worker" in
+  fable|opus|claude)
+    size_constraint="Keep each task coherent and reviewable."
+    ;;
+  *)
+    size_constraint="Keep changes small and reviewable."
+    ;;
+esac
+
 cmd=(
   "$python_bin" start_job.py
   --repo "$repo_path"
   --goal "$job_description"
-  --constraint "Keep changes small and reviewable."
+  --constraint "$size_constraint"
   --constraint "Do not modify unrelated files."
   --acceptance "The requested feature works."
   --acceptance "The test command passes."

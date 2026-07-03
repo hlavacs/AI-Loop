@@ -146,7 +146,7 @@ def claude_transient_retry_delay(attempt: int) -> float:
     return min(delay, CLAUDE_TRANSIENT_RETRY_MAX_BACKOFF_SECONDS)
 
 
-def json_remake_prompt(original_prompt: str, invalid_output: str, error: Exception) -> str:
+def json_remake_prompt(original_prompt: str, invalid_output: str, error: Exception, sizing: str = "small") -> str:
     return f"""Your previous response could not be accepted because it was not valid decision JSON.
 
 JSON/parser/schema error:
@@ -157,7 +157,7 @@ Invalid response tail:
 
 Remake the response now. Return one valid JSON object only, with no prose before or after it.
 The JSON must parse with json.loads and must satisfy this schema:
-{schema_text()}
+{schema_text(sizing)}
 
 Use the same planning/review context as before:
 {original_prompt}
@@ -261,7 +261,7 @@ def refreshed_instruction_files(job: dict[str, Any], task: dict[str, Any] | None
     return snapshots
 
 
-def run_claude(claude_bin: str, prompt: str, model: str = "") -> dict[str, Any]:
+def run_claude(claude_bin: str, prompt: str, model: str = "", sizing: str = "small") -> dict[str, Any]:
     if shutil.which(claude_bin) is None:
         return {
             "action": "HUMAN_NEEDED",
@@ -326,7 +326,7 @@ def run_claude(claude_bin: str, prompt: str, model: str = "") -> dict[str, Any]:
             last_error = exc
             if attempt >= CLAUDE_JSON_REMAKE_ATTEMPTS:
                 break
-            current_prompt = json_remake_prompt(prompt, output, exc)
+            current_prompt = json_remake_prompt(prompt, output, exc, sizing)
 
     raise ValueError(
         "Claude did not produce valid decision JSON after "
@@ -334,7 +334,7 @@ def run_claude(claude_bin: str, prompt: str, model: str = "") -> dict[str, Any]:
     )
 
 
-def run_codex_controller(codex_bin: str, prompt: str, workdir: str) -> dict[str, Any]:
+def run_codex_controller(codex_bin: str, prompt: str, workdir: str, sizing: str = "small") -> dict[str, Any]:
     if shutil.which(codex_bin) is None:
         return {
             "action": "HUMAN_NEEDED",
@@ -395,7 +395,7 @@ def run_codex_controller(codex_bin: str, prompt: str, workdir: str) -> dict[str,
             last_error = exc
             if attempt >= CLAUDE_JSON_REMAKE_ATTEMPTS:
                 break
-            current_prompt = json_remake_prompt(prompt, last_message or output, exc)
+            current_prompt = json_remake_prompt(prompt, last_message or output, exc, sizing)
 
     raise ValueError(
         "Codex did not produce valid decision JSON after "
@@ -412,18 +412,44 @@ def job_controller(settings, job: dict[str, Any]) -> str:
 
 def controller_decision(settings, job: dict[str, Any], prompt: str) -> dict[str, Any]:
     controller = job_controller(settings, job)
+    sizing = job_sizing(job)
     if controller == "codex":
-        return run_codex_controller(settings.codex_bin, prompt, str(job["worktree_path"]))
+        return run_codex_controller(settings.codex_bin, prompt, str(job["worktree_path"]), sizing)
     if controller == "fable":
         model = settings.fable_model
     elif controller == "opus":
         model = settings.opus_model
     else:
         model = settings.controller_model
-    return run_claude(settings.claude_bin, prompt, model)
+    return run_claude(settings.claude_bin, prompt, model, sizing)
 
 
-def schema_text() -> str:
+CAPABLE_WORKERS = {"fable", "opus"}
+
+
+def worker_sizing(worker: str) -> str:
+    return "large" if worker in CAPABLE_WORKERS else "small"
+
+
+def job_sizing(job: dict[str, Any]) -> str:
+    return worker_sizing(str(job.get("worker") or "codex").strip().lower())
+
+
+def sizing_rules(sizing: str) -> str:
+    if sizing == "large":
+        return """- The worker is a highly capable coding agent. Prefer coherent, self-contained tasks over micro-steps.
+- A next_task should have one clear objective and a testable stop point; it may span several related files.
+- Group discovery, scaffolding, implementation, and verification into one task when they serve the same objective; do not bundle unrelated objectives.
+- Split work only at natural boundaries such as independent features or risky refactors, not per file or per function.
+- Keep next_task.acceptance provable by the test command in one run."""
+    return """- Prefer more tasklets over fewer broad tasks. Each next_task should be the smallest independently useful step.
+- A next_task must have one concrete objective, one primary file or tightly related file cluster, and a clear stop point.
+- Do not combine discovery, scaffolding, implementation, broad refactoring, and full verification in one task unless the change is truly trivial.
+- If the next useful work has multiple parts, return only the first tasklet now and leave the rest for later CONTINUE decisions.
+- Keep next_task.acceptance narrow enough that the worker can prove it in one short run."""
+
+
+def schema_text(sizing: str = "small") -> str:
     return """Return JSON only with this schema:
 {
   "action": "CONTINUE | REPAIR | DONE | HUMAN_NEEDED",
@@ -440,25 +466,21 @@ def schema_text() -> str:
 Rules:
 - next_task is required for CONTINUE and REPAIR.
 - You are controller/planner/reviewer only, never a code editor.
-- Prefer more tasklets over fewer broad tasks. Each next_task should be the smallest independently useful step.
-- A next_task must have one concrete objective, one primary file or tightly related file cluster, and a clear stop point.
-- Do not combine discovery, scaffolding, implementation, broad refactoring, and full verification in one task unless the change is truly trivial.
-- If the next useful work has multiple parts, return only the first tasklet now and leave the rest for later CONTINUE decisions.
+""" + sizing_rules(sizing) + """
 - Write next_task.goal as a specific imperative, not a project summary. Name the exact directory, file, symbol, or test target when known.
-- Keep next_task.acceptance narrow enough that Codex can prove it in one short run.
-- Project instruction files such as AGENTS.md are optional. If they exist and are relevant, require Codex to follow them; if they are absent, continue using the job goal, constraints, local code patterns, and tests.
+- Project instruction files such as AGENTS.md are optional. If they exist and are relevant, require the worker to follow them; if they are absent, continue using the job goal, constraints, local code patterns, and tests.
 - File-like paths mentioned in the original job description, job constraints, or job acceptance criteria may be live guidance files. The prompt includes a refreshed snapshot of those files when they exist. Treat that snapshot as current guidance and prefer it over earlier summaries if it changed.
-- If a next_task depends on a mentioned guidance file, tell Codex to re-read that file at the start of the task and again before finalizing if the task runs long.
+- If a next_task depends on a mentioned guidance file, tell the worker to re-read that file at the start of the task and again before finalizing if the task runs long.
 - During REVIEW, assess code quality and guideline compliance, not just whether files changed. Check visible changes against project instructions when present, local architecture, naming/style patterns, scope control, maintainability, test coverage proportional to risk, and avoidance of unrelated refactors.
 - Avoid HUMAN_NEEDED at all costs. Treat it as the last resort, not a normal blocker state.
 - Before HUMAN_NEEDED, analyze the problem, identify concrete solution paths, and choose an automated diagnostic or fix task whenever any safe one exists.
 - Return REPAIR when the next task is meant to fix a known problem, including code defects, guideline violations, missing build wiring, bad test commands, fixable environment/tool configuration, or recoverable promotion/build failures.
 - For REPAIR, write next_task.goal so it says exactly what is being fixed and why; include acceptance that proves the problem is gone or narrowed.
-- Return REPAIR when Codex visibly violates coding guidelines, ignores existing project patterns, changes unrelated behavior, leaves brittle or duplicated code without cause, omits necessary tests for risky changes, or satisfies the task only superficially.
+- Return REPAIR when the worker visibly violates coding guidelines, ignores existing project patterns, changes unrelated behavior, leaves brittle or duplicated code without cause, omits necessary tests for risky changes, or satisfies the task only superficially.
 - Return HUMAN_NEEDED only after at least one concrete automated diagnostic/fix path has been tried or ruled out, and only when the remaining action truly requires a person, credentials, paid installation, physical device/display access, or a destructive choice that cannot be safely automated.
-- For GUI/display/window tasks, ask Codex to verify DISPLAY, WAYLAND_DISPLAY, XDG_SESSION_TYPE, SDL video backends, Vulkan presentation support, and visible windows from the same process environment before deciding the display is unavailable.
-- If Codex failed because of sandboxing, a missing tool, or permissions, first prefer REPAIR with a precise command, install step, configuration change, or diagnostic unless the loop demonstrably cannot perform it.
-- If a target executable prints a scene/asset load failure such as "scene load failed: error=io_error", first treat it as a likely working-directory or asset-path problem. Prefer REPAIR asking Codex to run the executable from the repository/worktree root, inspect the expected asset path, and fix path resolution or launch documentation as appropriate.
+- For GUI/display/window tasks, ask the worker to verify DISPLAY, WAYLAND_DISPLAY, XDG_SESSION_TYPE, SDL video backends, Vulkan presentation support, and visible windows from the same process environment before deciding the display is unavailable.
+- If the worker failed because of sandboxing, a missing tool, or permissions, first prefer REPAIR with a precise command, install step, configuration change, or diagnostic unless the loop demonstrably cannot perform it.
+- If a target executable prints a scene/asset load failure such as "scene load failed: error=io_error", first treat it as a likely working-directory or asset-path problem. Prefer REPAIR asking the worker to run the executable from the repository/worktree root, inspect the expected asset path, and fix path resolution or launch documentation as appropriate.
 - If tests fail due to code, return REPAIR.
 - If tests pass but the goal is incomplete, return CONTINUE.
 - If the goal and acceptance criteria are satisfied, return DONE.
@@ -467,11 +489,23 @@ Rules:
 
 def plan_prompt(job: dict[str, Any]) -> str:
     instruction_files = refreshed_instruction_files(job)
+    sizing = job_sizing(job)
+    if sizing == "large":
+        intro = "Create exactly one well-scoped first task for this job."
+        tail = """For PLAN, choose action CONTINUE unless the job is impossible or requires a human before any code work.
+The next_task may be a substantial, coherent unit of work: one clear objective, a testable stop point, including any discovery it needs.
+Preserve the job's constraints and acceptance criteria, and keep the task's own acceptance provable by the test command."""
+    else:
+        intro = "Create exactly one tiny first worker tasklet for this job."
+        tail = """For PLAN, choose action CONTINUE unless the job is impossible or requires a human before any code work.
+The next_task must be smaller than a normal development task: one tasklet, one narrow output, then stop.
+If discovery is needed, make the first tasklet discovery-only or scaffold-only; do not ask for a broad audit plus implementation.
+Preserve the job's constraints and acceptance criteria, but narrow the tasklet's own acceptance to what this one small step can prove."""
     return f"""You are the controller/planner in a generic continuous development loop.
 
-Create exactly one tiny first Codex tasklet for this job.
+{intro}
 
-{schema_text()}
+{schema_text(sizing)}
 
 Job state:
 {json.dumps(job, indent=2)}
@@ -479,10 +513,7 @@ Job state:
 Refreshed referenced guidance files:
 {json.dumps(instruction_files, indent=2)}
 
-For PLAN, choose action CONTINUE unless the job is impossible or requires a human before any code work.
-The next_task must be smaller than a normal development task: one tasklet, one narrow output, then stop.
-If discovery is needed, make the first tasklet discovery-only or scaffold-only; do not ask for a broad audit plus implementation.
-Preserve the job's constraints and acceptance criteria, but narrow the tasklet's own acceptance to what this one small step can prove.
+{tail}
 """
 
 
@@ -498,13 +529,19 @@ def review_prompt(job: dict[str, Any], task: dict[str, Any], run: dict[str, Any]
             "diff": run["diff"][-80000:],
         },
     }
+    sizing = job_sizing(job)
+    if sizing == "large":
+        guidance = """Review the worker output, test output, git diff, and durable job state. Decide the next loop action.
+When continuing, send the worker the next coherent task: one clear objective with a testable stop point, grouping related changes rather than splitting them into micro-steps."""
+    else:
+        guidance = """Review the worker output, test output, git diff, and durable job state. Decide the next loop action.
+When continuing, send the worker the next smallest tasklet, not the next broad milestone.
+Prefer several precise CONTINUE tasklets over one large mixed task."""
     return f"""You are the controller/reviewer in a generic continuous development loop.
 
-Review Codex output, test output, git diff, and durable job state. Decide the next loop action.
-When continuing, send Codex the next smallest tasklet, not the next broad milestone.
-Prefer several precise CONTINUE tasklets over one large mixed task.
+{guidance}
 
-{schema_text()}
+{schema_text(sizing)}
 
 State to review:
 {json.dumps(review_state, indent=2)}

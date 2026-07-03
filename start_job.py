@@ -26,14 +26,24 @@ from ai_loop.progress import estimate_progress
 from ai_loop.queues import ensure_group, redis_client, xadd_json
 
 
-DEFAULT_CONSTRAINTS = [
-    "Make small incremental changes.",
-    "Prefer many tiny, specific tasklets over fewer broad tasks.",
-    "Each tasklet should have one concrete objective and a clear stop point.",
+COMMON_CONSTRAINTS = [
     "Do not commit changes.",
     "Do not merge branches.",
     "Keep the repository buildable after each iteration.",
 ]
+
+SMALL_TASK_CONSTRAINTS = [
+    "Make small incremental changes.",
+    "Prefer many tiny, specific tasklets over fewer broad tasks.",
+    "Each tasklet should have one concrete objective and a clear stop point.",
+]
+
+LARGE_TASK_CONSTRAINTS = [
+    "Prefer coherent, self-contained tasks that group related changes.",
+    "Each task should have one clear objective and a testable stop point.",
+]
+
+CAPABLE_WORKERS = {"fable", "opus"}
 
 DEFAULT_ACCEPTANCE = [
     "The implementation satisfies the stated goal.",
@@ -613,7 +623,8 @@ def main() -> int:
         return 2
 
     job_id = timestamp_id("J")
-    constraints = [*DEFAULT_CONSTRAINTS, *args.constraint]
+    sizing_constraints = LARGE_TASK_CONSTRAINTS if worker in CAPABLE_WORKERS else SMALL_TASK_CONSTRAINTS
+    constraints = [*sizing_constraints, *COMMON_CONSTRAINTS, *args.constraint]
     acceptance = [*DEFAULT_ACCEPTANCE, *args.acceptance]
 
     use_worktree = not args.no_worktree

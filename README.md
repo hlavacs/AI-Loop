@@ -117,6 +117,15 @@ default `claude-fable-5`; `AI_LOOP_OPUS_MODEL`, default `opus`). `codex` runs
 `codex exec --sandbox read-only --output-last-message` and parses the decision
 JSON from the last agent message.
 
+## Task Sizing
+
+Task sizing follows the job's worker. With the `codex` worker, the controller
+plans many tiny tasklets (one narrow objective, one file cluster, short stop
+point). With `fable` or `opus` workers, the controller plans larger coherent
+tasks that may span several related files and include their own discovery and
+verification, cutting controller round-trips. The default job constraints and
+the worker prompt adjust accordingly.
+
 With `CODEX_BYPASS_SANDBOX=1` the Fable worker uses
 `--dangerously-skip-permissions` instead. Note the Claude CLI has no
 filesystem sandbox comparable to Codex's `workspace-write`; the Git worktree

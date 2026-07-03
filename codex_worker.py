@@ -186,6 +186,15 @@ def codex_prompt(job: dict, task: dict, worker: str = "codex") -> str:
     guidance_files = referenced_existing_files(job, task)
     crash_safe_runner = Path(__file__).resolve().parent / "ai_run_crash_safe.bash"
     worker_name = WORKER_NAMES.get(worker, "Codex CLI")
+    if worker in {"fable", "opus"}:
+        scope_rules = """- Implement only this task, completely; it may span several related files.
+- Do not expand the task into unrelated cleanup, broad audits, or follow-up milestones.
+- Stop once this task's acceptance criteria are met."""
+    else:
+        scope_rules = """- Implement only this task.
+- Treat this as a tasklet: keep changes as small and specific as possible.
+- Do not expand the task into adjacent cleanup, broad audits, or follow-up milestones.
+- Stop once this tasklet's acceptance criteria are met."""
     return f"""You are {worker_name}, the implementation worker in a Claude-controlled loop.
 
 Repository: {job["worktree_path"]}
@@ -208,10 +217,7 @@ Referenced guidance files to refresh before work:
 {db.to_json(guidance_files)}
 
 Rules:
-- Implement only this task.
-- Treat this as a tasklet: keep changes as small and specific as possible.
-- Do not expand the task into adjacent cleanup, broad audits, or follow-up milestones.
-- Stop once this tasklet's acceptance criteria are met.
+{scope_rules}
 - Follow project instruction files when they exist, such as AGENTS.md or equivalent local guidelines. If no such files exist, infer style and architecture from nearby code instead of treating their absence as a blocker.
 - The listed referenced guidance files may have changed since the job started. Re-read each existing listed file at the start of the task and use the current content, not stale summaries.
 - If the task runs long or your plan depends on those files, check their modification time and re-read them before finalizing.
