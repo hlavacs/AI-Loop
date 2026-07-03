@@ -67,6 +67,8 @@ def init_db(db_path: str | Path) -> None:
                 test_cmd TEXT NOT NULL,
                 max_iterations INTEGER NOT NULL,
                 use_worktree INTEGER NOT NULL,
+                worker TEXT NOT NULL DEFAULT 'codex',
+                controller TEXT NOT NULL DEFAULT 'claude',
                 status TEXT NOT NULL,
                 history_summary TEXT NOT NULL DEFAULT '',
                 created_at TEXT NOT NULL,
@@ -141,6 +143,14 @@ def init_db(db_path: str | Path) -> None:
             CREATE INDEX IF NOT EXISTS idx_events_job ON events(job_id, created_at);
             """
         )
+        ensure_column(conn, "jobs", "worker", "worker TEXT NOT NULL DEFAULT 'codex'")
+        ensure_column(conn, "jobs", "controller", "controller TEXT NOT NULL DEFAULT 'claude'")
+
+
+def ensure_column(conn: sqlite3.Connection, table: str, column: str, ddl: str) -> None:
+    columns = {row[1] for row in conn.execute(f"PRAGMA table_info({table})")}
+    if column not in columns:
+        conn.execute(f"ALTER TABLE {table} ADD COLUMN {ddl}")
 
 
 def row_to_job(row: sqlite3.Row) -> dict[str, Any]:
@@ -178,16 +188,18 @@ def create_job(
     test_cmd: str,
     max_iterations: int,
     use_worktree: bool,
+    worker: str = "codex",
+    controller: str = "claude",
 ) -> None:
     now = utc_now()
     conn.execute(
         """
         INSERT INTO jobs (
             id, repo_path, worktree_path, branch, base_ref, goal, constraints_json,
-            acceptance_json, test_cmd, max_iterations, use_worktree, status,
-            created_at, updated_at
+            acceptance_json, test_cmd, max_iterations, use_worktree, worker,
+            controller, status, created_at, updated_at
         )
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'planning', ?, ?)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'planning', ?, ?)
         """,
         (
             job_id,
@@ -201,6 +213,8 @@ def create_job(
             test_cmd,
             max_iterations,
             1 if use_worktree else 0,
+            worker,
+            controller,
             now,
             now,
         ),

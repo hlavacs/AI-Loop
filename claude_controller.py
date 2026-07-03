@@ -5,6 +5,7 @@ import os
 import re
 import shutil
 import subprocess
+import tempfile
 import time
 import uuid
 from datetime import datetime, timezone
@@ -260,13 +261,17 @@ def refreshed_instruction_files(job: dict[str, Any], task: dict[str, Any] | None
     return snapshots
 
 
-def run_claude(claude_bin: str, prompt: str) -> dict[str, Any]:
+def run_claude(claude_bin: str, prompt: str, model: str = "") -> dict[str, Any]:
     if shutil.which(claude_bin) is None:
         return {
             "action": "HUMAN_NEEDED",
             "reason": f"missing Claude binary: {claude_bin}",
             "history_summary": "Claude controller could not run because the Claude CLI is missing.",
         }
+
+    claude_cmd = [claude_bin, "-p", "--output-format", "json"]
+    if model:
+        claude_cmd.extend(["--model", model])
 
     current_prompt = prompt
     last_output = ""
@@ -280,7 +285,7 @@ def run_claude(claude_bin: str, prompt: str) -> dict[str, Any]:
         while True:
             try:
                 proc = subprocess.run(
-                    [claude_bin, "-p", "--output-format", "json", current_prompt],
+                    [*claude_cmd, current_prompt],
                     text=True,
                     capture_output=True,
                     timeout=7200,
@@ -329,6 +334,95 @@ def run_claude(claude_bin: str, prompt: str) -> dict[str, Any]:
     )
 
 
+def run_codex_controller(codex_bin: str, prompt: str, workdir: str) -> dict[str, Any]:
+    if shutil.which(codex_bin) is None:
+        return {
+            "action": "HUMAN_NEEDED",
+            "reason": f"missing Codex binary: {codex_bin}",
+            "history_summary": "Codex controller could not run because the Codex CLI is missing.",
+        }
+
+    current_prompt = prompt
+    last_output = ""
+    last_error: Exception | None = None
+    for attempt in range(CLAUDE_JSON_REMAKE_ATTEMPTS + 1):
+        label = "running Codex controller" if attempt == 0 else f"remaking Codex JSON decision attempt {attempt}"
+        print(label)
+        with tempfile.NamedTemporaryFile("w", suffix=".txt", delete=False) as handle:
+            last_message_path = Path(handle.name)
+        try:
+            try:
+                proc = subprocess.run(
+                    [
+                        codex_bin,
+                        "exec",
+                        "--cd",
+                        workdir,
+                        "--sandbox",
+                        "read-only",
+                        "--output-last-message",
+                        str(last_message_path),
+                        current_prompt,
+                    ],
+                    text=True,
+                    capture_output=True,
+                    timeout=7200,
+                )
+            except subprocess.TimeoutExpired as exc:
+                return {
+                    "action": "HUMAN_NEEDED",
+                    "reason": f"Codex CLI timed out after {exc.timeout:g}s",
+                    "history_summary": "Codex controller timed out before producing a usable decision.",
+                }
+            output = (proc.stdout + "\n" + proc.stderr).strip()
+            last_output = output
+            try:
+                last_message = last_message_path.read_text(encoding="utf-8").strip()
+            except OSError:
+                last_message = ""
+        finally:
+            last_message_path.unlink(missing_ok=True)
+
+        if proc.returncode != 0:
+            return {
+                "action": "HUMAN_NEEDED",
+                "reason": f"Codex CLI failed with rc={proc.returncode}: {output[-4000:]}",
+                "history_summary": "Codex controller failed before producing a usable decision.",
+            }
+        try:
+            return parse_and_validate_decision(last_message or output)
+        except (json.JSONDecodeError, ValueError) as exc:
+            last_error = exc
+            if attempt >= CLAUDE_JSON_REMAKE_ATTEMPTS:
+                break
+            current_prompt = json_remake_prompt(prompt, last_message or output, exc)
+
+    raise ValueError(
+        "Codex did not produce valid decision JSON after "
+        f"{CLAUDE_JSON_REMAKE_ATTEMPTS + 1} attempts: {last_error}; output tail={last_output[-4000:]!r}"
+    )
+
+
+def job_controller(settings, job: dict[str, Any]) -> str:
+    controller = str(job.get("controller") or "").strip().lower()
+    if controller not in {"claude", "fable", "opus", "codex"}:
+        controller = settings.controller_default
+    return controller
+
+
+def controller_decision(settings, job: dict[str, Any], prompt: str) -> dict[str, Any]:
+    controller = job_controller(settings, job)
+    if controller == "codex":
+        return run_codex_controller(settings.codex_bin, prompt, str(job["worktree_path"]))
+    if controller == "fable":
+        model = settings.fable_model
+    elif controller == "opus":
+        model = settings.opus_model
+    else:
+        model = settings.controller_model
+    return run_claude(settings.claude_bin, prompt, model)
+
+
 def schema_text() -> str:
     return """Return JSON only with this schema:
 {
@@ -345,7 +439,7 @@ def schema_text() -> str:
 
 Rules:
 - next_task is required for CONTINUE and REPAIR.
-- Claude is controller/planner/reviewer only, never a code editor.
+- You are controller/planner/reviewer only, never a code editor.
 - Prefer more tasklets over fewer broad tasks. Each next_task should be the smallest independently useful step.
 - A next_task must have one concrete objective, one primary file or tightly related file cluster, and a clear stop point.
 - Do not combine discovery, scaffolding, implementation, broad refactoring, and full verification in one task unless the change is truly trivial.
@@ -373,7 +467,7 @@ Rules:
 
 def plan_prompt(job: dict[str, Any]) -> str:
     instruction_files = refreshed_instruction_files(job)
-    return f"""You are Claude CLI, the controller/planner in a generic continuous development loop.
+    return f"""You are the controller/planner in a generic continuous development loop.
 
 Create exactly one tiny first Codex tasklet for this job.
 
@@ -404,7 +498,7 @@ def review_prompt(job: dict[str, Any], task: dict[str, Any], run: dict[str, Any]
             "diff": run["diff"][-80000:],
         },
     }
-    return f"""You are Claude CLI, the controller/reviewer in a generic continuous development loop.
+    return f"""You are the controller/reviewer in a generic continuous development loop.
 
 Review Codex output, test output, git diff, and durable job state. Decide the next loop action.
 When continuing, send Codex the next smallest tasklet, not the next broad milestone.
@@ -643,13 +737,13 @@ def handle_request(settings, client, request: dict[str, Any]) -> None:
     print(f"Claude request: {request_type} job={job_id}")
 
     if request_type == "PLAN":
-        decision = run_claude(settings.claude_bin, plan_prompt(job))
+        decision = controller_decision(settings, job, plan_prompt(job))
         task_id = None
         run_id = None
     elif request_type == "REVIEW":
         if task is None or run is None:
             raise ValueError("REVIEW requires task_id and run_id")
-        decision = run_claude(settings.claude_bin, review_prompt(job, task, run))
+        decision = controller_decision(settings, job, review_prompt(job, task, run))
         task_id = task["id"]
         run_id = run["id"]
     else:

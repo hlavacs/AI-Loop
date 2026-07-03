@@ -15,7 +15,13 @@ from textwrap import wrap
 from redis.exceptions import ConnectionError, TimeoutError
 
 from ai_loop import db
-from ai_loop.config import CLAUDE_REQUEST_STREAM, CODEX_TASK_STREAM, load_settings
+from ai_loop.config import (
+    CLAUDE_REQUEST_STREAM,
+    CODEX_TASK_STREAM,
+    load_settings,
+    normalize_controller,
+    normalize_worker,
+)
 from ai_loop.progress import estimate_progress
 from ai_loop.queues import ensure_group, redis_client, xadd_json
 
@@ -53,6 +59,16 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--max-iterations", type=int, default=50000, help="Maximum Codex iterations.")
     parser.add_argument("--base-ref", default="HEAD", help="Git ref used for the isolated worktree.")
     parser.add_argument("--no-worktree", action="store_true", help="Run directly in --repo instead of a Git worktree.")
+    parser.add_argument(
+        "--worker",
+        default=os.getenv("AI_LOOP_WORKER", "codex"),
+        help="Implementation worker: 'codex', 'fable' (alias 'claude'), or 'opus'. Default from AI_LOOP_WORKER or 'codex'.",
+    )
+    parser.add_argument(
+        "--controller",
+        default=os.getenv("AI_LOOP_CONTROLLER", "claude"),
+        help="Controller: 'claude' (CLI default model), 'fable', 'opus', or 'codex'. Default from AI_LOOP_CONTROLLER or 'claude'.",
+    )
     parser.add_argument("--allow-parallel", action="store_true", help="Allow creating this job while another job is active.")
     parser.add_argument("--wait", action="store_true", help="Wait for the job to reach a terminal status.")
     parser.add_argument("--poll-interval", type=float, default=5.0, help="Seconds between status checks with --wait.")
@@ -582,6 +598,12 @@ def main() -> int:
     if not repo.exists():
         print(f"repo does not exist: {repo}", file=sys.stderr)
         return 2
+    try:
+        worker = normalize_worker(args.worker)
+        controller = normalize_controller(args.controller)
+    except ValueError as exc:
+        print(str(exc), file=sys.stderr)
+        return 2
     test_cmd = detect_test_cmd(repo, args.test_cmd)
 
     db.init_db(settings.db_path)
@@ -622,6 +644,8 @@ def main() -> int:
                 test_cmd=test_cmd,
                 max_iterations=args.max_iterations,
                 use_worktree=use_worktree,
+                worker=worker,
+                controller=controller,
             )
             db.add_event(
                 conn,
@@ -632,6 +656,8 @@ def main() -> int:
                     "worktree_path": str(worktree),
                     "goal": args.goal,
                     "test_cmd": test_cmd,
+                    "worker": worker,
+                    "controller": controller,
                     "pre_job_commit": pre_job_commit,
                     "checkout_overlay_files": overlay_files,
                 },
@@ -667,6 +693,8 @@ def main() -> int:
 
     print(f"created job {job_id}")
     print(f"repo: {repo}")
+    print(f"worker: {worker}")
+    print(f"controller: {controller}")
     if pre_job_commit.get("created"):
         print(f"pre-job commit: {pre_job_commit.get('after')}")
     else:

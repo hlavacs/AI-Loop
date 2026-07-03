@@ -2,11 +2,31 @@
 set -euo pipefail
 
 usage() {
-  echo "usage: $0 <repo-path> <job-description>" >&2
-  echo "       $0 <job-description-file>" >&2
+  echo "usage: $0 [--worker codex|fable|opus] [--controller claude|fable|opus|codex] <repo-path> <job-description>" >&2
+  echo "       $0 [--worker codex|fable|opus] [--controller claude|fable|opus|codex] <job-description-file>" >&2
   echo "example: $0 /path/to/your/project \"Implement the requested feature in small safe steps.\"" >&2
-  echo "example: $0 /path/to/your/project/job.txt" >&2
+  echo "example: $0 --worker fable --controller fable /path/to/your/project/job.txt" >&2
 }
+
+worker="${AI_LOOP_WORKER:-}"
+controller="${AI_LOOP_CONTROLLER:-}"
+while [ "$#" -gt 0 ]; do
+  case "$1" in
+    --worker)
+      if [ "$#" -lt 2 ]; then usage; exit 2; fi
+      worker="$2"
+      shift 2
+      ;;
+    --controller)
+      if [ "$#" -lt 2 ]; then usage; exit 2; fi
+      controller="$2"
+      shift 2
+      ;;
+    *)
+      break
+      ;;
+  esac
+done
 
 if [ "$#" -eq 1 ]; then
   job_file="$1"
@@ -52,6 +72,14 @@ cmd=(
 
 if [ "${AI_LOOP_TEST_CMD:-}" != "" ]; then
   cmd+=(--test-cmd "$AI_LOOP_TEST_CMD")
+fi
+
+if [ "$worker" != "" ]; then
+  cmd+=(--worker "$worker")
+fi
+
+if [ "$controller" != "" ]; then
+  cmd+=(--controller "$controller")
 fi
 
 if [ "${AI_LOOP_ALLOW_PARALLEL_JOBS:-}" = "1" ]; then

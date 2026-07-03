@@ -81,6 +81,26 @@ def build_codex_command(codex_bin: str, cwd: str, prompt: str, bypass_sandbox: b
     return cmd
 
 
+FABLE_ALLOWED_TOOLS = "Bash,Edit,Write,MultiEdit,NotebookEdit"
+
+
+def build_fable_command(claude_bin: str, prompt: str, model: str, bypass_sandbox: bool) -> list[str]:
+    cmd = [claude_bin, "-p", "--model", model]
+    if bypass_sandbox:
+        cmd.append("--dangerously-skip-permissions")
+    else:
+        cmd.extend(["--permission-mode", "acceptEdits", "--allowedTools", FABLE_ALLOWED_TOOLS])
+    cmd.append(prompt)
+    return cmd
+
+
+def job_worker(settings, job: dict) -> str:
+    worker = str(job.get("worker") or "").strip().lower()
+    if worker == "claude":
+        worker = "fable"
+    return worker if worker in {"codex", "fable", "opus"} else settings.worker_default
+
+
 def text_fields(*items: object) -> str:
     parts: list[str] = []
     for item in items:
@@ -158,10 +178,15 @@ def referenced_existing_files(job: dict, task: dict) -> list[str]:
     return [str(path.relative_to(worktree.resolve())) for path in found]
 
 
-def codex_prompt(job: dict, task: dict) -> str:
+WORKER_NAMES = {"fable": "Claude Fable", "opus": "Claude Opus", "codex": "Codex CLI"}
+WORKER_LABELS = {"fable": "Fable", "opus": "Opus", "codex": "Codex"}
+
+
+def codex_prompt(job: dict, task: dict, worker: str = "codex") -> str:
     guidance_files = referenced_existing_files(job, task)
     crash_safe_runner = Path(__file__).resolve().parent / "ai_run_crash_safe.bash"
-    return f"""You are Codex CLI, the implementation worker in a Claude-controlled loop.
+    worker_name = WORKER_NAMES.get(worker, "Codex CLI")
+    return f"""You are {worker_name}, the implementation worker in a Claude-controlled loop.
 
 Repository: {job["worktree_path"]}
 Job: {job["id"]}
@@ -286,24 +311,36 @@ def process_task(settings, client, task_id: str) -> None:
     status = "completed"
     worktree_path = job["worktree_path"]
 
-    if shutil.which(settings.codex_bin) is None:
-        error = f"missing Codex binary: {settings.codex_bin}"
+    worker = job_worker(settings, job)
+    worker_bin = settings.claude_bin if worker in {"fable", "opus"} else settings.codex_bin
+    worker_label = WORKER_LABELS.get(worker, "Codex")
+
+    if shutil.which(worker_bin) is None:
+        error = f"missing {worker_label} binary: {worker_bin}"
         status = "human_needed"
         print(error)
     else:
-        prompt = codex_prompt(job, task)
-        codex_cmd = build_codex_command(
-            settings.codex_bin,
-            worktree_path,
-            prompt,
-            settings.codex_bypass_sandbox,
-        )
+        prompt = codex_prompt(job, task, worker)
+        if worker in {"fable", "opus"}:
+            codex_cmd = build_fable_command(
+                settings.claude_bin,
+                prompt,
+                settings.fable_model if worker == "fable" else settings.opus_model,
+                settings.codex_bypass_sandbox,
+            )
+        else:
+            codex_cmd = build_codex_command(
+                settings.codex_bin,
+                worktree_path,
+                prompt,
+                settings.codex_bypass_sandbox,
+            )
         worker_stage = "fixing" if str(task["created_by"]) == "claude:repair" else "implementing"
-        log_worker_stage(job["id"], task_id, worker_stage, "Codex process started; source changes may not exist until it finishes")
+        log_worker_stage(job["id"], task_id, worker_stage, f"{worker_label} process started; source changes may not exist until it finishes")
         codex = run_command(codex_cmd, worktree_path, 7200)
         codex_rc = int(codex["rc"])
         codex_output = str(codex["output"])[-OUTPUT_LIMIT:]
-        log_worker_stage(job["id"], task_id, "codex_done", f"Codex finished rc={codex_rc}; running task test command")
+        log_worker_stage(job["id"], task_id, "codex_done", f"{worker_label} finished rc={codex_rc}; running task test command")
 
         with db.transaction(settings.db_path) as conn:
             refreshed_task = db.get_task(conn, task_id)
@@ -349,7 +386,7 @@ def process_task(settings, client, task_id: str) -> None:
                 conn,
                 job["id"],
                 "human_needed",
-                "Codex worker could not run the implementation task.",
+                "Implementation worker could not run the task.",
             )
         db.add_event(
             conn,
@@ -364,7 +401,7 @@ def process_task(settings, client, task_id: str) -> None:
             "task_id": task_id,
             "run_id": run_id,
             "action": "HUMAN_NEEDED",
-            "reason": error or "Codex worker could not complete the task.",
+            "reason": error or "Implementation worker could not complete the task.",
         }
         xadd_json(client, HUMAN_STREAM, "event", payload)
         print(f"task {task_id}: reported HUMAN_NEEDED")

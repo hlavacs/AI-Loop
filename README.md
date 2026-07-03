@@ -5,7 +5,7 @@ This directory contains a durable continuous development loop:
 - SQLite stores jobs, tasks, runs, Claude decisions, and events.
 - Redis Streams are used only for activation messages and terminal notifications.
 - Claude CLI controls planning and review.
-- Codex CLI implements one task at a time.
+- A per-job worker (Codex CLI or Claude Fable) implements one task at a time.
 - Git worktrees isolate jobs by default.
 
 ## Requirements
@@ -79,6 +79,48 @@ description and the file's containing directory is used as the target repository
 ```
 
 Set `AI_LOOP_TEST_CMD` to override that detection for a target repository.
+
+## Choosing the Worker
+
+Each job stores which implementation worker it uses: `codex` (default),
+`fable` (Claude Fable via the Claude CLI; `claude` is accepted as an alias),
+or `opus` (Claude Opus via the Claude CLI, model `AI_LOOP_OPUS_MODEL`).
+
+```bash
+./ai_job.bash --worker fable /path/to/repo "Implement the requested feature."
+python3 start_job.py --worker fable --repo /path/to/repo --goal "..."
+export AI_LOOP_WORKER=fable   # default for new jobs when --worker is not given
+```
+
+The Fable/Opus workers run:
+
+```bash
+claude -p --model "$AI_LOOP_FABLE_MODEL" --permission-mode acceptEdits --allowedTools Bash,Edit,Write,MultiEdit,NotebookEdit
+```
+
+Set `AI_LOOP_FABLE_MODEL` to change the model (default `claude-fable-5`).
+
+## Choosing the Controller
+
+Each job also stores which controller plans and reviews: `claude` (default;
+Claude CLI with its default model or `AI_LOOP_CONTROLLER_MODEL`), `fable`,
+`opus`, or `codex`.
+
+```bash
+./ai_job.bash --controller fable --worker fable /path/to/repo "Implement feature X."
+python3 start_job.py --controller opus --repo /path/to/repo --goal "..."
+export AI_LOOP_CONTROLLER=fable   # default when --controller is not given
+```
+
+`fable` and `opus` run the Claude CLI with `--model` (`AI_LOOP_FABLE_MODEL`,
+default `claude-fable-5`; `AI_LOOP_OPUS_MODEL`, default `opus`). `codex` runs
+`codex exec --sandbox read-only --output-last-message` and parses the decision
+JSON from the last agent message.
+
+With `CODEX_BYPASS_SANDBOX=1` the Fable worker uses
+`--dangerously-skip-permissions` instead. Note the Claude CLI has no
+filesystem sandbox comparable to Codex's `workspace-write`; the Git worktree
+isolation is the main guardrail.
 
 By default Codex runs with:
 

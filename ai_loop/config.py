@@ -15,6 +15,25 @@ DEAD_STREAM = "ai:dead"
 
 READ_BLOCK_MS = 5000
 
+WORKERS = {"codex", "fable", "opus"}
+CONTROLLERS = {"claude", "fable", "opus", "codex"}
+
+
+def normalize_worker(value: str) -> str:
+    worker = value.strip().lower()
+    if worker == "claude":
+        worker = "fable"
+    if worker not in WORKERS:
+        raise ValueError(f"unknown worker: {value!r}; expected one of {sorted(WORKERS)}")
+    return worker
+
+
+def normalize_controller(value: str) -> str:
+    controller = value.strip().lower()
+    if controller not in CONTROLLERS:
+        raise ValueError(f"unknown controller: {value!r}; expected one of {sorted(CONTROLLERS)}")
+    return controller
+
 
 @dataclass(frozen=True)
 class Settings:
@@ -25,6 +44,11 @@ class Settings:
     codex_bin: str
     claude_bin: str
     codex_bypass_sandbox: bool
+    worker_default: str
+    fable_model: str
+    controller_default: str
+    controller_model: str
+    opus_model: str
 
 
 def env_bool(name: str, default: bool = False) -> bool:
@@ -46,5 +70,10 @@ def load_settings() -> Settings:
         codex_bin=os.getenv("CODEX_BIN", "codex"),
         claude_bin=os.getenv("CLAUDE_BIN", "claude"),
         codex_bypass_sandbox=env_bool("CODEX_BYPASS_SANDBOX", False),
+        worker_default=normalize_worker(os.getenv("AI_LOOP_WORKER", "codex")),
+        fable_model=os.getenv("AI_LOOP_FABLE_MODEL", "claude-fable-5"),
+        controller_default=normalize_controller(os.getenv("AI_LOOP_CONTROLLER", "claude")),
+        controller_model=os.getenv("AI_LOOP_CONTROLLER_MODEL", ""),
+        opus_model=os.getenv("AI_LOOP_OPUS_MODEL", "opus"),
     )
 
