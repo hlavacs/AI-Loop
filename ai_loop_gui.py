@@ -649,7 +649,6 @@ class AiLoopGui(tk.Tk):
 
         toolbar = ttk.Frame(self, padding=(8, 6))
         toolbar.grid(row=0, column=0, sticky="ew")
-        toolbar.columnconfigure(8, weight=1)
         ttk.Button(toolbar, text="Refresh", command=self.refresh_all).grid(row=0, column=0, padx=(0, 6))
         ttk.Checkbutton(toolbar, text="Auto refresh", variable=self.auto_refresh).grid(row=0, column=1, padx=(0, 14))
         ttk.Button(toolbar, text="Start Redis", command=self.start_redis).grid(row=0, column=2, padx=(0, 6))
@@ -660,8 +659,12 @@ class AiLoopGui(tk.Tk):
         ttk.Button(toolbar, text="Clear Worktrees", command=self.clear_worktrees).grid(row=0, column=7, padx=(0, 6))
         ttk.Button(toolbar, text="Reset DB", command=self.reset_loop).grid(row=0, column=8, padx=(0, 6))
         ttk.Button(toolbar, text="Full Reset", command=self.full_reset).grid(row=0, column=9, padx=(0, 14))
+        ttk.Button(toolbar, text="Hibernation", command=self.open_hibernation_window).grid(row=0, column=10, padx=(0, 14))
+        toolbar.columnconfigure(0, weight=0)
         toolbar.columnconfigure(10, weight=1)
-        ttk.Label(toolbar, textvariable=self.status_var).grid(row=0, column=10, sticky="e")
+        ttk.Label(toolbar, text="Status:").grid(row=1, column=0, sticky="w", pady=(6, 0))
+        status_label = ttk.Label(toolbar, textvariable=self.status_var, anchor="w")
+        status_label.grid(row=1, column=1, columnspan=10, sticky="ew", pady=(6, 0))
 
         paned = ttk.PanedWindow(self, orient=tk.HORIZONTAL)
         paned.grid(row=1, column=0, sticky="nsew")
@@ -888,7 +891,6 @@ class AiLoopGui(tk.Tk):
             messagebox.showerror("Create Job Failed", str(exc))
             return
         self.watch_job_id = job_id
-        self.status_var.set(f"Created {job_id}")
         self.refresh_all(select_job_id=job_id)
 
     def refresh_all(self, select_job_id: str | None = None) -> None:
@@ -943,8 +945,32 @@ class AiLoopGui(tk.Tk):
             self.set_text(self.detail_text, "")
             self.set_text(self.history_text, "")
             self.set_text(self.log_text, "")
-        redis_state = "Redis online" if self.backend.redis_running() else "Redis offline"
-        self.status_var.set(f"{redis_state}; loaded {len(jobs)} jobs from {self.backend.settings.db_path}")
+        self.update_system_status(jobs)
+
+    def update_system_status(self, jobs: list[dict[str, Any]] | None = None) -> None:
+        try:
+            if jobs is None:
+                jobs = self.backend.list_jobs()
+            active = sum(1 for job in jobs if str(job["status"]) in ACTIVE_STATUSES)
+            human_needed = sum(1 for job in jobs if str(job["status"]) == "human_needed")
+            dead = sum(1 for job in jobs if str(job["status"]) == "dead")
+            done = sum(1 for job in jobs if str(job["status"]) == "done")
+            running_processes = 0
+            stale_processes = 0
+            for job in jobs:
+                for info in self.backend.process_status(str(job["id"])).values():
+                    if info["running"]:
+                        running_processes += 1
+                    elif info["pid"]:
+                        stale_processes += 1
+            redis_state = "online" if self.backend.redis_running() else "offline"
+            self.status_var.set(
+                f"Redis {redis_state} | jobs {len(jobs)} | active {active} | "
+                f"human needed {human_needed} | dead {dead} | done {done} | "
+                f"processes running {running_processes}, stale {stale_processes}"
+            )
+        except Exception as exc:
+            self.status_var.set(f"System status unavailable: {exc}")
 
     def start_redis(self) -> None:
         try:
@@ -952,7 +978,6 @@ class AiLoopGui(tk.Tk):
         except Exception as exc:
             messagebox.showerror("Start Redis Failed", str(exc))
             return
-        self.status_var.set(f"Redis running pid={pid}")
         self.refresh_all()
 
     def _auto_refresh_tick(self) -> None:
@@ -1098,7 +1123,6 @@ class AiLoopGui(tk.Tk):
         except Exception as exc:
             messagebox.showerror("Stop Failed", str(exc))
             return
-        self.status_var.set("; ".join(f"{name}: {result}" for name, result in results.items()))
         self.refresh_all(select_job_id=job_id)
 
     def resume_selected_job(self) -> None:
@@ -1118,7 +1142,6 @@ class AiLoopGui(tk.Tk):
             messagebox.showerror("Resume Failed", str(exc))
             return
         self.watch_job_id = job_id
-        self.status_var.set(f"Resumed {job_id}")
         self.refresh_all(select_job_id=job_id)
 
     def watch_selected_job(self) -> None:
@@ -1168,7 +1191,6 @@ class AiLoopGui(tk.Tk):
         removed = len(summary["removed_worktrees"])
         leftovers = len(summary["leftover_folders"])
         skipped = len(summary["skipped_repos"])
-        self.status_var.set(f"Removed {removed} worktrees and {leftovers} leftover folders; skipped repos: {skipped}")
         messagebox.showinfo(
             "Clear Worktrees Complete",
             f"Runs dir: {summary['runs_dir']}\nRemoved worktrees: {removed}\nDeleted leftover folders: {leftovers}\nSkipped repos: {skipped}",
@@ -1189,13 +1211,76 @@ class AiLoopGui(tk.Tk):
         worktrees = summary["worktrees"]
         self.selected_job_id = None
         self.watch_job_id = None
-        self.status_var.set(
-            "Full reset complete: "
-            f"stopped {len(summary['stopped_jobs'])} jobs, "
-            f"removed {len(worktrees['removed_worktrees'])} worktrees, "
-            f"deleted {len(worktrees['leftover_folders'])} leftover folders"
-        )
         self.refresh_all()
+
+    def hibernation_status_text(self) -> str:
+        if platform.system() != "Darwin":
+            return "Hibernation control is only available on macOS."
+        pmset = shutil.which("pmset")
+        if pmset is None:
+            return "pmset was not found."
+        result = subprocess.run([pmset, "-g"], text=True, capture_output=True, check=False)
+        if result.returncode != 0:
+            return result.stderr.strip() or result.stdout.strip() or "pmset failed."
+        mode = "unavailable"
+        for line in result.stdout.splitlines():
+            parts = line.split()
+            if len(parts) >= 2 and parts[0] == "hibernatemode":
+                mode = parts[1]
+                break
+        descriptions = {
+            "0": "disabled",
+            "3": "enabled (default portable mode)",
+            "25": "enabled (deep hibernation mode)",
+        }
+        return f"hibernatemode: {mode}\nhibernation: {descriptions.get(mode, 'custom mode')}"
+
+    def set_hibernation_mode(self, mode: int, parent: tk.Toplevel) -> None:
+        if platform.system() != "Darwin":
+            messagebox.showerror("Unsupported", "Hibernation control is only available on macOS.", parent=parent)
+            return
+        pmset = shutil.which("pmset")
+        if pmset is None:
+            messagebox.showerror("Missing pmset", "pmset was not found.", parent=parent)
+            return
+        action = "disable hibernation" if mode == 0 else "enable hibernation"
+        if not messagebox.askyesno(
+            "Confirm Hibernation Change",
+            f"This will run:\n\nsudo pmset -a hibernatemode {mode}\n\nContinue to {action}?",
+            parent=parent,
+        ):
+            return
+        result = subprocess.run(
+            ["sudo", pmset, "-a", "hibernatemode", str(mode)],
+            text=True,
+            capture_output=True,
+            check=False,
+        )
+        if result.returncode != 0:
+            messagebox.showerror("Hibernation Change Failed", result.stderr.strip() or result.stdout.strip(), parent=parent)
+            return
+        self.open_hibernation_window(parent)
+        self.refresh_all()
+
+    def open_hibernation_window(self, existing: tk.Toplevel | None = None) -> None:
+        if existing is not None:
+            try:
+                existing.destroy()
+            except tk.TclError:
+                pass
+        window = tk.Toplevel(self)
+        window.title("macOS Hibernation")
+        window.geometry("460x220")
+        window.columnconfigure(0, weight=1)
+        text = tk.Text(window, height=6, wrap="word")
+        text.grid(row=0, column=0, sticky="nsew", padx=10, pady=10)
+        text.insert("1.0", self.hibernation_status_text())
+        controls = ttk.Frame(window, padding=(10, 0, 10, 10))
+        controls.grid(row=1, column=0, sticky="ew")
+        ttk.Button(controls, text="Refresh", command=lambda: self.open_hibernation_window(window)).pack(side="left")
+        ttk.Button(controls, text="Disable", command=lambda: self.set_hibernation_mode(0, window)).pack(side="left", padx=(8, 0))
+        ttk.Button(controls, text="Enable", command=lambda: self.set_hibernation_mode(3, window)).pack(side="left", padx=(8, 0))
+        ttk.Button(controls, text="Close", command=window.destroy).pack(side="right")
 
 
 def main() -> int:
