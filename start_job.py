@@ -76,8 +76,8 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument(
         "--controller",
-        default=os.getenv("AI_LOOP_CONTROLLER", "claude"),
-        help="Controller: 'claude' (CLI default model), 'fable', 'opus', or 'codex'. Default from AI_LOOP_CONTROLLER or 'claude'.",
+        default=os.getenv("AI_LOOP_CONTROLLER", "opus"),
+        help="Controller: 'claude' (CLI default model), 'fable', 'opus', or 'codex'. Default from AI_LOOP_CONTROLLER or 'opus'.",
     )
     parser.add_argument("--allow-parallel", action="store_true", help="Allow creating this job while another job is active.")
     parser.add_argument("--wait", action="store_true", help="Wait for the job to reach a terminal status.")

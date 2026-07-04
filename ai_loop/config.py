@@ -72,8 +72,7 @@ def load_settings() -> Settings:
         codex_bypass_sandbox=env_bool("CODEX_BYPASS_SANDBOX", False),
         worker_default=normalize_worker(os.getenv("AI_LOOP_WORKER", "codex")),
         fable_model=os.getenv("AI_LOOP_FABLE_MODEL", "claude-fable-5"),
-        controller_default=normalize_controller(os.getenv("AI_LOOP_CONTROLLER", "claude")),
+        controller_default=normalize_controller(os.getenv("AI_LOOP_CONTROLLER", "opus")),
         controller_model=os.getenv("AI_LOOP_CONTROLLER_MODEL", ""),
         opus_model=os.getenv("AI_LOOP_OPUS_MODEL", "opus"),
     )
-

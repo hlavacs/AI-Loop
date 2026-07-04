@@ -11,6 +11,7 @@ This directory contains a durable continuous development loop:
 ## Requirements
 
 - Python 3.10+
+- Tkinter for the optional GUI (`python -m tkinter` should open a test window)
 - Redis
 - `redis-py`
 - `git`
@@ -80,6 +81,31 @@ description and the file's containing directory is used as the target repository
 
 Set `AI_LOOP_TEST_CMD` to override that detection for a target repository.
 
+## Tkinter GUI
+
+The cross-platform GUI is a Python/Tkinter script and does not call the bash
+wrappers. It creates jobs, launches the controller/worker/watcher Python
+processes, tails logs, shows task/run history, stops jobs, resumes paused jobs,
+changes controller/worker choices, and resets the loop database. If the active
+Python is missing `redis-py`, the GUI creates `.gui-venv`, installs `redis`
+there, and restarts itself. It also has a Start Redis button and will start a
+local `redis-server --save "" --appendonly no` automatically before queueing a
+job when `REDIS_URL` points at localhost. Cleanup controls are split into
+Clear Worktrees, Reset DB, and Full Reset so you can remove generated worktrees,
+clear durable job records, or do both. When a job enters `human_needed`, the
+GUI shows an alert and lists practical next actions in the selected job's
+Overview tab.
+
+```bash
+python3 ai_loop_gui.py
+```
+
+Use the controller/worker dropdowns and model fields to select `codex`,
+`fable`, `opus`, or `claude` behavior. Defaults come from the same environment
+variables as the CLI (`AI_LOOP_CONTROLLER`, `AI_LOOP_WORKER`,
+`AI_LOOP_FABLE_MODEL`, `AI_LOOP_OPUS_MODEL`, `AI_LOOP_CONTROLLER_MODEL`,
+`CODEX_BIN`, and `CLAUDE_BIN`).
+
 ## Choosing the Worker
 
 Each job stores which implementation worker it uses: `codex` (default),
@@ -102,14 +128,14 @@ Set `AI_LOOP_FABLE_MODEL` to change the model (default `claude-fable-5`).
 
 ## Choosing the Controller
 
-Each job also stores which controller plans and reviews: `claude` (default;
-Claude CLI with its default model or `AI_LOOP_CONTROLLER_MODEL`), `fable`,
-`opus`, or `codex`.
+Each job also stores which controller plans and reviews: `opus` (default),
+`claude` (Claude CLI with its default model or `AI_LOOP_CONTROLLER_MODEL`),
+`fable`, or `codex`.
 
 ```bash
 ./ai_job.bash --controller fable --worker fable /path/to/repo "Implement feature X."
 python3 start_job.py --controller opus --repo /path/to/repo --goal "..."
-export AI_LOOP_CONTROLLER=fable   # default when --controller is not given
+export AI_LOOP_CONTROLLER=fable   # override the default when --controller is not given
 ```
 
 `fable` and `opus` run the Claude CLI with `--model` (`AI_LOOP_FABLE_MODEL`,
