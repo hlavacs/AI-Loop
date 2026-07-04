@@ -704,7 +704,7 @@ class AiLoopGui(tk.Tk):
 
         ttk.Label(frame, text="Repo").grid(row=0, column=0, sticky="w")
         ttk.Entry(frame, textvariable=self.repo_var).grid(row=0, column=1, sticky="ew", padx=4)
-        ttk.Button(frame, text="Browse", command=self.browse_repo).grid(row=0, column=2)
+        ttk.Button(frame, text="Browse", command=self.browse_repo_or_goal_file).grid(row=0, column=2)
 
         ttk.Label(frame, text="Goal").grid(row=1, column=0, sticky="nw", pady=(6, 0))
         self.goal_text = tk.Text(frame, height=5, wrap="word")
@@ -762,8 +762,7 @@ class AiLoopGui(tk.Tk):
         ttk.Checkbutton(toggles, text="Codex bypass sandbox", variable=self.bypass_var).pack(side="left", padx=(0, 12))
         ttk.Checkbutton(toggles, text="No worktree", variable=self.no_worktree_var).pack(side="left", padx=(0, 12))
         ttk.Checkbutton(toggles, text="Allow parallel", variable=self.allow_parallel_var).pack(side="left")
-
-        ttk.Button(frame, text="Create Job", command=self.create_job).grid(row=4, column=1, columnspan=2, sticky="e", pady=(8, 0))
+        ttk.Button(toggles, text="Create Job", command=self.create_job).pack(side="right")
 
     def _build_jobs_frame(self, parent: ttk.Frame) -> None:
         frame = ttk.LabelFrame(parent, text="Jobs", padding=6)
@@ -786,6 +785,13 @@ class AiLoopGui(tk.Tk):
             self.jobs_tree.heading(name, text=name.title())
             self.jobs_tree.column(name, width=width, stretch=False)
         self.jobs_tree.grid(row=0, column=0, sticky="nsew")
+        self.jobs_tree.tag_configure("planning", background="#e8f1ff")
+        self.jobs_tree.tag_configure("queued", background="#f2f2f2")
+        self.jobs_tree.tag_configure("implementing", background="#ffe6bf")
+        self.jobs_tree.tag_configure("fixing", background="#fff4db")
+        self.jobs_tree.tag_configure("human_needed", background="#ffe1df")
+        self.jobs_tree.tag_configure("dead", background="#f2d3d3")
+        self.jobs_tree.tag_configure("done", background="#dff3df")
         scrollbar = ttk.Scrollbar(frame, orient="vertical", command=self.jobs_tree.yview)
         scrollbar.grid(row=0, column=1, sticky="ns")
         self.jobs_tree.configure(yscrollcommand=scrollbar.set)
@@ -862,10 +868,26 @@ class AiLoopGui(tk.Tk):
             codex_bypass_sandbox=bool(self.bypass_var.get()),
         )
 
-    def browse_repo(self) -> None:
-        selected = filedialog.askdirectory(initialdir=self.repo_var.get() or str(Path.home()))
+    def browse_repo_or_goal_file(self) -> None:
+        selected = filedialog.askopenfilename(
+            initialdir=self.repo_var.get() or str(Path.home()),
+            title="Choose a goal text file, or cancel to choose a repository folder",
+            filetypes=(("Text files", "*.txt *.md *.rst *.adoc"), ("All files", "*")),
+        )
         if selected:
-            self.repo_var.set(selected)
+            path = Path(selected)
+            self.repo_var.set(str(path.parent))
+            try:
+                content = path.read_text(encoding="utf-8")
+            except UnicodeDecodeError:
+                content = path.read_text(errors="replace")
+            self.goal_text.delete("1.0", "end")
+            self.goal_text.insert("1.0", content)
+            return
+
+        selected_dir = filedialog.askdirectory(initialdir=self.repo_var.get() or str(Path.home()), title="Choose repository folder")
+        if selected_dir:
+            self.repo_var.set(selected_dir)
 
     def create_job(self) -> None:
         goal = self.goal_text.get("1.0", "end").strip()
@@ -914,9 +936,9 @@ class AiLoopGui(tk.Tk):
                 job["run_count"],
                 job["updated_at"],
             )
-            self.jobs_tree.insert("", "end", iid=job_id, text=job_id, values=values)
-            previous = self.last_status_by_job.get(job_id)
             status = str(job["status"])
+            self.jobs_tree.insert("", "end", iid=job_id, text=job_id, values=values, tags=(status,))
+            previous = self.last_status_by_job.get(job_id)
             self.last_status_by_job[job_id] = status
             if status != "human_needed":
                 self.alerted_human_needed.discard(job_id)
@@ -926,7 +948,13 @@ class AiLoopGui(tk.Tk):
             if self.watch_job_id == job_id and status in TERMINAL_STATUSES and previous and previous != status:
                 messagebox.showinfo("Watched Job Finished", f"{job_id} is now {status}.")
             if task:
-                self.jobs_tree.insert(job_id, "end", text=str(task.get("id")), values=(task.get("status"), "", "", "", "", "", task.get("updated_at")))
+                self.jobs_tree.insert(
+                    job_id,
+                    "end",
+                    text=str(task.get("id")),
+                    values=(task.get("status"), "", "", "", "", "", task.get("updated_at")),
+                    tags=(status,),
+                )
 
         if selected and self.jobs_tree.exists(selected):
             self.jobs_tree.selection_set(selected)
