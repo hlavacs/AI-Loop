@@ -1,7 +1,7 @@
 ++Complete Worker System
 ======================
 
-The system is a small controller + worker development loop with durable state in SQLite and activation messages in Redis Streams. By default Claude plans and reviews and Codex implements, but each job can select its own controller and worker.
+The system is a small controller + worker development loop with durable state in SQLite and activation messages in Redis Streams. By default Opus plans/reviews and Codex implements, but each job can select its own controller and worker.
 
 Fresh Machine Dependencies
 --------------------------
@@ -12,6 +12,7 @@ Common required software:
 - Git, including git worktree support
 - Python 3.10 or newer
 - Python venv and pip support
+- Tkinter for the optional GUI
 - redis-py Python package
 - Redis server
 - Bash
@@ -22,7 +23,7 @@ Common required software:
 Ubuntu setup:
 
 sudo apt update
-sudo apt install -y git python3 python3-venv python3-pip redis-server bash coreutils findutils gawk sed procps ca-certificates curl build-essential
+sudo apt install -y git python3 python3-venv python3-pip python3-tk redis-server bash coreutils findutils gawk sed procps ca-certificates curl build-essential
 
 Then create or refresh the ai-loop Python environment:
 
@@ -30,6 +31,10 @@ python3 -m venv .venv
 . .venv/bin/activate
 python -m pip install --upgrade pip
 python -m pip install redis
+
+For the Tkinter GUI, verify:
+
+python -m tkinter
 
 Start Redis, or enable it as a service:
 
@@ -45,7 +50,7 @@ xcode-select --install
 
 Install Homebrew if it is not already installed, then:
 
-brew install git python redis bash coreutils gawk gnu-sed
+brew install git python python-tk redis bash coreutils gawk gnu-sed
 
 Then create or refresh the ai-loop Python environment:
 
@@ -53,6 +58,10 @@ python3 -m venv .venv
 . .venv/bin/activate
 python -m pip install --upgrade pip
 python -m pip install redis
+
+For the Tkinter GUI, verify:
+
+python -m tkinter
 
 Start Redis for the current shell:
 
@@ -74,7 +83,7 @@ Main Components
 ---------------
 
 start_job.py
-Creates a job. ai_job.bash can submit either ./ai_job.bash <repo-path> <job-description> or ./ai_job.bash <job-description-file>; with the one-file form it reads the file contents as the goal and uses the file's containing directory as the target repo. Job ids use the form JYYYYMMDD-HHMMSS-ffffff. By default each job gets its own Claude controller, Codex worker, and watcher, with per-job Redis consumer groups, PID files under ./run/jobs/<job_id>, and process logs under ./logs/jobs/<job_id>. Multiple active jobs can therefore run concurrently. Set AI_LOOP_SINGLE_ACTIVE_JOB=1 to restore the old single-active-job guard; with that guard enabled, --allow-parallel or AI_LOOP_ALLOW_PARALLEL_JOBS=1 starts another job anyway. When job creation is allowed, it stages and commits all current changes in the target repo with a message like "AI loop snapshot before job <job_id>" when there is anything to commit. It then writes the job to SQLite, optionally creates a Git worktree and branch, overlays any remaining checkout changes into the worktree, creates the job-scoped consumer groups, starts the job-scoped process trio, and sends a scoped PLAN message to Redis stream ai:claude:requests. The default maximum iteration count is 50000. With --wait, it waits indefinitely by default; pass --timeout with a positive number of seconds to impose a foreground wait limit. If no test command is supplied, it infers a generic project command: CMake presets first, then plain CMake, then npm test, then pytest for Python projects, and finally true when no known runner is detected. Each job also stores its worker and controller selection, set with --worker and --controller or the AI_LOOP_WORKER and AI_LOOP_CONTROLLER environment variables; see Worker and Controller Selection below. Default job constraints depend on the worker: capable workers (fable, opus) get "prefer coherent, self-contained tasks" constraints, while codex gets "many tiny tasklets" constraints.
+Creates a job. ai_job.bash can submit either ./ai_job.bash <repo-path> <job-description> or ./ai_job.bash <job-description-file>; with the one-file form it reads the file contents as the goal and uses the file's containing directory as the target repo. Job ids use the form JYYYYMMDD-HHMMSS-ffffff. By default each job gets its own selected controller, selected worker, and watcher, with per-job Redis consumer groups, PID files under ./run/jobs/<job_id>, and process logs under ./logs/jobs/<job_id>. Multiple active jobs can therefore run concurrently. Set AI_LOOP_SINGLE_ACTIVE_JOB=1 to restore the old single-active-job guard; with that guard enabled, --allow-parallel or AI_LOOP_ALLOW_PARALLEL_JOBS=1 starts another job anyway. When job creation is allowed, it stages and commits all current changes in the target repo with a message like "AI loop snapshot before job <job_id>" when there is anything to commit. It then writes the job to SQLite, optionally creates a Git worktree and branch, overlays any remaining checkout changes into the worktree, creates the job-scoped consumer groups, starts the job-scoped process trio, and sends a scoped PLAN message to Redis stream ai:claude:requests. The default maximum iteration count is 50000. With --wait, it waits indefinitely by default; pass --timeout with a positive number of seconds to impose a foreground wait limit. If no test command is supplied, it infers a generic project command: CMake presets first, then plain CMake, then npm test, then pytest for Python projects, and finally true when no known runner is detected. Each job also stores its worker and controller selection, set with --worker and --controller or the AI_LOOP_WORKER and AI_LOOP_CONTROLLER environment variables; see Worker and Controller Selection below. Default job constraints depend on the worker: capable workers (fable, opus) get "prefer coherent, self-contained tasks" constraints, while codex gets "many tiny tasklets" constraints.
 
 claude_controller.py
 Acts as planner/reviewer. It runs the job's selected controller backend: claude (Claude CLI default model or AI_LOOP_CONTROLLER_MODEL), fable, opus, or codex (codex exec --sandbox read-only --output-last-message, parsing the decision JSON from the last agent message). It consumes PLAN and REVIEW messages from ai:claude:requests. For PLAN, it creates one first task sized to the job's worker: a tiny tasklet for codex, or a larger coherent task for fable/opus. For REVIEW, it inspects worker output, test output, git diff, job history, code quality, project guideline compliance, local architecture/style patterns, scope control, maintainability, and proportional test coverage, then decides CONTINUE, REPAIR, DONE, or HUMAN_NEEDED. HUMAN_NEEDED is a last resort: Claude should first analyze the blocker, identify solution paths, and choose REPAIR whenever a safe automated diagnostic or fix exists. Task ids use the form TYYYYMMDD-HHMMSS-ffffff. The controller stores the job's current test command on each new task; Claude may discuss tests in its JSON, but the persisted validation command is the job-level command. If Claude echoes stale test acceptance text from an earlier command, the controller replaces it with the current job test command. Claude decision JSON is checked before it is accepted: the controller extracts the decision object, validates the required fields, serializes/parses it again as a round-trip guard, and if parsing or validation fails it asks Claude to remake the same decision as valid JSON only. On DONE, it promotes the successful worktree changes back to the target repo before marking the job done.
@@ -87,13 +96,16 @@ When Codex needs to run a target-project executable that may crash, hang, or ope
 watcher.py
 Watches terminal streams: ai:done, ai:human, and ai:dead. It prints final outcomes and errors.
 
+ai_loop_gui.py
+Provides a cross-platform Python/Tkinter GUI for normal interactive use. It does not call the bash wrappers. It creates jobs, launches claude_controller.py, codex_worker.py, and watcher.py directly as Python subprocesses, tails per-job logs, shows job/task/run/decision/event state, stops jobs, resumes paused jobs, changes controller and worker choices, starts local Redis when REDIS_URL points at localhost, clears AI worktrees, resets the database, and performs a full reset. If the active Python is missing redis-py, it creates .gui-venv, installs redis there, and restarts itself. When a job enters human_needed, the GUI shows an alert and lists practical next actions in the Overview tab.
+
 Worker and Controller Selection
 -------------------------------
 
 Each job stores which implementation worker and which controller it uses.
 
 Workers: codex (default), fable (Claude Fable via the Claude CLI; "claude" is accepted as an alias), opus (Claude Opus via the Claude CLI).
-Controllers: claude (default), fable, opus, codex.
+Controllers: opus (default), claude, fable, codex.
 
 Selection, highest precedence first: --worker/--controller flags on ai_job.bash or start_job.py, then the AI_LOOP_WORKER and AI_LOOP_CONTROLLER environment variables, then the built-in defaults.
 
@@ -221,6 +233,15 @@ Examples:
 AI_LOOP_TEST_CMD="ctest --test-dir build/debug" ./ai_job.bash /path/to/project "Fix the failing renderer tests."
 AI_LOOP_ALLOW_PARALLEL_JOBS=1 ./ai_job.bash /path/to/project "Run an independent cleanup job."
 ./ai_job.bash /path/to/project/job.txt
+
+ai_gui.bash
+Starts the Tkinter GUI from the repository root.
+
+Parameters:
+./ai_gui.bash
+
+Examples:
+./ai_gui.bash
 
 ai_check_job.bash
 Prints job status, updated time, task/run counts, worktree path, goal, latest task diagnostics, and a rough percent-complete/time-remaining estimate. With no job id it lists all jobs ordered by most recent update.
