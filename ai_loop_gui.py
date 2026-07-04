@@ -811,7 +811,15 @@ class AiLoopGui(tk.Tk):
         overview.rowconfigure(1, weight=1)
         overview.columnconfigure(0, weight=1)
         self.summary_var = tk.StringVar(value="Select a job.")
-        ttk.Label(overview, textvariable=self.summary_var, font=("", 12, "bold")).grid(row=0, column=0, sticky="ew")
+        self.summary_label = ttk.Label(
+            overview,
+            textvariable=self.summary_var,
+            font=("", 12, "bold"),
+            justify="left",
+            anchor="w",
+        )
+        self.summary_label.grid(row=0, column=0, sticky="ew")
+        overview.bind("<Configure>", self.update_summary_wrap)
         self.detail_text = tk.Text(overview, wrap="word")
         self.detail_text.grid(row=1, column=0, sticky="nsew", pady=(8, 0))
 
@@ -1081,6 +1089,10 @@ class AiLoopGui(tk.Tk):
             history_lines.append(f"- {event['created_at']} {event['kind']} {event['payload_json']}")
         self.set_text(self.history_text, "\n".join(history_lines))
         self.refresh_log()
+
+    def update_summary_wrap(self, event: tk.Event) -> None:
+        width = max(240, int(getattr(event, "width", 600)) - 20)
+        self.summary_label.configure(wraplength=width)
 
     def human_needed_actions(self, job: dict[str, Any], details: dict[str, Any]) -> list[str]:
         actions = [
