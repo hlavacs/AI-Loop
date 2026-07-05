@@ -716,7 +716,10 @@ class AiLoopGui(tk.Tk):
 
         ttk.Label(frame, text="Repo").grid(row=0, column=0, sticky="w")
         ttk.Entry(frame, textvariable=self.repo_var).grid(row=0, column=1, sticky="ew", padx=4)
-        ttk.Button(frame, text="Browse", command=self.browse_repo_or_goal_file).grid(row=0, column=2)
+        browse_buttons = ttk.Frame(frame)
+        browse_buttons.grid(row=0, column=2, sticky="e")
+        ttk.Button(browse_buttons, text="Goal File", command=self.browse_goal_file).pack(side="left")
+        ttk.Button(browse_buttons, text="Repo Folder", command=self.browse_repo_folder).pack(side="left", padx=(4, 0))
 
         ttk.Label(frame, text="Goal").grid(row=1, column=0, sticky="nw", pady=(6, 0))
         self.goal_text = tk.Text(frame, height=5, wrap="word")
@@ -888,10 +891,10 @@ class AiLoopGui(tk.Tk):
             codex_bypass_sandbox=bool(self.bypass_var.get()),
         )
 
-    def browse_repo_or_goal_file(self) -> None:
+    def browse_goal_file(self) -> None:
         selected = filedialog.askopenfilename(
             initialdir=self.repo_var.get() or str(Path.home()),
-            title="Choose a goal text file, or cancel to choose a repository folder",
+            title="Choose a goal text file",
             filetypes=(("Text files", "*.txt *.md *.rst *.adoc"), ("All files", "*")),
         )
         if selected:
@@ -903,8 +906,8 @@ class AiLoopGui(tk.Tk):
                 content = path.read_text(errors="replace")
             self.goal_text.delete("1.0", "end")
             self.goal_text.insert("1.0", content)
-            return
 
+    def browse_repo_folder(self) -> None:
         selected_dir = filedialog.askdirectory(initialdir=self.repo_var.get() or str(Path.home()), title="Choose repository folder")
         if selected_dir:
             self.repo_var.set(selected_dir)
