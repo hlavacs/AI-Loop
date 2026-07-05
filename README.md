@@ -99,7 +99,12 @@ disable actions backed by `pmset`.
 
 ```bash
 python3 ai_loop_gui.py
+./ai_gui.bash --theme default
+./ai_gui.bash --list-themes
 ```
+
+The default theme keeps the current platform-native Tk style. Any theme printed
+by `--list-themes` can be passed with `--theme <name>`.
 
 Use the controller/worker dropdowns and model fields to select `codex`,
 `fable`, `opus`, or `claude` behavior. Defaults come from the same environment

@@ -235,13 +235,21 @@ AI_LOOP_ALLOW_PARALLEL_JOBS=1 ./ai_job.bash /path/to/project "Run an independent
 ./ai_job.bash /path/to/project/job.txt
 
 ai_gui.bash
-Starts the Tkinter GUI from the repository root.
+Starts the Tkinter GUI from the repository root. Extra arguments are passed to ai_loop_gui.py. Use --theme <name> with two leading dashes to select any installed Tk/ttk theme; -theme is not accepted. Use --list-themes to print the local theme names. The default theme keeps the current platform-native Tk style.
 
 Parameters:
 ./ai_gui.bash
+./ai_gui.bash --theme <theme-name>
+./ai_gui.bash --list-themes
 
 Examples:
 ./ai_gui.bash
+./ai_gui.bash --theme clam
+./ai_gui.bash --theme aqua
+./ai_gui.bash --theme classic
+./ai_gui.bash --list-themes
+
+Typical macOS theme names reported by --list-themes are aqua, clam, alt, default, and classic.
 
 ai_check_job.bash
 Prints job status, updated time, task/run counts, worktree path, goal, latest task diagnostics, and a rough percent-complete/time-remaining estimate. With no job id it lists all jobs ordered by most recent update.

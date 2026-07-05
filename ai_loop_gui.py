@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import argparse
 import platform
 import shutil
 import signal
@@ -70,6 +71,7 @@ from start_job import (
 ACTIVE_STATUSES = {"planning", "queued", "implementing", "fixing"}
 TERMINAL_STATUSES = {"done", "human_needed", "dead"}
 PROCESS_NAMES = ("claude_controller", "codex_worker", "watcher")
+APP_WINDOW_TITLE = "AI-LOOP - Prof. Helmut Hlavacs, University of Vienna and Robimo GmbH (https://robimo.at/), Vienna, Austria"
 
 
 @dataclass
@@ -627,10 +629,11 @@ class LoopBackend:
 
 
 class AiLoopGui(tk.Tk):
-    def __init__(self) -> None:
+    def __init__(self, theme: str = "default") -> None:
         super().__init__()
-        self.title("ai-loop")
+        self.title(APP_WINDOW_TITLE)
         self.geometry("1280x820")
+        self.apply_theme(theme)
         self.backend = LoopBackend()
         self.model_defaults = self.backend.model_defaults()
         self.selected_job_id: str | None = None
@@ -642,6 +645,15 @@ class AiLoopGui(tk.Tk):
         self._build_ui()
         self.refresh_all()
         self.after(3000, self._auto_refresh_tick)
+
+    def apply_theme(self, theme: str) -> None:
+        if theme in {"", "default", "native", "current"}:
+            return
+        style = ttk.Style(self)
+        available = tuple(style.theme_names())
+        if theme not in available:
+            raise ValueError(f"unknown Tk theme: {theme!r}; available themes: {', '.join(available)}")
+        style.theme_use(theme)
 
     def _build_ui(self) -> None:
         self.columnconfigure(0, weight=1)
@@ -1323,9 +1335,34 @@ class AiLoopGui(tk.Tk):
         ttk.Button(controls, text="Close", command=window.destroy).pack(side="right")
 
 
-def main() -> int:
+def parse_args() -> argparse.Namespace:
+    parser = argparse.ArgumentParser(description="Start the ai-loop Tkinter GUI.")
+    parser.add_argument(
+        "--theme",
+        default="default",
+        help="Tk/ttk theme name. Use 'default' to keep the platform-native/current theme.",
+    )
+    parser.add_argument("--list-themes", action="store_true", help="Print available Tk/ttk themes and exit.")
+    return parser.parse_args()
+
+
+def list_themes() -> None:
+    root = tk.Tk()
+    root.withdraw()
     try:
-        app = AiLoopGui()
+        style = ttk.Style(root)
+        print("\n".join(style.theme_names()))
+    finally:
+        root.destroy()
+
+
+def main() -> int:
+    args = parse_args()
+    if args.list_themes:
+        list_themes()
+        return 0
+    try:
+        app = AiLoopGui(theme=args.theme)
     except Exception as exc:
         messagebox.showerror("ai-loop GUI failed to start", str(exc))
         return 1
