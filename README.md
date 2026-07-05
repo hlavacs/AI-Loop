@@ -94,8 +94,9 @@ job when `REDIS_URL` points at localhost. Cleanup controls are split into
 Clear Worktrees, Reset DB, and Full Reset so you can remove generated worktrees,
 clear durable job records, or do both. When a job enters `human_needed`, the
 GUI shows an alert and lists practical next actions in the selected job's
-Overview tab. On macOS, the GUI also exposes hibernation status plus disable
-and deep-enable actions backed by `pmset` hibernatemode 0 and 25.
+Overview tab. On macOS only, the GUI also exposes hibernation status plus a
+selectable `pmset` hibernatemode: 0 disables hibernation, 3 enables the default
+portable mode, and 25 enables deep hibernation mode.
 
 ```bash
 python3 ai_loop_gui.py

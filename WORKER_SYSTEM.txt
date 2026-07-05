@@ -97,7 +97,7 @@ watcher.py
 Watches terminal streams: ai:done, ai:human, and ai:dead. It prints final outcomes and errors.
 
 ai_loop_gui.py
-Provides a cross-platform Python/Tkinter GUI for normal interactive use. It does not call the bash wrappers. It creates jobs, launches claude_controller.py, codex_worker.py, and watcher.py directly as Python subprocesses, tails per-job logs, shows job/task/run/decision/event state, stops jobs, resumes paused jobs, changes controller and worker choices, starts local Redis when REDIS_URL points at localhost, clears AI worktrees, resets the database, and performs a full reset. If the active Python is missing redis-py, it creates .gui-venv, installs redis there, and restarts itself. When a job enters human_needed, the GUI shows an alert and lists practical next actions in the Overview tab. On macOS, it can show hibernation status, disable hibernation with pmset mode 0, and enable deep hibernation with pmset mode 25.
+Provides a cross-platform Python/Tkinter GUI for normal interactive use. It does not call the bash wrappers. It creates jobs, launches claude_controller.py, codex_worker.py, and watcher.py directly as Python subprocesses, tails per-job logs, shows job/task/run/decision/event state, stops jobs, resumes paused jobs, changes controller and worker choices, starts local Redis when REDIS_URL points at localhost, clears AI worktrees, resets the database, and performs a full reset. If the active Python is missing redis-py, it creates .gui-venv, installs redis there, and restarts itself. When a job enters human_needed, the GUI shows an alert and lists practical next actions in the Overview tab. On macOS only, it can show hibernation status and select pmset hibernatemode 0, 3, or 25 with explanation strings.
 
 Worker and Controller Selection
 -------------------------------
@@ -299,17 +299,19 @@ Examples:
 ./ai_delete_job.bash J20260701-101500-123456
 
 ai_hibernation.bash
-macOS-only helper for reading or changing pmset hibernatemode. It is useful when long jobs should not be interrupted by sleep/hibernation policy changes. The disable command uses sudo pmset -a hibernatemode 0; the enable command uses sudo pmset -a hibernatemode 25 for deep hibernation.
+macOS-only helper for reading or changing pmset hibernatemode. It is useful when long jobs should not be interrupted by sleep/hibernation policy changes. It works on macOS only. Selectable modes are 0 (disabled), 3 (enabled, default portable mode), and 25 (enabled, deep hibernation mode).
 
 Parameters:
 ./ai_hibernation.bash status
 ./ai_hibernation.bash disable
 ./ai_hibernation.bash enable
+./ai_hibernation.bash set <0|3|25>
 
 Examples:
 ./ai_hibernation.bash status
 ./ai_hibernation.bash disable
 ./ai_hibernation.bash enable
+./ai_hibernation.bash set 25
 
 ai_loop_python.bash
 Shared helper sourced by other scripts. It chooses a runnable Python interpreter, honors AI_LOOP_PYTHON, resolves Python paths, shell-quotes words, and checks that the selected Python can import redis. It is not normally run directly.

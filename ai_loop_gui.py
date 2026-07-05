@@ -1267,7 +1267,7 @@ class AiLoopGui(tk.Tk):
 
     def hibernation_status_text(self) -> str:
         if platform.system() != "Darwin":
-            return "Hibernation control is only available on macOS."
+            return "Hibernation control works on macOS only."
         pmset = shutil.which("pmset")
         if pmset is None:
             return "pmset was not found."
@@ -1280,25 +1280,28 @@ class AiLoopGui(tk.Tk):
             if len(parts) >= 2 and parts[0] == "hibernatemode":
                 mode = parts[1]
                 break
+        return f"works on: macOS only\nhibernatemode: {mode}\nhibernation: {self.hibernation_mode_description(mode)}"
+
+    def hibernation_mode_description(self, mode: str | int) -> str:
         descriptions = {
             "0": "disabled",
             "3": "enabled (default portable mode)",
             "25": "enabled (deep hibernation mode)",
         }
-        return f"hibernatemode: {mode}\nhibernation: {descriptions.get(mode, 'custom mode')}"
+        return descriptions.get(str(mode), "custom mode")
 
     def set_hibernation_mode(self, mode: int, parent: tk.Toplevel) -> None:
         if platform.system() != "Darwin":
-            messagebox.showerror("Unsupported", "Hibernation control is only available on macOS.", parent=parent)
+            messagebox.showerror("Unsupported", "Hibernation control works on macOS only.", parent=parent)
             return
         pmset = shutil.which("pmset")
         if pmset is None:
             messagebox.showerror("Missing pmset", "pmset was not found.", parent=parent)
             return
-        action = "disable hibernation" if mode == 0 else "enable hibernation"
         if not messagebox.askyesno(
             "Confirm Hibernation Change",
-            f"This will run:\n\nsudo pmset -a hibernatemode {mode}\n\nContinue to {action}?",
+            f"This will run:\n\nsudo pmset -a hibernatemode {mode}\n\n"
+            f"Mode {mode}: {self.hibernation_mode_description(mode)}\n\nContinue?",
             parent=parent,
         ):
             return
@@ -1322,16 +1325,25 @@ class AiLoopGui(tk.Tk):
                 pass
         window = tk.Toplevel(self)
         window.title("macOS Hibernation")
-        window.geometry("460x220")
+        window.geometry("520x300")
         window.columnconfigure(0, weight=1)
-        text = tk.Text(window, height=6, wrap="word")
+        text = tk.Text(window, height=8, wrap="word")
         text.grid(row=0, column=0, sticky="nsew", padx=10, pady=10)
-        text.insert("1.0", self.hibernation_status_text())
+        mode_help = (
+            "\n\nSelectable modes:\n"
+            "0: disabled\n"
+            "3: enabled (default portable mode)\n"
+            "25: enabled (deep hibernation mode)"
+        )
+        text.insert("1.0", self.hibernation_status_text() + mode_help)
+        text.configure(state="disabled")
         controls = ttk.Frame(window, padding=(10, 0, 10, 10))
         controls.grid(row=1, column=0, sticky="ew")
+        selected_mode = tk.StringVar(value="3")
+        mode_select = ttk.Combobox(controls, textvariable=selected_mode, values=("0", "3", "25"), width=4, state="readonly")
+        mode_select.pack(side="left")
         ttk.Button(controls, text="Refresh", command=lambda: self.open_hibernation_window(window)).pack(side="left")
-        ttk.Button(controls, text="Disable", command=lambda: self.set_hibernation_mode(0, window)).pack(side="left", padx=(8, 0))
-        ttk.Button(controls, text="Enable Deep", command=lambda: self.set_hibernation_mode(25, window)).pack(side="left", padx=(8, 0))
+        ttk.Button(controls, text="Apply", command=lambda: self.set_hibernation_mode(int(selected_mode.get()), window)).pack(side="left", padx=(8, 0))
         ttk.Button(controls, text="Close", command=window.destroy).pack(side="right")
 
 
