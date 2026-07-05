@@ -1331,7 +1331,7 @@ class AiLoopGui(tk.Tk):
         controls.grid(row=1, column=0, sticky="ew")
         ttk.Button(controls, text="Refresh", command=lambda: self.open_hibernation_window(window)).pack(side="left")
         ttk.Button(controls, text="Disable", command=lambda: self.set_hibernation_mode(0, window)).pack(side="left", padx=(8, 0))
-        ttk.Button(controls, text="Enable", command=lambda: self.set_hibernation_mode(3, window)).pack(side="left", padx=(8, 0))
+        ttk.Button(controls, text="Enable Deep", command=lambda: self.set_hibernation_mode(25, window)).pack(side="left", padx=(8, 0))
         ttk.Button(controls, text="Close", command=window.destroy).pack(side="right")
 
 

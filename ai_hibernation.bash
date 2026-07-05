@@ -9,7 +9,7 @@ usage: ./ai_hibernation.bash status
 
 macOS only. Uses pmset to read or change hibernatemode.
 disable: sudo pmset -a hibernatemode 0
-enable:  sudo pmset -a hibernatemode 3
+enable:  sudo pmset -a hibernatemode 25
 USAGE
 }
 
@@ -71,7 +71,7 @@ case "$1" in
     set_mode 0
     ;;
   enable)
-    set_mode 3
+    set_mode 25
     ;;
   -h|--help)
     usage
