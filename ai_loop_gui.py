@@ -71,6 +71,22 @@ from start_job import (
 ACTIVE_STATUSES = {"planning", "queued", "implementing", "fixing"}
 TERMINAL_STATUSES = {"done", "human_needed", "dead"}
 PROCESS_NAMES = ("claude_controller", "codex_worker", "watcher")
+PROCESS_LABELS = {
+    "claude_controller": "controller",
+    "codex_worker": "worker",
+    "watcher": "watcher",
+}
+PROCESS_KEYS_BY_LABEL = {label: name for name, label in PROCESS_LABELS.items()}
+LOG_LABELS = tuple(PROCESS_LABELS[name] for name in PROCESS_NAMES)
+JOB_STATUS_COLORS = {
+    "planning": "#e8f1ff",
+    "queued": "#f2f2f2",
+    "implementing": "#ffe6bf",
+    "fixing": "#fff4db",
+    "human_needed": "#ffe1df",
+    "dead": "#f2d3d3",
+    "done": "#dff3df",
+}
 APP_WINDOW_TITLE = "AI-LOOP - Prof. Helmut Hlavacs, University of Vienna and Robimo GmbH (https://robimo.at/), Vienna, Austria"
 
 
@@ -785,7 +801,7 @@ class AiLoopGui(tk.Tk):
         frame.rowconfigure(0, weight=1)
         frame.columnconfigure(0, weight=1)
         columns = ("status", "progress", "controller", "worker", "tasks", "runs", "updated")
-        self.jobs_tree = ttk.Treeview(frame, columns=columns, show="tree headings", selectmode="browse")
+        self.jobs_tree = ttk.Treeview(frame, columns=columns, show="tree headings", selectmode="browse", style="Jobs.Treeview")
         self.jobs_tree.heading("#0", text="Job")
         self.jobs_tree.column("#0", width=190, stretch=False)
         for name, width in (
@@ -800,13 +816,7 @@ class AiLoopGui(tk.Tk):
             self.jobs_tree.heading(name, text=name.title())
             self.jobs_tree.column(name, width=width, stretch=False)
         self.jobs_tree.grid(row=0, column=0, sticky="nsew")
-        self.jobs_tree.tag_configure("planning", background="#e8f1ff")
-        self.jobs_tree.tag_configure("queued", background="#f2f2f2")
-        self.jobs_tree.tag_configure("implementing", background="#ffe6bf")
-        self.jobs_tree.tag_configure("fixing", background="#fff4db")
-        self.jobs_tree.tag_configure("human_needed", background="#ffe1df")
-        self.jobs_tree.tag_configure("dead", background="#f2d3d3")
-        self.jobs_tree.tag_configure("done", background="#dff3df")
+        self.configure_job_status_tags()
         scrollbar = ttk.Scrollbar(frame, orient="vertical", command=self.jobs_tree.yview)
         scrollbar.grid(row=0, column=1, sticky="ns")
         self.jobs_tree.configure(yscrollcommand=scrollbar.set)
@@ -868,8 +878,8 @@ class AiLoopGui(tk.Tk):
         logs.columnconfigure(0, weight=1)
         log_bar = ttk.Frame(logs)
         log_bar.grid(row=0, column=0, sticky="ew")
-        self.log_name_var = tk.StringVar(value="codex_worker")
-        ttk.Combobox(log_bar, textvariable=self.log_name_var, values=list(PROCESS_NAMES), state="readonly", width=20).grid(
+        self.log_name_var = tk.StringVar(value=PROCESS_LABELS["codex_worker"])
+        ttk.Combobox(log_bar, textvariable=self.log_name_var, values=list(LOG_LABELS), state="readonly", width=20).grid(
             row=0, column=0, padx=(0, 6)
         )
         ttk.Button(log_bar, text="Refresh Log", command=self.refresh_log).grid(row=0, column=1)
@@ -938,6 +948,21 @@ class AiLoopGui(tk.Tk):
         self.watch_job_id = job_id
         self.refresh_all(select_job_id=job_id)
 
+    def configure_job_status_tags(self) -> None:
+        for status, color in JOB_STATUS_COLORS.items():
+            self.jobs_tree.tag_configure(status, background=color)
+        self.update_jobs_selection_style()
+
+    def update_jobs_selection_style(self) -> None:
+        selected = self.jobs_tree.selection()
+        status = ""
+        if selected:
+            tags = self.jobs_tree.item(selected[0], "tags")
+            status = str(tags[0]) if tags else ""
+        selected_color = JOB_STATUS_COLORS.get(status, "#d9e8ff")
+        style = ttk.Style(self)
+        style.map("Jobs.Treeview", background=[("selected", selected_color)], foreground=[("selected", "black")])
+
     def refresh_all(self, select_job_id: str | None = None) -> None:
         try:
             jobs = self.backend.list_jobs()
@@ -946,6 +971,7 @@ class AiLoopGui(tk.Tk):
             return
 
         selected = select_job_id or self.selected_job_id
+        self.configure_job_status_tags()
         self.jobs_tree.delete(*self.jobs_tree.get_children())
         for job in jobs:
             job_id = str(job["id"])
@@ -997,6 +1023,8 @@ class AiLoopGui(tk.Tk):
             self.set_text(self.history_text, "")
             self.set_text(self.log_text, "")
         self.update_system_status(jobs)
+        self.update_jobs_selection_style()
+        self.jobs_tree.update_idletasks()
 
     def update_system_status(self, jobs: list[dict[str, Any]] | None = None) -> None:
         try:
@@ -1043,6 +1071,7 @@ class AiLoopGui(tk.Tk):
         parent = self.jobs_tree.parent(item)
         job_id = parent or item
         self.selected_job_id = job_id
+        self.update_jobs_selection_style()
         self.show_job(job_id)
 
     def show_job(self, job_id: str) -> None:
@@ -1058,7 +1087,7 @@ class AiLoopGui(tk.Tk):
             f"{job_id}  {job['status']}  controller={job['controller']} worker={job['worker']} updated={job['updated_at']}"
         )
         process_lines = [
-            f"{name}: {'running' if info['running'] else 'stopped'} pid={info['pid'] or '-'}"
+            f"{PROCESS_LABELS.get(name, name)}: {'running' if info['running'] else 'stopped'} pid={info['pid'] or '-'}"
             for name, info in details["processes"].items()
         ]
         latest_decision = details["decisions"][0] if details["decisions"] else None
@@ -1149,8 +1178,9 @@ class AiLoopGui(tk.Tk):
     def refresh_log(self) -> None:
         if not self.selected_job_id:
             return
+        log_name = PROCESS_KEYS_BY_LABEL.get(self.log_name_var.get(), self.log_name_var.get())
         try:
-            text = self.backend.log_text(self.selected_job_id, self.log_name_var.get())
+            text = self.backend.log_text(self.selected_job_id, log_name)
         except Exception as exc:
             text = f"Could not read log: {exc}"
         self.set_text(self.log_text, text)
