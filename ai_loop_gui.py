@@ -653,6 +653,7 @@ class AiLoopGui(tk.Tk):
         self.backend = LoopBackend()
         self.model_defaults = self.backend.model_defaults()
         self.selected_job_id: str | None = None
+        self.resume_fields_job_id: str | None = None
         self.watch_job_id: str | None = None
         self.last_status_by_job: dict[str, str] = {}
         self.alerted_human_needed: set[str] = set()
@@ -1081,8 +1082,12 @@ class AiLoopGui(tk.Tk):
             self.summary_var.set(f"Could not load {job_id}: {exc}")
             return
         job = details["job"]
-        self.resume_controller_var.set(str(job["controller"]))
-        self.resume_worker_var.set(str(job["worker"]))
+        if self.resume_fields_job_id != job_id:
+            self.resume_controller_var.set(str(job["controller"]))
+            self.resume_worker_var.set(str(job["worker"]))
+            self.extra_constraint_var.set("")
+            self.extra_acceptance_var.set("")
+            self.resume_fields_job_id = job_id
         self.summary_var.set(
             f"{job_id}  {job['status']}  controller={job['controller']} worker={job['worker']} updated={job['updated_at']}"
         )
@@ -1227,6 +1232,7 @@ class AiLoopGui(tk.Tk):
             messagebox.showerror("Resume Failed", str(exc))
             return
         self.watch_job_id = job_id
+        self.resume_fields_job_id = None
         self.refresh_all(select_job_id=job_id)
 
     def watch_selected_job(self) -> None:
