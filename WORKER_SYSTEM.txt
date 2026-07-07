@@ -97,7 +97,7 @@ watcher.py
 Watches terminal streams: ai:done, ai:human, and ai:dead. It prints final outcomes and errors.
 
 ai_loop_gui.py
-Provides a cross-platform Python/Tkinter GUI for normal interactive use. It does not call the bash wrappers. It creates jobs, launches claude_controller.py, codex_worker.py, and watcher.py directly as Python subprocesses, tails per-job logs, shows job/task/run/decision/event state, stops jobs, resumes paused jobs, changes controller and worker choices, starts local Redis when REDIS_URL points at localhost, clears AI worktrees, resets the database, and performs a full reset. If the active Python is missing redis-py, it creates .gui-venv, installs redis there, and restarts itself. When a job enters human_needed, the GUI shows an alert and lists practical next actions in the Overview tab. On macOS only, it can show hibernation status and select pmset hibernatemode 0, 3, or 25 with explanation strings.
+Provides a cross-platform Python/Tkinter GUI for normal interactive use. It does not call the bash wrappers. It creates jobs, launches claude_controller.py, codex_worker.py, and watcher.py directly as Python subprocesses, tails per-job logs, shows job/task/run/decision/event state, stops jobs, resumes paused jobs, changes controller and worker choices, starts local Redis when REDIS_URL points at localhost, clears AI worktrees, resets the database, and performs a full reset. The "Codex bypass sandbox" checkbox in the job settings sets CODEX_BYPASS_SANDBOX in the launched processes' environment (1 when checked, 0 when unchecked); despite the name it governs every worker's bypass behavior, not just Codex. See Sandbox and Permission Modes below. If the active Python is missing redis-py, it creates .gui-venv, installs redis there, and restarts itself. When a job enters human_needed, the GUI shows an alert and lists practical next actions in the Overview tab. On macOS only, it can show hibernation status and select pmset hibernatemode 0, 3, or 25 with explanation strings.
 
 Worker and Controller Selection
 -------------------------------
@@ -115,13 +115,22 @@ export AI_LOOP_WORKER=fable
 
 Models are configured with AI_LOOP_FABLE_MODEL (default claude-fable-5), AI_LOOP_OPUS_MODEL (default opus), and AI_LOOP_CONTROLLER_MODEL (default: Claude CLI default model, for the claude controller).
 
-The fable/opus workers run:
-
-claude -p --model "$MODEL" --permission-mode acceptEdits --allowedTools Bash,Edit,Write,MultiEdit,NotebookEdit
-
-With CODEX_BYPASS_SANDBOX=1 they instead use --dangerously-skip-permissions. The Claude CLI has no filesystem sandbox comparable to Codex's workspace-write; Git worktree isolation is the main guardrail.
-
 The codex controller runs codex exec --sandbox read-only --output-last-message and parses the decision JSON from the last agent message.
+
+Sandbox and Permission Modes
+----------------------------
+
+A single toggle, the CODEX_BYPASS_SANDBOX environment variable, controls how every worker is invoked. It is set by the GUI "Codex bypass sandbox" checkbox, or exported directly on the command line. There is no separate flag per LLM; each worker CLI simply maps the same toggle onto its own equivalent option.
+
+CODEX_BYPASS_SANDBOX=0 (safe, default in the GUI when unchecked): workers still run fully autonomously with no approval prompts, but constrained.
+- codex worker: codex exec --sandbox workspace-write. The process may write inside the workspace but network access and writes outside the workspace are restricted.
+- fable/opus workers: claude -p --model "$MODEL" --permission-mode acceptEdits --allowedTools Bash,Edit,Write,MultiEdit,NotebookEdit. Edits are auto-accepted and only the listed tools are pre-authorized; anything outside that set is blocked rather than prompted.
+
+CODEX_BYPASS_SANDBOX=1 (dangerous, no confinement):
+- codex worker: codex exec --dangerously-bypass-approvals-and-sandbox.
+- fable/opus workers: claude -p --model "$MODEL" --dangerously-skip-permissions.
+
+The Claude CLI has no filesystem sandbox comparable to Codex's workspace-write, so for fable/opus workers Git worktree isolation is the main guardrail in both modes. Codex is the only worker that gains true filesystem/network confinement from the safe mode. To add a different worker CLI, give it its own command builder that maps this same toggle onto that CLI's autonomous-vs-bypass options.
 
 Task sizing follows the worker. With the codex worker, the controller plans many tiny tasklets: one narrow objective, one file cluster, a short stop point. With fable or opus workers, the controller plans larger coherent tasks that may span several related files and include their own discovery and verification, cutting controller round-trips. Default job constraints, the decision schema rules, and the worker prompt all adjust accordingly.
 
