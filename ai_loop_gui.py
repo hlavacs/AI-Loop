@@ -278,6 +278,15 @@ class LoopBackend:
     def pid_running(pid: int | None) -> bool:
         if not pid:
             return False
+        if os.name != "nt":
+            stat_path = Path("/proc") / str(pid) / "stat"
+            try:
+                stat = stat_path.read_text(encoding="utf-8")
+                after_name = stat.rsplit(")", 1)[1].strip()
+                if after_name.startswith("Z"):
+                    return False
+            except OSError:
+                pass
         try:
             os.kill(pid, 0)
             return True

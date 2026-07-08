@@ -25,9 +25,17 @@ find_pids() {
 
 is_running() {
   local pid="$1"
-  [ -n "$pid" ] && kill -0 "$pid" 2>/dev/null
+  if [ -z "$pid" ] || ! kill -0 "$pid" 2>/dev/null; then
+    return 1
+  fi
+  if [ -r "/proc/$pid/stat" ]; then
+    local state
+    state="$(awk '{print $3}' "/proc/$pid/stat" 2>/dev/null || true)"
+    [ "$state" != "Z" ]
+    return
+  fi
+  return 0
 }
-
 read_pid() {
   local file
   file="$(pid_file "$1")"
