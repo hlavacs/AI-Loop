@@ -94,8 +94,10 @@ def extract_json(text: str) -> dict[str, Any]:
             raise ValueError(f"Claude did not return JSON: {text[:1000]}")
         parsed = json.loads(text[start : end + 1])
 
-    if isinstance(parsed, dict) and isinstance(parsed.get("result"), str):
-        return extract_json(parsed["result"])
+    if isinstance(parsed, dict):
+        for key in ("result", "response", "text", "content", "output"):
+            if isinstance(parsed.get(key), str):
+                return extract_json(parsed[key])
     if not isinstance(parsed, dict):
         raise ValueError("Claude output JSON is not an object")
     return parsed
@@ -334,7 +336,7 @@ def run_claude(claude_bin: str, prompt: str, model: str = "", sizing: str = "sma
     )
 
 
-def run_codex_controller(codex_bin: str, prompt: str, workdir: str, sizing: str = "small") -> dict[str, Any]:
+def run_codex_controller(codex_bin: str, prompt: str, workdir: str, model: str = "", sizing: str = "small") -> dict[str, Any]:
     if shutil.which(codex_bin) is None:
         return {
             "action": "HUMAN_NEEDED",
@@ -352,18 +354,21 @@ def run_codex_controller(codex_bin: str, prompt: str, workdir: str, sizing: str 
             last_message_path = Path(handle.name)
         try:
             try:
+                cmd = [
+                    codex_bin,
+                    "exec",
+                    "--cd",
+                    workdir,
+                    "--sandbox",
+                    "read-only",
+                    "--output-last-message",
+                    str(last_message_path),
+                ]
+                if model:
+                    cmd.extend(["-m", model])
+                cmd.append(current_prompt)
                 proc = subprocess.run(
-                    [
-                        codex_bin,
-                        "exec",
-                        "--cd",
-                        workdir,
-                        "--sandbox",
-                        "read-only",
-                        "--output-last-message",
-                        str(last_message_path),
-                        current_prompt,
-                    ],
+                    cmd,
                     text=True,
                     capture_output=True,
                     timeout=7200,
@@ -403,9 +408,67 @@ def run_codex_controller(codex_bin: str, prompt: str, workdir: str, sizing: str 
     )
 
 
+def run_gemini_controller(gemini_bin: str, prompt: str, workdir: str, model: str = "", sizing: str = "small") -> dict[str, Any]:
+    if shutil.which(gemini_bin) is None:
+        return {
+            "action": "HUMAN_NEEDED",
+            "reason": f"missing Gemini binary: {gemini_bin}",
+            "history_summary": "Gemini controller could not run because the Gemini CLI is missing.",
+        }
+
+    gemini_cmd = [gemini_bin]
+    if model:
+        gemini_cmd.extend(["-m", model])
+    gemini_cmd.extend(["-p", "", "--output-format", "json"])
+
+    current_prompt = prompt
+    last_output = ""
+    last_error: Exception | None = None
+    for attempt in range(CLAUDE_JSON_REMAKE_ATTEMPTS + 1):
+        label = "running Gemini controller" if attempt == 0 else f"remaking Gemini JSON decision attempt {attempt}"
+        print(label)
+        try:
+            cmd = [*gemini_cmd]
+            cmd[cmd.index("-p") + 1] = current_prompt
+            proc = subprocess.run(
+                cmd,
+                cwd=workdir,
+                text=True,
+                capture_output=True,
+                timeout=7200,
+            )
+        except subprocess.TimeoutExpired as exc:
+            return {
+                "action": "HUMAN_NEEDED",
+                "reason": f"Gemini CLI timed out after {exc.timeout:g}s",
+                "history_summary": "Gemini controller timed out before producing a usable decision.",
+            }
+
+        output = (proc.stdout + "\n" + proc.stderr).strip()
+        last_output = output
+        if proc.returncode != 0:
+            return {
+                "action": "HUMAN_NEEDED",
+                "reason": f"Gemini CLI failed with rc={proc.returncode}: {output[-4000:]}",
+                "history_summary": "Gemini controller failed before producing a usable decision.",
+            }
+        try:
+            return parse_and_validate_decision(proc.stdout)
+        except (json.JSONDecodeError, ValueError) as exc:
+            last_error = exc
+            if attempt >= CLAUDE_JSON_REMAKE_ATTEMPTS:
+                break
+            current_prompt = json_remake_prompt(prompt, output, exc, sizing)
+
+    raise ValueError(
+        "Gemini did not produce valid decision JSON after "
+        f"{CLAUDE_JSON_REMAKE_ATTEMPTS + 1} attempts: {last_error}; output tail={last_output[-4000:]!r}"
+    )
+
+
 def job_controller(settings, job: dict[str, Any]) -> str:
     controller = str(job.get("controller") or "").strip().lower()
-    if controller not in {"claude", "fable", "opus", "codex"}:
+    if controller not in {"claude", "fable", "opus", "codex", "gemini"}:
         controller = settings.controller_default
     return controller
 
@@ -414,7 +477,9 @@ def controller_decision(settings, job: dict[str, Any], prompt: str) -> dict[str,
     controller = job_controller(settings, job)
     sizing = job_sizing(job)
     if controller == "codex":
-        return run_codex_controller(settings.codex_bin, prompt, str(job["worktree_path"]), sizing)
+        return run_codex_controller(settings.codex_bin, prompt, str(job["worktree_path"]), settings.codex_model, sizing)
+    if controller == "gemini":
+        return run_gemini_controller(settings.gemini_bin, prompt, str(job["worktree_path"]), settings.gemini_model, sizing)
     if controller == "fable":
         model = settings.fable_model
     elif controller == "opus":
@@ -424,7 +489,7 @@ def controller_decision(settings, job: dict[str, Any], prompt: str) -> dict[str,
     return run_claude(settings.claude_bin, prompt, model, sizing)
 
 
-CAPABLE_WORKERS = {"fable", "opus"}
+CAPABLE_WORKERS = {"fable", "opus", "gemini"}
 
 
 def worker_sizing(worker: str) -> str:

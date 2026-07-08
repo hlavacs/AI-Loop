@@ -2,8 +2,8 @@
 set -euo pipefail
 
 usage() {
-  echo "usage: $0 [--worker codex|fable|opus] [--controller claude|fable|opus|codex] <repo-path> <job-description>" >&2
-  echo "       $0 [--worker codex|fable|opus] [--controller claude|fable|opus|codex] <job-description-file>" >&2
+  echo "usage: $0 [--worker codex|fable|opus|gemini] [--controller claude|fable|opus|codex|gemini] <repo-path> <job-description>" >&2
+  echo "       $0 [--worker codex|fable|opus|gemini] [--controller claude|fable|opus|codex|gemini] <job-description-file>" >&2
   echo "example: $0 /path/to/your/project \"Implement the requested feature in small safe steps.\"" >&2
   echo "example: $0 --worker fable --controller fable /path/to/your/project/job.txt" >&2
 }
@@ -60,7 +60,7 @@ python_bin="$(choose_ai_loop_python)"
 ensure_ai_loop_python_redis "$python_bin"
 
 case "$worker" in
-  fable|opus|claude)
+  fable|opus|claude|gemini)
     size_constraint="Keep each task coherent and reviewable."
     ;;
   *)

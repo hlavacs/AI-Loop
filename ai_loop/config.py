@@ -15,8 +15,8 @@ DEAD_STREAM = "ai:dead"
 
 READ_BLOCK_MS = 5000
 
-WORKERS = {"codex", "fable", "opus"}
-CONTROLLERS = {"claude", "fable", "opus", "codex"}
+WORKERS = {"codex", "fable", "opus", "gemini"}
+CONTROLLERS = {"claude", "fable", "opus", "codex", "gemini"}
 
 
 def normalize_worker(value: str) -> str:
@@ -43,12 +43,15 @@ class Settings:
     runs_dir: Path
     codex_bin: str
     claude_bin: str
+    gemini_bin: str
+    codex_model: str
     codex_bypass_sandbox: bool
     worker_default: str
     fable_model: str
     controller_default: str
     controller_model: str
     opus_model: str
+    gemini_model: str
 
 
 def env_bool(name: str, default: bool = False) -> bool:
@@ -69,10 +72,13 @@ def load_settings() -> Settings:
         runs_dir=runs_dir,
         codex_bin=os.getenv("CODEX_BIN", "codex"),
         claude_bin=os.getenv("CLAUDE_BIN", "claude"),
+        gemini_bin=os.getenv("GEMINI_BIN", "gemini"),
+        codex_model=os.getenv("AI_LOOP_CODEX_MODEL", ""),
         codex_bypass_sandbox=env_bool("CODEX_BYPASS_SANDBOX", False),
         worker_default=normalize_worker(os.getenv("AI_LOOP_WORKER", "codex")),
         fable_model=os.getenv("AI_LOOP_FABLE_MODEL", "claude-fable-5"),
         controller_default=normalize_controller(os.getenv("AI_LOOP_CONTROLLER", "opus")),
         controller_model=os.getenv("AI_LOOP_CONTROLLER_MODEL", ""),
         opus_model=os.getenv("AI_LOOP_OPUS_MODEL", "opus"),
+        gemini_model=os.getenv("AI_LOOP_GEMINI_MODEL", ""),
     )

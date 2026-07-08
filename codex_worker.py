@@ -71,8 +71,10 @@ def log_worker_stage(job_id: str, task_id: str, stage: str, detail: str) -> None
     print(f"job {job_id} task {task_id}: {stage} - {detail}")
 
 
-def build_codex_command(codex_bin: str, cwd: str, prompt: str, bypass_sandbox: bool) -> list[str]:
+def build_codex_command(codex_bin: str, cwd: str, prompt: str, model: str, bypass_sandbox: bool) -> list[str]:
     cmd = [codex_bin, "exec", "--cd", cwd]
+    if model:
+        cmd.extend(["-m", model])
     if bypass_sandbox:
         cmd.append("--dangerously-bypass-approvals-and-sandbox")
     else:
@@ -94,11 +96,22 @@ def build_fable_command(claude_bin: str, prompt: str, model: str, bypass_sandbox
     return cmd
 
 
+def build_gemini_command(gemini_bin: str, prompt: str, model: str, bypass_sandbox: bool) -> list[str]:
+    cmd = [gemini_bin]
+    if model:
+        cmd.extend(["-m", model])
+    if not bypass_sandbox:
+        cmd.append("--sandbox")
+    cmd.append("--yolo")
+    cmd.extend(["-p", prompt])
+    return cmd
+
+
 def job_worker(settings, job: dict) -> str:
     worker = str(job.get("worker") or "").strip().lower()
     if worker == "claude":
         worker = "fable"
-    return worker if worker in {"codex", "fable", "opus"} else settings.worker_default
+    return worker if worker in {"codex", "fable", "opus", "gemini"} else settings.worker_default
 
 
 def text_fields(*items: object) -> str:
@@ -178,15 +191,15 @@ def referenced_existing_files(job: dict, task: dict) -> list[str]:
     return [str(path.relative_to(worktree.resolve())) for path in found]
 
 
-WORKER_NAMES = {"fable": "Claude Fable", "opus": "Claude Opus", "codex": "Codex CLI"}
-WORKER_LABELS = {"fable": "Fable", "opus": "Opus", "codex": "Codex"}
+WORKER_NAMES = {"fable": "Claude Fable", "opus": "Claude Opus", "codex": "Codex CLI", "gemini": "Gemini CLI"}
+WORKER_LABELS = {"fable": "Fable", "opus": "Opus", "codex": "Codex", "gemini": "Gemini"}
 
 
 def codex_prompt(job: dict, task: dict, worker: str = "codex") -> str:
     guidance_files = referenced_existing_files(job, task)
     crash_safe_runner = Path(__file__).resolve().parent / "ai_run_crash_safe.bash"
     worker_name = WORKER_NAMES.get(worker, "Codex CLI")
-    if worker in {"fable", "opus"}:
+    if worker in {"fable", "opus", "gemini"}:
         scope_rules = """- Implement only this task, completely; it may span several related files.
 - Do not expand the task into unrelated cleanup, broad audits, or follow-up milestones.
 - Stop once this task's acceptance criteria are met."""
@@ -318,7 +331,12 @@ def process_task(settings, client, task_id: str) -> None:
     worktree_path = job["worktree_path"]
 
     worker = job_worker(settings, job)
-    worker_bin = settings.claude_bin if worker in {"fable", "opus"} else settings.codex_bin
+    if worker in {"fable", "opus"}:
+        worker_bin = settings.claude_bin
+    elif worker == "gemini":
+        worker_bin = settings.gemini_bin
+    else:
+        worker_bin = settings.codex_bin
     worker_label = WORKER_LABELS.get(worker, "Codex")
 
     if shutil.which(worker_bin) is None:
@@ -334,11 +352,19 @@ def process_task(settings, client, task_id: str) -> None:
                 settings.fable_model if worker == "fable" else settings.opus_model,
                 settings.codex_bypass_sandbox,
             )
+        elif worker == "gemini":
+            codex_cmd = build_gemini_command(
+                settings.gemini_bin,
+                prompt,
+                settings.gemini_model,
+                settings.codex_bypass_sandbox,
+            )
         else:
             codex_cmd = build_codex_command(
                 settings.codex_bin,
                 worktree_path,
                 prompt,
+                settings.codex_model,
                 settings.codex_bypass_sandbox,
             )
         worker_stage = "fixing" if str(task["created_by"]) == "claude:repair" else "implementing"

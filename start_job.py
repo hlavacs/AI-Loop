@@ -43,7 +43,7 @@ LARGE_TASK_CONSTRAINTS = [
     "Each task should have one clear objective and a testable stop point.",
 ]
 
-CAPABLE_WORKERS = {"fable", "opus"}
+CAPABLE_WORKERS = {"fable", "opus", "gemini"}
 
 DEFAULT_ACCEPTANCE = [
     "The implementation satisfies the stated goal.",
@@ -72,12 +72,12 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--worker",
         default=os.getenv("AI_LOOP_WORKER", "codex"),
-        help="Implementation worker: 'codex', 'fable' (alias 'claude'), or 'opus'. Default from AI_LOOP_WORKER or 'codex'.",
+        help="Implementation worker: 'codex', 'fable' (alias 'claude'), 'opus', or 'gemini'. Default from AI_LOOP_WORKER or 'codex'.",
     )
     parser.add_argument(
         "--controller",
         default=os.getenv("AI_LOOP_CONTROLLER", "opus"),
-        help="Controller: 'claude' (CLI default model), 'fable', 'opus', or 'codex'. Default from AI_LOOP_CONTROLLER or 'opus'.",
+        help="Controller: 'claude' (CLI default model), 'fable', 'opus', 'codex', or 'gemini'. Default from AI_LOOP_CONTROLLER or 'opus'.",
     )
     parser.add_argument("--allow-parallel", action="store_true", help="Allow creating this job while another job is active.")
     parser.add_argument("--wait", action="store_true", help="Wait for the job to reach a terminal status.")

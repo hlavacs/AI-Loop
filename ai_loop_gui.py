@@ -92,11 +92,14 @@ APP_WINDOW_TITLE = "AI-LOOP - Prof. Helmut Hlavacs, University of Vienna and Rob
 
 @dataclass
 class ModelDefaults:
+    codex_model: str
     fable_model: str
     opus_model: str
+    gemini_model: str
     controller_model: str
     codex_bin: str
     claude_bin: str
+    gemini_bin: str
     codex_bypass_sandbox: bool
 
 
@@ -111,11 +114,14 @@ class LoopBackend:
 
     def model_defaults(self) -> ModelDefaults:
         return ModelDefaults(
+            codex_model=self.settings.codex_model,
             fable_model=self.settings.fable_model,
             opus_model=self.settings.opus_model,
+            gemini_model=self.settings.gemini_model,
             controller_model=self.settings.controller_model,
             codex_bin=self.settings.codex_bin,
             claude_bin=self.settings.claude_bin,
+            gemini_bin=self.settings.gemini_bin,
             codex_bypass_sandbox=self.settings.codex_bypass_sandbox,
         )
 
@@ -285,8 +291,11 @@ class LoopBackend:
         env["AI_LOOP_LOG_DIR"] = str(self.log_dir(job_id))
         env["CODEX_BIN"] = models.codex_bin
         env["CLAUDE_BIN"] = models.claude_bin
+        env["GEMINI_BIN"] = models.gemini_bin
+        env["AI_LOOP_CODEX_MODEL"] = models.codex_model
         env["AI_LOOP_FABLE_MODEL"] = models.fable_model
         env["AI_LOOP_OPUS_MODEL"] = models.opus_model
+        env["AI_LOOP_GEMINI_MODEL"] = models.gemini_model
         env["AI_LOOP_CONTROLLER_MODEL"] = models.controller_model
         env["CODEX_BYPASS_SANDBOX"] = "1" if models.codex_bypass_sandbox else "0"
         return env
@@ -724,11 +733,14 @@ class AiLoopGui(tk.Tk):
         self.controller_var = tk.StringVar(value=self.backend.settings.controller_default)
         self.no_worktree_var = tk.BooleanVar(value=False)
         self.allow_parallel_var = tk.BooleanVar(value=False)
+        self.codex_model_var = tk.StringVar(value=self.model_defaults.codex_model)
         self.fable_model_var = tk.StringVar(value=self.model_defaults.fable_model)
         self.opus_model_var = tk.StringVar(value=self.model_defaults.opus_model)
+        self.gemini_model_var = tk.StringVar(value=self.model_defaults.gemini_model)
         self.controller_model_var = tk.StringVar(value=self.model_defaults.controller_model)
         self.codex_bin_var = tk.StringVar(value=self.model_defaults.codex_bin)
         self.claude_bin_var = tk.StringVar(value=self.model_defaults.claude_bin)
+        self.gemini_bin_var = tk.StringVar(value=self.model_defaults.gemini_bin)
         self.bypass_var = tk.BooleanVar(value=self.model_defaults.codex_bypass_sandbox)
 
         ttk.Label(frame, text="Repo").grid(row=0, column=0, sticky="w")
@@ -750,7 +762,7 @@ class AiLoopGui(tk.Tk):
         settings.columnconfigure(1, weight=1)
         settings.columnconfigure(3, weight=1)
 
-        label_width = 17
+        label_width = 13
         ttk.Label(settings, text="Controller", width=label_width).grid(row=0, column=0, sticky="w")
         ttk.Combobox(settings, textvariable=self.controller_var, values=sorted(CONTROLLERS), width=12, state="readonly").grid(
             row=0, column=1, sticky="ew", padx=(4, 10)
@@ -767,31 +779,29 @@ class AiLoopGui(tk.Tk):
             row=1, column=3, sticky="ew", padx=(4, 0), pady=(5, 0)
         )
 
-        ttk.Label(settings, text="Fable model", width=label_width).grid(row=2, column=0, sticky="w", pady=(5, 0))
-        ttk.Entry(settings, textvariable=self.fable_model_var).grid(
-            row=2, column=1, columnspan=3, sticky="ew", padx=(4, 0), pady=(5, 0)
-        )
-        ttk.Label(settings, text="Opus model", width=label_width).grid(row=3, column=0, sticky="w", pady=(5, 0))
-        ttk.Entry(settings, textvariable=self.opus_model_var).grid(
-            row=3, column=1, columnspan=3, sticky="ew", padx=(4, 0), pady=(5, 0)
-        )
-        ttk.Label(settings, text="Controller model", width=label_width).grid(row=4, column=0, sticky="w", pady=(5, 0))
-        ttk.Entry(settings, textvariable=self.controller_model_var).grid(
-            row=4, column=1, columnspan=3, sticky="ew", padx=(4, 0), pady=(5, 0)
-        )
+        ttk.Label(settings, text="Codex model", width=label_width).grid(row=2, column=0, sticky="w", pady=(5, 0))
+        ttk.Entry(settings, textvariable=self.codex_model_var).grid(row=2, column=1, sticky="ew", padx=(4, 10), pady=(5, 0))
+        ttk.Label(settings, text="Codex bin", width=label_width).grid(row=2, column=2, sticky="w", pady=(5, 0))
+        ttk.Entry(settings, textvariable=self.codex_bin_var).grid(row=2, column=3, sticky="ew", padx=(4, 0), pady=(5, 0))
 
-        ttk.Label(settings, text="Codex binary", width=label_width).grid(row=5, column=0, sticky="w", pady=(5, 0))
-        ttk.Entry(settings, textvariable=self.codex_bin_var).grid(
-            row=5, column=1, columnspan=3, sticky="ew", padx=(4, 0), pady=(5, 0)
-        )
-        ttk.Label(settings, text="Claude binary", width=label_width).grid(row=6, column=0, sticky="w", pady=(5, 0))
-        ttk.Entry(settings, textvariable=self.claude_bin_var).grid(
-            row=6, column=1, columnspan=3, sticky="ew", padx=(4, 0), pady=(5, 0)
-        )
+        ttk.Label(settings, text="Fable model", width=label_width).grid(row=3, column=0, sticky="w", pady=(5, 0))
+        ttk.Entry(settings, textvariable=self.fable_model_var).grid(row=3, column=1, sticky="ew", padx=(4, 10), pady=(5, 0))
+        ttk.Label(settings, text="Claude bin", width=label_width).grid(row=3, column=2, sticky="w", pady=(5, 0))
+        ttk.Entry(settings, textvariable=self.claude_bin_var).grid(row=3, column=3, sticky="ew", padx=(4, 0), pady=(5, 0))
+
+        ttk.Label(settings, text="Opus model", width=label_width).grid(row=4, column=0, sticky="w", pady=(5, 0))
+        ttk.Entry(settings, textvariable=self.opus_model_var).grid(row=4, column=1, sticky="ew", padx=(4, 10), pady=(5, 0))
+        ttk.Label(settings, text="Gemini bin", width=label_width).grid(row=4, column=2, sticky="w", pady=(5, 0))
+        ttk.Entry(settings, textvariable=self.gemini_bin_var).grid(row=4, column=3, sticky="ew", padx=(4, 0), pady=(5, 0))
+
+        ttk.Label(settings, text="Gemini model", width=label_width).grid(row=5, column=0, sticky="w", pady=(5, 0))
+        ttk.Entry(settings, textvariable=self.gemini_model_var).grid(row=5, column=1, sticky="ew", padx=(4, 10), pady=(5, 0))
+        ttk.Label(settings, text="Claude ctrl", width=label_width).grid(row=5, column=2, sticky="w", pady=(5, 0))
+        ttk.Entry(settings, textvariable=self.controller_model_var).grid(row=5, column=3, sticky="ew", padx=(4, 0), pady=(5, 0))
 
         toggles = ttk.Frame(settings)
-        toggles.grid(row=7, column=0, columnspan=4, sticky="ew", pady=(6, 0))
-        ttk.Checkbutton(toggles, text="Codex bypass sandbox", variable=self.bypass_var).pack(side="left", padx=(0, 12))
+        toggles.grid(row=6, column=0, columnspan=4, sticky="ew", pady=(6, 0))
+        ttk.Checkbutton(toggles, text="Bypass worker sandbox", variable=self.bypass_var).pack(side="left", padx=(0, 12))
         ttk.Checkbutton(toggles, text="No worktree", variable=self.no_worktree_var).pack(side="left", padx=(0, 12))
         ttk.Checkbutton(toggles, text="Allow parallel", variable=self.allow_parallel_var).pack(side="left")
         ttk.Button(toggles, text="Create Job", command=self.create_job).pack(side="right")
@@ -894,11 +904,14 @@ class AiLoopGui(tk.Tk):
 
     def current_models(self) -> ModelDefaults:
         return ModelDefaults(
+            codex_model=self.codex_model_var.get().strip(),
             fable_model=self.fable_model_var.get().strip() or "claude-fable-5",
             opus_model=self.opus_model_var.get().strip() or "opus",
+            gemini_model=self.gemini_model_var.get().strip(),
             controller_model=self.controller_model_var.get().strip(),
             codex_bin=self.codex_bin_var.get().strip() or "codex",
             claude_bin=self.claude_bin_var.get().strip() or "claude",
+            gemini_bin=self.gemini_bin_var.get().strip() or "gemini",
             codex_bypass_sandbox=bool(self.bypass_var.get()),
         )
 
