@@ -29,9 +29,52 @@ def bootstrap_python_dependencies() -> None:
     root_dir = Path(__file__).resolve().parent
     venv_dir = root_dir / ".gui-venv"
     venv_python = venv_dir / ("Scripts/python.exe" if os.name == "nt" else "bin/python")
+
+    def venv_python_works() -> bool:
+        if not venv_python.exists():
+            return False
+        try:
+            subprocess.run(
+                [str(venv_python), "-c", "import sys"],
+                check=True,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                timeout=10,
+            )
+            return True
+        except (OSError, subprocess.SubprocessError):
+            return False
+
+    def create_venv(*, clear: bool = False) -> None:
+        cmd = [sys.executable, "-m", "venv"]
+        if clear:
+            cmd.append("--clear")
+        cmd.append(str(venv_dir))
+        subprocess.check_call(cmd)
+
+    def venv_has_redis() -> bool:
+        if not venv_python_works():
+            return False
+        try:
+            subprocess.run(
+                [str(venv_python), "-c", "import redis"],
+                check=True,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                timeout=10,
+            )
+            return True
+        except (OSError, subprocess.SubprocessError):
+            return False
+
     if not venv_python.exists():
-        subprocess.check_call([sys.executable, "-m", "venv", str(venv_dir)])
-    subprocess.check_call([str(venv_python), "-m", "pip", "install", "redis"])
+        create_venv()
+    elif not venv_python_works():
+        create_venv(clear=True)
+
+    if not venv_has_redis():
+        subprocess.check_call([str(venv_python), "-m", "ensurepip", "--upgrade"])
+        subprocess.check_call([str(venv_python), "-m", "pip", "install", "redis"])
     env = os.environ.copy()
     env["AI_LOOP_GUI_BOOTSTRAPPED"] = "1"
     os.execve(str(venv_python), [str(venv_python), str(Path(__file__).resolve()), *sys.argv[1:]], env)
