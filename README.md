@@ -8,21 +8,26 @@ This directory contains a durable continuous development loop:
 - A per-job worker (Codex CLI or Claude Fable) implements one task at a time.
 - Git worktrees isolate jobs by default.
 
-## Requirements
+## Installation
 
 - Python 3.10+
-- Tkinter for the optional GUI (`python -m tkinter` should open a test window)
+- Tkinter for the optional GUI (`python3 -m tkinter` should open a test window)
 - Redis
 - `redis-py`
 - `git`
 - Claude CLI available as `claude`
 - Codex CLI available as `codex`, or set `CODEX_BIN`
 
-Install the Python dependency:
+Typical local setup:
 
 ```bash
+python3 -m venv .venv
+source .venv/bin/activate
 python -m pip install redis
+python3 -m tkinter
 ```
+
+If you prefer the system interpreter, the scripts also work without a virtual environment as long as `redis-py` is installed for the chosen Python.
 
 ## Start Redis
 
@@ -107,17 +112,18 @@ python3 ai_loop_gui.py
 The default theme keeps the current platform-native Tk style. Any theme printed
 by `--list-themes` can be passed with `--theme <name>`.
 
-Use the controller/worker dropdowns and model fields to select `codex`,
-`fable`, `opus`, or `claude` behavior. Defaults come from the same environment
-variables as the CLI (`AI_LOOP_CONTROLLER`, `AI_LOOP_WORKER`,
-`AI_LOOP_FABLE_MODEL`, `AI_LOOP_OPUS_MODEL`, `AI_LOOP_CONTROLLER_MODEL`,
-`CODEX_BIN`, and `CLAUDE_BIN`).
+Use the controller/worker dropdowns and optional model fields to select `codex`,
+`fable`, `opus`, or `claude` behavior. Leave a model field blank to use the CLI
+default. The binary fields come from the same environment variables as the CLI
+(`AI_LOOP_CONTROLLER`, `AI_LOOP_WORKER`, `AI_LOOP_FABLE_MODEL`,
+`AI_LOOP_OPUS_MODEL`, `AI_LOOP_CONTROLLER_MODEL`, `CODEX_BIN`, `CLAUDE_BIN`,
+and `GEMINI_BIN`).
 
 ## Choosing the Worker
 
 Each job stores which implementation worker it uses: `codex` (default),
 `fable` (Claude Fable via the Claude CLI; `claude` is accepted as an alias),
-or `opus` (Claude Opus via the Claude CLI, model `AI_LOOP_OPUS_MODEL`).
+or `opus` (Claude Opus via the Claude CLI).
 
 ```bash
 ./ai_job.bash --worker fable /path/to/repo "Implement the requested feature."
@@ -128,10 +134,10 @@ export AI_LOOP_WORKER=fable   # default for new jobs when --worker is not given
 The Fable/Opus workers run:
 
 ```bash
-claude -p --model "$AI_LOOP_FABLE_MODEL" --permission-mode acceptEdits --allowedTools Bash,Edit,Write,MultiEdit,NotebookEdit
+claude -p --permission-mode acceptEdits --allowedTools Bash,Edit,Write,MultiEdit,NotebookEdit
 ```
 
-Set `AI_LOOP_FABLE_MODEL` to change the model (default `claude-fable-5`).
+Set `AI_LOOP_FABLE_MODEL` if you want to pin a specific model; leave it blank to use the Claude CLI default.
 
 ## Choosing the Controller
 
@@ -145,10 +151,10 @@ python3 start_job.py --controller opus --repo /path/to/repo --goal "..."
 export AI_LOOP_CONTROLLER=fable   # override the default when --controller is not given
 ```
 
-`fable` and `opus` run the Claude CLI with `--model` (`AI_LOOP_FABLE_MODEL`,
-default `claude-fable-5`; `AI_LOOP_OPUS_MODEL`, default `opus`). `codex` runs
-`codex exec --sandbox read-only --output-last-message` and parses the decision
-JSON from the last agent message.
+`fable` and `opus` run the Claude CLI with `--model` only when the matching
+environment variable is set. If the variable is blank, the CLI default is used.
+`codex` runs `codex exec --sandbox read-only --output-last-message` and parses
+the decision JSON from the last agent message.
 
 ## Task Sizing
 
@@ -181,6 +187,14 @@ That changes Codex execution to use:
 ```bash
 codex exec --dangerously-bypass-approvals-and-sandbox
 ```
+
+## User Guide
+
+1. Launch the GUI with `python3 ai_loop_gui.py` or use `./ai_gui.bash` for a themed launcher.
+2. Create jobs from the GUI or with `./ai_job.bash <repo> <goal>`. The loop stores the job in SQLite, creates a worktree by default, and queues the first planning request.
+3. Watch the job with the GUI status panels, `./ai_check_job.bash <job_id>`, or `./ai_watch_job.bash`. The task history, run history, and process logs all update from the durable database and per-job log files.
+4. Use `Resume Job` when you want to continue with new constraints or a corrected controller/worker choice. Use `Stop Job` to pause the processes, and `Finish Early` when you want to end the remaining workload and keep the current progress.
+5. Use `Fix It` when you want to run an extra diagnostic or repair command, `Clear Worktrees` when you need to clean generated worktrees, `Reset DB` when you want to keep the repository but clear job state, and `Full Reset` when you want a clean slate.
 
 ## Loop Process Operations
 
@@ -227,7 +241,7 @@ python start_job.py \
 
 With `--wait`, the command prints status updates until the job reaches `done`, `human_needed`, or `dead`, then prints inspect commands. It waits indefinitely by default; pass `--timeout <seconds>` with a positive value to impose a foreground wait limit. Omit `--wait` to submit the job asynchronously.
 
-By default, each ai-loop job gets its own Claude controller, Codex worker, and terminal watcher. Active jobs can run concurrently because every job uses its own Redis consumer groups, PID directory, and process log directory. Set `AI_LOOP_SINGLE_ACTIVE_JOB=1` to restore the old single-active-job guard; with that guard enabled, `--allow-parallel` or `AI_LOOP_ALLOW_PARALLEL_JOBS=1` starts another job anyway.
+By default, each ai-loop job gets its own controller, worker, and watcher. Active jobs can run concurrently because every job uses its own Redis consumer groups, PID directory, and process log directory. Set `AI_LOOP_SINGLE_ACTIVE_JOB=1` to restore the old single-active-job guard; with that guard enabled, `--allow-parallel` or `AI_LOOP_ALLOW_PARALLEL_JOBS=1` starts another job anyway.
 
 ```bash
 ./ai_check_job.bash
@@ -281,7 +295,7 @@ Watch an active job periodically:
 ./ai_watch_job.bash
 ```
 
-The watcher picks the newest `planning`, `queued`, `implementing`, or `fixing` job automatically.
+The watcher picks the newest `planning`, `queued`, `implementing`, or `fixing` job automatically, so a job that stays in `queued` for too long is still visible in the live task list.
 
 Resume a job that reached `human_needed` because the test command was wrong:
 
@@ -315,7 +329,7 @@ Clear run, decision, and event log rows, and truncate process log files, while k
 ./ai_clear_log.bash --yes
 ```
 
-The process log files are created by `./ai_run_claude.bash`, `./ai_run_codex.bash`, and `./ai_run_watcher.bash`. Restart already-running workers with those wrappers to begin writing `./logs/*.log`. To wipe the entire job database, use `./ai_clear_db.bash --yes` instead.
+The process log files are created by `./ai_run_claude.bash`, `./ai_run_codex.bash`, and `./ai_run_watcher.bash`. Restart already-running workers with those wrappers to begin writing `./logs/*.log`. To wipe the entire job database, use `./ai_clear_db.bash --yes` instead. The GUI and watcher refresh their visible text only when the content actually changed, which keeps the task list responsive without repainting unchanged rows.
 
 Delete one job record from SQLite:
 
@@ -353,7 +367,7 @@ File-like paths mentioned in the job goal, constraints, or acceptance criteria a
 
 Claude reviews more than task completion. It should reject or repair visible violations of project guidelines, local architecture, naming/style patterns, scope control, maintainability, proportional test coverage, and unrelated refactors.
 
-`HUMAN_NEEDED` is a last resort. Claude should first analyze the blocker, identify concrete solution paths, and create a `REPAIR` task whenever the loop can safely diagnose or fix the problem automatically. Such jobs are shown as `fixing` while the repair task is queued or running.
+`HUMAN_NEEDED` is a last resort. Claude should first analyze the blocker, identify concrete solution paths, and create a `REPAIR` task whenever the loop can safely diagnose or fix the problem automatically. Such jobs are shown as `fixing` while the repair task is queued or running. The GUI also keeps the current task row visible in the live job list so you can see whether a task is still queued, running, or complete.
 
 Transient Claude CLI transport/service failures are retried indefinitely by the controller instead of emitting `HUMAN_NEEDED`. This covers connection resets, timeouts, overload/rate-limit responses, and similar temporary service failures. Configure the wait behavior with `AI_LOOP_CLAUDE_TRANSIENT_BACKOFF_SECONDS` (default `5`) and `AI_LOOP_CLAUDE_TRANSIENT_MAX_BACKOFF_SECONDS` (default `60`). Missing binaries, promotion conflicts, non-transient CLI failures, and real Claude `HUMAN_NEEDED` decisions still surface to the human stream.
 

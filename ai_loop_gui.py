@@ -90,6 +90,70 @@ JOB_STATUS_COLORS = {
 APP_WINDOW_TITLE = "AI-LOOP - Prof. Helmut Hlavacs, University of Vienna and Robimo GmbH (https://robimo.at/), Vienna, Austria"
 
 
+class HoverTooltip:
+    def __init__(self, root: tk.Tk, *, delay_ms: int = 200, wraplength: int = 460) -> None:
+        self.root = root
+        self.delay_ms = delay_ms
+        self.wraplength = wraplength
+        self.window: tk.Toplevel | None = None
+        self.after_id: str | None = None
+
+    def attach(self, widget: tk.Widget, text: str) -> None:
+        if not text:
+            return
+        widget.bind("<Enter>", lambda _event, w=widget, t=text: self._schedule_show(w, t), add="+")
+        widget.bind("<Leave>", lambda _event: self.hide(), add="+")
+        widget.bind("<ButtonPress>", lambda _event: self.hide(), add="+")
+        widget.bind("<Destroy>", lambda _event: self.hide(), add="+")
+
+    def _schedule_show(self, widget: tk.Widget, text: str) -> None:
+        self.hide()
+        self.after_id = widget.after(self.delay_ms, lambda: self._show(widget, text))
+
+    def _show(self, widget: tk.Widget, text: str) -> None:
+        self.after_id = None
+        if not text or not widget.winfo_exists():
+            return
+        self.window = window = tk.Toplevel(widget)
+        window.withdraw()
+        window.overrideredirect(True)
+        try:
+            window.attributes("-topmost", True)
+        except tk.TclError:
+            pass
+        label = tk.Label(
+            window,
+            text=text,
+            justify="left",
+            wraplength=self.wraplength,
+            padx=10,
+            pady=8,
+            relief="solid",
+            borderwidth=1,
+            bg="#fff9d8",
+            fg="#202020",
+            font=("TkDefaultFont", 10),
+        )
+        label.pack(fill="both", expand=True)
+        x, y = widget.winfo_pointerxy()
+        window.geometry(f"+{x + 18}+{y + 18}")
+        window.deiconify()
+
+    def hide(self) -> None:
+        if self.after_id is not None:
+            try:
+                self.root.after_cancel(self.after_id)
+            except tk.TclError:
+                pass
+            self.after_id = None
+        if self.window is not None:
+            try:
+                self.window.destroy()
+            except tk.TclError:
+                pass
+            self.window = None
+
+
 @dataclass
 class ModelDefaults:
     codex_model: str
@@ -729,6 +793,8 @@ class AiLoopGui(tk.Tk):
         self.apply_theme(theme)
         self.backend = LoopBackend()
         self.model_defaults = self.backend.model_defaults()
+        self.help_tooltip = HoverTooltip(self)
+        self.protocol("WM_DELETE_WINDOW", self.on_close)
         self.selected_job_id: str | None = None
         self.resume_fields_job_id: str | None = None
         self.watch_job_id: str | None = None
@@ -738,7 +804,7 @@ class AiLoopGui(tk.Tk):
         self.status_var = tk.StringVar(value=f"DB: {self.backend.settings.db_path}")
         self._build_ui()
         self.refresh_all()
-        self.after(3000, self._auto_refresh_tick)
+        self.after(1500, self._auto_refresh_tick)
 
     def apply_theme(self, theme: str) -> None:
         if theme in {"", "default", "native", "current"}:
@@ -749,29 +815,35 @@ class AiLoopGui(tk.Tk):
             raise ValueError(f"unknown Tk theme: {theme!r}; available themes: {', '.join(available)}")
         style.theme_use(theme)
 
+    def on_close(self) -> None:
+        self.auto_refresh.set(False)
+        self.help_tooltip.hide()
+        self.quit()
+        self.destroy()
+
     def _build_ui(self) -> None:
         self.columnconfigure(0, weight=1)
         self.rowconfigure(1, weight=1)
 
         toolbar = ttk.Frame(self, padding=(8, 6))
         toolbar.grid(row=0, column=0, sticky="ew")
-        ttk.Button(toolbar, text="Refresh", command=self.refresh_all).grid(row=0, column=0, padx=(0, 6))
-        ttk.Checkbutton(toolbar, text="Auto refresh", variable=self.auto_refresh).grid(row=0, column=1, padx=(0, 14))
-        ttk.Button(toolbar, text="Start Redis", command=self.start_redis).grid(row=0, column=2, padx=(0, 6))
-        ttk.Button(toolbar, text="Status", command=self.explain_selected_status).grid(row=0, column=3, padx=(0, 6))
-        ttk.Button(toolbar, text="Stop Job", command=self.stop_selected_job).grid(row=0, column=4, padx=(0, 6))
-        ttk.Button(toolbar, text="Finish", command=self.finish_selected_job).grid(row=0, column=5, padx=(0, 6))
-        ttk.Button(toolbar, text="Resume Job", command=self.resume_selected_job).grid(row=0, column=6, padx=(0, 6))
-        ttk.Button(toolbar, text="Wait/Notify", command=self.watch_selected_job).grid(row=0, column=7, padx=(0, 6))
-        ttk.Button(toolbar, text="Delete Job", command=self.delete_selected_job).grid(row=0, column=8, padx=(0, 6))
-        ttk.Button(toolbar, text="Clear Worktrees", command=self.clear_worktrees).grid(row=0, column=9, padx=(0, 6))
-        ttk.Button(toolbar, text="Reset DB", command=self.reset_loop).grid(row=0, column=10, padx=(0, 6))
-        ttk.Button(toolbar, text="Full Reset", command=self.full_reset).grid(row=0, column=11, padx=(0, 14))
-        ttk.Button(toolbar, text="Hibernation", command=self.open_hibernation_window).grid(row=0, column=12, padx=(0, 14))
+        self.help_widget(ttk.Button(toolbar, text="Refresh", command=self.refresh_all), "Reload the full job list, the selected job details, the logs, and the live process snapshot.").grid(row=0, column=0, padx=(0, 6))
+        self.help_widget(ttk.Checkbutton(toolbar, text="Auto refresh", variable=self.auto_refresh), "Keep refreshing the dashboard automatically so changing task and job states stay current.").grid(row=0, column=1, padx=(0, 14))
+        self.help_widget(ttk.Button(toolbar, text="Start Redis", command=self.start_redis), "Start a local Redis server for the loop when the configured Redis URL points to localhost.").grid(row=0, column=2, padx=(0, 6))
+        self.help_widget(ttk.Button(toolbar, text="Status", command=self.explain_selected_status), "Explain the selected job in plain language, including the latest task, run, and reason for the current state.").grid(row=0, column=3, padx=(0, 6))
+        self.help_widget(ttk.Button(toolbar, text="Stop Job", command=self.stop_selected_job), "Stop the controller, worker, and watcher for the selected job without deleting its records.").grid(row=0, column=4, padx=(0, 6))
+        self.help_widget(ttk.Button(toolbar, text="Finish Early", command=self.finish_selected_job), "End the job now, preserve the current worktree state, and stop spending iterations on the remaining backlog.").grid(row=0, column=5, padx=(0, 6))
+        self.help_widget(ttk.Button(toolbar, text="Resume Job", command=self.resume_selected_job), "Resume the selected job with the current controller, worker, and optional extra constraints or acceptance criteria.").grid(row=0, column=6, padx=(0, 6))
+        self.help_widget(ttk.Button(toolbar, text="Wait/Notify", command=self.watch_selected_job), "Mark this job as the one to watch closely in the dashboard status line.").grid(row=0, column=7, padx=(0, 6))
+        self.help_widget(ttk.Button(toolbar, text="Delete Job", command=self.delete_selected_job), "Remove the selected job record and its dependent task, run, decision, and event rows from SQLite.").grid(row=0, column=8, padx=(0, 6))
+        self.help_widget(ttk.Button(toolbar, text="Clear Worktrees", command=self.clear_worktrees), "Remove registered ai-loop worktrees and leftover folders without deleting job history.").grid(row=0, column=9, padx=(0, 6))
+        self.help_widget(ttk.Button(toolbar, text="Reset DB", command=self.reset_loop), "Stop loop processes and clear the durable SQLite job database while keeping the repository tree intact.").grid(row=0, column=10, padx=(0, 6))
+        self.help_widget(ttk.Button(toolbar, text="Full Reset", command=self.full_reset), "Stop everything, clear the database, and remove generated worktrees for a clean restart.").grid(row=0, column=11, padx=(0, 14))
+        self.help_widget(ttk.Button(toolbar, text="Hibernation", command=self.open_hibernation_window), "Open the macOS hibernation helper to inspect or change pmset hibernatemode.").grid(row=0, column=12, padx=(0, 14))
         toolbar.columnconfigure(0, weight=0)
         toolbar.columnconfigure(12, weight=1)
         ttk.Label(toolbar, text="Status:").grid(row=1, column=0, sticky="w", pady=(6, 0))
-        status_label = ttk.Label(toolbar, textvariable=self.status_var, anchor="w")
+        status_label = self.help_widget(ttk.Label(toolbar, textvariable=self.status_var, anchor="w"), "Live loop status, including Redis connectivity, job counts, and running or stale processes.")
         status_label.grid(row=1, column=1, columnspan=12, sticky="ew", pady=(6, 0))
 
         paned = ttk.PanedWindow(self, orient=tk.HORIZONTAL)
@@ -814,18 +886,18 @@ class AiLoopGui(tk.Tk):
         self.bypass_var = tk.BooleanVar(value=self.model_defaults.codex_bypass_sandbox)
 
         ttk.Label(frame, text="Repo").grid(row=0, column=0, sticky="w")
-        ttk.Entry(frame, textvariable=self.repo_var).grid(row=0, column=1, sticky="ew", padx=4)
+        self.help_widget(ttk.Entry(frame, textvariable=self.repo_var), "Repository root for the job. The selected path is where the job will read and write.").grid(row=0, column=1, sticky="ew", padx=4)
         browse_buttons = ttk.Frame(frame)
         browse_buttons.grid(row=0, column=2, sticky="e")
-        ttk.Button(browse_buttons, text="Goal File", command=self.browse_goal_file).pack(side="left")
-        ttk.Button(browse_buttons, text="Repo Folder", command=self.browse_repo_folder).pack(side="left", padx=(4, 0))
+        self.help_widget(ttk.Button(browse_buttons, text="Goal File", command=self.browse_goal_file), "Pick a text file and load its contents into the goal box while setting the repo path to that file's parent directory.").pack(side="left")
+        self.help_widget(ttk.Button(browse_buttons, text="Repo Folder", command=self.browse_repo_folder), "Choose the repository folder that the job should modify.").pack(side="left", padx=(4, 0))
 
         ttk.Label(frame, text="Goal").grid(row=1, column=0, sticky="nw", pady=(6, 0))
-        self.goal_text = tk.Text(frame, height=5, wrap="word")
+        self.goal_text = self.help_widget(tk.Text(frame, height=5, wrap="word"), "Describe the work the loop should do. This is the main job goal and should be specific enough to test.")
         self.goal_text.grid(row=1, column=1, columnspan=2, sticky="ew", pady=(6, 0))
 
         ttk.Label(frame, text="Test").grid(row=2, column=0, sticky="w", pady=(6, 0))
-        ttk.Entry(frame, textvariable=self.test_cmd_var).grid(row=2, column=1, columnspan=2, sticky="ew", pady=(6, 0))
+        self.help_widget(ttk.Entry(frame, textvariable=self.test_cmd_var), "Validation command run after each worker task. Use auto to infer a command from the target repository.").grid(row=2, column=1, columnspan=2, sticky="ew", pady=(6, 0))
 
         settings = ttk.Frame(frame)
         settings.grid(row=3, column=0, columnspan=3, sticky="ew", pady=(6, 0))
@@ -834,47 +906,47 @@ class AiLoopGui(tk.Tk):
 
         label_width = 13
         ttk.Label(settings, text="Controller", width=label_width).grid(row=0, column=0, sticky="w")
-        ttk.Combobox(settings, textvariable=self.controller_var, values=sorted(CONTROLLERS), width=12, state="readonly").grid(
+        self.help_widget(ttk.Combobox(settings, textvariable=self.controller_var, values=sorted(CONTROLLERS), width=12, state="readonly"), "Pick which controller plans and reviews the job after each worker run.").grid(
             row=0, column=1, sticky="ew", padx=(4, 10)
         )
         ttk.Label(settings, text="Worker", width=label_width).grid(row=0, column=2, sticky="w")
-        ttk.Combobox(settings, textvariable=self.worker_var, values=sorted(WORKERS), width=12, state="readonly").grid(
+        self.help_widget(ttk.Combobox(settings, textvariable=self.worker_var, values=sorted(WORKERS), width=12, state="readonly"), "Pick which implementation worker will edit the worktree and run the task.").grid(
             row=0, column=3, sticky="ew", padx=(4, 0)
         )
 
         ttk.Label(settings, text="Base ref", width=label_width).grid(row=1, column=0, sticky="w", pady=(5, 0))
-        ttk.Entry(settings, textvariable=self.base_ref_var).grid(row=1, column=1, sticky="ew", padx=(4, 10), pady=(5, 0))
+        self.help_widget(ttk.Entry(settings, textvariable=self.base_ref_var), "Git ref used when creating the isolated worktree.").grid(row=1, column=1, sticky="ew", padx=(4, 10), pady=(5, 0))
         ttk.Label(settings, text="Max iterations", width=label_width).grid(row=1, column=2, sticky="w", pady=(5, 0))
-        ttk.Spinbox(settings, from_=1, to=50000, textvariable=self.max_iterations_var).grid(
+        self.help_widget(ttk.Spinbox(settings, from_=1, to=50000, textvariable=self.max_iterations_var), "Upper bound for job iterations. Lower values cut the remaining workload sooner.").grid(
             row=1, column=3, sticky="ew", padx=(4, 0), pady=(5, 0)
         )
 
         ttk.Label(settings, text="Codex model", width=label_width).grid(row=2, column=0, sticky="w", pady=(5, 0))
-        ttk.Entry(settings, textvariable=self.codex_model_var).grid(row=2, column=1, sticky="ew", padx=(4, 10), pady=(5, 0))
+        self.help_widget(ttk.Entry(settings, textvariable=self.codex_model_var), "Optional Codex CLI model override. Leave blank to use the CLI default.").grid(row=2, column=1, sticky="ew", padx=(4, 10), pady=(5, 0))
         ttk.Label(settings, text="Codex bin", width=label_width).grid(row=2, column=2, sticky="w", pady=(5, 0))
-        ttk.Entry(settings, textvariable=self.codex_bin_var).grid(row=2, column=3, sticky="ew", padx=(4, 0), pady=(5, 0))
+        self.help_widget(ttk.Entry(settings, textvariable=self.codex_bin_var), "Command used to launch Codex CLI for the job.").grid(row=2, column=3, sticky="ew", padx=(4, 0), pady=(5, 0))
 
         ttk.Label(settings, text="Fable model", width=label_width).grid(row=3, column=0, sticky="w", pady=(5, 0))
-        ttk.Entry(settings, textvariable=self.fable_model_var).grid(row=3, column=1, sticky="ew", padx=(4, 10), pady=(5, 0))
+        self.help_widget(ttk.Entry(settings, textvariable=self.fable_model_var), "Optional Claude Fable model override. Leave blank to use the CLI default.").grid(row=3, column=1, sticky="ew", padx=(4, 10), pady=(5, 0))
         ttk.Label(settings, text="Claude bin", width=label_width).grid(row=3, column=2, sticky="w", pady=(5, 0))
-        ttk.Entry(settings, textvariable=self.claude_bin_var).grid(row=3, column=3, sticky="ew", padx=(4, 0), pady=(5, 0))
+        self.help_widget(ttk.Entry(settings, textvariable=self.claude_bin_var), "Command used to launch the Claude CLI for controller or worker roles.").grid(row=3, column=3, sticky="ew", padx=(4, 0), pady=(5, 0))
 
         ttk.Label(settings, text="Opus model", width=label_width).grid(row=4, column=0, sticky="w", pady=(5, 0))
-        ttk.Entry(settings, textvariable=self.opus_model_var).grid(row=4, column=1, sticky="ew", padx=(4, 10), pady=(5, 0))
+        self.help_widget(ttk.Entry(settings, textvariable=self.opus_model_var), "Optional Claude Opus model override. Leave blank to use the CLI default.").grid(row=4, column=1, sticky="ew", padx=(4, 10), pady=(5, 0))
         ttk.Label(settings, text="Claude ctrl", width=label_width).grid(row=4, column=2, sticky="w", pady=(5, 0))
-        ttk.Entry(settings, textvariable=self.controller_model_var).grid(row=4, column=3, sticky="ew", padx=(4, 0), pady=(5, 0))
+        self.help_widget(ttk.Entry(settings, textvariable=self.controller_model_var), "Optional Claude controller model override. Leave blank to use the CLI default.").grid(row=4, column=3, sticky="ew", padx=(4, 0), pady=(5, 0))
 
         ttk.Label(settings, text="Gemini model", width=label_width).grid(row=5, column=0, sticky="w", pady=(5, 0))
-        ttk.Entry(settings, textvariable=self.gemini_model_var).grid(row=5, column=1, sticky="ew", padx=(4, 10), pady=(5, 0))
+        self.help_widget(ttk.Entry(settings, textvariable=self.gemini_model_var), "Optional Gemini CLI model override. Leave blank to use the CLI default.").grid(row=5, column=1, sticky="ew", padx=(4, 10), pady=(5, 0))
         ttk.Label(settings, text="Gemini bin", width=label_width).grid(row=5, column=2, sticky="w", pady=(5, 0))
-        ttk.Entry(settings, textvariable=self.gemini_bin_var).grid(row=5, column=3, sticky="ew", padx=(4, 0), pady=(5, 0))
+        self.help_widget(ttk.Entry(settings, textvariable=self.gemini_bin_var), "Command used to launch the Gemini CLI for the job.").grid(row=5, column=3, sticky="ew", padx=(4, 0), pady=(5, 0))
 
         toggles = ttk.Frame(settings)
         toggles.grid(row=6, column=0, columnspan=4, sticky="ew", pady=(6, 0))
-        ttk.Checkbutton(toggles, text="Bypass worker sandbox", variable=self.bypass_var).pack(side="left", padx=(0, 12))
-        ttk.Checkbutton(toggles, text="No worktree", variable=self.no_worktree_var).pack(side="left", padx=(0, 12))
-        ttk.Checkbutton(toggles, text="Allow parallel", variable=self.allow_parallel_var).pack(side="left")
-        ttk.Button(toggles, text="Create Job", command=self.create_job).pack(side="right")
+        self.help_widget(ttk.Checkbutton(toggles, text="Bypass worker sandbox", variable=self.bypass_var), "Run the worker without sandbox restrictions. Leave this off unless you need to debug or the environment is trusted.").pack(side="left", padx=(0, 12))
+        self.help_widget(ttk.Checkbutton(toggles, text="No worktree", variable=self.no_worktree_var), "Run directly in the target repository instead of creating an isolated Git worktree.").pack(side="left", padx=(0, 12))
+        self.help_widget(ttk.Checkbutton(toggles, text="Allow parallel", variable=self.allow_parallel_var), "Allow this job to start even if another job is already active.").pack(side="left")
+        self.help_widget(ttk.Button(toggles, text="Create Job", command=self.create_job), "Create the job with the current goal, test command, controller, worker, and environment settings.").pack(side="right")
 
     def _build_jobs_frame(self, parent: ttk.Frame) -> None:
         frame = ttk.LabelFrame(parent, text="Jobs", padding=6)
@@ -882,7 +954,7 @@ class AiLoopGui(tk.Tk):
         frame.rowconfigure(0, weight=1)
         frame.columnconfigure(0, weight=1)
         columns = ("status", "progress", "controller", "worker", "tasks", "runs", "updated")
-        self.jobs_tree = ttk.Treeview(frame, columns=columns, show="tree headings", selectmode="browse", style="Jobs.Treeview")
+        self.jobs_tree = self.help_widget(ttk.Treeview(frame, columns=columns, show="tree headings", selectmode="browse", style="Jobs.Treeview"), "Job list with the current status, progress estimate, and latest task row for each job.")
         self.jobs_tree.heading("#0", text="Job")
         self.jobs_tree.column("#0", width=190, stretch=False)
         for name, width in (
@@ -918,7 +990,7 @@ class AiLoopGui(tk.Tk):
         return text
 
     def _build_detail_frame(self, parent: ttk.Frame) -> None:
-        notebook = ttk.Notebook(parent)
+        notebook = self.help_widget(ttk.Notebook(parent), "Switch between the overview, status, logs, and task history views for the selected job.")
         notebook.grid(row=0, column=0, sticky="nsew")
 
         overview = ttk.Frame(notebook, padding=8)
@@ -933,16 +1005,19 @@ class AiLoopGui(tk.Tk):
         overview.rowconfigure(1, weight=1)
         overview.columnconfigure(0, weight=1)
         self.summary_var = tk.StringVar(value="Select a job.")
-        self.summary_label = ttk.Label(
-            overview,
-            textvariable=self.summary_var,
-            font=("", 12, "bold"),
-            justify="left",
-            anchor="w",
+        self.summary_label = self.help_widget(
+            ttk.Label(
+                overview,
+                textvariable=self.summary_var,
+                font=("", 12, "bold"),
+                justify="left",
+                anchor="w",
+            ),
+            "Short summary of the selected job, including its status, controller, worker, and last update time.",
         )
         self.summary_label.grid(row=0, column=0, sticky="ew")
         overview.bind("<Configure>", self.update_summary_wrap)
-        self.detail_text = self.add_scrolled_text(overview, 1, 0, wrap="none")
+        self.detail_text = self.help_widget(self.add_scrolled_text(overview, 1, 0, wrap="none"), "Full details for the selected job: repo, worktree, goal, history summary, and latest decision.")
 
         resume_frame = ttk.LabelFrame(parent, text="Resume / Change Controller", padding=8)
         resume_frame.grid(row=1, column=0, sticky="ew", pady=(8, 0))
@@ -953,56 +1028,63 @@ class AiLoopGui(tk.Tk):
         self.extra_constraint_var = tk.StringVar()
         self.extra_acceptance_var = tk.StringVar()
         ttk.Label(resume_frame, text="Controller").grid(row=0, column=0, sticky="w")
-        ttk.Combobox(
-            resume_frame,
-            textvariable=self.resume_controller_var,
-            values=sorted(CONTROLLERS),
-            width=10,
-            state="readonly",
+        self.help_widget(
+            ttk.Combobox(
+                resume_frame,
+                textvariable=self.resume_controller_var,
+                values=sorted(CONTROLLERS),
+                width=10,
+                state="readonly",
+            ),
+            "Controller to use when the selected job is resumed.",
         ).grid(row=0, column=1, sticky="ew", padx=3)
         ttk.Label(resume_frame, text="Worker").grid(row=0, column=2, sticky="w")
-        ttk.Combobox(resume_frame, textvariable=self.resume_worker_var, values=sorted(WORKERS), width=10, state="readonly").grid(
+        self.help_widget(ttk.Combobox(resume_frame, textvariable=self.resume_worker_var, values=sorted(WORKERS), width=10, state="readonly"), "Worker to use when the selected job is resumed.").grid(
             row=0, column=3, sticky="ew", padx=3
         )
-        ttk.Button(resume_frame, text="Apply + Resume", command=self.resume_selected_job).grid(row=0, column=4, columnspan=2, sticky="e")
+        self.help_widget(ttk.Button(resume_frame, text="Apply + Resume", command=self.resume_selected_job), "Apply the selected controller and worker, then queue a new plan for the job.").grid(row=0, column=4, columnspan=2, sticky="e")
         ttk.Label(resume_frame, text="Extra constraint").grid(row=1, column=0, sticky="w", pady=(5, 0))
-        ttk.Entry(resume_frame, textvariable=self.extra_constraint_var).grid(row=1, column=1, columnspan=5, sticky="ew", pady=(5, 0))
+        self.help_widget(ttk.Entry(resume_frame, textvariable=self.extra_constraint_var), "Optional extra constraint to add before resuming the job.").grid(row=1, column=1, columnspan=5, sticky="ew", pady=(5, 0))
         ttk.Label(resume_frame, text="Extra acceptance").grid(row=2, column=0, sticky="w", pady=(5, 0))
-        ttk.Entry(resume_frame, textvariable=self.extra_acceptance_var).grid(row=2, column=1, columnspan=5, sticky="ew", pady=(5, 0))
+        self.help_widget(ttk.Entry(resume_frame, textvariable=self.extra_acceptance_var), "Optional extra acceptance criterion to add before resuming the job.").grid(row=2, column=1, columnspan=5, sticky="ew", pady=(5, 0))
         self.fix_binary_var = tk.StringVar(value=self.codex_bin_var.get() or "codex")
         ttk.Label(resume_frame, text="Fix binary").grid(row=3, column=0, sticky="w", pady=(5, 0))
-        ttk.Combobox(
-            resume_frame,
-            textvariable=self.fix_binary_var,
-            values=(self.codex_bin_var.get() or "codex", self.claude_bin_var.get() or "claude", self.gemini_bin_var.get() or "gemini"),
-            width=18,
+        self.help_widget(
+            ttk.Combobox(
+                resume_frame,
+                textvariable=self.fix_binary_var,
+                values=(self.codex_bin_var.get() or "codex", self.claude_bin_var.get() or "claude", self.gemini_bin_var.get() or "gemini"),
+                width=18,
+            ),
+            "CLI binary to use for the repair helper when the selected job needs a manual or assisted fix.",
         ).grid(row=3, column=1, columnspan=3, sticky="ew", pady=(5, 0))
-        ttk.Button(resume_frame, text="Fix It", command=self.fix_selected_job).grid(row=3, column=4, columnspan=2, sticky="e", pady=(5, 0))
+        self.help_widget(ttk.Button(resume_frame, text="Fix It", command=self.fix_selected_job), "Run the selected binary to diagnose or repair the job, then resume it if successful.").grid(row=3, column=4, columnspan=2, sticky="e", pady=(5, 0))
 
         status_tab.rowconfigure(0, weight=1)
         status_tab.columnconfigure(0, weight=1)
-        self.status_text = self.add_scrolled_text(status_tab, 0, 0, wrap="none")
+        self.status_text = self.help_widget(self.add_scrolled_text(status_tab, 0, 0, wrap="none"), "Plain-language explanation of what the loop is doing now and why it is in this state.")
 
         logs.rowconfigure(1, weight=1)
         logs.columnconfigure(0, weight=1)
         log_bar = ttk.Frame(logs)
         log_bar.grid(row=0, column=0, sticky="ew")
         self.log_name_var = tk.StringVar(value=PROCESS_LABELS["codex_worker"])
-        ttk.Combobox(log_bar, textvariable=self.log_name_var, values=list(LOG_LABELS), state="readonly", width=20).grid(
-            row=0, column=0, padx=(0, 6)
-        )
-        ttk.Button(log_bar, text="Refresh Log", command=self.refresh_log).grid(row=0, column=1)
-        self.log_text = self.add_scrolled_text(logs, 1, 0, wrap="none")
+        self.help_widget(
+            ttk.Combobox(log_bar, textvariable=self.log_name_var, values=list(LOG_LABELS), state="readonly", width=20),
+            "Choose which process log to view: controller, worker, or watcher.",
+        ).grid(row=0, column=0, padx=(0, 6))
+        self.help_widget(ttk.Button(log_bar, text="Refresh Log", command=self.refresh_log), "Reload the selected log file from disk and jump to the end if it changed.").grid(row=0, column=1)
+        self.log_text = self.help_widget(self.add_scrolled_text(logs, 1, 0, wrap="none"), "Selected process log file, including controller, worker, or watcher output.")
 
         history.rowconfigure(0, weight=1)
         history.columnconfigure(0, weight=1)
-        self.history_text = self.add_scrolled_text(history, 0, 0, wrap="none")
+        self.history_text = self.help_widget(self.add_scrolled_text(history, 0, 0, wrap="none"), "Task and run history for the selected job, with the newest entries first.")
 
     def current_models(self) -> ModelDefaults:
         return ModelDefaults(
             codex_model=self.codex_model_var.get().strip(),
-            fable_model=self.fable_model_var.get().strip() or "claude-fable-5",
-            opus_model=self.opus_model_var.get().strip() or "opus",
+            fable_model=self.fable_model_var.get().strip(),
+            opus_model=self.opus_model_var.get().strip(),
             gemini_model=self.gemini_model_var.get().strip(),
             controller_model=self.controller_model_var.get().strip(),
             codex_bin=self.codex_bin_var.get().strip() or "codex",
@@ -1173,7 +1255,7 @@ class AiLoopGui(tk.Tk):
     def _auto_refresh_tick(self) -> None:
         if self.auto_refresh.get():
             self.refresh_all()
-        self.after(3000, self._auto_refresh_tick)
+        self.after(1500, self._auto_refresh_tick)
 
     def on_job_selected(self, _event: object) -> None:
         item = self.jobs_tree.focus()
@@ -1378,8 +1460,18 @@ class AiLoopGui(tk.Tk):
         self.set_text(self.log_text, text)
         self.log_text.see("end")
 
+    def add_help(self, widget: tk.Widget, text: str) -> None:
+        self.help_tooltip.attach(widget, text)
+
+    def help_widget(self, widget: tk.Widget, text: str) -> tk.Widget:
+        self.add_help(widget, text)
+        return widget
+
     @staticmethod
     def set_text(widget: tk.Text, text: str) -> None:
+        current = widget.get("1.0", "end-1c")
+        if current == text:
+            return
         widget.configure(state="normal")
         widget.delete("1.0", "end")
         widget.insert("1.0", text)
@@ -1585,7 +1677,7 @@ class AiLoopGui(tk.Tk):
         window.title("macOS Hibernation")
         window.geometry("520x300")
         window.columnconfigure(0, weight=1)
-        text = tk.Text(window, height=8, wrap="word")
+        text = self.help_widget(tk.Text(window, height=8, wrap="word"), "Read-only summary of the current macOS hibernation state and the available hibernatemode values.")
         text.grid(row=0, column=0, sticky="nsew", padx=10, pady=10)
         mode_help = (
             "\n\nSelectable modes:\n"
@@ -1598,11 +1690,12 @@ class AiLoopGui(tk.Tk):
         controls = ttk.Frame(window, padding=(10, 0, 10, 10))
         controls.grid(row=1, column=0, sticky="ew")
         selected_mode = tk.StringVar(value="3")
-        mode_select = ttk.Combobox(controls, textvariable=selected_mode, values=("0", "3", "25"), width=4, state="readonly")
+        mode_select = self.help_widget(ttk.Combobox(controls, textvariable=selected_mode, values=("0", "3", "25"), width=4, state="readonly"), "Choose the hibernatemode value to apply on this Mac.")
         mode_select.pack(side="left")
-        ttk.Button(controls, text="Refresh", command=lambda: self.open_hibernation_window(window)).pack(side="left")
-        ttk.Button(controls, text="Apply", command=lambda: self.set_hibernation_mode(int(selected_mode.get()), window)).pack(side="left", padx=(8, 0))
-        ttk.Button(controls, text="Close", command=window.destroy).pack(side="right")
+        self.help_widget(ttk.Button(controls, text="Refresh", command=lambda: self.open_hibernation_window(window)), "Reload the current hibernation status from pmset.").pack(side="left")
+        self.help_widget(ttk.Button(controls, text="Apply", command=lambda: self.set_hibernation_mode(int(selected_mode.get()), window)), "Run sudo pmset to apply the selected hibernatemode.").pack(side="left", padx=(8, 0))
+        self.help_widget(ttk.Button(controls, text="Close", command=window.destroy), "Close the hibernation helper window.").pack(side="right")
+        window.protocol("WM_DELETE_WINDOW", window.destroy)
 
 
 def parse_args() -> argparse.Namespace:

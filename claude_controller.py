@@ -75,7 +75,13 @@ def scoped_group(base_group: str, job_id: str | None) -> str:
 def prompt_arg_or_file(prompt: str, label: str) -> tuple[str, Path | None]:
     if len(prompt.encode("utf-8")) < PROMPT_ARG_LIMIT:
         return prompt, None
-    handle = tempfile.NamedTemporaryFile("w", suffix=f"-{label}-prompt.txt", delete=False)
+    handle = tempfile.NamedTemporaryFile(
+        "w",
+        prefix=".ai-loop-",
+        suffix=f"-{label}-prompt.txt",
+        dir=Path.cwd(),
+        delete=False,
+    )
     with handle:
         handle.write(prompt)
     path = Path(handle.name)
@@ -318,6 +324,9 @@ def run_claude(claude_bin: str, prompt: str, model: str = "", sizing: str = "sma
                 output = f"Claude CLI timed out after {exc.timeout:g}s\n{stdout}\n{stderr}".strip()
                 last_output = output
                 proc = None
+            finally:
+                if prompt_file is not None:
+                    prompt_file.unlink(missing_ok=True)
 
             delay = claude_transient_retry_delay(cli_attempt)
             print(

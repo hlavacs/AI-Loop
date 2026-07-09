@@ -103,7 +103,9 @@ FABLE_ALLOWED_TOOLS = "Bash,Edit,Write,MultiEdit,NotebookEdit"
 
 
 def build_fable_command(claude_bin: str, prompt: str, model: str, bypass_sandbox: bool) -> list[str]:
-    cmd = [claude_bin, "-p", "--model", model]
+    cmd = [claude_bin, "-p"]
+    if model:
+        cmd.extend(["--model", model])
     if bypass_sandbox:
         cmd.append("--dangerously-skip-permissions")
     else:
