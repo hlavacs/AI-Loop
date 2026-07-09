@@ -925,8 +925,8 @@ class AiLoopGui(tk.Tk):
         status_tab = ttk.Frame(notebook, padding=8)
         logs = ttk.Frame(notebook, padding=8)
         history = ttk.Frame(notebook, padding=8)
-        notebook.add(overview, text="Overview")
         notebook.add(status_tab, text="Status")
+        notebook.add(overview, text="Overview")
         notebook.add(logs, text="Logs")
         notebook.add(history, text="Tasks/Runs")
 
@@ -944,8 +944,8 @@ class AiLoopGui(tk.Tk):
         overview.bind("<Configure>", self.update_summary_wrap)
         self.detail_text = self.add_scrolled_text(overview, 1, 0, wrap="none")
 
-        resume_frame = ttk.LabelFrame(overview, text="Resume / Change Controller", padding=8)
-        resume_frame.grid(row=2, column=0, sticky="ew", pady=(8, 0))
+        resume_frame = ttk.LabelFrame(parent, text="Resume / Change Controller", padding=8)
+        resume_frame.grid(row=1, column=0, sticky="ew", pady=(8, 0))
         for column in range(6):
             resume_frame.columnconfigure(column, weight=1)
         self.resume_controller_var = tk.StringVar(value=self.controller_var.get())
