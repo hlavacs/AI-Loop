@@ -50,9 +50,17 @@ def heuristic_percent(
 
     active_credit = 0.5 if has_active_task and task_count > run_count else 0.0
     work_units = run_count + active_credit
-    percent = max(1, min(95, round(100 * work_units / (work_units + 3))))
+    percent = max(1, min(85, round(100 * work_units / (work_units + 25))))
+    if run_count >= 5:
+        percent = max(percent, 20)
+    if run_count >= 20:
+        percent = max(percent, 45)
+    if run_count >= 75:
+        percent = max(percent, 65)
+    if run_count >= 150:
+        percent = max(percent, 75)
     if status in {"human_needed", "dead"}:
-        percent = min(percent, 95)
+        percent = min(percent, 85)
     return percent
 
 

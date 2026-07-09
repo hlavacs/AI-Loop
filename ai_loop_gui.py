@@ -647,6 +647,65 @@ class LoopBackend:
         self.reset_loop()
         return reset_summary
 
+    def finish_job(self, job_id: str) -> None:
+        self.stop_processes(job_id)
+        with db.transaction(self.settings.db_path) as conn:
+            db.update_job_status(
+                conn,
+                job_id,
+                "human_needed",
+                "Finished manually from the GUI. Progress is preserved in the job worktree and database; resume if more work is needed.",
+            )
+            db.add_event(conn, job_id=job_id, kind="job_finished_from_gui", payload={})
+
+    def fix_job_with_binary(self, job_id: str, binary: str, models: ModelDefaults) -> subprocess.CompletedProcess[str]:
+        details = self.job_details(job_id)
+        job = details["job"]
+        binary = binary.strip() or models.codex_bin or "codex"
+        prompt = self.fix_prompt(details)
+        env = self.env_for_processes(job_id, models)
+        env["CODEX_BYPASS_SANDBOX"] = "1"
+        if Path(binary).name.startswith("codex") or binary == "codex":
+            cmd = [binary, "exec", "--cd", str(job["worktree_path"]), "--dangerously-bypass-approvals-and-sandbox", "-"]
+            proc = subprocess.run(cmd, input=prompt, text=True, capture_output=True, timeout=7200, env=env)
+        else:
+            cmd = [binary, "-"]
+            proc = subprocess.run(cmd, input=prompt, text=True, capture_output=True, timeout=7200, env=env, cwd=str(job["worktree_path"]))
+        with db.transaction(self.settings.db_path) as conn:
+            db.add_event(
+                conn,
+                job_id=job_id,
+                kind="manual_fix_binary_finished",
+                payload={
+                    "binary": binary,
+                    "returncode": proc.returncode,
+                    "output_tail": (proc.stdout + "\n" + proc.stderr)[-4000:],
+                },
+            )
+        if proc.returncode == 0:
+            self.resume_job(job_id, worker=str(job["worker"]), controller=str(job["controller"]), models=models)
+        return proc
+
+    def fix_prompt(self, details: dict[str, Any]) -> str:
+        job = details["job"]
+        latest_task = details["tasks"][0] if details.get("tasks") else None
+        latest_run = details["runs"][0] if details.get("runs") else None
+        latest_decision = details["decisions"][0] if details.get("decisions") else None
+        return f"""You are repairing the local ai-loop job runner or the target worktree so the job can continue.
+
+Job: {job['id']}
+Status: {job['status']}
+Repo: {job['repo_path']}
+Worktree: {job['worktree_path']}
+Current goal: {job['goal'][:4000]}
+History summary: {str(job.get('history_summary') or '')[-4000:]}
+Latest task: {latest_task}
+Latest run: {latest_run}
+Latest decision: {latest_decision}
+
+Diagnose the immediate blocker, make the smallest safe fix, run relevant syntax/build checks, and leave the worktree resumable. Do not commit or merge. If the blocker is quota or credentials, explain that clearly and do not fabricate a fix.
+"""
+
     def log_text(self, job_id: str, name: str, max_bytes: int = 60000) -> str:
         path = self.log_dir(job_id) / f"{name}.log"
         if not path.is_file():
@@ -699,19 +758,21 @@ class AiLoopGui(tk.Tk):
         ttk.Button(toolbar, text="Refresh", command=self.refresh_all).grid(row=0, column=0, padx=(0, 6))
         ttk.Checkbutton(toolbar, text="Auto refresh", variable=self.auto_refresh).grid(row=0, column=1, padx=(0, 14))
         ttk.Button(toolbar, text="Start Redis", command=self.start_redis).grid(row=0, column=2, padx=(0, 6))
-        ttk.Button(toolbar, text="Stop Job", command=self.stop_selected_job).grid(row=0, column=3, padx=(0, 6))
-        ttk.Button(toolbar, text="Resume Job", command=self.resume_selected_job).grid(row=0, column=4, padx=(0, 6))
-        ttk.Button(toolbar, text="Wait/Notify", command=self.watch_selected_job).grid(row=0, column=5, padx=(0, 6))
-        ttk.Button(toolbar, text="Delete Job", command=self.delete_selected_job).grid(row=0, column=6, padx=(0, 6))
-        ttk.Button(toolbar, text="Clear Worktrees", command=self.clear_worktrees).grid(row=0, column=7, padx=(0, 6))
-        ttk.Button(toolbar, text="Reset DB", command=self.reset_loop).grid(row=0, column=8, padx=(0, 6))
-        ttk.Button(toolbar, text="Full Reset", command=self.full_reset).grid(row=0, column=9, padx=(0, 14))
-        ttk.Button(toolbar, text="Hibernation", command=self.open_hibernation_window).grid(row=0, column=10, padx=(0, 14))
+        ttk.Button(toolbar, text="Status", command=self.explain_selected_status).grid(row=0, column=3, padx=(0, 6))
+        ttk.Button(toolbar, text="Stop Job", command=self.stop_selected_job).grid(row=0, column=4, padx=(0, 6))
+        ttk.Button(toolbar, text="Finish", command=self.finish_selected_job).grid(row=0, column=5, padx=(0, 6))
+        ttk.Button(toolbar, text="Resume Job", command=self.resume_selected_job).grid(row=0, column=6, padx=(0, 6))
+        ttk.Button(toolbar, text="Wait/Notify", command=self.watch_selected_job).grid(row=0, column=7, padx=(0, 6))
+        ttk.Button(toolbar, text="Delete Job", command=self.delete_selected_job).grid(row=0, column=8, padx=(0, 6))
+        ttk.Button(toolbar, text="Clear Worktrees", command=self.clear_worktrees).grid(row=0, column=9, padx=(0, 6))
+        ttk.Button(toolbar, text="Reset DB", command=self.reset_loop).grid(row=0, column=10, padx=(0, 6))
+        ttk.Button(toolbar, text="Full Reset", command=self.full_reset).grid(row=0, column=11, padx=(0, 14))
+        ttk.Button(toolbar, text="Hibernation", command=self.open_hibernation_window).grid(row=0, column=12, padx=(0, 14))
         toolbar.columnconfigure(0, weight=0)
-        toolbar.columnconfigure(10, weight=1)
+        toolbar.columnconfigure(12, weight=1)
         ttk.Label(toolbar, text="Status:").grid(row=1, column=0, sticky="w", pady=(6, 0))
         status_label = ttk.Label(toolbar, textvariable=self.status_var, anchor="w")
-        status_label.grid(row=1, column=1, columnspan=10, sticky="ew", pady=(6, 0))
+        status_label.grid(row=1, column=1, columnspan=12, sticky="ew", pady=(6, 0))
 
         paned = ttk.PanedWindow(self, orient=tk.HORIZONTAL)
         paned.grid(row=1, column=0, sticky="nsew")
@@ -800,13 +861,13 @@ class AiLoopGui(tk.Tk):
 
         ttk.Label(settings, text="Opus model", width=label_width).grid(row=4, column=0, sticky="w", pady=(5, 0))
         ttk.Entry(settings, textvariable=self.opus_model_var).grid(row=4, column=1, sticky="ew", padx=(4, 10), pady=(5, 0))
-        ttk.Label(settings, text="Gemini bin", width=label_width).grid(row=4, column=2, sticky="w", pady=(5, 0))
-        ttk.Entry(settings, textvariable=self.gemini_bin_var).grid(row=4, column=3, sticky="ew", padx=(4, 0), pady=(5, 0))
+        ttk.Label(settings, text="Claude ctrl", width=label_width).grid(row=4, column=2, sticky="w", pady=(5, 0))
+        ttk.Entry(settings, textvariable=self.controller_model_var).grid(row=4, column=3, sticky="ew", padx=(4, 0), pady=(5, 0))
 
         ttk.Label(settings, text="Gemini model", width=label_width).grid(row=5, column=0, sticky="w", pady=(5, 0))
         ttk.Entry(settings, textvariable=self.gemini_model_var).grid(row=5, column=1, sticky="ew", padx=(4, 10), pady=(5, 0))
-        ttk.Label(settings, text="Claude ctrl", width=label_width).grid(row=5, column=2, sticky="w", pady=(5, 0))
-        ttk.Entry(settings, textvariable=self.controller_model_var).grid(row=5, column=3, sticky="ew", padx=(4, 0), pady=(5, 0))
+        ttk.Label(settings, text="Gemini bin", width=label_width).grid(row=5, column=2, sticky="w", pady=(5, 0))
+        ttk.Entry(settings, textvariable=self.gemini_bin_var).grid(row=5, column=3, sticky="ew", padx=(4, 0), pady=(5, 0))
 
         toggles = ttk.Frame(settings)
         toggles.grid(row=6, column=0, columnspan=4, sticky="ew", pady=(6, 0))
@@ -827,11 +888,11 @@ class AiLoopGui(tk.Tk):
         for name, width in (
             ("status", 95),
             ("progress", 70),
-            ("controller", 80),
+            ("controller", 70),
             ("worker", 70),
             ("tasks", 55),
             ("runs", 55),
-            ("updated", 145),
+            ("updated", 120),
         ):
             self.jobs_tree.heading(name, text=name.title())
             self.jobs_tree.column(name, width=width, stretch=False)
@@ -842,14 +903,30 @@ class AiLoopGui(tk.Tk):
         self.jobs_tree.configure(yscrollcommand=scrollbar.set)
         self.jobs_tree.bind("<<TreeviewSelect>>", self.on_job_selected)
 
+    def add_scrolled_text(self, parent: ttk.Frame, row: int, column: int, *, wrap: str = "none") -> tk.Text:
+        holder = ttk.Frame(parent)
+        holder.grid(row=row, column=column, sticky="nsew")
+        holder.rowconfigure(0, weight=1)
+        holder.columnconfigure(0, weight=1)
+        text = tk.Text(holder, wrap=wrap)
+        y_scroll = ttk.Scrollbar(holder, orient="vertical", command=text.yview)
+        x_scroll = ttk.Scrollbar(holder, orient="horizontal", command=text.xview)
+        text.configure(yscrollcommand=y_scroll.set, xscrollcommand=x_scroll.set)
+        text.grid(row=0, column=0, sticky="nsew")
+        y_scroll.grid(row=0, column=1, sticky="ns")
+        x_scroll.grid(row=1, column=0, sticky="ew")
+        return text
+
     def _build_detail_frame(self, parent: ttk.Frame) -> None:
         notebook = ttk.Notebook(parent)
         notebook.grid(row=0, column=0, sticky="nsew")
 
         overview = ttk.Frame(notebook, padding=8)
+        status_tab = ttk.Frame(notebook, padding=8)
         logs = ttk.Frame(notebook, padding=8)
         history = ttk.Frame(notebook, padding=8)
         notebook.add(overview, text="Overview")
+        notebook.add(status_tab, text="Status")
         notebook.add(logs, text="Logs")
         notebook.add(history, text="Tasks/Runs")
 
@@ -865,8 +942,7 @@ class AiLoopGui(tk.Tk):
         )
         self.summary_label.grid(row=0, column=0, sticky="ew")
         overview.bind("<Configure>", self.update_summary_wrap)
-        self.detail_text = tk.Text(overview, wrap="word")
-        self.detail_text.grid(row=1, column=0, sticky="nsew", pady=(8, 0))
+        self.detail_text = self.add_scrolled_text(overview, 1, 0, wrap="none")
 
         resume_frame = ttk.LabelFrame(overview, text="Resume / Change Controller", padding=8)
         resume_frame.grid(row=2, column=0, sticky="ew", pady=(8, 0))
@@ -893,6 +969,19 @@ class AiLoopGui(tk.Tk):
         ttk.Entry(resume_frame, textvariable=self.extra_constraint_var).grid(row=1, column=1, columnspan=5, sticky="ew", pady=(5, 0))
         ttk.Label(resume_frame, text="Extra acceptance").grid(row=2, column=0, sticky="w", pady=(5, 0))
         ttk.Entry(resume_frame, textvariable=self.extra_acceptance_var).grid(row=2, column=1, columnspan=5, sticky="ew", pady=(5, 0))
+        self.fix_binary_var = tk.StringVar(value=self.codex_bin_var.get() or "codex")
+        ttk.Label(resume_frame, text="Fix binary").grid(row=3, column=0, sticky="w", pady=(5, 0))
+        ttk.Combobox(
+            resume_frame,
+            textvariable=self.fix_binary_var,
+            values=(self.codex_bin_var.get() or "codex", self.claude_bin_var.get() or "claude", self.gemini_bin_var.get() or "gemini"),
+            width=18,
+        ).grid(row=3, column=1, columnspan=3, sticky="ew", pady=(5, 0))
+        ttk.Button(resume_frame, text="Fix It", command=self.fix_selected_job).grid(row=3, column=4, columnspan=2, sticky="e", pady=(5, 0))
+
+        status_tab.rowconfigure(0, weight=1)
+        status_tab.columnconfigure(0, weight=1)
+        self.status_text = self.add_scrolled_text(status_tab, 0, 0, wrap="none")
 
         logs.rowconfigure(1, weight=1)
         logs.columnconfigure(0, weight=1)
@@ -903,13 +992,11 @@ class AiLoopGui(tk.Tk):
             row=0, column=0, padx=(0, 6)
         )
         ttk.Button(log_bar, text="Refresh Log", command=self.refresh_log).grid(row=0, column=1)
-        self.log_text = tk.Text(logs, wrap="none")
-        self.log_text.grid(row=1, column=0, sticky="nsew", pady=(8, 0))
+        self.log_text = self.add_scrolled_text(logs, 1, 0, wrap="none")
 
         history.rowconfigure(0, weight=1)
         history.columnconfigure(0, weight=1)
-        self.history_text = tk.Text(history, wrap="word")
-        self.history_text.grid(row=0, column=0, sticky="nsew")
+        self.history_text = self.add_scrolled_text(history, 0, 0, wrap="none")
 
     def current_models(self) -> ModelDefaults:
         return ModelDefaults(
@@ -1043,6 +1130,7 @@ class AiLoopGui(tk.Tk):
             self.selected_job_id = None
             self.summary_var.set("No jobs.")
             self.set_text(self.detail_text, "")
+            self.set_text(self.status_text, "")
             self.set_text(self.history_text, "")
             self.set_text(self.log_text, "")
         self.update_system_status(jobs)
@@ -1097,6 +1185,82 @@ class AiLoopGui(tk.Tk):
         self.update_jobs_selection_style()
         self.show_job(job_id)
 
+    def plain_status_text(self, details: dict[str, Any]) -> str:
+        job = details["job"]
+        tasks = details.get("tasks", [])
+        runs = details.get("runs", [])
+        decisions = details.get("decisions", [])
+        processes = details.get("processes", {})
+        latest_task = tasks[0] if tasks else None
+        latest_run = runs[0] if runs else None
+        latest_decision = decisions[0] if decisions else None
+        process_lines = [
+            f"- {PROCESS_LABELS.get(name, name)}: {'running' if info['running'] else 'stopped'} pid={info['pid'] or '-'}"
+            for name, info in processes.items()
+        ]
+        status = str(job["status"])
+        if status in {"queued", "planning"}:
+            now_line = "The controller has planned or is planning the next step; the worker has not finished it yet."
+        elif status in {"implementing", "fixing"}:
+            now_line = "The worker is editing or diagnosing the job worktree, then it will run the configured test command."
+        elif status == "human_needed":
+            now_line = "The loop stopped because it needs operator input before it can continue."
+        elif status == "dead":
+            now_line = "The loop stopped because an internal controller/worker error was recorded."
+        elif status == "done":
+            now_line = "The controller marked the job complete."
+        else:
+            now_line = f"The job is in state {status}."
+
+        recent_done = next((t['goal'] for t in tasks if t['status'] == 'completed'), 'none in the recent window')
+        changed_files = ', '.join(latest_run.get('changed_files', [])) if latest_run else '-'
+        lines = [
+            "What is happening now",
+            now_line,
+            "",
+            "Who is doing what",
+            *process_lines,
+            "- controller: decides whether to continue, repair, finish, or ask for help after each worker run.",
+            "- worker: performs the current task in the worktree and runs tests.",
+            "- watcher: reports terminal done/human/dead events.",
+            "",
+            "Current or latest task",
+            f"- id: {latest_task['id'] if latest_task else '-'}",
+            f"- status: {latest_task['status'] if latest_task else '-'}",
+            f"- goal: {latest_task['goal'] if latest_task else '-'}",
+            "",
+            "Latest run result",
+            f"- run: {latest_run['id'] if latest_run else '-'}",
+            f"- worker rc: {latest_run['codex_rc'] if latest_run else '-'}",
+            f"- test rc: {latest_run['test_rc'] if latest_run else '-'}",
+            f"- changed files: {changed_files}",
+            "",
+            "Why the loop is doing this",
+            str(latest_decision['reason'] if latest_decision else job.get('history_summary') or 'No controller decision recorded yet.'),
+            "",
+            "What has been done",
+            f"- recent completed task: {recent_done}",
+            f"- recent tasks shown: {len(tasks)}; total task count is in the job list.",
+            "",
+            "Still to do after the current step",
+            "- If tests pass, the controller reviews the diff and either plans the next small task or marks the job done.",
+            "- If tests or behavior checks fail, the controller asks the worker for a narrower repair/diagnostic task.",
+            "- If quota, credentials, missing tools, or an internal crash blocks automation, the job enters human_needed/dead and can be resumed or fixed from the GUI.",
+        ]
+        return "\n".join(lines)
+
+    def explain_selected_status(self) -> None:
+        job_id = self.selected_job_or_error()
+        if not job_id:
+            return
+        try:
+            details = self.backend.job_details(job_id)
+        except Exception as exc:
+            messagebox.showerror("Status Failed", str(exc))
+            return
+        self.set_text(self.status_text, self.plain_status_text(details))
+        self.status_var.set(f"Status explanation refreshed for {job_id}")
+
     def show_job(self, job_id: str) -> None:
         try:
             details = self.backend.job_details(job_id)
@@ -1139,6 +1303,7 @@ class AiLoopGui(tk.Tk):
         if str(job["status"]) == "human_needed":
             text.extend(["", "Suggested actions:", *self.human_needed_actions(job, details)])
         self.set_text(self.detail_text, "\n".join(text))
+        self.set_text(self.status_text, self.plain_status_text(details))
 
         history_lines: list[str] = ["Tasks:"]
         for task in details["tasks"]:
@@ -1255,6 +1420,38 @@ class AiLoopGui(tk.Tk):
             return
         self.watch_job_id = job_id
         self.resume_fields_job_id = None
+        self.refresh_all(select_job_id=job_id)
+
+    def finish_selected_job(self) -> None:
+        job_id = self.selected_job_or_error()
+        if not job_id:
+            return
+        if not messagebox.askyesno("Finish Job", "Stop the loop and preserve current worktree/database progress for this job?"):
+            return
+        try:
+            self.backend.finish_job(job_id)
+        except Exception as exc:
+            messagebox.showerror("Finish Failed", str(exc))
+            return
+        self.refresh_all(select_job_id=job_id)
+
+    def fix_selected_job(self) -> None:
+        job_id = self.selected_job_or_error()
+        if not job_id:
+            return
+        binary = self.fix_binary_var.get().strip() or "codex"
+        if not messagebox.askyesno("Fix It", f"Run {binary!r} to diagnose/fix and then resume this job if successful?"):
+            return
+        try:
+            proc = self.backend.fix_job_with_binary(job_id, binary, self.current_models())
+        except Exception as exc:
+            messagebox.showerror("Fix It Failed", str(exc))
+            return
+        output = (proc.stdout + "\n" + proc.stderr).strip()
+        if proc.returncode == 0:
+            messagebox.showinfo("Fix It", f"{binary} finished successfully and the job was resumed.\n\n{output[-1200:]}")
+        else:
+            messagebox.showerror("Fix It Failed", f"{binary} exited with rc={proc.returncode}.\n\n{output[-2000:]}")
         self.refresh_all(select_job_id=job_id)
 
     def watch_selected_job(self) -> None:

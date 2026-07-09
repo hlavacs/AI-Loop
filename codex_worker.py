@@ -4,6 +4,7 @@ import re
 import os
 import shutil
 import subprocess
+import tempfile
 import time
 import uuid
 from pathlib import Path
@@ -13,6 +14,7 @@ from redis.exceptions import ConnectionError, TimeoutError
 from ai_loop import db
 from ai_loop.config import CLAUDE_REQUEST_STREAM, CODEX_TASK_STREAM, DEAD_STREAM, HUMAN_STREAM, load_settings
 from ai_loop.queues import consumer_name, decode, ensure_group, redis_client, read_group, xadd_json
+from ai_loop.recovery import attempt_auto_recovery
 
 
 GROUP = "codex-workers"
@@ -20,6 +22,7 @@ OUTPUT_LIMIT = 20000
 DIFF_LIMIT = 80000
 INSTRUCTION_FILE_LIMIT = 10
 TERMINAL_STATUSES = {"done", "human_needed", "dead"}
+PROMPT_ARG_LIMIT = 100000
 
 
 def scoped_job_id() -> str | None:
@@ -37,14 +40,27 @@ def is_terminal_job(settings, job_id: str) -> bool:
         return str(job["status"]) in TERMINAL_STATUSES
 
 
-def run_command(cmd: list[str], cwd: str, timeout: int) -> dict[str, object]:
-    print(f"running: {' '.join(cmd)}")
+def prompt_arg_or_file(prompt: str, label: str) -> str:
+    if len(prompt.encode("utf-8")) < PROMPT_ARG_LIMIT:
+        return prompt
+    handle = tempfile.NamedTemporaryFile("w", suffix=f"-{label}-prompt.txt", delete=False)
+    with handle:
+        handle.write(prompt)
+    return f"Read the full prompt from this file, follow it exactly, and complete the requested task: {handle.name}"
+
+
+def run_command(cmd: list[str], cwd: str, timeout: int, input_text: str | None = None) -> dict[str, object]:
+    display_cmd = [*cmd]
+    if input_text is not None and display_cmd and display_cmd[-1] == "-":
+        display_cmd[-1] = "<stdin>"
+    print(f"running: {' '.join(display_cmd)}")
     print(f"cwd: {cwd}")
     started = time.monotonic()
     try:
         proc = subprocess.run(
             cmd,
             cwd=cwd,
+            input=input_text,
             text=True,
             capture_output=True,
             timeout=timeout,
@@ -79,7 +95,7 @@ def build_codex_command(codex_bin: str, cwd: str, prompt: str, model: str, bypas
         cmd.append("--dangerously-bypass-approvals-and-sandbox")
     else:
         cmd.extend(["--sandbox", "workspace-write"])
-    cmd.append(prompt)
+    cmd.append("-")
     return cmd
 
 
@@ -92,7 +108,7 @@ def build_fable_command(claude_bin: str, prompt: str, model: str, bypass_sandbox
         cmd.append("--dangerously-skip-permissions")
     else:
         cmd.extend(["--permission-mode", "acceptEdits", "--allowedTools", FABLE_ALLOWED_TOOLS])
-    cmd.append(prompt)
+    cmd.append(prompt_arg_or_file(prompt, "fable-worker"))
     return cmd
 
 
@@ -103,7 +119,7 @@ def build_gemini_command(gemini_bin: str, prompt: str, model: str, bypass_sandbo
     if not bypass_sandbox:
         cmd.append("--sandbox")
     cmd.append("--yolo")
-    cmd.extend(["-p", prompt])
+    cmd.extend(["-p", prompt_arg_or_file(prompt, "gemini-worker")])
     return cmd
 
 
@@ -369,7 +385,8 @@ def process_task(settings, client, task_id: str) -> None:
             )
         worker_stage = "fixing" if str(task["created_by"]) == "claude:repair" else "implementing"
         log_worker_stage(job["id"], task_id, worker_stage, f"{worker_label} process started; source changes may not exist until it finishes")
-        codex = run_command(codex_cmd, worktree_path, 7200)
+        codex_input = prompt if worker == "codex" else None
+        codex = run_command(codex_cmd, worktree_path, 7200, input_text=codex_input)
         codex_rc = int(codex["rc"])
         codex_output = str(codex["output"])[-OUTPUT_LIMIT:]
         log_worker_stage(job["id"], task_id, "codex_done", f"{worker_label} finished rc={codex_rc}; running task test command")
@@ -498,6 +515,10 @@ def main() -> int:
                     return 0
             except Exception as exc:
                 print(f"worker error: {exc}")
+                if attempt_auto_recovery(settings, job_id, "codex_worker", repr(exc), fields):
+                    client.xack(CODEX_TASK_STREAM, group, message_id)
+                    print(f"job {job_id}: auto recovery launched; Codex worker exiting")
+                    return 0
                 payload = {"where": "codex_worker", "error": repr(exc), "fields": fields}
                 try:
                     record_dead(settings, client, job_id, payload, task_id)

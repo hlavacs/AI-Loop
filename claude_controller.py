@@ -24,6 +24,7 @@ from ai_loop.config import (
     load_settings,
 )
 from ai_loop.queues import consumer_name, decode, ensure_group, redis_client, read_group, xadd_json
+from ai_loop.recovery import attempt_auto_recovery
 
 
 GROUP = "claude-controllers"
@@ -37,6 +38,8 @@ CLAUDE_TRANSIENT_RETRY_BACKOFF_SECONDS = float(os.getenv("AI_LOOP_CLAUDE_TRANSIE
 CLAUDE_TRANSIENT_RETRY_MAX_BACKOFF_SECONDS = float(
     os.getenv("AI_LOOP_CLAUDE_TRANSIENT_MAX_BACKOFF_SECONDS", "60")
 )
+PROMPT_ARG_LIMIT = 100000
+
 CLAUDE_TRANSIENT_FAILURE_PATTERNS = (
     "api error",
     "connection closed",
@@ -67,6 +70,16 @@ def scoped_job_id() -> str | None:
 
 def scoped_group(base_group: str, job_id: str | None) -> str:
     return f"{base_group}:{job_id}" if job_id else base_group
+
+
+def prompt_arg_or_file(prompt: str, label: str) -> tuple[str, Path | None]:
+    if len(prompt.encode("utf-8")) < PROMPT_ARG_LIMIT:
+        return prompt, None
+    handle = tempfile.NamedTemporaryFile("w", suffix=f"-{label}-prompt.txt", delete=False)
+    with handle:
+        handle.write(prompt)
+    path = Path(handle.name)
+    return f"Read the full prompt from this file, follow it exactly, and produce the requested response: {path}", path
 
 
 def is_terminal_job(settings, job_id: str) -> bool:
@@ -285,9 +298,10 @@ def run_claude(claude_bin: str, prompt: str, model: str = "", sizing: str = "sma
         output = ""
         cli_attempt = 0
         while True:
+            prompt_arg, prompt_file = prompt_arg_or_file(current_prompt, "claude-controller")
             try:
                 proc = subprocess.run(
-                    [*claude_cmd, current_prompt],
+                    [*claude_cmd, prompt_arg],
                     text=True,
                     capture_output=True,
                     timeout=7200,
@@ -366,9 +380,10 @@ def run_codex_controller(codex_bin: str, prompt: str, workdir: str, model: str =
                 ]
                 if model:
                     cmd.extend(["-m", model])
-                cmd.append(current_prompt)
+                cmd.append("-")
                 proc = subprocess.run(
                     cmd,
+                    input=current_prompt,
                     text=True,
                     capture_output=True,
                     timeout=7200,
@@ -950,6 +965,10 @@ def main() -> int:
                     return 0
             except Exception as exc:
                 print(f"controller error: {exc}")
+                if attempt_auto_recovery(settings, job_id, "claude_controller", repr(exc), fields):
+                    client.xack(CLAUDE_REQUEST_STREAM, group, message_id)
+                    print(f"job {job_id}: auto recovery launched; Claude controller exiting")
+                    return 0
                 payload = {"where": "claude_controller", "error": repr(exc), "fields": fields}
                 try:
                     record_dead(settings, client, job_id, payload)
