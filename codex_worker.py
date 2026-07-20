@@ -23,6 +23,7 @@ DIFF_LIMIT = 80000
 INSTRUCTION_FILE_LIMIT = 10
 TERMINAL_STATUSES = {"done", "human_needed", "dead"}
 PROMPT_ARG_LIMIT = 100000
+BYPASS_SANDBOX_MARKER = "bypass_sandbox"
 
 
 def scoped_job_id() -> str | None:
@@ -32,6 +33,11 @@ def scoped_job_id() -> str | None:
 
 def scoped_group(base_group: str, job_id: str | None) -> str:
     return f"{base_group}:{job_id}" if job_id else base_group
+
+
+def runtime_requests_sandbox_bypass() -> bool:
+    runtime_dir = os.getenv("AI_LOOP_RUNTIME_DIR", "").strip()
+    return bool(runtime_dir and (Path(runtime_dir) / BYPASS_SANDBOX_MARKER).is_file())
 
 
 def is_terminal_job(settings, job_id: str) -> bool:
@@ -363,19 +369,22 @@ def process_task(settings, client, task_id: str) -> None:
         print(error)
     else:
         prompt = codex_prompt(job, task, worker)
+        bypass_sandbox = settings.codex_bypass_sandbox or runtime_requests_sandbox_bypass()
+        if bypass_sandbox and not settings.codex_bypass_sandbox:
+            print(f"sandbox bypass requested by {BYPASS_SANDBOX_MARKER} runtime marker")
         if worker in {"fable", "opus"}:
             codex_cmd = build_fable_command(
                 settings.claude_bin,
                 prompt,
                 settings.fable_model if worker == "fable" else settings.opus_model,
-                settings.codex_bypass_sandbox,
+                bypass_sandbox,
             )
         elif worker == "gemini":
             codex_cmd = build_gemini_command(
                 settings.gemini_bin,
                 prompt,
                 settings.gemini_model,
-                settings.codex_bypass_sandbox,
+                bypass_sandbox,
             )
         else:
             codex_cmd = build_codex_command(
@@ -383,7 +392,7 @@ def process_task(settings, client, task_id: str) -> None:
                 worktree_path,
                 prompt,
                 settings.codex_model,
-                settings.codex_bypass_sandbox,
+                bypass_sandbox,
             )
         worker_stage = "fixing" if str(task["created_by"]) == "claude:repair" else "implementing"
         log_worker_stage(job["id"], task_id, worker_stage, f"{worker_label} process started; source changes may not exist until it finishes")

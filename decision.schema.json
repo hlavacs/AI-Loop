@@ -8,6 +8,9 @@
     "reason": {
       "type": "string"
     },
+    "history_summary": {
+      "type": "string"
+    },
     "next_task": {
       "type": "object",
       "properties": {
@@ -26,7 +29,6 @@
       "additionalProperties": false
     }
   },
-  "required": ["action", "reason"],
+  "required": ["action", "reason", "history_summary"],
   "additionalProperties": false
 }
-

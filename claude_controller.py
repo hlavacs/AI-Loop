@@ -113,6 +113,8 @@ def extract_json(text: str) -> dict[str, Any]:
             raise ValueError(f"Claude did not return JSON: {text[:1000]}")
         parsed = json.loads(text[start : end + 1])
 
+    if isinstance(parsed, dict) and isinstance(parsed.get("structured_output"), dict):
+        return parsed["structured_output"]
     if isinstance(parsed, dict):
         for key in ("result", "response", "text", "content", "output"):
             if isinstance(parsed.get(key), str):
@@ -155,6 +157,11 @@ def parse_and_validate_decision(text: str) -> dict[str, Any]:
     validate_decision(decision)
     validate_json_round_trip(decision)
     return decision
+
+
+def decision_json_schema() -> str:
+    schema_path = Path(__file__).with_name("decision.schema.json")
+    return json.dumps(json.loads(schema_path.read_text(encoding="utf-8")), separators=(",", ":"))
 
 
 def is_transient_claude_cli_failure(output: str) -> bool:
@@ -290,7 +297,14 @@ def run_claude(claude_bin: str, prompt: str, model: str = "", sizing: str = "sma
             "history_summary": "Claude controller could not run because the Claude CLI is missing.",
         }
 
-    claude_cmd = [claude_bin, "-p", "--output-format", "json"]
+    claude_cmd = [
+        claude_bin,
+        "-p",
+        "--output-format",
+        "json",
+        "--json-schema",
+        decision_json_schema(),
+    ]
     if model:
         claude_cmd.extend(["--model", model])
 
