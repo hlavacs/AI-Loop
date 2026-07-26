@@ -11,6 +11,16 @@
     "history_summary": {
       "type": "string"
     },
+    "progress": {
+      "type": "object",
+      "properties": {
+        "completed_work_units": { "type": "integer", "minimum": 0 },
+        "remaining_work_units": { "type": "integer", "minimum": 0 },
+        "remaining_minutes": { "type": ["integer", "null"], "minimum": 0 }
+      },
+      "required": ["completed_work_units", "remaining_work_units", "remaining_minutes"],
+      "additionalProperties": false
+    },
     "next_task": {
       "type": "object",
       "properties": {
@@ -29,6 +39,6 @@
       "additionalProperties": false
     }
   },
-  "required": ["action", "reason", "history_summary"],
+  "required": ["action", "reason", "history_summary", "progress"],
   "additionalProperties": false
 }

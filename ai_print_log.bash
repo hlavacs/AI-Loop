@@ -58,6 +58,7 @@ import json
 import sqlite3
 import sys
 from textwrap import shorten
+from ai_loop.db import init_db
 from ai_loop.progress import estimate_progress
 
 db_path = sys.argv[1]
@@ -73,6 +74,7 @@ if limit < 1:
     print("limit must be greater than zero", file=sys.stderr)
     sys.exit(2)
 
+init_db(db_path)
 conn = sqlite3.connect(db_path)
 conn.row_factory = sqlite3.Row
 
@@ -87,22 +89,22 @@ def short(value, width=220):
 def describe_status(status, index=0):
     descriptions = {
         "planning": [
-            "Claude is choosing the next implementation task.",
+            "The controller is choosing the next implementation task.",
             "Planner is reading the job history and constraints.",
-            "Planning pass is deciding what Codex should change next.",
+            "Planning pass is deciding what the worker should change next.",
         ],
         "implementing": [
-            "Codex is applying the current task in the worktree.",
+            "The worker is applying the current task in the worktree.",
             "Implementation worker is editing and validating the task.",
             "Worker is turning the plan into a concrete code change.",
         ],
         "fixing": [
-            "Codex is fixing a reviewed problem in the worktree.",
+            "The worker is fixing a reviewed problem in the worktree.",
             "Repair task is applying a focused correction.",
             "Worker is resolving the current blocker one step at a time.",
         ],
         "queued": [
-            "The next Codex task is waiting for the worker.",
+            "The next task is waiting for the worker.",
             "Task is ready and pending worker pickup.",
             "Queue has the next implementation request.",
         ],
@@ -115,6 +117,9 @@ def describe_status(status, index=0):
             "The loop needs a person to resolve the next step.",
             "Automation paused because manual input is required.",
             "A human decision is needed before continuing.",
+        ],
+        "waiting_tokens": [
+            "The loop is waiting for model tokens to replenish and will resume automatically.",
         ],
         "dead": [
             "The loop stopped after an unrecoverable error.",
@@ -161,7 +166,7 @@ def job_progress(job):
         created_at=job["created_at"],
         run_count=int(job["run_count"]),
         task_count=int(job["task_count"]),
-        has_active_task=task is not None and task["status"] in {"queued", "running"},
+        has_active_task=task is not None and task["status"] in {"queued", "running", "waiting_tokens"},
     )
     conn.commit()
     return result
@@ -178,6 +183,8 @@ if job_id:
             j.created_at,
             j.updated_at,
             j.goal,
+            j.estimated_completed_units,
+            j.estimated_remaining_units,
             (
                 SELECT COUNT(*)
                 FROM tasks t
@@ -202,6 +209,7 @@ if job_id:
     print(f"status: {job['status']} - {describe_status(job['status'])}")
     print(f"updated_at: {job['updated_at']}")
     print(f"estimate: {percent}% done, about {duration_text(remaining)} remaining")
+    print(f"work_estimate: {job['estimated_completed_units']} logical units completed, {job['estimated_remaining_units']} remaining")
     print(f"goal: {job['goal']}")
     print()
 else:

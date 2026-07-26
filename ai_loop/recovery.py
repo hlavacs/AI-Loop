@@ -46,10 +46,10 @@ Error: {error}
 Message fields: {fields}
 
 Controller log tail:
-{_tail(log_dir / 'claude_controller.log')}
+{_tail(log_dir / 'controller.log')}
 
 Worker log tail:
-{_tail(log_dir / 'codex_worker.log')}
+{_tail(log_dir / 'worker.log')}
 
 Watcher log tail:
 {_tail(log_dir / 'watcher.log')}

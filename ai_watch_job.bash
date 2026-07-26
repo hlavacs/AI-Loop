@@ -35,7 +35,7 @@ row = conn.execute(
     """
     SELECT id
     FROM jobs
-    WHERE status IN ('implementing', 'fixing', 'queued', 'planning')
+    WHERE status IN ('implementing', 'fixing', 'queued', 'planning', 'waiting_tokens')
     ORDER BY updated_at DESC
     LIMIT 1
     """

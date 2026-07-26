@@ -3,17 +3,21 @@
 ```text
 .
 ├── README.md
-├── README_AI_LOOP.md
 ├── WORKER_SYSTEM.txt
+├── WORKER_SYSTEMS.md
 ├── decision.schema.json
 ├── ai_loop/
 │   ├── __init__.py
 │   ├── config.py
 │   ├── db.py
+│   ├── notifications.py
+│   ├── planning.py
 │   ├── progress.py
-│   └── queues.py
-├── claude_controller.py
-├── codex_worker.py
+│   ├── queues.py
+│   ├── recovery.py
+│   └── token_wait.py
+├── controller.py
+├── worker.py
 ├── resume_job.py
 ├── start_job.py
 ├── watcher.py
@@ -39,12 +43,12 @@
 
 ## Top-Level Files
 
-- `README.md`: file structure index.
-- `README_AI_LOOP.md`: existing project notes.
-- `WORKER_SYSTEM.txt`: worker system prompt text.
+- `README.md`: complete installation and user guide.
+- `WORKER_SYSTEMS.md`: authoritative technical architecture and lifecycle guide.
+- `WORKER_SYSTEM.txt`: compatibility pointer to `WORKER_SYSTEMS.md`.
 - `decision.schema.json`: JSON schema for controller decisions.
-- `claude_controller.py`: Claude-side controller process.
-- `codex_worker.py`: Codex-side worker process.
+- `controller.py`: model-neutral planning and review controller process.
+- `worker.py`: model-neutral implementation worker process.
 - `resume_job.py`: job resume entrypoint.
 - `start_job.py`: job creation entrypoint.
 - `watcher.py`: event watcher process.
@@ -54,8 +58,12 @@
 - `ai_loop/__init__.py`: package marker.
 - `ai_loop/config.py`: configuration loading.
 - `ai_loop/db.py`: SQLite schema and database helpers.
+- `ai_loop/notifications.py`: terminal SMTP/sendmail notifications.
+- `ai_loop/planning.py`: immutable plans and granularity policy.
 - `ai_loop/progress.py`: progress formatting and reporting helpers.
 - `ai_loop/queues.py`: queue and stream helpers.
+- `ai_loop/recovery.py`: internal failure recovery.
+- `ai_loop/token_wait.py`: quota reset parsing and automatic waits.
 
 ## Shell Scripts
 

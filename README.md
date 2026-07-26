@@ -1,376 +1,314 @@
-# Generic Claude + Codex Development Loop
+# ai-loop
 
-This directory contains a durable continuous development loop:
+ai-loop is a durable development orchestrator. A controller plans and reviews work, a worker edits and verifies a repository, SQLite stores the durable state, Redis Streams wake processes, and an optional Tkinter dashboard exposes the whole lifecycle.
 
-- SQLite stores jobs, tasks, runs, Claude decisions, and events.
-- Redis Streams are used only for activation messages and terminal notifications.
-- Claude CLI controls planning and review.
-- A per-job worker (Codex CLI or Claude Fable) implements one task at a time.
-- Git worktrees isolate jobs by default.
+Jobs normally run in isolated Git worktrees. They can use Codex, Claude, or Gemini-compatible CLIs in either role without putting a model name in the role program: the processes are always `controller.py` and `worker.py`.
 
-## Installation
+## What you get
 
-- Python 3.10+
-- Tkinter for the optional GUI (`python3 -m tkinter` should open a test window)
-- Redis
+- Durable jobs, tasks, runs, decisions, events, plans, estimates, and terminal state in SQLite.
+- One controller, worker, and watcher process per active job.
+- An immutable, enumerated overall plan created with every job.
+- Fine, normal, and coarse task granularity.
+- Automatic retry after a model token limit: the reset time is extracted, the job shows `waiting_tokens`, and execution resumes one minute after replenishment.
+- Email notification when a job is ready or automation reaches a genuine human-needed/dead condition.
+- Live GUI status, changed-only text refresh, wrapped text, informative hover help, logs, task/run history, and work/time estimates.
+- `Finish Soon` to reduce remaining work without lowering acceptance quality, and `Finish Early` to stop immediately while preserving progress.
+- Safe promotion of successful worktree changes back to the original checkout when paths do not conflict.
+
+## Requirements
+
+Required:
+
+- Python 3.10 or newer
+- Git
+- Redis server
 - `redis-py`
-- `git`
-- Claude CLI available as `claude`
-- Codex CLI available as `codex`, or set `CODEX_BIN`
+- At least one supported controller CLI and one supported worker CLI
 
-Typical local setup:
+Optional:
+
+- Tkinter for the GUI
+- A local `sendmail` command or an SMTP account for email
+- Bash for the convenience launchers
+
+Supported role choices are `codex`, `fable`, `opus`, and `gemini` for workers, and `claude`, `fable`, `opus`, `codex`, and `gemini` for controllers. `fable` and `opus` use the Claude CLI with different optional model settings.
+
+### Linux installation
+
+Package names vary by distribution. On Debian or Ubuntu, the base dependencies are typically:
 
 ```bash
-python3 -m venv .venv
-source .venv/bin/activate
-python -m pip install redis
-python3 -m tkinter
+sudo apt update
+sudo apt install python3 python3-venv python3-tk git redis-server
 ```
 
-If you prefer the system interpreter, the scripts also work without a virtual environment as long as `redis-py` is installed for the chosen Python.
+Create an environment and install the Python dependency:
 
-## Start Redis
+```bash
+cd /path/to/ai-loop
+python3 -m venv .venv
+source .venv/bin/activate
+python -m pip install --upgrade pip redis
+```
+
+Install and authenticate the controller/worker CLIs you intend to select, then verify them, for example:
+
+```bash
+codex --version
+claude --version
+gemini --version
+```
+
+### macOS installation
+
+Install Python, Git, and Redis with your preferred package manager, then create the same `.venv` shown above. The GUI includes a separate macOS hibernation helper; changing hibernation mode invokes `sudo pmset` only after confirmation.
+
+### Windows installation
+
+Install Python with Tkinter, Git, and Redis or a Redis-compatible service. Run the Python entry points directly from PowerShell. The Bash wrappers require WSL, Git Bash, or another Bash environment.
+
+### Verify the installation
+
+```bash
+python3 -c "import redis, tkinter; print('Python dependencies OK')"
+git --version
+redis-cli ping
+python3 -m py_compile controller.py worker.py start_job.py resume_job.py ai_loop_gui.py ai_loop/*.py
+```
+
+`redis-cli ping` should print `PONG`. If Redis is not already running, start it with your operating system service manager or:
 
 ```bash
 redis-server --save "" --appendonly no
 ```
 
-Or use an existing Redis and set:
+## Configuration
+
+All settings are optional unless your environment needs an override.
+
+| Variable | Purpose | Default |
+| --- | --- | --- |
+| `AI_LOOP_DB` | SQLite database path | `./ai_loop.sqlite3` |
+| `AI_LOOP_RUNS_DIR` | Generated job worktrees | sibling `ai-runs/` directory |
+| `REDIS_URL` | Redis connection | `redis://localhost:6379/0` |
+| `AI_LOOP_CONTROLLER` | New-job controller | `opus` |
+| `AI_LOOP_WORKER` | New-job worker | `codex` |
+| `AI_LOOP_GRANULARITY` | New-job task size | `normal` |
+| `AI_LOOP_TEST_CMD` | Explicit validation command | inferred from repository |
+| `CODEX_BIN`, `CLAUDE_BIN`, `GEMINI_BIN` | CLI executable paths | CLI name on `PATH` |
+| `AI_LOOP_CODEX_MODEL` | Optional Codex model override | CLI default |
+| `AI_LOOP_FABLE_MODEL` | Optional Fable override | CLI default |
+| `AI_LOOP_OPUS_MODEL` | Optional Opus override | CLI default |
+| `AI_LOOP_GEMINI_MODEL` | Optional Gemini override | CLI default |
+| `AI_LOOP_CONTROLLER_MODEL` | Optional default-Claude controller override | CLI default |
+| `CODEX_BYPASS_SANDBOX` | Allow unrestricted worker execution | false in Python entry points |
+| `AI_LOOP_NOTIFY_EMAIL` | Terminal notification recipient | `helmut.hlavacs@univie.ac.at` |
+| `AI_LOOP_SMTP_HOST` | SMTP server; empty uses local `sendmail` | empty |
+| `AI_LOOP_SMTP_PORT` | SMTP port | 587, or 465 with SSL |
+| `AI_LOOP_SMTP_USER`, `AI_LOOP_SMTP_PASSWORD` | SMTP authentication | empty |
+| `AI_LOOP_SMTP_FROM` | Sender address | SMTP user or recipient |
+| `AI_LOOP_SMTP_STARTTLS` | Upgrade SMTP connection with STARTTLS | true |
+| `AI_LOOP_SMTP_SSL` | Use SMTP-over-SSL | false |
+
+Example SMTP setup:
 
 ```bash
-export REDIS_URL=redis://localhost:6379/0
+export AI_LOOP_SMTP_HOST=smtp.example.edu
+export AI_LOOP_SMTP_PORT=587
+export AI_LOOP_SMTP_USER='account@example.edu'
+export AI_LOOP_SMTP_PASSWORD='application-password'
+export AI_LOOP_SMTP_FROM='account@example.edu'
+export AI_LOOP_NOTIFY_EMAIL='helmut.hlavacs@univie.ac.at'
 ```
 
-## Initialize the Database
+Credentials are read from the environment and are not written to the job database. Notification delivery failures are recorded as events and do not erase a successful job result.
 
-The scripts initialize the schema automatically. To initialize it explicitly:
-
-```bash
-python - <<'PY'
-from ai_loop.config import load_settings
-from ai_loop.db import init_db
-
-settings = load_settings()
-init_db(settings.db_path)
-print(settings.db_path)
-PY
-```
-
-Optional settings:
-
-```bash
-export AI_LOOP_DB="$PWD/ai_loop.sqlite3"
-export AI_LOOP_RUNS_DIR="$(dirname "$PWD")/ai-runs"
-export AI_LOOP_PYTHON=python3
-export CODEX_BIN=codex
-```
-
-The shell wrappers prefer `AI_LOOP_PYTHON` when set, then local virtualenv
-interpreters, then versioned `python3` commands. They do not require a bare
-`python` executable.
-
-`./ai_job.bash` uses the selected interpreter to submit the job, but it does
-not force every target project through pytest. If `AI_LOOP_TEST_CMD` is unset,
-`start_job.py` infers a generic validation command from the target repository:
-CMake presets first, then plain CMake, then `npm test`, then `pytest -q` for
-Python projects, and finally `true` when no known runner is detected.
-
-The wrapper accepts either an explicit repository plus job description, or a
-single text file. With the text-file form, the file contents are used as the job
-description and the file's containing directory is used as the target repository:
-
-```bash
-./ai_job.bash /path/to/repo "Implement the requested feature."
-./ai_job.bash /path/to/repo/job.txt
-```
-
-Set `AI_LOOP_TEST_CMD` to override that detection for a target repository.
-
-## Tkinter GUI
-
-The cross-platform GUI is a Python/Tkinter script and does not call the bash
-wrappers. It creates jobs, launches the controller/worker/watcher Python
-processes, tails logs, shows task/run history, stops jobs, resumes paused jobs,
-changes controller/worker choices, and resets the loop database. If the active
-Python is missing `redis-py`, the GUI creates `.gui-venv`, installs `redis`
-there, and restarts itself. It also has a Start Redis button and will start a
-local `redis-server --save "" --appendonly no` automatically before queueing a
-job when `REDIS_URL` points at localhost. Cleanup controls are split into
-Clear Worktrees, Reset DB, and Full Reset so you can remove generated worktrees,
-clear durable job records, or do both. When a job enters `human_needed`, the
-GUI shows an alert and lists practical next actions in the selected job's
-Overview tab. On macOS only, the GUI also exposes hibernation status plus a
-selectable `pmset` hibernatemode: 0 disables hibernation, 3 enables the default
-portable mode, and 25 enables deep hibernation mode.
+## Start the GUI
 
 ```bash
 python3 ai_loop_gui.py
+```
+
+or:
+
+```bash
 ./ai_gui.bash --theme default
 ./ai_gui.bash --list-themes
 ```
 
-The default theme keeps the current platform-native Tk style. Any theme printed
-by `--list-themes` can be passed with `--theme <name>`.
+If the selected Python lacks `redis-py`, the GUI can create `.gui-venv`, install `redis`, and restart itself. The `System` menu provides `Start Redis` to start a local server when `REDIS_URL` points at localhost.
 
-Use the controller/worker dropdowns and optional model fields to select `codex`,
-`fable`, `opus`, or `claude` behavior. Leave a model field blank to use the CLI
-default. The binary fields come from the same environment variables as the CLI
-(`AI_LOOP_CONTROLLER`, `AI_LOOP_WORKER`, `AI_LOOP_FABLE_MODEL`,
-`AI_LOOP_OPUS_MODEL`, `AI_LOOP_CONTROLLER_MODEL`, `CODEX_BIN`, `CLAUDE_BIN`,
-and `GEMINI_BIN`).
+### Create a job
 
-## Choosing the Worker
+1. Choose the repository folder.
+2. Enter the Goal. `Goal File` loads a text file; `Clear Goal` empties the existing Goal field.
+3. Set the validation command or leave `auto` selected.
+4. Choose controller, worker, and granularity.
+5. Leave worktree isolation enabled unless you deliberately want direct edits.
+6. Click `Create Job`.
 
-Each job stores which implementation worker it uses: `codex` (default),
-`fable` (Claude Fable via the Claude CLI; `claude` is accepted as an alias),
-or `opus` (Claude Opus via the Claude CLI).
+Creation stores an immutable four-part overall plan. The `Plan` tab always displays it as an enumerated list. Controller review can adapt individual tasks, but it cannot rewrite this plan.
+
+### Granularity
+
+- `Fine`: many focused tasklets and frequent controller review. This gives maximum control and may take longer.
+- `Normal`: medium-sized coherent tasks. This is the default balance.
+- `Coarse`: fewer substantial tasks that combine related discovery, implementation, documentation, and testing. This reduces round trips without relaxing acceptance criteria or test quality.
+
+Granularity is independent of the selected model. It can be changed in the resume panel.
+
+### Dashboard tabs
+
+- `Status`: plain-language current state, active processes, current task, completed-work estimate, remaining work units, and remaining time.
+- `Overview`: repository/worktree details, configuration, goal, history summary, and latest decision.
+- `Plan`: immutable enumerated overall plan.
+- `Logs`: controller, worker, or watcher log. Long lines wrap at the right edge.
+- `Tasks/Runs`: recent task statuses, test results, diffs, errors, and events.
+
+The GUI checks text before rewriting a text box. Unchanged content is left alone, preserving selection and scroll position. Every GUI element has hover help, and tooltips use readable wrapped text.
+
+### Ending sooner
+
+- `Finish Soon` keeps automation running, switches the job to coarse granularity, drops optional polish, and tells the next controller review to return `DONE` when acceptance is met or create at most one consolidated final task.
+- `Finish Early` stops immediately and preserves the worktree/database state as resumable progress.
+- `Stop Job` stops job processes without deleting records.
+- Lowering maximum iterations on resume provides a hard safety bound.
+
+`Finish Soon` does not weaken tests or acceptance criteria.
+
+### Queued and token-wait states
+
+The worker changes a queued task to `running` in the same database transaction that moves the job to `implementing` or `fixing`. GUI refresh also reconciles inconsistent active job/task rows. If a queued task has no live worker process, the list shows `queued / worker offline` instead of a misleading bare `queued` state. Expanded task rows remain expanded across refreshes.
+
+When CLI output reports a token/quota limit and includes a reset time, ai-loop records `waiting_tokens`, shows the exact `waiting_until` value, waits until that time plus one minute, restores the task/job state, and retries automatically. It does not show this expected wait as a human-needed error. If no reset time can be extracted, the ordinary human-needed flow and email notification apply.
+
+## Command-line user guide
+
+Create and wait for a job:
 
 ```bash
-./ai_job.bash --worker fable /path/to/repo "Implement the requested feature."
-python3 start_job.py --worker fable --repo /path/to/repo --goal "..."
-export AI_LOOP_WORKER=fable   # default for new jobs when --worker is not given
+./ai_job.bash --granularity normal /path/to/repo "Implement the requested feature."
 ```
 
-The Fable/Opus workers run:
+Use a goal file:
 
 ```bash
-claude -p --permission-mode acceptEdits --allowedTools Bash,Edit,Write,MultiEdit,NotebookEdit
+./ai_job.bash --worker fable --controller opus --granularity coarse /path/to/repo/job.md
 ```
 
-Set `AI_LOOP_FABLE_MODEL` if you want to pin a specific model; leave it blank to use the Claude CLI default.
-
-## Choosing the Controller
-
-Each job also stores which controller plans and reviews: `opus` (default),
-`claude` (Claude CLI with its default model or `AI_LOOP_CONTROLLER_MODEL`),
-`fable`, or `codex`.
+Direct Python entry point:
 
 ```bash
-./ai_job.bash --controller fable --worker fable /path/to/repo "Implement feature X."
-python3 start_job.py --controller opus --repo /path/to/repo --goal "..."
-export AI_LOOP_CONTROLLER=fable   # override the default when --controller is not given
+python3 start_job.py \
+  --repo /path/to/repo \
+  --goal "Implement the requested feature." \
+  --test-cmd "pytest -q" \
+  --granularity normal \
+  --controller opus \
+  --worker codex \
+  --max-iterations 50000 \
+  --wait
 ```
 
-`fable` and `opus` run the Claude CLI with `--model` only when the matching
-environment variable is set. If the variable is blank, the CLI default is used.
-`codex` runs `codex exec --sandbox read-only --output-last-message` and parses
-the decision JSON from the last agent message.
+Without `--wait`, submission returns immediately. `--timeout 0` waits indefinitely; a positive timeout limits only the foreground waiter, not the background job.
 
-## Task Sizing
-
-Task sizing follows the job's worker. With the `codex` worker, the controller
-plans many tiny tasklets (one narrow objective, one file cluster, short stop
-point). With `fable` or `opus` workers, the controller plans larger coherent
-tasks that may span several related files and include their own discovery and
-verification, cutting controller round-trips. The default job constraints and
-the worker prompt adjust accordingly.
-
-With `CODEX_BYPASS_SANDBOX=1` the Fable worker uses
-`--dangerously-skip-permissions` instead. Note the Claude CLI has no
-filesystem sandbox comparable to Codex's `workspace-write`; the Git worktree
-isolation is the main guardrail.
-
-By default Codex runs with:
+Inspect and operate jobs:
 
 ```bash
-codex exec --sandbox workspace-write
-```
-
-To bypass Codex sandboxing and approvals:
-
-```bash
-export CODEX_BYPASS_SANDBOX=1
-```
-
-That changes Codex execution to use:
-
-```bash
-codex exec --dangerously-bypass-approvals-and-sandbox
-```
-
-## User Guide
-
-1. Launch the GUI with `python3 ai_loop_gui.py` or use `./ai_gui.bash` for a themed launcher.
-2. Create jobs from the GUI or with `./ai_job.bash <repo> <goal>`. The loop stores the job in SQLite, creates a worktree by default, and queues the first planning request.
-3. Watch the job with the GUI status panels, `./ai_check_job.bash <job_id>`, or `./ai_watch_job.bash`. The task history, run history, and process logs all update from the durable database and per-job log files.
-4. Use `Resume Job` when you want to continue with new constraints or a corrected controller/worker choice. Use `Stop Job` to pause the processes, and `Finish Early` when you want to end the remaining workload and keep the current progress.
-5. Use `Fix It` when you want to run an extra diagnostic or repair command, `Clear Worktrees` when you need to clean generated worktrees, `Reset DB` when you want to keep the repository but clear job state, and `Full Reset` when you want a clean slate.
-
-## Loop Process Operations
-
-Normal jobs start their own Claude controller, Codex worker, and watcher. You do not need to start global loop processes before creating a job.
-
-Use the control script for status and emergency stop:
-
-```bash
+./ai_check_job.bash
+./ai_check_job.bash JOB_ID
+./ai_print_log.bash --job JOB_ID --limit 160
+./ai_watch_job.bash
+./ai_resume_job.bash JOB_ID
+python3 resume_job.py JOB_ID --granularity coarse --wait
+./ai_delete_job.bash JOB_ID
 ./ai_loopctl.bash status
 ./ai_loopctl.bash stop
 ```
 
-For legacy/manual debugging, each process can still be run in a separate terminal from this directory:
-
-```bash
-python claude_controller.py
-```
-
-```bash
-python codex_worker.py
-```
-
-```bash
-python watcher.py
-```
-
-The controller listens on `ai:claude:requests`.
-The worker listens on `ai:codex:tasks`.
-The watcher prints terminal events from `ai:done`, `ai:human`, and `ai:dead`.
-
-## Create a Generic Job
-
-```bash
-python start_job.py \
-  --repo /path/to/repo \
-  --goal "Implement the requested feature in small safe steps" \
-  --test-cmd "pytest -q" \
-  --constraint "Preserve public APIs unless the task requires changing them." \
-  --acceptance "The feature is documented where users would expect it." \
-  --max-iterations 50000 \
-  --base-ref HEAD \
-  --wait
-```
-
-With `--wait`, the command prints status updates until the job reaches `done`, `human_needed`, or `dead`, then prints inspect commands. It waits indefinitely by default; pass `--timeout <seconds>` with a positive value to impose a foreground wait limit. Omit `--wait` to submit the job asynchronously.
-
-By default, each ai-loop job gets its own controller, worker, and watcher. Active jobs can run concurrently because every job uses its own Redis consumer groups, PID directory, and process log directory. Set `AI_LOOP_SINGLE_ACTIVE_JOB=1` to restore the old single-active-job guard; with that guard enabled, `--allow-parallel` or `AI_LOOP_ALLOW_PARALLEL_JOBS=1` starts another job anyway.
-
-```bash
-./ai_check_job.bash
-./ai_watch_job.bash
-./ai_job.bash /path/to/repo "Second job"
-./ai_delete_job.bash [job-id]
-./ai_clear_db.bash --yes
-```
-
-By default this creates:
-
-- SQLite job state in `./ai_loop.sqlite3`
-- Git branch `ai/<job_id>`
-- Git worktree `../ai-runs/<job_id>`
-- Per-job PID files in `./run/jobs/<job_id>`
-- Per-job process logs in `./logs/jobs/<job_id>`
-- A `PLAN` request on `ai:claude:requests`
-
-To work directly in the repository instead of a worktree:
-
-```bash
-python start_job.py \
-  --repo /path/to/repo \
-  --goal "Make the requested change" \
-  --test-cmd "pytest -q" \
-  --no-worktree
-```
-
-Check whether a job exists in the system:
-
-```bash
-./ai_check_job.bash <job_id>
-```
-
-List all known jobs:
-
-```bash
-./ai_check_job.bash
-```
-
-Print the durable loop log from SQLite and tail process log files from `./logs`:
-
-```bash
-./ai_print_log.bash
-./ai_print_log.bash --job <job_id> --limit 50
-```
-
-Watch an active job periodically:
-
-```bash
-./ai_watch_job.bash
-```
-
-The watcher picks the newest `planning`, `queued`, `implementing`, or `fixing` job automatically, so a job that stays in `queued` for too long is still visible in the live task list.
-
-Resume a job that reached `human_needed` because the test command was wrong:
-
-```bash
-./ai_resume_job.bash
-./ai_resume_job.bash <job_id> \
-  --test-cmd "ctest --test-dir build/debug-macos -C Debug --output-on-failure" \
-  --wait
-```
-
-With no arguments, `./ai_resume_job.bash` resumes the newest `human_needed` job and sets `--max-iterations` to `50000`.
-Override that default with `AI_LOOP_RESUME_MAX_ITERATIONS`.
-With `--wait`, resume waits indefinitely by default; pass `--timeout <seconds>` with a positive value to impose a foreground wait limit.
-
-Resume a job with a corrected target path or goal:
-
-```bash
-./ai_resume_job.bash <job_id> \
-  --goal "Implement the requested feature under the intended target directory." \
-  --constraint "Do not modify unrelated packages or generated files." \
-  --acceptance "The implementation lives in the requested target area." \
-  --wait
-```
-
-This updates the stored job fields, marks the job as `planning`, and queues a new `PLAN` request.
-
-Clear run, decision, and event log rows, and truncate process log files, while keeping jobs and tasks:
+Cleanup commands:
 
 ```bash
 ./ai_clear_log.bash --dry-run
-./ai_clear_log.bash --yes
-```
-
-The process log files are created by `./ai_run_claude.bash`, `./ai_run_codex.bash`, and `./ai_run_watcher.bash`. Restart already-running workers with those wrappers to begin writing `./logs/*.log`. To wipe the entire job database, use `./ai_clear_db.bash --yes` instead. The GUI and watcher refresh their visible text only when the content actually changed, which keeps the task list responsive without repainting unchanged rows.
-
-Delete one job record from SQLite:
-
-```bash
-./ai_delete_job.bash [job-id]
-```
-
-This removes the durable job/task/run/decision rows for that job. If no job id is given, it deletes the newest active job (`planning`, `queued`, `implementing`, or `fixing`). It does not delete worktree folders; use `./ai_remove_worktrees.bash` for worktree cleanup.
-
-Reset the local loop by deleting active job records, clearing the database, and restarting the controller, worker, and watcher:
-
-```bash
-./ai_reset_loop.bash --dry-run
+./ai_clear_db.bash --yes
+./ai_remove_worktrees.bash
 ./ai_reset_loop.bash --yes
 ```
 
-## Loop Behavior
+Read each command's usage before destructive cleanup. Database deletion does not automatically remove worktrees, and worktree removal does not automatically delete job history unless the GUI `Full Reset` action is used.
 
-1. `start_job.py` creates a durable SQLite job record.
-2. It creates an isolated Git worktree unless `--no-worktree` is provided.
-3. It sends a `PLAN` request to `ai:claude:requests`.
-4. `claude_controller.py` asks Claude for one small first Codex task.
-5. The controller stores Claude's decision and sends one task to `ai:codex:tasks`.
-6. `codex_worker.py` runs `codex exec` in the job worktree.
-7. The worker runs the task test command, captures git status, changed files, diff stat, and diff.
-8. The worker stores a durable run and sends a `REVIEW` request to `ai:claude:requests`.
-9. Claude reviews state and returns `CONTINUE`, `REPAIR`, `DONE`, or `HUMAN_NEEDED`.
-10. Terminal outcomes are published to `ai:done`, `ai:human`, or `ai:dead`.
+## Validation-command inference
 
-Before creating a job, `start_job.py` commits current target-repo changes when needed so new worktrees include the user's latest files. The loop does not commit Codex task changes or merge branches automatically.
+When `--test-cmd auto` is used, ai-loop selects in this order:
 
-Project instruction files such as `AGENTS.md` are optional. When present and relevant, Claude and Codex should follow them. When absent, the loop should continue from the job goal, constraints, local code patterns, and tests instead of treating the missing file as a blocker.
+1. Visible CMake configure/build presets.
+2. Plain CMake configure and build.
+3. `npm test` for `package.json`.
+4. `pytest -q` for common Python project markers.
+5. `true` when no known validation system is detected.
 
-File-like paths mentioned in the job goal, constraints, or acceptance criteria are treated as possible live guidance files. On each PLAN/REVIEW, Claude receives refreshed content and modification times for existing referenced files in the worktree. On each task, Codex is told to re-read the current versions before working. This is generic and does not depend on a particular filename.
+Set an explicit command for production jobs when the inferred command does not cover the required behavior.
 
-Claude reviews more than task completion. It should reject or repair visible violations of project guidelines, local architecture, naming/style patterns, scope control, maintainability, proportional test coverage, and unrelated refactors.
+## Files and directories
 
-`HUMAN_NEEDED` is a last resort. Claude should first analyze the blocker, identify concrete solution paths, and create a `REPAIR` task whenever the loop can safely diagnose or fix the problem automatically. Such jobs are shown as `fixing` while the repair task is queued or running. The GUI also keeps the current task row visible in the live job list so you can see whether a task is still queued, running, or complete.
+- `controller.py`: planning, review, completion, promotion, estimates, and controller token waits.
+- `worker.py`: implementation CLI execution, worker token waits, validation, and Git snapshots.
+- `start_job.py`, `resume_job.py`: job lifecycle entry points.
+- `watcher.py`: terminal Redis event observer.
+- `ai_loop_gui.py`: Tkinter dashboard.
+- `ai_loop/db.py`: schema and durable state helpers.
+- `ai_loop/progress.py`: work/time estimate display.
+- `ai_loop/planning.py`: static plans and granularity policy.
+- `ai_loop/token_wait.py`: limit detection and replenishment-time parsing.
+- `ai_loop/notifications.py`: SMTP/sendmail terminal notifications.
+- `ai_loop/queues.py`: Redis Stream JSON helpers.
+- `ai_loop/recovery.py`: internal process recovery.
+- `ai_loop.sqlite3`: default database.
+- `../ai-runs/JOB_ID`: default isolated job worktree.
+- `run/jobs/JOB_ID`: PID and runtime marker files.
+- `logs/jobs/JOB_ID`: controller, worker, and watcher logs.
 
-Transient Claude CLI transport/service failures are retried indefinitely by the controller instead of emitting `HUMAN_NEEDED`. This covers connection resets, timeouts, overload/rate-limit responses, and similar temporary service failures. Configure the wait behavior with `AI_LOOP_CLAUDE_TRANSIENT_BACKOFF_SECONDS` (default `5`) and `AI_LOOP_CLAUDE_TRANSIENT_MAX_BACKOFF_SECONDS` (default `60`). Missing binaries, promotion conflicts, non-transient CLI failures, and real Claude `HUMAN_NEEDED` decisions still surface to the human stream.
+## Troubleshooting
 
-Executable scene or asset load errors such as `scene load failed: error=io_error` are treated as likely working-directory or asset-path issues first. Claude should ask Codex to reproduce from the repository/worktree root, compare the failing launch directory, inspect expected asset paths, and repair path resolution or launch documentation before considering `HUMAN_NEEDED`.
+### A task says queued
 
-The controller should split work into small tasklets: one narrow objective, one clear stop point, and no bundled audit-plus-implementation milestones. Restart the workers after changing prompt code so running processes pick up the new tasklet policy.
+Check the GUI child row or:
+
+```bash
+./ai_check_job.bash JOB_ID
+./ai_loopctl.bash status
+./ai_print_log.bash --job JOB_ID --limit 160
+```
+
+`queued / worker offline` means the database still has runnable work but no live worker. Resume the job after correcting the missing process or CLI issue.
+
+### The job is waiting for tokens
+
+This is not an error. The Status tab shows `waiting_until`. Keep the job process alive; it retries automatically after the recorded time plus one minute.
+
+### Email was not delivered
+
+Look for `email_notification_failed` in Recent events. Configure SMTP variables or install a local sendmail-compatible MTA. Test the account outside ai-loop if authentication or network policy is uncertain.
+
+### Redis is unavailable
+
+Verify `REDIS_URL`, run `redis-cli ping`, or use the GUI `Start Redis` button for localhost. SQLite retains the job state even if activation must be retried.
+
+### Promotion failed
+
+Successful worktree changes are copied back only if the target checkout has no conflicting local edits in those paths. Resolve the reported conflict manually, preserve both sides, and resume. ai-loop never resets or discards the target repository to force promotion.
+
+### GUI cannot start
+
+Run `python3 -m tkinter`. Install your platform's Tk package if it fails. To verify the rest of the system without a display, use the command-line entry points.
+
+## Safety notes
+
+- New jobs create a pre-job snapshot commit when the target checkout is dirty, then copy that checkout overlay into the isolated worktree.
+- Workers are instructed not to commit or merge.
+- Successful promotion refuses paths with local target-checkout conflicts.
+- `CODEX_BYPASS_SANDBOX=1` grants broad execution authority; use it only in a trusted environment.
+- Claude-based workers do not provide the same filesystem sandbox as Codex; worktree isolation is their primary boundary.
+
+For the detailed internal design, see `WORKER_SYSTEMS.md`.

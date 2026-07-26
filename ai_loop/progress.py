@@ -50,7 +50,7 @@ def heuristic_percent(
 
     active_credit = 0.5 if has_active_task and task_count > run_count else 0.0
     work_units = run_count + active_credit
-    percent = max(1, min(85, round(100 * work_units / (work_units + 25))))
+    percent = max(1, min(99, round(100 * work_units / (work_units + 25))))
     if run_count >= 5:
         percent = max(percent, 20)
     if run_count >= 20:
@@ -59,8 +59,6 @@ def heuristic_percent(
         percent = max(percent, 65)
     if run_count >= 150:
         percent = max(percent, 75)
-    if status in {"human_needed", "dead"}:
-        percent = min(percent, 85)
     return percent
 
 
@@ -76,12 +74,27 @@ def estimate_progress(
 ) -> tuple[int, int | None]:
     ensure_progress_table(conn)
     now = utc_now()
-    percent = heuristic_percent(
-        status=status,
-        run_count=run_count,
-        task_count=task_count,
-        has_active_task=has_active_task,
-    )
+    estimate_row = conn.execute(
+        """
+        SELECT estimated_completed_units, estimated_remaining_units,
+               estimated_remaining_seconds
+        FROM jobs WHERE id = ?
+        """,
+        (job_id,),
+    ).fetchone()
+    completed_units = int(estimate_row["estimated_completed_units"] or 0) if estimate_row else 0
+    remaining_units = int(estimate_row["estimated_remaining_units"] or 0) if estimate_row else 0
+    explicit_remaining = estimate_row["estimated_remaining_seconds"] if estimate_row else None
+    if completed_units + remaining_units > 0:
+        percent = round(100 * completed_units / (completed_units + remaining_units))
+        percent = max(1, min(99, percent))
+    else:
+        percent = heuristic_percent(
+            status=status,
+            run_count=run_count,
+            task_count=task_count,
+            has_active_task=has_active_task,
+        )
 
     if status == "done":
         conn.execute(
@@ -110,6 +123,30 @@ def estimate_progress(
         """,
         (job_id,),
     ).fetchone()
+
+    if explicit_remaining is not None:
+        if row is not None and int(row["last_percent"]) == percent and row["predicted_end_at"]:
+            predicted = parse_time(row["predicted_end_at"])
+            if predicted is not None:
+                return percent, max(0, round((predicted - now).total_seconds()))
+        remaining = max(0, int(explicit_remaining))
+        predicted = datetime.fromtimestamp(now.timestamp() + remaining, timezone.utc)
+        conn.execute(
+            """
+            INSERT INTO progress_estimates (
+                job_id, last_percent, last_progress_at, smoothed_rate,
+                predicted_end_at, updated_at
+            )
+            VALUES (?, ?, ?, NULL, ?, ?)
+            ON CONFLICT(job_id) DO UPDATE SET
+                last_percent = excluded.last_percent,
+                last_progress_at = excluded.last_progress_at,
+                predicted_end_at = excluded.predicted_end_at,
+                updated_at = excluded.updated_at
+            """,
+            (job_id, percent, format_time(now), format_time(predicted), format_time(now)),
+        )
+        return percent, remaining
 
     if row is None:
         start = parse_time(created_at) or now

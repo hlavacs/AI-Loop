@@ -24,7 +24,10 @@ from ai_loop.config import (
     load_settings,
 )
 from ai_loop.queues import consumer_name, decode, ensure_group, redis_client, read_group, xadd_json
+from ai_loop.notifications import terminal_email
+from ai_loop.planning import normalize_granularity
 from ai_loop.recovery import attempt_auto_recovery
+from ai_loop.token_wait import is_token_limit, replenishment_time, wait_until
 
 
 GROUP = "claude-controllers"
@@ -132,6 +135,24 @@ def validate_decision(decision: dict[str, Any]) -> None:
         raise ValueError("decision.reason must be a string")
     if not isinstance(decision.get("history_summary"), str):
         raise ValueError("decision.history_summary must be a string")
+    progress = decision.get("progress")
+    if progress is None:
+        progress = {
+            "completed_work_units": 0,
+            "remaining_work_units": 1,
+            "remaining_minutes": None,
+        }
+        decision["progress"] = progress
+    if not isinstance(progress, dict):
+        raise ValueError("decision.progress must be an object")
+    for key in ("completed_work_units", "remaining_work_units"):
+        if not isinstance(progress.get(key), int) or progress[key] < 0:
+            raise ValueError(f"decision.progress.{key} must be a non-negative integer")
+    remaining_minutes = progress.get("remaining_minutes")
+    if remaining_minutes is not None and (
+        not isinstance(remaining_minutes, int) or remaining_minutes < 0
+    ):
+        raise ValueError("decision.progress.remaining_minutes must be null or a non-negative integer")
     if action in {"CONTINUE", "REPAIR"}:
         next_task = decision.get("next_task")
         if not isinstance(next_task, dict):
@@ -174,7 +195,7 @@ def claude_transient_retry_delay(attempt: int) -> float:
     return min(delay, CLAUDE_TRANSIENT_RETRY_MAX_BACKOFF_SECONDS)
 
 
-def json_remake_prompt(original_prompt: str, invalid_output: str, error: Exception, sizing: str = "small") -> str:
+def json_remake_prompt(original_prompt: str, invalid_output: str, error: Exception, sizing: str = "normal") -> str:
     return f"""Your previous response could not be accepted because it was not valid decision JSON.
 
 JSON/parser/schema error:
@@ -289,7 +310,7 @@ def refreshed_instruction_files(job: dict[str, Any], task: dict[str, Any] | None
     return snapshots
 
 
-def run_claude(claude_bin: str, prompt: str, model: str = "", sizing: str = "small") -> dict[str, Any]:
+def run_claude(claude_bin: str, prompt: str, model: str = "", sizing: str = "normal") -> dict[str, Any]:
     if shutil.which(claude_bin) is None:
         return {
             "action": "HUMAN_NEEDED",
@@ -329,6 +350,8 @@ def run_claude(claude_bin: str, prompt: str, model: str = "", sizing: str = "sma
                 output = (proc.stdout + "\n" + proc.stderr).strip()
                 last_output = output
                 if proc.returncode == 0:
+                    break
+                if is_token_limit(output):
                     break
                 if not is_transient_claude_cli_failure(output):
                     break
@@ -373,7 +396,7 @@ def run_claude(claude_bin: str, prompt: str, model: str = "", sizing: str = "sma
     )
 
 
-def run_codex_controller(codex_bin: str, prompt: str, workdir: str, model: str = "", sizing: str = "small") -> dict[str, Any]:
+def run_codex_controller(codex_bin: str, prompt: str, workdir: str, model: str = "", sizing: str = "normal") -> dict[str, Any]:
     if shutil.which(codex_bin) is None:
         return {
             "action": "HUMAN_NEEDED",
@@ -446,7 +469,7 @@ def run_codex_controller(codex_bin: str, prompt: str, workdir: str, model: str =
     )
 
 
-def run_gemini_controller(gemini_bin: str, prompt: str, workdir: str, model: str = "", sizing: str = "small") -> dict[str, Any]:
+def run_gemini_controller(gemini_bin: str, prompt: str, workdir: str, model: str = "", sizing: str = "normal") -> dict[str, Any]:
     if shutil.which(gemini_bin) is None:
         return {
             "action": "HUMAN_NEEDED",
@@ -512,52 +535,96 @@ def job_controller(settings, job: dict[str, Any]) -> str:
 
 
 def controller_decision(settings, job: dict[str, Any], prompt: str) -> dict[str, Any]:
-    controller = job_controller(settings, job)
-    sizing = job_sizing(job)
-    if controller == "codex":
-        return run_codex_controller(settings.codex_bin, prompt, str(job["worktree_path"]), settings.codex_model, sizing)
-    if controller == "gemini":
-        return run_gemini_controller(settings.gemini_bin, prompt, str(job["worktree_path"]), settings.gemini_model, sizing)
-    if controller == "fable":
-        model = settings.fable_model
-    elif controller == "opus":
-        model = settings.opus_model
-    else:
-        model = settings.controller_model
-    return run_claude(settings.claude_bin, prompt, model, sizing)
+    while True:
+        controller = job_controller(settings, job)
+        sizing = job_sizing(job)
+        if controller == "codex":
+            decision = run_codex_controller(
+                settings.codex_bin,
+                prompt,
+                str(job["worktree_path"]),
+                settings.codex_model,
+                sizing,
+            )
+        elif controller == "gemini":
+            decision = run_gemini_controller(
+                settings.gemini_bin,
+                prompt,
+                str(job["worktree_path"]),
+                settings.gemini_model,
+                sizing,
+            )
+        else:
+            if controller == "fable":
+                model = settings.fable_model
+            elif controller == "opus":
+                model = settings.opus_model
+            else:
+                model = settings.controller_model
+            decision = run_claude(settings.claude_bin, prompt, model, sizing)
 
+        reason = str(decision.get("reason") or "")
+        retry_at = replenishment_time(reason)
+        if decision.get("action") != "HUMAN_NEEDED" or retry_at is None:
+            return decision
 
-CAPABLE_WORKERS = {"fable", "opus", "gemini"}
-
-
-def worker_sizing(worker: str) -> str:
-    return "large" if worker in CAPABLE_WORKERS else "small"
+        waiting_until = retry_at.isoformat(timespec="seconds")
+        with db.transaction(settings.db_path) as conn:
+            db.set_waiting_for_tokens(conn, str(job["id"]), waiting_until)
+            db.add_event(
+                conn,
+                job_id=str(job["id"]),
+                kind="waiting_for_tokens",
+                payload={"role": "controller", "waiting_until": waiting_until},
+            )
+        print(f"job {job['id']}: waiting for controller tokens until {waiting_until}")
+        wait_until(
+            retry_at,
+            on_tick=lambda remaining: print(
+                f"job {job['id']}: controller token wait, {remaining}s remaining"
+            ),
+        )
+        with db.transaction(settings.db_path) as conn:
+            db.set_waiting_for_tokens(conn, str(job["id"]), None, resume_status="planning")
+            db.add_event(
+                conn,
+                job_id=str(job["id"]),
+                kind="token_wait_finished",
+                payload={"role": "controller", "waiting_until": waiting_until},
+            )
+            job = db.get_job(conn, str(job["id"]))
 
 
 def job_sizing(job: dict[str, Any]) -> str:
-    return worker_sizing(str(job.get("worker") or "codex").strip().lower())
+    return normalize_granularity(str(job.get("granularity") or "normal"))
 
 
 def sizing_rules(sizing: str) -> str:
-    if sizing == "large":
-        return """- The worker is a highly capable coding agent. Prefer coherent, self-contained tasks over micro-steps.
-- A next_task should have one clear objective and a testable stop point; it may span several related files.
-- Group discovery, scaffolding, implementation, and verification into one task when they serve the same objective; do not bundle unrelated objectives.
-- Split work only at natural boundaries such as independent features or risky refactors, not per file or per function.
-- Keep next_task.acceptance provable by the test command in one run."""
-    return """- Prefer more tasklets over fewer broad tasks. Each next_task should be the smallest independently useful step.
-- A next_task must have one concrete objective, one primary file or tightly related file cluster, and a clear stop point.
-- Do not combine discovery, scaffolding, implementation, broad refactoring, and full verification in one task unless the change is truly trivial.
-- If the next useful work has multiple parts, return only the first tasklet now and leave the rest for later CONTINUE decisions.
-- Keep next_task.acceptance narrow enough that the worker can prove it in one short run."""
+    if sizing == "coarse":
+        return """- Minimize controller round trips with a small number of substantial, coherent tasks.
+- Combine related discovery, implementation, documentation, and verification in one task when they serve the same outcome.
+- Split only at genuine architecture, dependency, or risk boundaries; never split merely per file or function.
+- Maintain the same quality, reviewability, and test coverage as smaller tasks."""
+    if sizing == "fine":
+        return """- Prefer focused tasklets so the controller retains close control.
+- Give each tasklet one narrow objective, one primary file or tightly related file cluster, and a clear stop point.
+- Split at natural behavior boundaries and keep acceptance provable in a short run."""
+    return """- Prefer medium-sized coherent tasks with one outcome and a testable stop point.
+- Group closely related discovery and implementation, but split independent features or risky migrations.
+- Keep acceptance provable in one worker run without turning each file into a separate task."""
 
 
-def schema_text(sizing: str = "small") -> str:
+def schema_text(sizing: str = "normal") -> str:
     return """Return JSON only with this schema:
 {
   "action": "CONTINUE | REPAIR | DONE | HUMAN_NEEDED",
   "reason": "string",
   "history_summary": "string",
+  "progress": {
+    "completed_work_units": 0,
+    "remaining_work_units": 1,
+    "remaining_minutes": 30
+  },
   "next_task": {
     "goal": "string",
     "constraints": ["string"],
@@ -568,6 +635,7 @@ def schema_text(sizing: str = "small") -> str:
 
 Rules:
 - next_task is required for CONTINUE and REPAIR.
+- progress is required for every action. Estimate logical work units already completed, units still remaining, and remaining wall-clock minutes. Keep the work-unit scale consistent with earlier decisions so the estimate remains comparable. Use null only when time cannot yet be estimated.
 - You are controller/planner/reviewer only, never a code editor.
 """ + sizing_rules(sizing) + """
 - Write next_task.goal as a specific imperative, not a project summary. Name the exact directory, file, symbol, or test target when known.
@@ -593,17 +661,10 @@ Rules:
 def plan_prompt(job: dict[str, Any]) -> str:
     instruction_files = refreshed_instruction_files(job)
     sizing = job_sizing(job)
-    if sizing == "large":
-        intro = "Create exactly one well-scoped first task for this job."
-        tail = """For PLAN, choose action CONTINUE unless the job is impossible or requires a human before any code work.
-The next_task may be a substantial, coherent unit of work: one clear objective, a testable stop point, including any discovery it needs.
-Preserve the job's constraints and acceptance criteria, and keep the task's own acceptance provable by the test command."""
-    else:
-        intro = "Create exactly one tiny first worker tasklet for this job."
-        tail = """For PLAN, choose action CONTINUE unless the job is impossible or requires a human before any code work.
-The next_task must be smaller than a normal development task: one tasklet, one narrow output, then stop.
-If discovery is needed, make the first tasklet discovery-only or scaffold-only; do not ask for a broad audit plus implementation.
-Preserve the job's constraints and acceptance criteria, but narrow the tasklet's own acceptance to what this one small step can prove."""
+    intro = f"Create exactly one {sizing}-granularity first task for this job."
+    tail = """For PLAN, choose action CONTINUE unless the job is impossible or requires a human before any code work.
+Use the immutable overall plan as milestone guidance; do not rewrite or replace it.
+Preserve the job's constraints and acceptance criteria, and keep task acceptance provable by the test command."""
     return f"""You are the controller/planner in a generic continuous development loop.
 
 {intro}
@@ -633,13 +694,12 @@ def review_prompt(job: dict[str, Any], task: dict[str, Any], run: dict[str, Any]
         },
     }
     sizing = job_sizing(job)
-    if sizing == "large":
-        guidance = """Review the worker output, test output, git diff, and durable job state. Decide the next loop action.
-When continuing, send the worker the next coherent task: one clear objective with a testable stop point, grouping related changes rather than splitting them into micro-steps."""
-    else:
-        guidance = """Review the worker output, test output, git diff, and durable job state. Decide the next loop action.
-When continuing, send the worker the next smallest tasklet, not the next broad milestone.
-Prefer several precise CONTINUE tasklets over one large mixed task."""
+    guidance = f"""Review the worker output, test output, git diff, and durable job state. Decide the next loop action.
+When continuing, create the next {sizing}-granularity task according to the sizing rules.
+The immutable overall plan is milestone guidance and must not be rewritten."""
+    if job.get("finish_requested"):
+        guidance += """
+Finish-soon mode is active. Drop optional polish and speculative follow-up work. If the core goal and acceptance criteria are met, return DONE now; otherwise create at most one consolidated final task containing only the work required for acceptance."""
     return f"""You are the controller/reviewer in a generic continuous development loop.
 
 {guidance}
@@ -830,6 +890,21 @@ def finish_job(settings, client, job_id: str, stream: str, status: str, decision
         db.add_event(conn, job_id=job_id, kind=status, payload=payload)
     xadd_json(client, stream, "event", payload)
     print(f"job {job_id}: {status} - {decision['reason']}")
+    notify_terminal(settings, job_id, status, str(decision["reason"]))
+
+
+def notify_terminal(settings, job_id: str, status: str, reason: str) -> None:
+    with db.transaction(settings.db_path) as conn:
+        job = db.get_job(conn, job_id)
+    sent, detail = terminal_email(settings, job=job, status=status, reason=reason)
+    with db.transaction(settings.db_path) as conn:
+        db.add_event(
+            conn,
+            job_id=job_id,
+            kind="email_notification_sent" if sent else "email_notification_failed",
+            payload={"status": status, "recipient": settings.notify_email, "detail": detail},
+        )
+    print(f"job {job_id}: email notification {'sent' if sent else 'failed'} - {detail}")
 
 
 def finish_done_job(settings, client, job: dict[str, Any], decision: dict[str, Any]) -> None:
@@ -861,6 +936,7 @@ def finish_done_job(settings, client, job: dict[str, Any], decision: dict[str, A
         db.add_event(conn, job_id=job["id"], kind="done", payload=done_payload)
     xadd_json(client, DONE_STREAM, "event", done_payload)
     print(f"job {job['id']}: done - {decision['reason']}")
+    notify_terminal(settings, str(job["id"]), "done", str(decision["reason"]))
     if promotion["promoted"]:
         print(f"job {job['id']}: promoted {len(promotion['files'])} changed files to {job['repo_path']}")
 
@@ -910,6 +986,15 @@ def handle_request(settings, client, request: dict[str, Any]) -> None:
             kind="claude_decision",
             payload={"request_type": request_type, "action": decision["action"], "reason": decision["reason"]},
         )
+        progress = decision["progress"]
+        remaining_minutes = progress.get("remaining_minutes")
+        db.update_job_estimate(
+            conn,
+            job_id,
+            completed_units=int(progress["completed_work_units"]),
+            remaining_units=int(progress["remaining_work_units"]),
+            remaining_seconds=None if remaining_minutes is None else int(remaining_minutes) * 60,
+        )
 
     action = decision["action"]
     if action in {"CONTINUE", "REPAIR"}:
@@ -937,6 +1022,8 @@ def record_dead(settings, client, job_id: str | None, payload: dict[str, Any]) -
         if job_id:
             db.update_job_status(conn, job_id, "dead")
     xadd_json(client, DEAD_STREAM, "event", payload)
+    if job_id:
+        notify_terminal(settings, job_id, "dead", str(payload.get("error") or payload))
 
 
 def main() -> int:
@@ -948,7 +1035,7 @@ def main() -> int:
     ensure_group(client, CLAUDE_REQUEST_STREAM, group, start_id="$" if job_scope else "0")
     consumer = consumer_name("claude")
 
-    print("Claude controller started")
+    print("AI loop controller started")
     print(f"db: {settings.db_path}")
     print(f"redis: {settings.redis_url}")
     if job_scope:
@@ -988,11 +1075,11 @@ def main() -> int:
                     return 0
             except Exception as exc:
                 print(f"controller error: {exc}")
-                if attempt_auto_recovery(settings, job_id, "claude_controller", repr(exc), fields):
+                if attempt_auto_recovery(settings, job_id, "controller", repr(exc), fields):
                     client.xack(CLAUDE_REQUEST_STREAM, group, message_id)
                     print(f"job {job_id}: auto recovery launched; Claude controller exiting")
                     return 0
-                payload = {"where": "claude_controller", "error": repr(exc), "fields": fields}
+                payload = {"where": "controller", "error": repr(exc), "fields": fields}
                 try:
                     record_dead(settings, client, job_id, payload)
                     client.xack(CLAUDE_REQUEST_STREAM, group, message_id)

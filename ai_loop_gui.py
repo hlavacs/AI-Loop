@@ -95,13 +95,17 @@ from ai_loop.config import (
     normalize_worker,
 )
 from ai_loop.progress import estimate_progress
+from ai_loop.planning import (
+    GRANULARITIES,
+    build_static_plan,
+    granularity_constraints,
+    normalize_granularity,
+    replace_granularity_constraints,
+)
 from ai_loop.queues import ensure_group, redis_client, xadd_json
 from start_job import (
-    CAPABLE_WORKERS,
     COMMON_CONSTRAINTS,
     DEFAULT_ACCEPTANCE,
-    LARGE_TASK_CONSTRAINTS,
-    SMALL_TASK_CONSTRAINTS,
     active_jobs,
     copy_checkout_overlay,
     create_pre_job_commit,
@@ -111,14 +115,15 @@ from start_job import (
 )
 
 
-ACTIVE_STATUSES = {"planning", "queued", "implementing", "fixing"}
+ACTIVE_STATUSES = {"planning", "queued", "implementing", "fixing", "waiting_tokens"}
 TERMINAL_STATUSES = {"done", "human_needed", "dead"}
-PROCESS_NAMES = ("claude_controller", "codex_worker", "watcher")
+PROCESS_NAMES = ("controller", "worker", "watcher")
 PROCESS_LABELS = {
-    "claude_controller": "controller",
-    "codex_worker": "worker",
+    "controller": "controller",
+    "worker": "worker",
     "watcher": "watcher",
 }
+LEGACY_PROCESS_NAMES = {"controller": "claude_controller", "worker": "codex_worker"}
 PROCESS_KEYS_BY_LABEL = {label: name for name, label in PROCESS_LABELS.items()}
 LOG_LABELS = tuple(PROCESS_LABELS[name] for name in PROCESS_NAMES)
 JOB_STATUS_COLORS = {
@@ -126,6 +131,7 @@ JOB_STATUS_COLORS = {
     "queued": "#f2f2f2",
     "implementing": "#ffe6bf",
     "fixing": "#fff4db",
+    "waiting_tokens": "#e7def8",
     "human_needed": "#ffe1df",
     "dead": "#f2d3d3",
     "done": "#dff3df",
@@ -144,14 +150,14 @@ class HoverTooltip:
     def attach(self, widget: tk.Widget, text: str) -> None:
         if not text:
             return
+        setattr(widget, "_ai_loop_help_attached", True)
         widget.bind("<Enter>", lambda _event, w=widget, t=text: self._schedule_show(w, t), add="+")
         widget.bind("<Leave>", lambda _event: self.hide(), add="+")
         widget.bind("<ButtonPress>", lambda _event: self.hide(), add="+")
-        widget.bind("<Destroy>", lambda _event: self.hide(), add="+")
 
     def _schedule_show(self, widget: tk.Widget, text: str) -> None:
         self.hide()
-        self.after_id = widget.after(self.delay_ms, lambda: self._show(widget, text))
+        self.after_id = self.root.after(self.delay_ms, lambda: self._show(widget, text))
 
     def _show(self, widget: tk.Widget, text: str) -> None:
         self.after_id = None
@@ -175,7 +181,7 @@ class HoverTooltip:
             borderwidth=1,
             bg="#fff9d8",
             fg="#202020",
-            font=("TkDefaultFont", 10),
+            font=("TkDefaultFont", 11),
         )
         label.pack(fill="both", expand=True)
         x, y = widget.winfo_pointerxy()
@@ -299,24 +305,47 @@ class LoopBackend:
                 item["task_count"] = int(row["task_count"])
                 item["run_count"] = int(row["run_count"])
                 task = db.latest_task(conn, str(row["id"]))
+                status = str(row["status"])
+                if task is not None and status in ACTIVE_STATUSES:
+                    task_status = str(task["status"])
+                    if task_status == "running":
+                        expected = "fixing" if str(task["created_by"]) == "claude:repair" else "implementing"
+                    elif task_status == "waiting_tokens":
+                        expected = "waiting_tokens"
+                    elif task_status == "queued":
+                        expected = "fixing" if str(task["created_by"]) == "claude:repair" else "queued"
+                    else:
+                        expected = status
+                    if expected != status:
+                        db.update_job_status(conn, str(row["id"]), expected)
+                        status = expected
+                        item["status"] = expected
                 percent, remaining = estimate_progress(
                     conn,
                     job_id=str(row["id"]),
-                    status=str(row["status"]),
+                    status=status,
                     created_at=str(row["created_at"]),
                     run_count=int(row["run_count"]),
                     task_count=int(row["task_count"]),
-                    has_active_task=task is not None and str(task["status"]) in {"queued", "running"},
+                    has_active_task=task is not None and str(task["status"]) in {"queued", "running", "waiting_tokens"},
                 )
                 item["percent"] = percent
                 item["remaining"] = remaining
                 item["latest_task"] = task
+                worker_info = self.process_status(str(row["id"]))["worker"]
+                item["status_display"] = (
+                    "queued / worker offline"
+                    if status == "queued" and not worker_info["running"]
+                    else status
+                )
                 result.append(item)
             return result
 
     def job_details(self, job_id: str) -> dict[str, Any]:
         with db.transaction(self.settings.db_path) as conn:
             job = db.get_job(conn, job_id)
+            task_count = int(conn.execute("SELECT COUNT(*) FROM tasks WHERE job_id = ?", (job_id,)).fetchone()[0])
+            run_count = int(conn.execute("SELECT COUNT(*) FROM runs WHERE job_id = ?", (job_id,)).fetchone()[0])
             tasks = [
                 db.row_to_task(row)
                 for row in conn.execute(
@@ -345,6 +374,16 @@ class LoopBackend:
                     (job_id,),
                 )
             ]
+            latest = db.latest_task(conn, job_id)
+            percent, remaining = estimate_progress(
+                conn,
+                job_id=job_id,
+                status=str(job["status"]),
+                created_at=str(job["created_at"]),
+                run_count=run_count,
+                task_count=task_count,
+                has_active_task=latest is not None and str(latest["status"]) in {"queued", "running", "waiting_tokens"},
+            )
             return {
                 "job": job,
                 "tasks": tasks,
@@ -352,6 +391,10 @@ class LoopBackend:
                 "decisions": decisions,
                 "events": events,
                 "processes": self.process_status(job_id),
+                "task_count": task_count,
+                "run_count": run_count,
+                "percent": percent,
+                "remaining": remaining,
             }
 
     def process_status(self, job_id: str) -> dict[str, dict[str, Any]]:
@@ -359,6 +402,8 @@ class LoopBackend:
         status: dict[str, dict[str, Any]] = {}
         for name in PROCESS_NAMES:
             pid_file = runtime_dir / f"{name}.pid"
+            if not pid_file.exists() and name in LEGACY_PROCESS_NAMES:
+                pid_file = runtime_dir / f"{LEGACY_PROCESS_NAMES[name]}.pid"
             pid = self.read_pid(pid_file)
             status[name] = {
                 "pid": pid,
@@ -424,13 +469,16 @@ class LoopBackend:
 
         env = self.env_for_processes(job_id, models)
         scripts = {
-            "claude_controller": "claude_controller.py",
-            "codex_worker": "codex_worker.py",
+            "controller": "controller.py",
+            "worker": "worker.py",
             "watcher": "watcher.py",
         }
         pids: dict[str, int] = {}
         for name, script in scripts.items():
-            old_pid = self.read_pid(runtime_dir / f"{name}.pid")
+            pid_file = runtime_dir / f"{name}.pid"
+            old_pid = self.read_pid(pid_file)
+            if not self.pid_running(old_pid) and name in LEGACY_PROCESS_NAMES:
+                old_pid = self.read_pid(runtime_dir / f"{LEGACY_PROCESS_NAMES[name]}.pid")
             if self.pid_running(old_pid):
                 pids[name] = int(old_pid)
                 continue
@@ -449,7 +497,7 @@ class LoopBackend:
             proc = subprocess.Popen([sys.executable, script], **kwargs)
             log_file.close()
             pids[name] = proc.pid
-            (runtime_dir / f"{name}.pid").write_text(f"{proc.pid}\n", encoding="utf-8")
+            pid_file.write_text(f"{proc.pid}\n", encoding="utf-8")
         return pids
 
     def stop_processes(self, job_id: str) -> dict[str, str]:
@@ -457,6 +505,8 @@ class LoopBackend:
         results: dict[str, str] = {}
         for name in PROCESS_NAMES:
             pid_file = runtime_dir / f"{name}.pid"
+            if not pid_file.exists() and name in LEGACY_PROCESS_NAMES:
+                pid_file = runtime_dir / f"{LEGACY_PROCESS_NAMES[name]}.pid"
             pid = self.read_pid(pid_file)
             if not pid:
                 results[name] = "no pid"
@@ -511,6 +561,7 @@ class LoopBackend:
         allow_parallel: bool,
         worker: str,
         controller: str,
+        granularity: str,
         models: ModelDefaults,
     ) -> str:
         repo = repo.expanduser().resolve()
@@ -518,6 +569,7 @@ class LoopBackend:
             raise ValueError(f"repo does not exist: {repo}")
         worker = normalize_worker(worker)
         controller = normalize_controller(controller)
+        granularity = normalize_granularity(granularity)
         detected_test_cmd = detect_test_cmd(repo, test_cmd)
 
         current_active = active_jobs(self.settings.db_path)
@@ -525,9 +577,9 @@ class LoopBackend:
             raise RuntimeError("another job is active; enable Allow parallel to create a new one anyway")
 
         job_id = timestamp_id("J")
-        sizing_constraints = LARGE_TASK_CONSTRAINTS if worker in CAPABLE_WORKERS else SMALL_TASK_CONSTRAINTS
-        all_constraints = [*sizing_constraints, *COMMON_CONSTRAINTS, *constraints]
+        all_constraints = [*granularity_constraints(granularity), *COMMON_CONSTRAINTS, *constraints]
         all_acceptance = [*DEFAULT_ACCEPTANCE, *acceptance]
+        plan = build_static_plan(goal, all_acceptance, detected_test_cmd)
         worktree = repo
         branch: str | None = None
         overlay_files: list[str] = []
@@ -554,6 +606,8 @@ class LoopBackend:
                 use_worktree=use_worktree,
                 worker=worker,
                 controller=controller,
+                granularity=granularity,
+                plan=plan,
             )
             db.add_event(
                 conn,
@@ -564,13 +618,15 @@ class LoopBackend:
                     "worktree_path": str(worktree),
                     "worker": worker,
                     "controller": controller,
+                    "granularity": granularity,
+                    "plan": plan,
                     "pre_job_commit": pre_job_commit,
                     "checkout_overlay_files": overlay_files,
                 },
             )
 
-        self.queue_plan(job_id)
         pids = self.launch_processes(job_id, models)
+        self.queue_plan(job_id)
         with db.transaction(self.settings.db_path) as conn:
             db.add_event(
                 conn,
@@ -586,6 +642,7 @@ class LoopBackend:
         *,
         worker: str | None,
         controller: str | None,
+        granularity: str | None,
         models: ModelDefaults,
         extra_constraint: str = "",
         extra_acceptance: str = "",
@@ -600,16 +657,19 @@ class LoopBackend:
                 acceptance.append(extra_acceptance.strip())
             new_worker = normalize_worker(worker or str(job["worker"]))
             new_controller = normalize_controller(controller or str(job["controller"]))
+            new_granularity = normalize_granularity(granularity or str(job["granularity"]))
+            constraints = replace_granularity_constraints(constraints, new_granularity)
             conn.execute(
                 """
                 UPDATE jobs
-                SET worker = ?, controller = ?, constraints_json = ?, acceptance_json = ?,
+                SET worker = ?, controller = ?, granularity = ?, constraints_json = ?, acceptance_json = ?,
                     status = 'planning', updated_at = ?
                 WHERE id = ?
                 """,
                 (
                     new_worker,
                     new_controller,
+                    new_granularity,
                     db.to_json(constraints),
                     db.to_json(acceptance),
                     db.utc_now(),
@@ -620,7 +680,7 @@ class LoopBackend:
                 conn,
                 job_id=job_id,
                 kind="job_resumed_from_gui",
-                payload={"worker": new_worker, "controller": new_controller},
+                payload={"worker": new_worker, "controller": new_controller, "granularity": new_granularity},
             )
         self.queue_plan(job_id)
         self.launch_processes(job_id, models)
@@ -765,6 +825,30 @@ class LoopBackend:
             )
             db.add_event(conn, job_id=job_id, kind="job_finished_from_gui", payload={})
 
+    def request_finish_soon(self, job_id: str) -> None:
+        with db.transaction(self.settings.db_path) as conn:
+            job = db.get_job(conn, job_id)
+            if str(job["status"]) in TERMINAL_STATUSES:
+                raise RuntimeError(f"job is already {job['status']}")
+            conn.execute(
+                """
+                UPDATE jobs
+                SET finish_requested = 1, granularity = 'coarse', constraints_json = ?, updated_at = ?
+                WHERE id = ?
+                """,
+                (
+                    db.to_json(replace_granularity_constraints(list(job["constraints"]), "coarse")),
+                    db.utc_now(),
+                    job_id,
+                ),
+            )
+            db.add_event(
+                conn,
+                job_id=job_id,
+                kind="finish_soon_requested",
+                payload={"previous_granularity": job["granularity"]},
+            )
+
     def fix_job_with_binary(self, job_id: str, binary: str, models: ModelDefaults) -> subprocess.CompletedProcess[str]:
         details = self.job_details(job_id)
         job = details["job"]
@@ -815,6 +899,8 @@ Diagnose the immediate blocker, make the smallest safe fix, run relevant syntax/
 
     def log_text(self, job_id: str, name: str, max_bytes: int = 60000) -> str:
         path = self.log_dir(job_id) / f"{name}.log"
+        if not path.is_file() and name in LEGACY_PROCESS_NAMES:
+            path = self.log_dir(job_id) / f"{LEGACY_PROCESS_NAMES[name]}.log"
         if not path.is_file():
             return f"No log file: {path}"
         size = path.stat().st_size
@@ -846,6 +932,7 @@ class AiLoopGui(tk.Tk):
         self.auto_refresh = tk.BooleanVar(value=True)
         self.status_var = tk.StringVar(value=f"DB: {self.backend.settings.db_path}")
         self._build_ui()
+        self.install_default_help(self)
         self.refresh_all()
         self.after(1500, self._auto_refresh_tick)
 
@@ -870,32 +957,59 @@ class AiLoopGui(tk.Tk):
 
         toolbar = ttk.Frame(self, padding=(8, 6))
         toolbar.grid(row=0, column=0, sticky="ew")
-        self.help_widget(ttk.Button(toolbar, text="Refresh", command=self.refresh_all), "Reload the full job list, the selected job details, the logs, and the live process snapshot.").grid(row=0, column=0, padx=(0, 6))
-        self.help_widget(ttk.Checkbutton(toolbar, text="Auto refresh", variable=self.auto_refresh), "Keep refreshing the dashboard automatically so changing task and job states stay current.").grid(row=0, column=1, padx=(0, 14))
-        self.help_widget(ttk.Button(toolbar, text="Start Redis", command=self.start_redis), "Start a local Redis server for the loop when the configured Redis URL points to localhost.").grid(row=0, column=2, padx=(0, 6))
-        self.help_widget(ttk.Button(toolbar, text="Status", command=self.explain_selected_status), "Explain the selected job in plain language, including the latest task, run, and reason for the current state.").grid(row=0, column=3, padx=(0, 6))
-        self.help_widget(ttk.Button(toolbar, text="Stop Job", command=self.stop_selected_job), "Stop the controller, worker, and watcher for the selected job without deleting its records.").grid(row=0, column=4, padx=(0, 6))
-        self.help_widget(ttk.Button(toolbar, text="Finish Early", command=self.finish_selected_job), "End the job now, preserve the current worktree state, and stop spending iterations on the remaining backlog.").grid(row=0, column=5, padx=(0, 6))
-        self.help_widget(ttk.Button(toolbar, text="Resume Job", command=self.resume_selected_job), "Resume the selected job with the current controller, worker, and optional extra constraints or acceptance criteria.").grid(row=0, column=6, padx=(0, 6))
-        self.help_widget(ttk.Button(toolbar, text="Wait/Notify", command=self.watch_selected_job), "Mark this job as the one to watch closely in the dashboard status line.").grid(row=0, column=7, padx=(0, 6))
-        self.help_widget(ttk.Button(toolbar, text="Delete Job", command=self.delete_selected_job), "Remove the selected job record and its dependent task, run, decision, and event rows from SQLite.").grid(row=0, column=8, padx=(0, 6))
-        self.help_widget(ttk.Button(toolbar, text="Clear Worktrees", command=self.clear_worktrees), "Remove registered ai-loop worktrees and leftover folders without deleting job history.").grid(row=0, column=9, padx=(0, 6))
-        self.help_widget(ttk.Button(toolbar, text="Reset DB", command=self.reset_loop), "Stop loop processes and clear the durable SQLite job database while keeping the repository tree intact.").grid(row=0, column=10, padx=(0, 6))
-        self.help_widget(ttk.Button(toolbar, text="Full Reset", command=self.full_reset), "Stop everything, clear the database, and remove generated worktrees for a clean restart.").grid(row=0, column=11, padx=(0, 14))
-        self.help_widget(ttk.Button(toolbar, text="Hibernation", command=self.open_hibernation_window), "Open the macOS hibernation helper to inspect or change pmset hibernatemode.").grid(row=0, column=12, padx=(0, 14))
-        toolbar.columnconfigure(0, weight=0)
-        toolbar.columnconfigure(12, weight=1)
-        ttk.Label(toolbar, text="Status:").grid(row=1, column=0, sticky="w", pady=(6, 0))
-        status_label = self.help_widget(ttk.Label(toolbar, textvariable=self.status_var, anchor="w"), "Live loop status, including Redis connectivity, job counts, and running or stale processes.")
-        status_label.grid(row=1, column=1, columnspan=12, sticky="ew", pady=(6, 0))
+        self.help_widget(ttk.Button(toolbar, text="Refresh", command=self.refresh_all), "Reload the full job list, selected-job details, logs, and live process snapshot.").grid(row=0, column=0, padx=(0, 6))
+        self.help_widget(ttk.Checkbutton(toolbar, text="Auto refresh", variable=self.auto_refresh), "Keep refreshing the dashboard automatically so changing task and job states stay current.").grid(row=0, column=1, padx=(0, 12))
+        self.help_widget(ttk.Button(toolbar, text="Stop", command=self.stop_selected_job), "Stop the controller, worker, and watcher for the selected job without deleting its records.").grid(row=0, column=2, padx=(0, 6))
+        self.help_widget(ttk.Button(toolbar, text="Finish Soon", command=self.finish_soon_selected_job), "Keep the job running but switch it to coarse tasks, discard optional work, and ask the controller to reach acceptance in at most one consolidated final task.").grid(row=0, column=3, padx=(0, 6))
+        self.help_widget(ttk.Button(toolbar, text="Resume", command=self.resume_selected_job), "Resume the selected job with the current controller, worker, granularity, and optional extra criteria.").grid(row=0, column=4, padx=(0, 6))
+
+        job_actions = self.help_widget(
+            ttk.Menubutton(toolbar, text="Job Actions"),
+            "Open less-frequent selected-job actions: status details, notifications, immediate finish, or deletion.",
+        )
+        job_menu = tk.Menu(self, tearoff=False)
+        job_menu.add_command(label="Status Details", command=self.explain_selected_status)
+        job_menu.add_command(label="Wait / Notify", command=self.watch_selected_job)
+        job_menu.add_separator()
+        job_menu.add_command(label="Finish Early", command=self.finish_selected_job)
+        job_menu.add_command(label="Delete Job", command=self.delete_selected_job)
+        job_actions.configure(menu=job_menu)
+        job_actions.grid(row=0, column=5, padx=(0, 6))
+
+        system_actions = self.help_widget(
+            ttk.Menubutton(toolbar, text="System"),
+            "Open Redis, worktree cleanup, database reset, full reset, and macOS hibernation actions.",
+        )
+        system_menu = tk.Menu(self, tearoff=False)
+        system_menu.add_command(label="Start Redis", command=self.start_redis)
+        system_menu.add_command(label="Clear Worktrees", command=self.clear_worktrees)
+        system_menu.add_separator()
+        system_menu.add_command(label="Reset DB", command=self.reset_loop)
+        system_menu.add_command(label="Full Reset", command=self.full_reset)
+        system_menu.add_separator()
+        system_menu.add_command(label="Hibernation", command=self.open_hibernation_window)
+        system_actions.configure(menu=system_menu)
+        system_actions.grid(row=0, column=6, padx=(0, 12))
+
+        ttk.Label(toolbar, text="Status:").grid(row=0, column=7, sticky="e", padx=(0, 4))
+        status_label = self.help_widget(ttk.Label(toolbar, textvariable=self.status_var, anchor="w", width=1), "Live loop status, including Redis connectivity, job counts, and running or stale processes.")
+        status_label.grid(row=0, column=8, sticky="ew")
+        toolbar.columnconfigure(8, weight=1)
 
         paned = ttk.PanedWindow(self, orient=tk.HORIZONTAL)
         paned.grid(row=1, column=0, sticky="nsew")
 
         left = ttk.Frame(paned, padding=8)
         right = ttk.Frame(paned, padding=8)
-        paned.add(left, weight=1)
-        paned.add(right, weight=2)
+        paned.add(left, weight=6)
+        paned.add(right, weight=5)
+        def set_initial_pane_split(event: tk.Event) -> None:
+            if getattr(paned, "_ai_loop_split_initialized", False) or event.width <= 1:
+                return
+            paned._ai_loop_split_initialized = True
+            paned.sashpos(0, int(event.width * 0.55))
+
+        paned.bind("<Configure>", set_initial_pane_split, add="+")
         left.rowconfigure(1, weight=1)
         left.columnconfigure(0, weight=1)
         right.rowconfigure(0, weight=1)
@@ -916,6 +1030,7 @@ class AiLoopGui(tk.Tk):
         self.max_iterations_var = tk.IntVar(value=50000)
         self.worker_var = tk.StringVar(value=self.backend.settings.worker_default)
         self.controller_var = tk.StringVar(value=self.backend.settings.controller_default)
+        self.granularity_var = tk.StringVar(value="normal")
         self.no_worktree_var = tk.BooleanVar(value=False)
         self.allow_parallel_var = tk.BooleanVar(value=False)
         self.codex_model_var = tk.StringVar(value=self.model_defaults.codex_model)
@@ -933,10 +1048,14 @@ class AiLoopGui(tk.Tk):
         browse_buttons = ttk.Frame(frame)
         browse_buttons.grid(row=0, column=2, sticky="e")
         self.help_widget(ttk.Button(browse_buttons, text="Goal File", command=self.browse_goal_file), "Pick a text file and load its contents into the goal box while setting the repo path to that file's parent directory.").pack(side="left")
+        self.help_widget(
+            ttk.Button(browse_buttons, text="Clear Goal", command=self.clear_goal),
+            "Remove all text from the Goal field so that a new job description can be entered.",
+        ).pack(side="left", padx=(4, 0))
         self.help_widget(ttk.Button(browse_buttons, text="Repo Folder", command=self.browse_repo_folder), "Choose the repository folder that the job should modify.").pack(side="left", padx=(4, 0))
 
         ttk.Label(frame, text="Goal").grid(row=1, column=0, sticky="nw", pady=(6, 0))
-        self.goal_text = self.help_widget(tk.Text(frame, height=5, wrap="word"), "Describe the work the loop should do. This is the main job goal and should be specific enough to test.")
+        self.goal_text = self.help_widget(tk.Text(frame, height=5, width=40, wrap="word"), "Describe the work the loop should do. This is the main job goal and should be specific enough to test.")
         self.goal_text.grid(row=1, column=1, columnspan=2, sticky="ew", pady=(6, 0))
 
         ttk.Label(frame, text="Test").grid(row=2, column=0, sticky="w", pady=(6, 0))
@@ -986,10 +1105,17 @@ class AiLoopGui(tk.Tk):
 
         toggles = ttk.Frame(settings)
         toggles.grid(row=6, column=0, columnspan=4, sticky="ew", pady=(6, 0))
+        self.help_widget(ttk.Label(toggles, text="Granularity"), "Task sizing policy used by both controller and worker for this job.").pack(side="left", padx=(0, 4))
+        self.help_widget(
+            ttk.Combobox(toggles, textvariable=self.granularity_var, values=GRANULARITIES, width=8, state="readonly"),
+            "Fine creates many focused tasklets; normal balances control and speed; coarse creates fewer substantial tasks without lowering quality.",
+        ).pack(side="left", padx=(0, 12))
         self.help_widget(ttk.Checkbutton(toggles, text="Bypass worker sandbox", variable=self.bypass_var), "Run the worker without sandbox restrictions. Leave this off unless you need to debug or the environment is trusted.").pack(side="left", padx=(0, 12))
         self.help_widget(ttk.Checkbutton(toggles, text="No worktree", variable=self.no_worktree_var), "Run directly in the target repository instead of creating an isolated Git worktree.").pack(side="left", padx=(0, 12))
-        self.help_widget(ttk.Checkbutton(toggles, text="Allow parallel", variable=self.allow_parallel_var), "Allow this job to start even if another job is already active.").pack(side="left")
-        self.help_widget(ttk.Button(toggles, text="Create Job", command=self.create_job), "Create the job with the current goal, test command, controller, worker, and environment settings.").pack(side="right")
+        create_actions = ttk.Frame(settings)
+        create_actions.grid(row=7, column=0, columnspan=4, sticky="ew", pady=(5, 0))
+        self.help_widget(ttk.Checkbutton(create_actions, text="Allow parallel", variable=self.allow_parallel_var), "Allow this job to start even if another job is already active.").pack(side="left")
+        self.help_widget(ttk.Button(create_actions, text="Create Job", command=self.create_job), "Create the job with the current goal, static plan, granularity, test command, controller, worker, and environment settings.").pack(side="right")
 
     def _build_jobs_frame(self, parent: ttk.Frame) -> None:
         frame = ttk.LabelFrame(parent, text="Jobs", padding=6)
@@ -999,15 +1125,15 @@ class AiLoopGui(tk.Tk):
         columns = ("status", "progress", "controller", "worker", "tasks", "runs", "updated")
         self.jobs_tree = self.help_widget(ttk.Treeview(frame, columns=columns, show="tree headings", selectmode="browse", style="Jobs.Treeview"), "Job list with the current status, progress estimate, and latest task row for each job.")
         self.jobs_tree.heading("#0", text="Job")
-        self.jobs_tree.column("#0", width=190, stretch=False)
+        self.jobs_tree.column("#0", width=150, stretch=False)
         for name, width in (
-            ("status", 95),
-            ("progress", 70),
-            ("controller", 70),
-            ("worker", 70),
-            ("tasks", 55),
-            ("runs", 55),
-            ("updated", 120),
+            ("status", 110),
+            ("progress", 55),
+            ("controller", 55),
+            ("worker", 55),
+            ("tasks", 40),
+            ("runs", 40),
+            ("updated", 90),
         ):
             self.jobs_tree.heading(name, text=name.title())
             self.jobs_tree.column(name, width=width, stretch=False)
@@ -1018,18 +1144,20 @@ class AiLoopGui(tk.Tk):
         self.jobs_tree.configure(yscrollcommand=scrollbar.set)
         self.jobs_tree.bind("<<TreeviewSelect>>", self.on_job_selected)
 
-    def add_scrolled_text(self, parent: ttk.Frame, row: int, column: int, *, wrap: str = "none") -> tk.Text:
+    def add_scrolled_text(self, parent: ttk.Frame, row: int, column: int, *, wrap: str = "word") -> tk.Text:
         holder = ttk.Frame(parent)
         holder.grid(row=row, column=column, sticky="nsew")
         holder.rowconfigure(0, weight=1)
         holder.columnconfigure(0, weight=1)
-        text = tk.Text(holder, wrap=wrap)
+        text = tk.Text(holder, width=40, wrap=wrap)
         y_scroll = ttk.Scrollbar(holder, orient="vertical", command=text.yview)
-        x_scroll = ttk.Scrollbar(holder, orient="horizontal", command=text.xview)
-        text.configure(yscrollcommand=y_scroll.set, xscrollcommand=x_scroll.set)
+        text.configure(yscrollcommand=y_scroll.set)
         text.grid(row=0, column=0, sticky="nsew")
         y_scroll.grid(row=0, column=1, sticky="ns")
-        x_scroll.grid(row=1, column=0, sticky="ew")
+        if wrap == "none":
+            x_scroll = ttk.Scrollbar(holder, orient="horizontal", command=text.xview)
+            text.configure(xscrollcommand=x_scroll.set)
+            x_scroll.grid(row=1, column=0, sticky="ew")
         return text
 
     def _build_detail_frame(self, parent: ttk.Frame) -> None:
@@ -1037,11 +1165,13 @@ class AiLoopGui(tk.Tk):
         notebook.grid(row=0, column=0, sticky="nsew")
 
         overview = ttk.Frame(notebook, padding=8)
+        plan_tab = ttk.Frame(notebook, padding=8)
         status_tab = ttk.Frame(notebook, padding=8)
         logs = ttk.Frame(notebook, padding=8)
         history = ttk.Frame(notebook, padding=8)
         notebook.add(status_tab, text="Status")
         notebook.add(overview, text="Overview")
+        notebook.add(plan_tab, text="Plan")
         notebook.add(logs, text="Logs")
         notebook.add(history, text="Tasks/Runs")
 
@@ -1060,7 +1190,14 @@ class AiLoopGui(tk.Tk):
         )
         self.summary_label.grid(row=0, column=0, sticky="ew")
         overview.bind("<Configure>", self.update_summary_wrap)
-        self.detail_text = self.help_widget(self.add_scrolled_text(overview, 1, 0, wrap="none"), "Full details for the selected job: repo, worktree, goal, history summary, and latest decision.")
+        self.detail_text = self.help_widget(self.add_scrolled_text(overview, 1, 0), "Full details for the selected job: repo, worktree, goal, history summary, and latest decision.")
+
+        plan_tab.rowconfigure(0, weight=1)
+        plan_tab.columnconfigure(0, weight=1)
+        self.plan_text = self.help_widget(
+            self.add_scrolled_text(plan_tab, 0, 0),
+            "Immutable enumerated overall plan captured when the job was created. Controller tasks may adapt beneath these milestones, but this plan does not change.",
+        )
 
         resume_frame = ttk.LabelFrame(parent, text="Resume / Change Controller", padding=8)
         resume_frame.grid(row=1, column=0, sticky="ew", pady=(8, 0))
@@ -1068,6 +1205,7 @@ class AiLoopGui(tk.Tk):
             resume_frame.columnconfigure(column, weight=1)
         self.resume_controller_var = tk.StringVar(value=self.controller_var.get())
         self.resume_worker_var = tk.StringVar(value=self.worker_var.get())
+        self.resume_granularity_var = tk.StringVar(value=self.granularity_var.get())
         self.extra_constraint_var = tk.StringVar()
         self.extra_acceptance_var = tk.StringVar()
         ttk.Label(resume_frame, text="Controller").grid(row=0, column=0, sticky="w")
@@ -1086,12 +1224,17 @@ class AiLoopGui(tk.Tk):
             row=0, column=3, sticky="ew", padx=3
         )
         self.help_widget(ttk.Button(resume_frame, text="Apply + Resume", command=self.resume_selected_job), "Apply the selected controller and worker, then queue a new plan for the job.").grid(row=0, column=4, columnspan=2, sticky="e")
-        ttk.Label(resume_frame, text="Extra constraint").grid(row=1, column=0, sticky="w", pady=(5, 0))
-        self.help_widget(ttk.Entry(resume_frame, textvariable=self.extra_constraint_var), "Optional extra constraint to add before resuming the job.").grid(row=1, column=1, columnspan=5, sticky="ew", pady=(5, 0))
-        ttk.Label(resume_frame, text="Extra acceptance").grid(row=2, column=0, sticky="w", pady=(5, 0))
-        self.help_widget(ttk.Entry(resume_frame, textvariable=self.extra_acceptance_var), "Optional extra acceptance criterion to add before resuming the job.").grid(row=2, column=1, columnspan=5, sticky="ew", pady=(5, 0))
+        ttk.Label(resume_frame, text="Granularity").grid(row=1, column=0, sticky="w", pady=(5, 0))
+        self.help_widget(
+            ttk.Combobox(resume_frame, textvariable=self.resume_granularity_var, values=GRANULARITIES, width=10, state="readonly"),
+            "Task granularity to use after resuming. Coarse reduces controller round trips while retaining normal acceptance and testing requirements.",
+        ).grid(row=1, column=1, sticky="ew", pady=(5, 0))
+        ttk.Label(resume_frame, text="Extra constraint").grid(row=2, column=0, sticky="w", pady=(5, 0))
+        self.help_widget(ttk.Entry(resume_frame, textvariable=self.extra_constraint_var), "Optional extra constraint to add before resuming the job.").grid(row=2, column=1, columnspan=5, sticky="ew", pady=(5, 0))
+        ttk.Label(resume_frame, text="Extra acceptance").grid(row=3, column=0, sticky="w", pady=(5, 0))
+        self.help_widget(ttk.Entry(resume_frame, textvariable=self.extra_acceptance_var), "Optional extra acceptance criterion to add before resuming the job.").grid(row=3, column=1, columnspan=5, sticky="ew", pady=(5, 0))
         self.fix_binary_var = tk.StringVar(value=self.codex_bin_var.get() or "codex")
-        ttk.Label(resume_frame, text="Fix binary").grid(row=3, column=0, sticky="w", pady=(5, 0))
+        ttk.Label(resume_frame, text="Fix binary").grid(row=4, column=0, sticky="w", pady=(5, 0))
         self.help_widget(
             ttk.Combobox(
                 resume_frame,
@@ -1100,28 +1243,28 @@ class AiLoopGui(tk.Tk):
                 width=18,
             ),
             "CLI binary to use for the repair helper when the selected job needs a manual or assisted fix.",
-        ).grid(row=3, column=1, columnspan=3, sticky="ew", pady=(5, 0))
-        self.help_widget(ttk.Button(resume_frame, text="Fix It", command=self.fix_selected_job), "Run the selected binary to diagnose or repair the job, then resume it if successful.").grid(row=3, column=4, columnspan=2, sticky="e", pady=(5, 0))
+        ).grid(row=4, column=1, columnspan=3, sticky="ew", pady=(5, 0))
+        self.help_widget(ttk.Button(resume_frame, text="Fix It", command=self.fix_selected_job), "Run the selected binary to diagnose or repair the job, then resume it if successful.").grid(row=4, column=4, columnspan=2, sticky="e", pady=(5, 0))
 
         status_tab.rowconfigure(0, weight=1)
         status_tab.columnconfigure(0, weight=1)
-        self.status_text = self.help_widget(self.add_scrolled_text(status_tab, 0, 0, wrap="none"), "Plain-language explanation of what the loop is doing now and why it is in this state.")
+        self.status_text = self.help_widget(self.add_scrolled_text(status_tab, 0, 0), "Plain-language explanation of what the loop is doing now and why it is in this state.")
 
         logs.rowconfigure(1, weight=1)
         logs.columnconfigure(0, weight=1)
         log_bar = ttk.Frame(logs)
         log_bar.grid(row=0, column=0, sticky="ew")
-        self.log_name_var = tk.StringVar(value=PROCESS_LABELS["codex_worker"])
+        self.log_name_var = tk.StringVar(value=PROCESS_LABELS["worker"])
         self.help_widget(
             ttk.Combobox(log_bar, textvariable=self.log_name_var, values=list(LOG_LABELS), state="readonly", width=20),
             "Choose which process log to view: controller, worker, or watcher.",
         ).grid(row=0, column=0, padx=(0, 6))
         self.help_widget(ttk.Button(log_bar, text="Refresh Log", command=self.refresh_log), "Reload the selected log file from disk and jump to the end if it changed.").grid(row=0, column=1)
-        self.log_text = self.help_widget(self.add_scrolled_text(logs, 1, 0, wrap="none"), "Selected process log file, including controller, worker, or watcher output.")
+        self.log_text = self.help_widget(self.add_scrolled_text(logs, 1, 0), "Selected process log file, including controller, worker, or watcher output. Long lines wrap at the right edge so all text remains readable.")
 
         history.rowconfigure(0, weight=1)
         history.columnconfigure(0, weight=1)
-        self.history_text = self.help_widget(self.add_scrolled_text(history, 0, 0, wrap="none"), "Task and run history for the selected job, with the newest entries first.")
+        self.history_text = self.help_widget(self.add_scrolled_text(history, 0, 0), "Task and run history for the selected job, with the newest entries first. Long lines wrap at the right edge.")
 
     def current_models(self) -> ModelDefaults:
         return ModelDefaults(
@@ -1149,8 +1292,11 @@ class AiLoopGui(tk.Tk):
                 content = path.read_text(encoding="utf-8")
             except UnicodeDecodeError:
                 content = path.read_text(errors="replace")
-            self.goal_text.delete("1.0", "end")
-            self.goal_text.insert("1.0", content)
+            self.set_text(self.goal_text, content)
+
+    def clear_goal(self) -> None:
+        self.set_text(self.goal_text, "")
+        self.goal_text.focus_set()
 
     def browse_repo_folder(self) -> None:
         selected_dir = filedialog.askdirectory(initialdir=self.repo_var.get() or str(Path.home()), title="Choose repository folder")
@@ -1175,6 +1321,7 @@ class AiLoopGui(tk.Tk):
                 allow_parallel=self.allow_parallel_var.get(),
                 worker=self.worker_var.get(),
                 controller=self.controller_var.get(),
+                granularity=self.granularity_var.get(),
                 models=self.current_models(),
             )
         except Exception as exc:
@@ -1206,13 +1353,18 @@ class AiLoopGui(tk.Tk):
             return
 
         selected = select_job_id or self.selected_job_id
+        expanded = {
+            item
+            for item in self.jobs_tree.get_children()
+            if bool(self.jobs_tree.item(item, "open"))
+        }
         self.configure_job_status_tags()
         self.jobs_tree.delete(*self.jobs_tree.get_children())
         for job in jobs:
             job_id = str(job["id"])
             task = job.get("latest_task") or {}
             values = (
-                job["status"],
+                job.get("status_display", job["status"]),
                 f"{job['percent']}%",
                 job["controller"],
                 job["worker"],
@@ -1221,7 +1373,15 @@ class AiLoopGui(tk.Tk):
                 job["updated_at"],
             )
             status = str(job["status"])
-            self.jobs_tree.insert("", "end", iid=job_id, text=job_id, values=values, tags=(status,))
+            self.jobs_tree.insert(
+                "",
+                "end",
+                iid=job_id,
+                text=job_id,
+                values=values,
+                tags=(status,),
+                open=job_id in expanded,
+            )
             previous = self.last_status_by_job.get(job_id)
             self.last_status_by_job[job_id] = status
             if status != "human_needed":
@@ -1232,11 +1392,14 @@ class AiLoopGui(tk.Tk):
             if self.watch_job_id == job_id and status in TERMINAL_STATUSES and previous and previous != status:
                 messagebox.showinfo("Watched Job Finished", f"{job_id} is now {status}.")
             if task:
+                task_status = str(task.get("status"))
+                if task_status == "queued" and job.get("status_display") == "queued / worker offline":
+                    task_status = "queued / worker offline"
                 self.jobs_tree.insert(
                     job_id,
                     "end",
                     text=str(task.get("id")),
-                    values=(task.get("status"), "", "", "", "", "", task.get("updated_at")),
+                    values=(task_status, "", "", "", "", "", task.get("updated_at")),
                     tags=(status,),
                 )
 
@@ -1255,6 +1418,7 @@ class AiLoopGui(tk.Tk):
             self.selected_job_id = None
             self.summary_var.set("No jobs.")
             self.set_text(self.detail_text, "")
+            self.set_text(self.plan_text, "")
             self.set_text(self.status_text, "")
             self.set_text(self.history_text, "")
             self.set_text(self.log_text, "")
@@ -1328,6 +1492,8 @@ class AiLoopGui(tk.Tk):
             now_line = "The controller has planned or is planning the next step; the worker has not finished it yet."
         elif status in {"implementing", "fixing"}:
             now_line = "The worker is editing or diagnosing the job worktree, then it will run the configured test command."
+        elif status == "waiting_tokens":
+            now_line = f"The loop is waiting for model tokens to replenish, then it will resume automatically after {job.get('waiting_until') or 'the recorded reset time'}."
         elif status == "human_needed":
             now_line = "The loop stopped because it needs operator input before it can continue."
         elif status == "dead":
@@ -1365,10 +1531,12 @@ class AiLoopGui(tk.Tk):
             "",
             "What has been done",
             f"- recent completed task: {recent_done}",
-            f"- recent tasks shown: {len(tasks)}; total task count is in the job list.",
+            f"- completed work estimate: {details['percent']}% ({job.get('estimated_completed_units', 0)} logical units completed).",
+            f"- estimated remaining work: {job.get('estimated_remaining_units', 0)} logical units, about {self.duration_text(details['remaining'])}.",
+            f"- tasks: {details['task_count']}; runs: {details['run_count']}.",
             "",
             "Still to do after the current step",
-            "- If tests pass, the controller reviews the diff and either plans the next small task or marks the job done.",
+            "- If tests pass, the controller reviews the diff and either plans the next task at the selected granularity or marks the job done.",
             "- If tests or behavior checks fail, the controller asks the worker for a narrower repair/diagnostic task.",
             "- If quota, credentials, missing tools, or an internal crash blocks automation, the job enters human_needed/dead and can be resumed or fixed from the GUI.",
         ]
@@ -1396,11 +1564,13 @@ class AiLoopGui(tk.Tk):
         if self.resume_fields_job_id != job_id:
             self.resume_controller_var.set(str(job["controller"]))
             self.resume_worker_var.set(str(job["worker"]))
+            self.resume_granularity_var.set(str(job["granularity"]))
             self.extra_constraint_var.set("")
             self.extra_acceptance_var.set("")
             self.resume_fields_job_id = job_id
         self.summary_var.set(
-            f"{job_id}  {job['status']}  controller={job['controller']} worker={job['worker']} updated={job['updated_at']}"
+            f"{job_id}  {job['status']}  {details['percent']}% done, about {self.duration_text(details['remaining'])} remaining  "
+            f"controller={job['controller']} worker={job['worker']} granularity={job['granularity']} updated={job['updated_at']}"
         )
         process_lines = [
             f"{PROCESS_LABELS.get(name, name)}: {'running' if info['running'] else 'stopped'} pid={info['pid'] or '-'}"
@@ -1413,6 +1583,9 @@ class AiLoopGui(tk.Tk):
             f"Branch: {job['branch'] or '-'}",
             f"Base ref: {job['base_ref']}",
             f"Test command: {job['test_cmd']}",
+            f"Granularity: {job['granularity']}",
+            f"Finish soon requested: {'yes' if job['finish_requested'] else 'no'}",
+            f"Progress estimate: {details['percent']}% done; {job.get('estimated_completed_units', 0)} work units complete; {job.get('estimated_remaining_units', 0)} remaining; about {self.duration_text(details['remaining'])} remaining",
             "",
             "Processes:",
             *process_lines,
@@ -1428,6 +1601,8 @@ class AiLoopGui(tk.Tk):
         if str(job["status"]) == "human_needed":
             text.extend(["", "Suggested actions:", *self.human_needed_actions(job, details)])
         self.set_text(self.detail_text, "\n".join(text))
+        plan_lines = [f"{index}. {item}" for index, item in enumerate(job.get("plan", []), start=1)]
+        self.set_text(self.plan_text, "\n\n".join(plan_lines) or "No static plan was recorded for this older job.")
         self.set_text(self.status_text, self.plain_status_text(details))
 
         history_lines: list[str] = ["Tasks:"]
@@ -1500,8 +1675,8 @@ class AiLoopGui(tk.Tk):
             text = self.backend.log_text(self.selected_job_id, log_name)
         except Exception as exc:
             text = f"Could not read log: {exc}"
-        self.set_text(self.log_text, text)
-        self.log_text.see("end")
+        if self.set_text(self.log_text, text):
+            self.log_text.see("end")
 
     def add_help(self, widget: tk.Widget, text: str) -> None:
         self.help_tooltip.attach(widget, text)
@@ -1510,14 +1685,56 @@ class AiLoopGui(tk.Tk):
         self.add_help(widget, text)
         return widget
 
+    def install_default_help(self, parent: tk.Misc) -> None:
+        """Ensure even passive labels, scrollbars, and containers explain themselves."""
+
+        for widget in parent.winfo_children():
+            if not getattr(widget, "_ai_loop_help_attached", False):
+                widget_class = widget.winfo_class()
+                try:
+                    visible_text = str(widget.cget("text")).strip()
+                except tk.TclError:
+                    visible_text = ""
+                if widget_class in {"TLabel", "Label"} and visible_text:
+                    help_text = f"{visible_text}: label for the value or control beside it."
+                elif "Scrollbar" in widget_class:
+                    help_text = "Scroll the associated content to reach information outside the visible area."
+                elif "Frame" in widget_class:
+                    help_text = "Groups the related controls and information shown in this section."
+                elif "Panedwindow" in widget_class:
+                    help_text = "Drag the divider to resize the job list and selected-job details."
+                else:
+                    help_text = f"{visible_text or widget_class}: interface element used in the ai-loop dashboard."
+                self.add_help(widget, help_text)
+            self.install_default_help(widget)
+
     @staticmethod
-    def set_text(widget: tk.Text, text: str) -> None:
+    def set_text(widget: tk.Text, text: str) -> bool:
         current = widget.get("1.0", "end-1c")
         if current == text:
-            return
+            return False
+        yview = widget.yview()
         widget.configure(state="normal")
         widget.delete("1.0", "end")
         widget.insert("1.0", text)
+        if yview:
+            widget.yview_moveto(yview[0])
+        return True
+
+    @staticmethod
+    def duration_text(seconds: int | None) -> str:
+        if seconds is None:
+            return "unknown time"
+        seconds = max(0, int(seconds))
+        if seconds < 90:
+            return f"{seconds} seconds"
+        minutes = seconds // 60
+        if minutes < 90:
+            return f"{minutes} minutes"
+        hours = minutes // 60
+        if hours < 48:
+            return f"{hours}h {minutes % 60}m"
+        return f"{hours // 24}d {hours % 24}h"
 
     def selected_job_or_error(self) -> str | None:
         if not self.selected_job_id:
@@ -1546,6 +1763,7 @@ class AiLoopGui(tk.Tk):
                 job_id,
                 worker=self.resume_worker_var.get(),
                 controller=self.resume_controller_var.get(),
+                granularity=self.resume_granularity_var.get(),
                 models=self.current_models(),
                 extra_constraint=self.extra_constraint_var.get(),
                 extra_acceptance=self.extra_acceptance_var.get(),
@@ -1555,6 +1773,23 @@ class AiLoopGui(tk.Tk):
             return
         self.watch_job_id = job_id
         self.resume_fields_job_id = None
+        self.refresh_all(select_job_id=job_id)
+
+    def finish_soon_selected_job(self) -> None:
+        job_id = self.selected_job_or_error()
+        if not job_id:
+            return
+        if not messagebox.askyesno(
+            "Finish Soon",
+            "Keep the job running, switch to coarse tasks, omit optional work, and ask the controller to reach acceptance with at most one consolidated final task?",
+        ):
+            return
+        try:
+            self.backend.request_finish_soon(job_id)
+        except Exception as exc:
+            messagebox.showerror("Finish Soon Failed", str(exc))
+            return
+        self.resume_granularity_var.set("coarse")
         self.refresh_all(select_job_id=job_id)
 
     def finish_selected_job(self) -> None:
@@ -1738,6 +1973,7 @@ class AiLoopGui(tk.Tk):
         self.help_widget(ttk.Button(controls, text="Refresh", command=lambda: self.open_hibernation_window(window)), "Reload the current hibernation status from pmset.").pack(side="left")
         self.help_widget(ttk.Button(controls, text="Apply", command=lambda: self.set_hibernation_mode(int(selected_mode.get()), window)), "Run sudo pmset to apply the selected hibernatemode.").pack(side="left", padx=(8, 0))
         self.help_widget(ttk.Button(controls, text="Close", command=window.destroy), "Close the hibernation helper window.").pack(side="right")
+        self.install_default_help(window)
         window.protocol("WM_DELETE_WINDOW", window.destroy)
 
 

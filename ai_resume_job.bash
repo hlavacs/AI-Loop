@@ -71,9 +71,9 @@ rows = conn.execute(
     """
 ).fetchall()
 
-active = [row for row in rows if row[1] in {"queued", "implementing", "fixing"}]
+active = [row for row in rows if row[1] in {"queued", "implementing", "fixing", "waiting_tokens"}]
 if active:
-    print("no paused job needs resuming; active jobs are already queued, implementing, or fixing")
+    print("no paused job needs resuming; active jobs are already queued, implementing, fixing, or waiting for tokens")
     for job_id, status, updated_at, goal in active:
         print(f"  - {job_id}: {status} updated_at={updated_at}")
         print(f"    goal: {goal}")

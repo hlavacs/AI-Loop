@@ -12,7 +12,7 @@ ensure_ai_loop_python_redis "$python_bin"
 
 log_dir="${AI_LOOP_LOG_DIR:-./logs}"
 mkdir -p "$log_dir"
-exec >> "$log_dir/claude_controller.log" 2>&1
+exec >> "$log_dir/controller.log" 2>&1
 
 export PYTHONUNBUFFERED="${PYTHONUNBUFFERED:-1}"
-exec "$python_bin" claude_controller.py
+exec "$python_bin" controller.py

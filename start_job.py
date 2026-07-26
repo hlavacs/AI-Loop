@@ -23,6 +23,12 @@ from ai_loop.config import (
     normalize_worker,
 )
 from ai_loop.progress import estimate_progress
+from ai_loop.planning import (
+    GRANULARITIES,
+    build_static_plan,
+    granularity_constraints,
+    normalize_granularity,
+)
 from ai_loop.queues import ensure_group, redis_client, xadd_json
 
 
@@ -32,25 +38,12 @@ COMMON_CONSTRAINTS = [
     "Keep the repository buildable after each iteration.",
 ]
 
-SMALL_TASK_CONSTRAINTS = [
-    "Make small incremental changes.",
-    "Prefer many tiny, specific tasklets over fewer broad tasks.",
-    "Each tasklet should have one concrete objective and a clear stop point.",
-]
-
-LARGE_TASK_CONSTRAINTS = [
-    "Prefer coherent, self-contained tasks that group related changes.",
-    "Each task should have one clear objective and a testable stop point.",
-]
-
-CAPABLE_WORKERS = {"fable", "opus", "gemini"}
-
 DEFAULT_ACCEPTANCE = [
     "The implementation satisfies the stated goal.",
     "The requested test command passes.",
     "No unrelated files are changed.",
 ]
-ACTIVE_STATUSES = {"planning", "queued", "implementing", "fixing"}
+ACTIVE_STATUSES = {"planning", "queued", "implementing", "fixing", "waiting_tokens"}
 CLAUDE_GROUP = "claude-controllers"
 CODEX_GROUP = "codex-workers"
 
@@ -66,7 +59,13 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--test-cmd", default="auto", help="Command run after each Codex task, or 'auto' to infer one.")
     parser.add_argument("--constraint", action="append", default=[], help="Additional job constraint.")
     parser.add_argument("--acceptance", action="append", default=[], help="Additional acceptance criterion.")
-    parser.add_argument("--max-iterations", type=int, default=50000, help="Maximum Codex iterations.")
+    parser.add_argument("--max-iterations", type=int, default=50000, help="Maximum worker iterations.")
+    parser.add_argument(
+        "--granularity",
+        choices=GRANULARITIES,
+        default=os.getenv("AI_LOOP_GRANULARITY", "normal"),
+        help="Task size: fine gives close control, coarse reduces round trips, normal balances both.",
+    )
     parser.add_argument("--base-ref", default="HEAD", help="Git ref used for the isolated worktree.")
     parser.add_argument("--no-worktree", action="store_true", help="Run directly in --repo instead of a Git worktree.")
     parser.add_argument(
@@ -302,8 +301,8 @@ def launch_job_processes(root_dir: Path, job_id: str) -> dict[str, int]:
     env["AI_LOOP_LOG_DIR"] = str(log_dir)
 
     processes = {
-        "claude_controller": "./ai_run_claude.bash",
-        "codex_worker": "./ai_run_codex.bash",
+        "controller": "./ai_run_claude.bash",
+        "worker": "./ai_run_codex.bash",
         "watcher": "./ai_run_watcher.bash",
     }
     pids: dict[str, int] = {}
@@ -432,7 +431,7 @@ def job_state(db_path: Path, job_id: str) -> dict[str, str | int | None]:
             created_at=str(job["created_at"]),
             run_count=int(run_count),
             task_count=int(task_count),
-            has_active_task=task is not None and str(task["status"]) in {"queued", "running"},
+            has_active_task=task is not None and str(task["status"]) in {"queued", "running", "waiting_tokens"},
         )
     state: dict[str, str | int | None] = {
         "status": str(job["status"]),
@@ -516,22 +515,22 @@ def print_status_update(
 def describe_status(status: str, index: int) -> str:
     descriptions = {
         "planning": [
-            "Claude is choosing the next implementation task.",
+            "The controller is choosing the next implementation task.",
             "Planner is reading the job history and constraints.",
-            "Planning pass is deciding what Codex should change next.",
+            "Planning pass is deciding what the worker should change next.",
         ],
         "implementing": [
-            "Codex is applying the current task in the worktree.",
+            "The worker is applying the current task in the worktree.",
             "Implementation worker is editing and validating the task.",
             "Worker is turning the plan into a concrete code change.",
         ],
         "fixing": [
-            "Codex is fixing a reviewed problem in the worktree.",
+            "The worker is fixing a reviewed problem in the worktree.",
             "Repair task is applying a focused correction.",
             "Worker is resolving the current blocker one step at a time.",
         ],
         "queued": [
-            "The next Codex task is waiting for the worker.",
+            "The next task is waiting for the worker.",
             "Task is ready and pending worker pickup.",
             "Queue has the next implementation request.",
         ],
@@ -544,6 +543,10 @@ def describe_status(status: str, index: int) -> str:
             "The loop needs a person to resolve the next step.",
             "Automation paused because manual input is required.",
             "A human decision is needed before continuing.",
+        ],
+        "waiting_tokens": [
+            "The loop is waiting for model tokens to replenish and will resume automatically.",
+            "Token quota is temporarily exhausted; the recorded reset time controls the automatic retry.",
         ],
         "dead": [
             "The loop stopped after an unrecoverable error.",
@@ -611,6 +614,7 @@ def main() -> int:
     try:
         worker = normalize_worker(args.worker)
         controller = normalize_controller(args.controller)
+        granularity = normalize_granularity(args.granularity)
     except ValueError as exc:
         print(str(exc), file=sys.stderr)
         return 2
@@ -623,9 +627,9 @@ def main() -> int:
         return 2
 
     job_id = timestamp_id("J")
-    sizing_constraints = LARGE_TASK_CONSTRAINTS if worker in CAPABLE_WORKERS else SMALL_TASK_CONSTRAINTS
-    constraints = [*sizing_constraints, *COMMON_CONSTRAINTS, *args.constraint]
+    constraints = [*granularity_constraints(granularity), *COMMON_CONSTRAINTS, *args.constraint]
     acceptance = [*DEFAULT_ACCEPTANCE, *args.acceptance]
+    plan = build_static_plan(args.goal, acceptance, test_cmd)
 
     use_worktree = not args.no_worktree
     branch: str | None = None
@@ -657,6 +661,8 @@ def main() -> int:
                 use_worktree=use_worktree,
                 worker=worker,
                 controller=controller,
+                granularity=granularity,
+                plan=plan,
             )
             db.add_event(
                 conn,
@@ -669,6 +675,8 @@ def main() -> int:
                     "test_cmd": test_cmd,
                     "worker": worker,
                     "controller": controller,
+                    "granularity": granularity,
+                    "plan": plan,
                     "pre_job_commit": pre_job_commit,
                     "checkout_overlay_files": overlay_files,
                 },
@@ -706,6 +714,7 @@ def main() -> int:
     print(f"repo: {repo}")
     print(f"worker: {worker}")
     print(f"controller: {controller}")
+    print(f"granularity: {granularity}")
     if pre_job_commit.get("created"):
         print(f"pre-job commit: {pre_job_commit.get('after')}")
     else:

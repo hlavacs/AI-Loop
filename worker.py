@@ -13,8 +13,11 @@ from redis.exceptions import ConnectionError, TimeoutError
 
 from ai_loop import db
 from ai_loop.config import CLAUDE_REQUEST_STREAM, CODEX_TASK_STREAM, DEAD_STREAM, HUMAN_STREAM, load_settings
+from ai_loop.notifications import terminal_email
+from ai_loop.planning import normalize_granularity
 from ai_loop.queues import consumer_name, decode, ensure_group, redis_client, read_group, xadd_json
 from ai_loop.recovery import attempt_auto_recovery
+from ai_loop.token_wait import replenishment_time, wait_until
 
 
 GROUP = "codex-workers"
@@ -223,16 +226,20 @@ def codex_prompt(job: dict, task: dict, worker: str = "codex") -> str:
     guidance_files = referenced_existing_files(job, task)
     crash_safe_runner = Path(__file__).resolve().parent / "ai_run_crash_safe.bash"
     worker_name = WORKER_NAMES.get(worker, "Codex CLI")
-    if worker in {"fable", "opus", "gemini"}:
-        scope_rules = """- Implement only this task, completely; it may span several related files.
-- Do not expand the task into unrelated cleanup, broad audits, or follow-up milestones.
-- Stop once this task's acceptance criteria are met."""
+    granularity = normalize_granularity(str(job.get("granularity") or "normal"))
+    if granularity == "coarse":
+        scope_rules = """- Complete this substantial task as one coherent unit, including its related discovery, implementation, documentation, and verification.
+- Do not split work merely per file or function, and do not leave obvious in-scope follow-up tasklets.
+- Preserve code quality, reviewability, and test coverage while reducing controller round trips."""
+    elif granularity == "fine":
+        scope_rules = """- Implement only this focused tasklet.
+- Keep the change narrow and stop at its explicit acceptance boundary.
+- Do not expand into adjacent cleanup or follow-up milestones."""
     else:
-        scope_rules = """- Implement only this task.
-- Treat this as a tasklet: keep changes as small and specific as possible.
-- Do not expand the task into adjacent cleanup, broad audits, or follow-up milestones.
-- Stop once this tasklet's acceptance criteria are met."""
-    return f"""You are {worker_name}, the implementation worker in a Claude-controlled loop.
+        scope_rules = """- Implement this medium-sized coherent task completely.
+- Group directly related changes, but do not expand into independent features or broad cleanup.
+- Stop once this task's acceptance criteria are met."""
+    return f"""You are {worker_name}, the implementation worker in a controller-managed loop.
 
 Repository: {job["worktree_path"]}
 Job: {job["id"]}
@@ -397,9 +404,49 @@ def process_task(settings, client, task_id: str) -> None:
         worker_stage = "fixing" if str(task["created_by"]) == "claude:repair" else "implementing"
         log_worker_stage(job["id"], task_id, worker_stage, f"{worker_label} process started; source changes may not exist until it finishes")
         codex_input = prompt if worker == "codex" else None
-        codex = run_command(codex_cmd, worktree_path, 7200, input_text=codex_input)
-        codex_rc = int(codex["rc"])
-        codex_output = str(codex["output"])[-OUTPUT_LIMIT:]
+        while True:
+            codex = run_command(codex_cmd, worktree_path, 7200, input_text=codex_input)
+            codex_rc = int(codex["rc"])
+            codex_output = str(codex["output"])[-OUTPUT_LIMIT:]
+            retry_at = replenishment_time(codex_output) if codex_rc != 0 else None
+            if retry_at is None:
+                break
+            waiting_until = retry_at.isoformat(timespec="seconds")
+            with db.transaction(settings.db_path) as conn:
+                db.set_waiting_for_tokens(
+                    conn,
+                    str(job["id"]),
+                    waiting_until,
+                    task_id=task_id,
+                )
+                db.add_event(
+                    conn,
+                    job_id=str(job["id"]),
+                    kind="waiting_for_tokens",
+                    payload={"role": "worker", "task_id": task_id, "waiting_until": waiting_until},
+                )
+            print(f"job {job['id']}: waiting for worker tokens until {waiting_until}")
+            wait_until(
+                retry_at,
+                on_tick=lambda remaining: print(
+                    f"job {job['id']}: worker token wait, {remaining}s remaining"
+                ),
+            )
+            with db.transaction(settings.db_path) as conn:
+                db.set_waiting_for_tokens(
+                    conn,
+                    str(job["id"]),
+                    None,
+                    task_id=task_id,
+                    resume_status=running_status,
+                )
+                db.add_event(
+                    conn,
+                    job_id=str(job["id"]),
+                    kind="token_wait_finished",
+                    payload={"role": "worker", "task_id": task_id, "waiting_until": waiting_until},
+                )
+            print(f"job {job['id']}: token wait finished; retrying task {task_id}")
         log_worker_stage(job["id"], task_id, "codex_done", f"{worker_label} finished rc={codex_rc}; running task test command")
 
         with db.transaction(settings.db_path) as conn:
@@ -448,6 +495,8 @@ def process_task(settings, client, task_id: str) -> None:
                 "human_needed",
                 "Implementation worker could not run the task.",
             )
+        else:
+            db.update_job_status(conn, job["id"], "planning")
         db.add_event(
             conn,
             job_id=job["id"],
@@ -464,6 +513,7 @@ def process_task(settings, client, task_id: str) -> None:
             "reason": error or "Implementation worker could not complete the task.",
         }
         xadd_json(client, HUMAN_STREAM, "event", payload)
+        notify_terminal(settings, str(job["id"]), "human_needed", str(payload["reason"]))
         print(f"task {task_id}: reported HUMAN_NEEDED")
         return
 
@@ -472,6 +522,20 @@ def process_task(settings, client, task_id: str) -> None:
         review_payload["scope"] = "job"
     xadd_json(client, CLAUDE_REQUEST_STREAM, "request", review_payload)
     print(f"task {task_id}: queued REVIEW for run {run_id}")
+
+
+def notify_terminal(settings, job_id: str, status: str, reason: str) -> None:
+    with db.transaction(settings.db_path) as conn:
+        job = db.get_job(conn, job_id)
+    sent, detail = terminal_email(settings, job=job, status=status, reason=reason)
+    with db.transaction(settings.db_path) as conn:
+        db.add_event(
+            conn,
+            job_id=job_id,
+            kind="email_notification_sent" if sent else "email_notification_failed",
+            payload={"status": status, "recipient": settings.notify_email, "detail": detail},
+        )
+    print(f"job {job_id}: email notification {'sent' if sent else 'failed'} - {detail}")
 
 
 def main() -> int:
@@ -483,7 +547,7 @@ def main() -> int:
     ensure_group(client, CODEX_TASK_STREAM, group, start_id="$" if job_scope else "0")
     consumer = consumer_name("codex")
 
-    print("Codex worker started")
+    print("AI loop worker started")
     print(f"db: {settings.db_path}")
     print(f"redis: {settings.redis_url}")
     if job_scope:
@@ -526,13 +590,15 @@ def main() -> int:
                     return 0
             except Exception as exc:
                 print(f"worker error: {exc}")
-                if attempt_auto_recovery(settings, job_id, "codex_worker", repr(exc), fields):
+                if attempt_auto_recovery(settings, job_id, "worker", repr(exc), fields):
                     client.xack(CODEX_TASK_STREAM, group, message_id)
                     print(f"job {job_id}: auto recovery launched; Codex worker exiting")
                     return 0
-                payload = {"where": "codex_worker", "error": repr(exc), "fields": fields}
+                payload = {"where": "worker", "error": repr(exc), "fields": fields}
                 try:
                     record_dead(settings, client, job_id, payload, task_id)
+                    if job_id:
+                        notify_terminal(settings, job_id, "dead", repr(exc))
                     client.xack(CODEX_TASK_STREAM, group, message_id)
                 except Exception as inner:
                     print(f"could not record dead event: {inner}")

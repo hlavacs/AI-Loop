@@ -12,8 +12,8 @@ ensure_ai_loop_python_redis "$python_bin"
 
 log_dir="${AI_LOOP_LOG_DIR:-./logs}"
 mkdir -p "$log_dir"
-exec >> "$log_dir/codex_worker.log" 2>&1
+exec >> "$log_dir/worker.log" 2>&1
 
 export PYTHONUNBUFFERED="${PYTHONUNBUFFERED:-1}"
 export CODEX_BYPASS_SANDBOX="${CODEX_BYPASS_SANDBOX:-1}"
-exec "$python_bin" codex_worker.py
+exec "$python_bin" worker.py

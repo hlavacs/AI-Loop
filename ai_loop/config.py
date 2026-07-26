@@ -52,6 +52,14 @@ class Settings:
     controller_model: str
     opus_model: str
     gemini_model: str
+    notify_email: str
+    smtp_host: str
+    smtp_port: int
+    smtp_user: str
+    smtp_password: str
+    smtp_from: str
+    smtp_starttls: bool
+    smtp_ssl: bool
 
 
 def env_bool(name: str, default: bool = False) -> bool:
@@ -81,4 +89,12 @@ def load_settings() -> Settings:
         controller_model=os.getenv("AI_LOOP_CONTROLLER_MODEL", ""),
         opus_model=os.getenv("AI_LOOP_OPUS_MODEL", "").strip(),
         gemini_model=os.getenv("AI_LOOP_GEMINI_MODEL", ""),
+        notify_email=os.getenv("AI_LOOP_NOTIFY_EMAIL", "helmut.hlavacs@univie.ac.at"),
+        smtp_host=os.getenv("AI_LOOP_SMTP_HOST", "").strip(),
+        smtp_port=int(os.getenv("AI_LOOP_SMTP_PORT", "465" if env_bool("AI_LOOP_SMTP_SSL") else "587")),
+        smtp_user=os.getenv("AI_LOOP_SMTP_USER", "").strip(),
+        smtp_password=os.getenv("AI_LOOP_SMTP_PASSWORD", ""),
+        smtp_from=os.getenv("AI_LOOP_SMTP_FROM", "").strip(),
+        smtp_starttls=env_bool("AI_LOOP_SMTP_STARTTLS", True),
+        smtp_ssl=env_bool("AI_LOOP_SMTP_SSL", False),
     )

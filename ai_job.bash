@@ -2,14 +2,15 @@
 set -euo pipefail
 
 usage() {
-  echo "usage: $0 [--worker codex|fable|opus|gemini] [--controller claude|fable|opus|codex|gemini] <repo-path> <job-description>" >&2
-  echo "       $0 [--worker codex|fable|opus|gemini] [--controller claude|fable|opus|codex|gemini] <job-description-file>" >&2
+  echo "usage: $0 [--worker codex|fable|opus|gemini] [--controller claude|fable|opus|codex|gemini] [--granularity fine|normal|coarse] <repo-path> <job-description>" >&2
+  echo "       $0 [--worker codex|fable|opus|gemini] [--controller claude|fable|opus|codex|gemini] [--granularity fine|normal|coarse] <job-description-file>" >&2
   echo "example: $0 /path/to/your/project \"Implement the requested feature in small safe steps.\"" >&2
   echo "example: $0 --worker fable --controller fable /path/to/your/project/job.txt" >&2
 }
 
 worker="${AI_LOOP_WORKER:-}"
 controller="${AI_LOOP_CONTROLLER:-}"
+granularity="${AI_LOOP_GRANULARITY:-normal}"
 while [ "$#" -gt 0 ]; do
   case "$1" in
     --worker)
@@ -20,6 +21,11 @@ while [ "$#" -gt 0 ]; do
     --controller)
       if [ "$#" -lt 2 ]; then usage; exit 2; fi
       controller="$2"
+      shift 2
+      ;;
+    --granularity)
+      if [ "$#" -lt 2 ]; then usage; exit 2; fi
+      granularity="$2"
       shift 2
       ;;
     *)
@@ -77,6 +83,7 @@ cmd=(
   --acceptance "The requested feature works."
   --acceptance "The test command passes."
   --wait
+  --granularity "$granularity"
 )
 
 if [ "${AI_LOOP_TEST_CMD:-}" != "" ]; then

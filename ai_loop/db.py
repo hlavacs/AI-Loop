@@ -69,6 +69,13 @@ def init_db(db_path: str | Path) -> None:
                 use_worktree INTEGER NOT NULL,
                 worker TEXT NOT NULL DEFAULT 'codex',
                 controller TEXT NOT NULL DEFAULT 'claude',
+                granularity TEXT NOT NULL DEFAULT 'normal',
+                plan_json TEXT NOT NULL DEFAULT '[]',
+                finish_requested INTEGER NOT NULL DEFAULT 0,
+                estimated_completed_units INTEGER NOT NULL DEFAULT 0,
+                estimated_remaining_units INTEGER NOT NULL DEFAULT 0,
+                estimated_remaining_seconds INTEGER,
+                waiting_until TEXT,
                 status TEXT NOT NULL,
                 history_summary TEXT NOT NULL DEFAULT '',
                 created_at TEXT NOT NULL,
@@ -145,6 +152,13 @@ def init_db(db_path: str | Path) -> None:
         )
         ensure_column(conn, "jobs", "worker", "worker TEXT NOT NULL DEFAULT 'codex'")
         ensure_column(conn, "jobs", "controller", "controller TEXT NOT NULL DEFAULT 'claude'")
+        ensure_column(conn, "jobs", "granularity", "granularity TEXT NOT NULL DEFAULT 'normal'")
+        ensure_column(conn, "jobs", "plan_json", "plan_json TEXT NOT NULL DEFAULT '[]'")
+        ensure_column(conn, "jobs", "finish_requested", "finish_requested INTEGER NOT NULL DEFAULT 0")
+        ensure_column(conn, "jobs", "estimated_completed_units", "estimated_completed_units INTEGER NOT NULL DEFAULT 0")
+        ensure_column(conn, "jobs", "estimated_remaining_units", "estimated_remaining_units INTEGER NOT NULL DEFAULT 0")
+        ensure_column(conn, "jobs", "estimated_remaining_seconds", "estimated_remaining_seconds INTEGER")
+        ensure_column(conn, "jobs", "waiting_until", "waiting_until TEXT")
 
 
 def ensure_column(conn: sqlite3.Connection, table: str, column: str, ddl: str) -> None:
@@ -157,7 +171,9 @@ def row_to_job(row: sqlite3.Row) -> dict[str, Any]:
     data = dict(row)
     data["constraints"] = from_json(data.pop("constraints_json"), [])
     data["acceptance"] = from_json(data.pop("acceptance_json"), [])
+    data["plan"] = from_json(data.pop("plan_json"), [])
     data["use_worktree"] = bool(data["use_worktree"])
+    data["finish_requested"] = bool(data["finish_requested"])
     return data
 
 
@@ -190,6 +206,8 @@ def create_job(
     use_worktree: bool,
     worker: str = "codex",
     controller: str = "claude",
+    granularity: str = "normal",
+    plan: list[str] | None = None,
 ) -> None:
     now = utc_now()
     conn.execute(
@@ -197,9 +215,10 @@ def create_job(
         INSERT INTO jobs (
             id, repo_path, worktree_path, branch, base_ref, goal, constraints_json,
             acceptance_json, test_cmd, max_iterations, use_worktree, worker,
-            controller, status, created_at, updated_at
+            controller, granularity, plan_json, estimated_remaining_units,
+            status, created_at, updated_at
         )
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'planning', ?, ?)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'planning', ?, ?)
         """,
         (
             job_id,
@@ -215,10 +234,66 @@ def create_job(
             1 if use_worktree else 0,
             worker,
             controller,
+            granularity,
+            to_json(plan or []),
+            len(plan or []),
             now,
             now,
         ),
     )
+    conn.execute("DELETE FROM progress_estimates WHERE job_id = ?", (job_id,))
+
+
+def update_job_estimate(
+    conn: sqlite3.Connection,
+    job_id: str,
+    *,
+    completed_units: int,
+    remaining_units: int,
+    remaining_seconds: int | None,
+) -> None:
+    current = conn.execute(
+        "SELECT estimated_completed_units FROM jobs WHERE id = ?",
+        (job_id,),
+    ).fetchone()
+    if current is not None:
+        completed_units = max(completed_units, int(current["estimated_completed_units"] or 0))
+    conn.execute(
+        """
+        UPDATE jobs
+        SET estimated_completed_units = ?, estimated_remaining_units = ?,
+            estimated_remaining_seconds = ?, updated_at = ?
+        WHERE id = ?
+        """,
+        (
+            max(0, completed_units),
+            max(0, remaining_units),
+            None if remaining_seconds is None else max(0, remaining_seconds),
+            utc_now(),
+            job_id,
+        ),
+    )
+    conn.execute("DELETE FROM progress_estimates WHERE job_id = ?", (job_id,))
+
+
+def set_waiting_for_tokens(
+    conn: sqlite3.Connection,
+    job_id: str,
+    waiting_until: str | None,
+    *,
+    task_id: str | None = None,
+    resume_status: str | None = None,
+) -> None:
+    status = "waiting_tokens" if waiting_until else (resume_status or "planning")
+    conn.execute(
+        "UPDATE jobs SET status = ?, waiting_until = ?, updated_at = ? WHERE id = ?",
+        (status, waiting_until, utc_now(), job_id),
+    )
+    if task_id is not None:
+        conn.execute(
+            "UPDATE tasks SET status = ?, updated_at = ? WHERE id = ?",
+            ("waiting_tokens" if waiting_until else "running", utc_now(), task_id),
+        )
 
 
 def get_job(conn: sqlite3.Connection, job_id: str) -> dict[str, Any]:

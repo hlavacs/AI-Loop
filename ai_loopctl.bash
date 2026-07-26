@@ -143,7 +143,7 @@ stop_job_processes() {
   for job_dir in "$root"/*; do
     [ -d "$job_dir" ] || continue
     job_id="$(basename "$job_dir")"
-    for name in watcher codex_worker claude_controller; do
+    for name in watcher worker controller codex_worker claude_controller; do
       file="$job_dir/$name.pid"
       [ -f "$file" ] || continue
       found=1
@@ -168,7 +168,7 @@ status_job_processes() {
   for job_dir in "$root"/*; do
     [ -d "$job_dir" ] || continue
     job_id="$(basename "$job_dir")"
-    for name in claude_controller codex_worker watcher; do
+    for name in controller worker watcher claude_controller codex_worker; do
       file="$job_dir/$name.pid"
       [ -f "$file" ] || continue
       found=1
@@ -188,13 +188,13 @@ status_job_processes() {
 stop_all() {
   stop_job_processes
   stop_one watcher watcher.py
-  stop_one codex_worker codex_worker.py
-  stop_one claude_controller claude_controller.py
+  stop_one worker worker.py
+  stop_one controller controller.py
 }
 
 status_all() {
-  status_one claude_controller claude_controller.py
-  status_one codex_worker codex_worker.py
+  status_one controller controller.py
+  status_one worker worker.py
   status_one watcher watcher.py
   status_job_processes
 }

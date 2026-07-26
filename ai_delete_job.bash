@@ -30,7 +30,7 @@ stop_job_processes() {
     return
   fi
 
-  for name in watcher codex_worker claude_controller; do
+  for name in watcher worker controller codex_worker claude_controller; do
     file="$job_dir/$name.pid"
     [ -f "$file" ] || continue
     pid="$(cat "$file" 2>/dev/null || true)"
@@ -48,7 +48,7 @@ import sys
 
 db_path = sys.argv[1]
 job_id = sys.argv[2]
-active_statuses = ("implementing", "fixing", "queued", "planning")
+active_statuses = ("implementing", "fixing", "queued", "planning", "waiting_tokens")
 
 conn = sqlite3.connect(db_path)
 conn.row_factory = sqlite3.Row
