@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import os
 import argparse
+import json
 import platform
 import shutil
 import signal
@@ -391,6 +392,7 @@ class LoopBackend:
                 "decisions": decisions,
                 "events": events,
                 "processes": self.process_status(job_id),
+                "redis_running": self.redis_running(),
                 "task_count": task_count,
                 "run_count": run_count,
                 "percent": percent,
@@ -926,6 +928,7 @@ class AiLoopGui(tk.Tk):
         self.protocol("WM_DELETE_WINDOW", self.on_close)
         self.selected_job_id: str | None = None
         self.resume_fields_job_id: str | None = None
+        self._refreshing_jobs = False
         self.watch_job_id: str | None = None
         self.last_status_by_job: dict[str, str] = {}
         self.alerted_human_needed: set[str] = set()
@@ -1149,7 +1152,7 @@ class AiLoopGui(tk.Tk):
         holder.grid(row=row, column=column, sticky="nsew")
         holder.rowconfigure(0, weight=1)
         holder.columnconfigure(0, weight=1)
-        text = tk.Text(holder, width=40, wrap=wrap)
+        text = tk.Text(holder, width=40, wrap=wrap, font=("TkDefaultFont", 11), padx=8, pady=8, spacing1=2, spacing3=4)
         y_scroll = ttk.Scrollbar(holder, orient="vertical", command=text.yview)
         text.configure(yscrollcommand=y_scroll.set)
         text.grid(row=0, column=0, sticky="nsew")
@@ -1158,47 +1161,60 @@ class AiLoopGui(tk.Tk):
             x_scroll = ttk.Scrollbar(holder, orient="horizontal", command=text.xview)
             text.configure(xscrollcommand=x_scroll.set)
             x_scroll.grid(row=1, column=0, sticky="ew")
+        setattr(text, "_ai_loop_read_only", True)
+        text.configure(state="disabled")
         return text
 
     def _build_detail_frame(self, parent: ttk.Frame) -> None:
-        notebook = self.help_widget(ttk.Notebook(parent), "Switch between the overview, status, logs, and task history views for the selected job.")
-        notebook.grid(row=0, column=0, sticky="nsew")
-
-        overview = ttk.Frame(notebook, padding=8)
-        plan_tab = ttk.Frame(notebook, padding=8)
-        status_tab = ttk.Frame(notebook, padding=8)
-        logs = ttk.Frame(notebook, padding=8)
-        history = ttk.Frame(notebook, padding=8)
-        notebook.add(status_tab, text="Status")
-        notebook.add(overview, text="Overview")
-        notebook.add(plan_tab, text="Plan")
-        notebook.add(logs, text="Logs")
-        notebook.add(history, text="Tasks/Runs")
-
-        overview.rowconfigure(1, weight=1)
-        overview.columnconfigure(0, weight=1)
-        self.summary_var = tk.StringVar(value="Select a job.")
-        self.summary_label = self.help_widget(
-            ttk.Label(
-                overview,
-                textvariable=self.summary_var,
-                font=("", 12, "bold"),
-                justify="left",
-                anchor="w",
-            ),
-            "Short summary of the selected job, including its status, controller, worker, and last update time.",
+        notebook = self.help_widget(
+            ttk.Notebook(parent),
+            "Switch between the plain-language plan, current task, system status, controller messages, worker reports, database details, and raw process logs.",
         )
-        self.summary_label.grid(row=0, column=0, sticky="ew")
-        overview.bind("<Configure>", self.update_summary_wrap)
-        self.detail_text = self.help_widget(self.add_scrolled_text(overview, 1, 0), "Full details for the selected job: repo, worktree, goal, history summary, and latest decision.")
-
-        plan_tab.rowconfigure(0, weight=1)
-        plan_tab.columnconfigure(0, weight=1)
+        notebook.grid(row=0, column=0, sticky="nsew")
+        plan_tab = ttk.Frame(notebook, padding=8)
+        task_tab = ttk.Frame(notebook, padding=8)
+        status_tab = ttk.Frame(notebook, padding=8)
+        controller_tab = ttk.Frame(notebook, padding=8)
+        worker_tab = ttk.Frame(notebook, padding=8)
+        details_tab = ttk.Frame(notebook, padding=8)
+        logs = ttk.Frame(notebook, padding=8)
+        for tab, label in (
+            (plan_tab, "Plan"),
+            (task_tab, "Task"),
+            (status_tab, "Status"),
+            (controller_tab, "Controller"),
+            (worker_tab, "Worker"),
+            (details_tab, "Details"),
+            (logs, "Logs"),
+        ):
+            notebook.add(tab, text=label)
+            tab.rowconfigure(0, weight=1)
+            tab.columnconfigure(0, weight=1)
         self.plan_text = self.help_widget(
             self.add_scrolled_text(plan_tab, 0, 0),
-            "Immutable enumerated overall plan captured when the job was created. Controller tasks may adapt beneath these milestones, but this plan does not change.",
+            "The fixed overall job plan in simple language. The highlighted line is the plan item most closely matching the current task.",
         )
-
+        self.plan_text.tag_configure("current_plan_item", background="#fff0a8", foreground="#202020", font=("TkDefaultFont", 11, "bold"))
+        self.task_text = self.help_widget(
+            self.add_scrolled_text(task_tab, 0, 0),
+            "The current task followed by a detailed explanation of its goal, progress, constraints, checks, and expected result.",
+        )
+        self.status_text = self.help_widget(
+            self.add_scrolled_text(status_tab, 0, 0),
+            "Current controller, worker, Redis, process, blocker, and suggested-solution status in plain language.",
+        )
+        self.controller_text = self.help_widget(
+            self.add_scrolled_text(controller_tab, 0, 0),
+            "Recent instructions and explanations sent by the controller, with the newest message first and raw JSON omitted.",
+        )
+        self.worker_text = self.help_widget(
+            self.add_scrolled_text(worker_tab, 0, 0),
+            "What the worker is doing now and the recent results it returned to the controller, including tests and changed files.",
+        )
+        self.detail_text = self.help_widget(
+            self.add_scrolled_text(details_tab, 0, 0),
+            "Extensive diagnostic details assembled from SQLite, process state, Redis state, progress estimates, tasks, runs, decisions, and events.",
+        )
         resume_frame = ttk.LabelFrame(parent, text="Resume / Change Controller", padding=8)
         resume_frame.grid(row=1, column=0, sticky="ew", pady=(8, 0))
         for column in range(6):
@@ -1245,11 +1261,7 @@ class AiLoopGui(tk.Tk):
             "CLI binary to use for the repair helper when the selected job needs a manual or assisted fix.",
         ).grid(row=4, column=1, columnspan=3, sticky="ew", pady=(5, 0))
         self.help_widget(ttk.Button(resume_frame, text="Fix It", command=self.fix_selected_job), "Run the selected binary to diagnose or repair the job, then resume it if successful.").grid(row=4, column=4, columnspan=2, sticky="e", pady=(5, 0))
-
-        status_tab.rowconfigure(0, weight=1)
-        status_tab.columnconfigure(0, weight=1)
-        self.status_text = self.help_widget(self.add_scrolled_text(status_tab, 0, 0), "Plain-language explanation of what the loop is doing now and why it is in this state.")
-
+        logs.rowconfigure(0, weight=0)
         logs.rowconfigure(1, weight=1)
         logs.columnconfigure(0, weight=1)
         log_bar = ttk.Frame(logs)
@@ -1261,10 +1273,6 @@ class AiLoopGui(tk.Tk):
         ).grid(row=0, column=0, padx=(0, 6))
         self.help_widget(ttk.Button(log_bar, text="Refresh Log", command=self.refresh_log), "Reload the selected log file from disk and jump to the end if it changed.").grid(row=0, column=1)
         self.log_text = self.help_widget(self.add_scrolled_text(logs, 1, 0), "Selected process log file, including controller, worker, or watcher output. Long lines wrap at the right edge so all text remains readable.")
-
-        history.rowconfigure(0, weight=1)
-        history.columnconfigure(0, weight=1)
-        self.history_text = self.help_widget(self.add_scrolled_text(history, 0, 0), "Task and run history for the selected job, with the newest entries first. Long lines wrap at the right edge.")
 
     def current_models(self) -> ModelDefaults:
         return ModelDefaults(
@@ -1351,8 +1359,8 @@ class AiLoopGui(tk.Tk):
         except Exception as exc:
             self.status_var.set(f"Refresh failed: {exc}")
             return
-
         selected = select_job_id or self.selected_job_id
+        self._refreshing_jobs = True
         expanded = {
             item
             for item in self.jobs_tree.get_children()
@@ -1416,15 +1424,20 @@ class AiLoopGui(tk.Tk):
             self.show_job(first)
         else:
             self.selected_job_id = None
-            self.summary_var.set("No jobs.")
-            self.set_text(self.detail_text, "")
-            self.set_text(self.plan_text, "")
-            self.set_text(self.status_text, "")
-            self.set_text(self.history_text, "")
-            self.set_text(self.log_text, "")
+            for widget in (
+                self.plan_text,
+                self.task_text,
+                self.status_text,
+                self.controller_text,
+                self.worker_text,
+                self.detail_text,
+                self.log_text,
+            ):
+                self.set_text(widget, "")
         self.update_system_status(jobs)
         self.update_jobs_selection_style()
         self.jobs_tree.update_idletasks()
+        self.after_idle(lambda: setattr(self, "_refreshing_jobs", False))
 
     def update_system_status(self, jobs: list[dict[str, Any]] | None = None) -> None:
         try:
@@ -1465,6 +1478,8 @@ class AiLoopGui(tk.Tk):
         self.after(1500, self._auto_refresh_tick)
 
     def on_job_selected(self, _event: object) -> None:
+        if self._refreshing_jobs:
+            return
         item = self.jobs_tree.focus()
         if not item:
             return
@@ -1474,73 +1489,267 @@ class AiLoopGui(tk.Tk):
         self.update_jobs_selection_style()
         self.show_job(job_id)
 
+    def current_task(self, details: dict[str, Any]) -> dict[str, Any] | None:
+        tasks = details.get("tasks", [])
+        active = next(
+            (task for task in tasks if str(task.get("status")) in {"queued", "running", "waiting_tokens"}),
+            None,
+        )
+        if active is not None:
+            return active
+        if str(details["job"].get("status")) in {"implementing", "fixing"} and tasks:
+            return tasks[0]
+        return None
+
+    def current_plan_index(self, details: dict[str, Any]) -> int | None:
+        job = details["job"]
+        if str(job.get("status")) == "done":
+            return None
+        task = self.current_task(details)
+        goal = str(task.get("goal") if task else "").lower()
+        if any(word in goal for word in ("inspect", "investigate", "audit", "analyze", "analyse", "discover")):
+            return 0
+        if any(word in goal for word in ("test", "validate", "verify", "pytest", "ctest", "cmake")):
+            return 2
+        if any(word in goal for word in ("final review", "acceptance", "finish", "release readiness")):
+            return 3
+        percent = int(details.get("percent", 0))
+        if percent < 15:
+            return 0
+        if percent < 75:
+            return 1
+        if percent < 92:
+            return 2
+        return 3
+
+    def plan_view_text(self, details: dict[str, Any]) -> tuple[str, int | None]:
+        job = details["job"]
+        plan = list(job.get("plan") or [])
+        if not plan:
+            return "No overall plan was recorded for this older job.", None
+        current = self.current_plan_index(details)
+        current = min(current, len(plan) - 1) if current is not None else None
+        lines: list[str] = []
+        for index, item in enumerate(plan):
+            if str(job.get("status")) == "done" or (current is not None and index < current):
+                marker, suffix = "✓", " — completed"
+            elif index == current:
+                marker, suffix = "▶", " — CURRENTLY WORKING HERE"
+            else:
+                marker, suffix = "○", ""
+            lines.append(f"{marker} {index + 1}. {item}{suffix}")
+        lines.extend(["", "Legend: ▶ current step    ✓ completed step    ○ later step"])
+        return "\n\n".join(lines), current
+
+    def task_view_text(self, details: dict[str, Any]) -> str:
+        task = self.current_task(details)
+        if task is None:
+            status = str(details["job"].get("status"))
+            return f"There is no current worker task.\n\nThe job status is {status}. The controller may still be preparing the next instruction."
+        status = str(task.get("status"))
+        explanations = {
+            "queued": "The task is ready and waiting for the worker to start.",
+            "running": "The worker is carrying out this task now.",
+            "waiting_tokens": "Work is paused until model tokens replenish; it will resume automatically.",
+            "completed": "The worker finished this task and returned the result to the controller.",
+            "failed": "The task stopped with a failure and needs controller review or repair.",
+        }
+        lines = [
+            "CURRENT TASK",
+            str(task.get("goal") or "No task goal was recorded."),
+            "",
+            "What is happening",
+            explanations.get(status, f"The task is in state {status}."),
+            f"Task number: {task.get("iteration")}",
+            f"Task id: {task.get("id")}",
+            f"Last update: {task.get("updated_at")}",
+            "",
+            "Detailed instructions",
+        ]
+        constraints = list(task.get("constraints") or [])
+        lines.extend([f"{index}. {item}" for index, item in enumerate(constraints, start=1)] or ["No extra constraints were recorded."])
+        lines.extend(["", "How completion will be checked"])
+        acceptance = list(task.get("acceptance") or [])
+        lines.extend([f"{index}. {item}" for index, item in enumerate(acceptance, start=1)] or ["No task-specific acceptance checks were recorded."])
+        lines.extend(["", f"Validation command: {task.get("test_cmd") or "none"}"])
+        matching_run = next((run for run in details.get("runs", []) if run.get("task_id") == task.get("id")), None)
+        if matching_run:
+            changed = ", ".join(matching_run.get("changed_files") or []) or "none recorded"
+            test_result = "passed" if matching_run.get("test_rc") == 0 else "failed or did not run"
+            lines.extend([
+                "",
+                "Latest result for this task",
+                f"Worker result: {matching_run.get("status")}",
+                f"Tests: {test_result}",
+                f"Changed files: {changed}",
+            ])
+            if matching_run.get("error"):
+                lines.append(f"Problem reported: {matching_run.get("error")}")
+        return "\n".join(lines)
+
+    def blockers(self, details: dict[str, Any]) -> list[tuple[str, str]]:
+        job = details["job"]
+        status = str(job.get("status"))
+        processes = details.get("processes", {})
+        latest_run = details.get("runs", [None])[0] if details.get("runs") else None
+        latest_decision = details.get("decisions", [None])[0] if details.get("decisions") else None
+        result: list[tuple[str, str]] = []
+        if not details.get("redis_running", False) and status in ACTIVE_STATUSES:
+            result.append(("Redis is offline, so controller and worker messages cannot be delivered.", "Open System and choose Start Redis, or start the configured Redis service."))
+        if status == "waiting_tokens":
+            until = job.get("waiting_until") or "the recorded reset time"
+            result.append((f"The selected model has temporarily run out of tokens. Waiting until {until} plus one minute.", "No action is normally needed; the loop resumes automatically."))
+        if status == "human_needed":
+            reason = str(latest_decision.get("reason") if latest_decision else job.get("history_summary") or "Human input was requested.")
+            result.append((reason, "Read the suggested actions below, correct the external problem, then use Apply + Resume."))
+        if status == "dead":
+            result.append(("The loop stopped after an internal or process failure.", "Inspect Controller, Worker, Details, and Logs; fix the reported cause and then resume."))
+        controller = processes.get("controller", {})
+        worker = processes.get("worker", {})
+        if status == "planning" and not controller.get("running"):
+            result.append(("The job is planning but the controller process is not running.", "Use Resume. If it stops again, inspect the Controller tab and controller log."))
+        if status in {"queued", "implementing", "fixing"} and not worker.get("running"):
+            result.append(("Worker work is pending but the worker process is not running.", "Use Resume. If the worker exits again, inspect the Worker tab and worker log."))
+        if latest_run and latest_run.get("error"):
+            result.append((f"The latest worker run reported: {latest_run.get("error")}", "Inspect the Worker and Logs tabs, then let the controller create a repair or use Fix It."))
+        elif latest_run and latest_run.get("test_rc") not in {None, 0}:
+            result.append(("The latest validation command failed.", "Read the Worker test result and let the controller issue a repair task."))
+        return result
+
     def plain_status_text(self, details: dict[str, Any]) -> str:
         job = details["job"]
-        tasks = details.get("tasks", [])
-        runs = details.get("runs", [])
-        decisions = details.get("decisions", [])
-        processes = details.get("processes", {})
-        latest_task = tasks[0] if tasks else None
-        latest_run = runs[0] if runs else None
-        latest_decision = decisions[0] if decisions else None
-        process_lines = [
-            f"- {PROCESS_LABELS.get(name, name)}: {'running' if info['running'] else 'stopped'} pid={info['pid'] or '-'}"
-            for name, info in processes.items()
-        ]
-        status = str(job["status"])
-        if status in {"queued", "planning"}:
-            now_line = "The controller has planned or is planning the next step; the worker has not finished it yet."
-        elif status in {"implementing", "fixing"}:
-            now_line = "The worker is editing or diagnosing the job worktree, then it will run the configured test command."
-        elif status == "waiting_tokens":
-            now_line = f"The loop is waiting for model tokens to replenish, then it will resume automatically after {job.get('waiting_until') or 'the recorded reset time'}."
-        elif status == "human_needed":
-            now_line = "The loop stopped because it needs operator input before it can continue."
-        elif status == "dead":
-            now_line = "The loop stopped because an internal controller/worker error was recorded."
-        elif status == "done":
-            now_line = "The controller marked the job complete."
-        else:
-            now_line = f"The job is in state {status}."
-
-        recent_done = next((t['goal'] for t in tasks if t['status'] == 'completed'), 'none in the recent window')
-        changed_files = ', '.join(latest_run.get('changed_files', [])) if latest_run else '-'
+        task = self.current_task(details)
+        status = str(job.get("status"))
+        status_explanations = {
+            "planning": "The controller is deciding what the worker should do next.",
+            "queued": "A task is ready and waiting for the worker.",
+            "implementing": "The worker is changing the repository and will run the configured checks.",
+            "fixing": "The worker is repairing or diagnosing a failed result.",
+            "waiting_tokens": "Work is paused until model tokens replenish, then it will resume automatically.",
+            "human_needed": "Automation cannot continue safely without human input.",
+            "dead": "The loop stopped after an internal failure.",
+            "done": "The controller confirmed that the job is complete.",
+        }
         lines = [
-            "What is happening now",
-            now_line,
+            "SYSTEM STATUS",
+            f"Job: {job.get("id")}",
+            f"State: {status}",
+            status_explanations.get(status, f"The job is in state {status}."),
+            f"Progress: {details.get("percent")}% complete; about {self.duration_text(details.get("remaining"))} remaining.",
+            f"Redis message service: {"online" if details.get("redis_running") else "offline"}",
             "",
-            "Who is doing what",
-            *process_lines,
-            "- controller: decides whether to continue, repair, finish, or ask for help after each worker run.",
-            "- worker: performs the current task in the worktree and runs tests.",
-            "- watcher: reports terminal done/human/dead events.",
-            "",
-            "Current or latest task",
-            f"- id: {latest_task['id'] if latest_task else '-'}",
-            f"- status: {latest_task['status'] if latest_task else '-'}",
-            f"- goal: {latest_task['goal'] if latest_task else '-'}",
-            "",
-            "Latest run result",
-            f"- run: {latest_run['id'] if latest_run else '-'}",
-            f"- worker rc: {latest_run['codex_rc'] if latest_run else '-'}",
-            f"- test rc: {latest_run['test_rc'] if latest_run else '-'}",
-            f"- changed files: {changed_files}",
-            "",
-            "Why the loop is doing this",
-            str(latest_decision['reason'] if latest_decision else job.get('history_summary') or 'No controller decision recorded yet.'),
-            "",
-            "What has been done",
-            f"- recent completed task: {recent_done}",
-            f"- completed work estimate: {details['percent']}% ({job.get('estimated_completed_units', 0)} logical units completed).",
-            f"- estimated remaining work: {job.get('estimated_remaining_units', 0)} logical units, about {self.duration_text(details['remaining'])}.",
-            f"- tasks: {details['task_count']}; runs: {details['run_count']}.",
-            "",
-            "Still to do after the current step",
-            "- If tests pass, the controller reviews the diff and either plans the next task at the selected granularity or marks the job done.",
-            "- If tests or behavior checks fail, the controller asks the worker for a narrower repair/diagnostic task.",
-            "- If quota, credentials, missing tools, or an internal crash blocks automation, the job enters human_needed/dead and can be resumed or fixed from the GUI.",
+            "CONTROLLER",
+            f"Selected controller: {job.get("controller")}",
         ]
+        controller_info = details.get("processes", {}).get("controller", {})
+        lines.append(f"Process: {"running" if controller_info.get("running") else "stopped"}; pid {controller_info.get("pid") or "-"}")
+        lines.append("Role: reviews worker results and sends the next task or marks the job complete.")
+        lines.extend(["", "WORKER", f"Selected worker: {job.get("worker")}"])
+        worker_info = details.get("processes", {}).get("worker", {})
+        lines.append(f"Process: {"running" if worker_info.get("running") else "stopped"}; pid {worker_info.get("pid") or "-"}")
+        lines.append(f"Current task: {task.get("goal") if task else "none"}")
+        lines.extend(["", "BLOCKERS AND SOLUTIONS"])
+        blockers = self.blockers(details)
+        if blockers:
+            for index, (problem, solution) in enumerate(blockers, start=1):
+                lines.extend([f"{index}. Problem: {problem}", f"   Solution: {solution}"])
+        else:
+            lines.append("No blocker is currently visible. The loop can continue automatically.")
         return "\n".join(lines)
+
+    def compact_output(self, value: Any, limit: int = 1800) -> str:
+        lines = [line.strip() for line in str(value or "").splitlines() if line.strip()]
+        text = "\n".join(lines)
+        if len(text) > limit:
+            return "…\n" + text[-limit:]
+        return text or "No written report was recorded."
+
+    def controller_view_text(self, details: dict[str, Any]) -> str:
+        decisions = details.get("decisions", [])
+        if not decisions:
+            return "No controller message has been recorded yet. The controller may still be preparing the first task."
+        lines = ["CONTROLLER MESSAGES — NEWEST FIRST", ""]
+        action_text = {
+            "CONTINUE": "Continue with another task.",
+            "REPAIR": "Repair a problem found in the previous result.",
+            "DONE": "The job is complete; no more worker task is needed.",
+            "HUMAN_NEEDED": "Automation needs human help before it can continue.",
+        }
+        for index, decision in enumerate(decisions, start=1):
+            try:
+                payload = json.loads(str(decision.get("decision_json") or "{}"))
+            except (TypeError, json.JSONDecodeError):
+                payload = {}
+            action = str(decision.get("action") or "unknown")
+            next_task = payload.get("next_task") if isinstance(payload, dict) else None
+            lines.extend([
+                f"MESSAGE {index} — {decision.get("created_at")}",
+                action_text.get(action, f"Controller action: {action}."),
+                f"Why: {decision.get("reason") or "No explanation was recorded."}",
+            ])
+            if isinstance(next_task, dict):
+                lines.extend(["Instruction sent to the worker:", str(next_task.get("goal") or "No task goal was recorded.")])
+                acceptance = list(next_task.get("acceptance") or [])
+                if acceptance:
+                    lines.append("The controller will accept this task when:")
+                    lines.extend(f"- {item}" for item in acceptance)
+                lines.append(f"Validation command: {next_task.get("test_cmd") or "none"}")
+            else:
+                lines.append("No new worker instruction was sent with this message.")
+            lines.append("")
+        return "\n".join(lines).rstrip()
+
+    def worker_view_text(self, details: dict[str, Any]) -> str:
+        task = self.current_task(details)
+        lines = ["WORKER ACTIVITY", f"Worker: {details["job"].get("worker")}"]
+        if task and str(task.get("status")) in {"queued", "running", "waiting_tokens"}:
+            lines.extend([f"Current task state: {task.get("status")}", f"What it is doing: {task.get("goal")}"])
+        else:
+            lines.append("The worker has no active task right now.")
+        runs = details.get("runs", [])
+        if not runs:
+            lines.extend(["", "No worker result has been returned yet."])
+            return "\n".join(lines)
+        lines.extend(["", "RESULTS SENT BACK TO THE CONTROLLER — NEWEST FIRST"])
+        for index, run in enumerate(runs[:5], start=1):
+            worker_ok = run.get("codex_rc") == 0
+            test_rc = run.get("test_rc")
+            test_text = "passed" if test_rc == 0 else ("failed" if test_rc is not None else "not run")
+            changed = ", ".join(run.get("changed_files") or []) or "none recorded"
+            lines.extend([
+                "",
+                f"RESULT {index} — task {run.get("task_id")}",
+                f"Worker execution: {"completed" if worker_ok else "failed"}",
+                f"Validation: {test_text}",
+                f"Changed files: {changed}",
+            ])
+            if run.get("diff_stat"):
+                lines.append(f"Change summary: {str(run.get("diff_stat")).strip()}")
+            if run.get("error"):
+                lines.append(f"Problem: {run.get("error")}")
+            lines.extend(["Worker report:", self.compact_output(run.get("codex_output"))])
+            if test_rc not in {None, 0}:
+                lines.extend(["Validation output:", self.compact_output(run.get("test_output"), 1200)])
+        return "\n".join(lines)
+
+    def details_view_text(self, details: dict[str, Any]) -> str:
+        snapshot = {
+            "computed": {
+                "percent": details.get("percent"),
+                "remaining_seconds": details.get("remaining"),
+                "task_count": details.get("task_count"),
+                "run_count": details.get("run_count"),
+                "redis_running": details.get("redis_running"),
+                "current_plan_index": self.current_plan_index(details),
+            },
+            "processes": details.get("processes"),
+            "job": details.get("job"),
+            "tasks": details.get("tasks"),
+            "runs": details.get("runs"),
+            "decisions": details.get("decisions"),
+            "events": details.get("events"),
+        }
+        return "EXTENSIVE DIAGNOSTIC DETAILS\nNewest tasks, runs, decisions, and events are listed first.\n\n" + json.dumps(snapshot, indent=2, ensure_ascii=False, default=str)
 
     def explain_selected_status(self) -> None:
         job_id = self.selected_job_or_error()
@@ -1554,86 +1763,41 @@ class AiLoopGui(tk.Tk):
         self.set_text(self.status_text, self.plain_status_text(details))
         self.status_var.set(f"Status explanation refreshed for {job_id}")
 
+    def set_choice_if_changed(self, variable: tk.StringVar, value: str) -> None:
+        if variable.get() != value:
+            variable.set(value)
+
     def show_job(self, job_id: str) -> None:
         try:
             details = self.backend.job_details(job_id)
         except Exception as exc:
-            self.summary_var.set(f"Could not load {job_id}: {exc}")
+            self.status_var.set(f"Could not load {job_id}: {exc}")
             return
         job = details["job"]
         if self.resume_fields_job_id != job_id:
-            self.resume_controller_var.set(str(job["controller"]))
-            self.resume_worker_var.set(str(job["worker"]))
-            self.resume_granularity_var.set(str(job["granularity"]))
+            self.set_choice_if_changed(self.resume_controller_var, str(job.get("controller")))
+            self.set_choice_if_changed(self.resume_worker_var, str(job.get("worker")))
+            self.set_choice_if_changed(self.resume_granularity_var, str(job.get("granularity")))
             self.extra_constraint_var.set("")
             self.extra_acceptance_var.set("")
             self.resume_fields_job_id = job_id
-        self.summary_var.set(
-            f"{job_id}  {job['status']}  {details['percent']}% done, about {self.duration_text(details['remaining'])} remaining  "
-            f"controller={job['controller']} worker={job['worker']} granularity={job['granularity']} updated={job['updated_at']}"
-        )
-        process_lines = [
-            f"{PROCESS_LABELS.get(name, name)}: {'running' if info['running'] else 'stopped'} pid={info['pid'] or '-'}"
-            for name, info in details["processes"].items()
-        ]
-        latest_decision = details["decisions"][0] if details["decisions"] else None
-        text = [
-            f"Repo: {job['repo_path']}",
-            f"Worktree: {job['worktree_path']}",
-            f"Branch: {job['branch'] or '-'}",
-            f"Base ref: {job['base_ref']}",
-            f"Test command: {job['test_cmd']}",
-            f"Granularity: {job['granularity']}",
-            f"Finish soon requested: {'yes' if job['finish_requested'] else 'no'}",
-            f"Progress estimate: {details['percent']}% done; {job.get('estimated_completed_units', 0)} work units complete; {job.get('estimated_remaining_units', 0)} remaining; about {self.duration_text(details['remaining'])} remaining",
-            "",
-            "Processes:",
-            *process_lines,
-            "",
-            "History summary:",
-            str(job["history_summary"] or ""),
-            "",
-            "Goal:",
-            str(job["goal"]),
-        ]
-        if latest_decision:
-            text.extend(["", "Latest decision:", f"{latest_decision['action']}: {latest_decision['reason']}"])
-        if str(job["status"]) == "human_needed":
-            text.extend(["", "Suggested actions:", *self.human_needed_actions(job, details)])
-        self.set_text(self.detail_text, "\n".join(text))
-        plan_lines = [f"{index}. {item}" for index, item in enumerate(job.get("plan", []), start=1)]
-        self.set_text(self.plan_text, "\n\n".join(plan_lines) or "No static plan was recorded for this older job.")
+        plan_text, current_plan = self.plan_view_text(details)
+        self.set_text(self.plan_text, plan_text)
+        self.plan_text.tag_remove("current_plan_item", "1.0", "end")
+        if current_plan is not None:
+            line = 1 + (current_plan * 2)
+            self.plan_text.tag_add("current_plan_item", f"{line}.0", f"{line}.end")
+        self.set_text(self.task_text, self.task_view_text(details))
         self.set_text(self.status_text, self.plain_status_text(details))
-
-        history_lines: list[str] = ["Tasks:"]
-        for task in details["tasks"]:
-            history_lines.append(f"- iter {task['iteration']} {task['id']} {task['status']} updated={task['updated_at']}")
-            history_lines.append(f"  {task['goal']}")
-        history_lines.append("")
-        history_lines.append("Runs:")
-        for run in details["runs"]:
-            history_lines.append(
-                f"- iter {run['iteration']} {run['id']} {run['status']} codex_rc={run['codex_rc']} test_rc={run['test_rc']} finished={run['finished_at']}"
-            )
-            if run.get("error"):
-                history_lines.append(f"  error: {run['error']}")
-            if run.get("diff_stat"):
-                history_lines.append(f"  diff: {run['diff_stat'].strip()}")
-        history_lines.append("")
-        history_lines.append("Recent events:")
-        for event in details["events"]:
-            history_lines.append(f"- {event['created_at']} {event['kind']} {event['payload_json']}")
-        self.set_text(self.history_text, "\n".join(history_lines))
+        self.set_text(self.controller_text, self.controller_view_text(details))
+        self.set_text(self.worker_text, self.worker_view_text(details))
+        self.set_text(self.detail_text, self.details_view_text(details))
         self.refresh_log()
-
-    def update_summary_wrap(self, event: tk.Event) -> None:
-        width = max(240, int(getattr(event, "width", 600)) - 20)
-        self.summary_label.configure(wraplength=width)
 
     def human_needed_actions(self, job: dict[str, Any], details: dict[str, Any]) -> list[str]:
         actions = [
             "- Inspect the latest controller and worker logs in the Logs tab.",
-            "- Read the latest decision reason and history summary above.",
+            "- Read the controller explanation in Controller and the stored history in Details.",
             "- Choose controller/worker values in Resume / Change Controller, then click Apply + Resume.",
             "- Add an extra constraint or acceptance criterion before resuming if the next step needs correction.",
             "- Click Stop Job if stale processes are still running.",
@@ -1645,7 +1809,7 @@ class AiLoopGui(tk.Tk):
             actions.insert(0, "- Some job processes appear to be running; stop them before manual cleanup if they look stuck.")
         latest_run = details["runs"][0] if details.get("runs") else None
         if latest_run and (latest_run.get("codex_rc") not in {0, None} or latest_run.get("test_rc") not in {0, None}):
-            actions.insert(0, "- Latest run or test command failed; inspect the latest run output in Tasks/Runs and worker log.")
+            actions.insert(0, "- Latest run or test command failed; inspect the latest run output in Worker and Details and worker log.")
         if str(job.get("controller")) != "opus":
             actions.append("- Consider switching the controller to opus before resuming.")
         return actions
@@ -1719,9 +1883,11 @@ class AiLoopGui(tk.Tk):
         widget.insert("1.0", text)
         if yview:
             widget.yview_moveto(yview[0])
+        if getattr(widget, "_ai_loop_read_only", False):
+            widget.configure(state="disabled")
         return True
-
     @staticmethod
+
     def duration_text(seconds: int | None) -> str:
         if seconds is None:
             return "unknown time"
@@ -1772,7 +1938,6 @@ class AiLoopGui(tk.Tk):
             messagebox.showerror("Resume Failed", str(exc))
             return
         self.watch_job_id = job_id
-        self.resume_fields_job_id = None
         self.refresh_all(select_job_id=job_id)
 
     def finish_soon_selected_job(self) -> None:

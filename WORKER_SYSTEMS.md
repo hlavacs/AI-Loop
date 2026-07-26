@@ -209,13 +209,7 @@ Every controller decision estimates completed work units, remaining work units, 
 
 The remaining duration becomes a predicted end time and counts down between decisions. If no controller estimate exists—especially for migrated old jobs—the prior run/task heuristic and smoothed observed progress rate are used as a fallback.
 
-The GUI Status and Overview views show:
-
-- percent complete
-- completed logical work units
-- remaining logical work units
-- remaining duration
-- total task and run counts
+The GUI separates information into Plan, Task, Status, Controller, Worker, Details, and Logs tabs. Status shows percent complete, logical work estimates, remaining duration, process health, blockers, and solutions. Details contains the extensive database and runtime snapshot. All display text boxes are read-only, word-wrapped, and rewritten only when their generated content changes.
 
 CLI status tools show percent and remaining time.
 

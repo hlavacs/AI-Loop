@@ -160,11 +160,13 @@ Granularity is independent of the selected model. It can be changed in the resum
 
 ### Dashboard tabs
 
-- `Status`: plain-language current state, active processes, current task, completed-work estimate, remaining work units, and remaining time.
-- `Overview`: repository/worktree details, configuration, goal, history summary, and latest decision.
-- `Plan`: immutable enumerated overall plan.
-- `Logs`: controller, worker, or watcher log. Long lines wrap at the right edge.
-- `Tasks/Runs`: recent task statuses, test results, diffs, errors, and events.
+- `Plan`: the immutable overall plan as a simple enumerated list. Completed items are marked, and the item matching current work is visibly highlighted.
+- `Task`: repeats the current task, then explains its state, detailed instructions, constraints, acceptance checks, validation command, and latest result.
+- `Status`: current job, Redis, controller, worker, progress, visible blockers, and practical blocker solutions.
+- `Controller`: recent controller instructions and reasons in plain language, newest first.
+- `Worker`: what the worker is doing and the recent results it returned, including tests and changed files.
+- `Details`: extensive diagnostic data assembled from SQLite, process state, Redis, estimates, tasks, runs, decisions, and events.
+- `Logs`: the existing controller, worker, or watcher log view. Long lines wrap at the right edge.
 
 The GUI checks text before rewriting a text box. Unchanged content is left alone, preserving selection and scroll position. Every GUI element has hover help, and tooltips use readable wrapped text.
 
