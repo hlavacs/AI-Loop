@@ -193,6 +193,8 @@ Run it from the repository:
 
 The launcher asks only for the password. The input is hidden and exported only to the AI-Loop processes started by that script. The password is not written to the launcher or the job database. Keep the launcher outside the repository so its fixed account settings are not committed. Notification delivery failures are recorded as events and do not erase a successful job result.
 
+> **SMTP port remark:** The example uses implicit SSL on port `465`. If your provider uses STARTTLS, port `587` is the common choice. Set `AI_LOOP_SMTP_PORT="587"`, `AI_LOOP_SMTP_SSL="0"`, and `AI_LOOP_SMTP_STARTTLS="1"`. Use the values published by your email provider if they differ.
+
 For an active job, the watcher sends a progress email after 12 hours and then once every 12 hours until the job reaches a terminal state. The email includes the current status, progress estimate, remaining-time estimate, controller, worker, task and run counts, current task, and latest controller summary. The last attempt is stored in SQLite, so restarting the watcher does not restart the 12-hour interval.
 
 ## Graphical user interface
