@@ -1,27 +1,27 @@
 # AI-Loop
 
-AI coding agents are effective at individual changes, but substantial repository work often needs many cycles of planning, implementation, testing, review, and correction. A single interactive session can lose context, stop at a token limit, or require repeated human prompts before the complete goal is reached.
+Coding agents work well on focused changes. Larger jobs are harder. They may span many files and need several rounds of implementation, testing, and review. A chat session can run out of context or stop at a usage limit before the repository is ready.
 
-AI-Loop turns that process into a durable job. You describe the desired outcome once; a controller breaks it into testable tasks and reviews the results, while a worker changes the repository and runs validation. The loop continues until the acceptance criteria are satisfied, genuine human input is required, or you decide to stop it.
+AI-Loop runs this work as a persistent job. You provide a repository and a goal. A controller creates tasks and reviews the results. A worker edits the code and runs the validation command. The job continues until the goal is complete, it needs your input, or you stop it.
 
-## What can you use AI-Loop for?
+## Typical uses
 
-AI-Loop is intended for development work that is larger than a single prompt, including:
+AI-Loop is useful for work that is too large for one prompt:
 
-- Implementing a feature that spans multiple files, components, tests, and documentation.
-- Refactoring or migrating an existing codebase while repeatedly checking that behavior remains correct.
-- Investigating and fixing a failing build or test suite through several diagnose-and-repair cycles.
-- Adding test coverage, resolving related defects, and reviewing the complete result against explicit acceptance criteria.
-- Running a long development task unattended while retaining enough state to inspect, stop, or resume it later.
-- Assigning different models or providers to planning/review and implementation—for example, Claude as controller and Codex as worker.
+- Build a feature that touches several files, tests, and documentation.
+- Refactor or migrate a codebase while checking that behavior stays correct.
+- Diagnose and repair a failing build or test suite.
+- Add test coverage and fix the problems exposed by those tests.
+- Run a long development task unattended, then inspect or resume it later.
+- Use different models for review and implementation. For example, Claude can control the job while Codex performs the edits.
 
-AI-Loop is especially useful when success can be expressed as a clear repository goal plus an executable validation command. It does not remove the need for human judgment on product decisions, credentials, destructive operations, or requirements that cannot be verified from the repository.
+AI-Loop works best when the goal is clear and the result can be checked with a command. Product decisions, credentials, destructive operations, and unclear requirements still need human attention.
 
-## Why use a durable loop?
+## Why keep the job state?
 
-Every job has a persistent plan, task history, model decisions, run results, progress estimates, and terminal state. If a process crashes or a model reaches a token limit, the job can wait or resume without treating the entire effort as a disposable chat session. You can watch the work in the GUI, inspect controller and worker logs, change the model or task granularity, finish early, or preserve the work for later.
+AI-Loop stores the plan, tasks, model decisions, run results, progress, and final state. If a process crashes or a model reaches a usage limit, the job can wait and continue later. The GUI lets you inspect the work, change models or task size, stop early, and resume when you are ready.
 
-Jobs normally run in isolated Git worktrees, protecting the original checkout while work is in progress. Codex, Claude, and Gemini-compatible CLIs can be used independently as controller or worker. SQLite stores durable state, Redis Streams coordinate the processes, and the optional Tkinter dashboard exposes the complete lifecycle.
+Jobs normally run in isolated Git worktrees, so the original checkout stays separate from work in progress. Codex, Claude, and Gemini-compatible CLIs can each act as controller or worker. SQLite stores the job state. Redis Streams coordinate the processes. The Tkinter GUI shows what is happening.
 
 ## What you get
 
@@ -54,7 +54,7 @@ Optional:
 - A local `sendmail` command or an SMTP account for email
 - Bash for the convenience launchers
 
-Supported role choices are `claude`, `codex`, `fable`, `opus`, and `gemini` for workers and controllers. `fable` and `opus` are retained as Claude CLI aliases with separate legacy model settings; the GUI presents the simpler binary-plus-model controls.
+Supported role choices are `claude`, `codex`, `fable`, `opus`, and `gemini` for workers and controllers. `fable` and `opus` remain available as Claude CLI aliases with separate legacy model settings. The GUI uses simpler binary and model controls.
 
 ### Linux installation
 
@@ -84,7 +84,7 @@ gemini --version
 
 ### macOS installation
 
-Install Python, Git, and Redis with your preferred package manager, then create the same `.venv` shown above. The GUI includes a separate macOS hibernation helper; changing hibernation mode invokes `sudo pmset` only after confirmation.
+Install Python, Git, and Redis with your preferred package manager, then create the same `.venv` shown above. The GUI includes a separate macOS hibernation helper. Changing hibernation mode invokes `sudo pmset` only after confirmation.
 
 ### Windows installation
 
@@ -93,7 +93,7 @@ Install Python with Tkinter, Git, and Redis or a Redis-compatible service. Run t
 ### Verify the installation
 
 ```bash
-python3 -c "import redis, tkinter; print('Python dependencies OK')"
+python3 -c "import redis, tkinter"
 git --version
 redis-cli ping
 python3 -m py_compile controller.py worker.py start_job.py resume_job.py ai_loop_gui.py ai_loop/*.py
@@ -128,7 +128,7 @@ All settings are optional unless your environment needs an override.
 | `AI_LOOP_WORKER_ROLE_MODEL` | Model selected specifically for the worker process | provider model above |
 | `CODEX_BYPASS_SANDBOX` | Allow unrestricted worker execution | false in Python entry points |
 | `AI_LOOP_NOTIFY_EMAIL` | Terminal notification recipient | `helmut.hlavacs@univie.ac.at` |
-| `AI_LOOP_SMTP_HOST` | SMTP server; empty uses local `sendmail` | empty |
+| `AI_LOOP_SMTP_HOST` | SMTP server. Empty uses local `sendmail` | empty |
 | `AI_LOOP_SMTP_PORT` | SMTP port | 587, or 465 with SSL |
 | `AI_LOOP_SMTP_USER`, `AI_LOOP_SMTP_PASSWORD` | SMTP authentication | empty |
 | `AI_LOOP_SMTP_FROM` | Sender address | SMTP user or recipient |
@@ -170,7 +170,7 @@ install command. If the selected Python lacks `redis-py`, the GUI creates
 `.gui-venv`, installs `redis`, and restarts itself.
 
 When a job is created, the GUI also checks its selected Codex, Claude, or Gemini
-CLIs. It attempts to install a missing standard CLI through npm; if npm is
+CLIs. It attempts to install a missing standard CLI through npm. If npm is
 missing, it first attempts to install npm. Provider authentication remains an
 interactive account-security step. If a Claude or Codex controller reports an
 expired or missing login, the GUI recognizes the authentication failure, offers
@@ -183,7 +183,7 @@ to start a local server when `REDIS_URL` points at localhost.
 
 ![AI-Loop GUI with job creation, controller and worker selection, job status, logs, and resume controls](docs/images/ai-loop-gui.png)
 
-The window is split into a job-management area on the left and a job-inspection area on the right. Drag the divider to give either side more room; form controls reduce their minimum widths as the left side narrows.
+The window is split into a job-management area on the left and a job-inspection area on the right. Drag the divider to give either side more room. Form controls reduce their minimum widths as the left side narrows.
 
 The top toolbar contains the global controls:
 
@@ -211,7 +211,7 @@ Hover over a control to see its purpose. Text views update only when their gener
 ### Create a job
 
 1. Choose the repository folder.
-2. Enter the Goal. `Goal File` loads a text file; `Clear Goal` empties the existing Goal field.
+2. Enter the Goal. `Goal File` loads a text file. `Clear Goal` empties the existing Goal field.
 3. Set the validation command or leave `auto` selected.
 4. Choose a binary and optional model independently for the controller and worker. Switching a binary restores the model last entered for that role and binary.
 5. Choose the task granularity.
@@ -283,7 +283,7 @@ python3 start_job.py \
   --wait
 ```
 
-Without `--wait`, submission returns immediately. `--timeout 0` waits indefinitely; a positive timeout limits only the foreground waiter, not the background job.
+Without `--wait`, submission returns immediately. `--timeout 0` waits indefinitely. A positive timeout limits only the foreground waiter, not the background job.
 
 Inspect and operate jobs:
 
@@ -357,7 +357,7 @@ Check the GUI child row or:
 
 ### The job is waiting for tokens
 
-This is not an error. The Status tab shows `waiting_until`. Keep the job process alive; it retries automatically after the recorded time plus one minute.
+This is not an error. The Status tab shows `waiting_until`. Keep the job process alive. It retries automatically after the recorded time plus one minute.
 
 ### Email was not delivered
 
@@ -372,7 +372,7 @@ open a browser for account approval. The GUI runs the CLI's authentication
 status check afterward and resumes only when it succeeds.
 
 Gemini authentication is detected, but its CLI does not expose the same stable
-status/login command pair; authenticate Gemini manually and then use
+status/login command pair. Authenticate Gemini manually and then use
 `Apply + Resume`.
 
 ### Redis is unavailable
@@ -396,8 +396,8 @@ use the command-line entry points.
 - New jobs create a pre-job snapshot commit when the target checkout is dirty, then copy that checkout overlay into the isolated worktree.
 - Workers are instructed not to commit or merge.
 - Successful promotion refuses paths with local target-checkout conflicts.
-- `CODEX_BYPASS_SANDBOX=1` grants broad execution authority; use it only in a trusted environment.
-- Claude-based workers do not provide the same filesystem sandbox as Codex; worktree isolation is their primary boundary.
+- `CODEX_BYPASS_SANDBOX=1` grants broad execution authority. Use it only in a trusted environment.
+- Claude-based workers do not provide the same filesystem sandbox as Codex. Worktree isolation is their primary boundary.
 
 The sole authoritative internal design document is
 [WORKER_SYSTEMS.md](WORKER_SYSTEMS.md).
