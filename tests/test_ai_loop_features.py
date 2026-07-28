@@ -261,7 +261,7 @@ class NotificationTests(unittest.TestCase):
     def test_ready_email_uses_configured_recipient(self, smtp_class: MagicMock) -> None:
         smtp = smtp_class.return_value.__enter__.return_value
         settings = SimpleNamespace(
-            notify_email="helmut.hlavacs@univie.ac.at",
+            notify_email="recipient@example.invalid",
             smtp_from="loop@example.invalid",
             smtp_user="",
             smtp_password="",
@@ -278,7 +278,7 @@ class NotificationTests(unittest.TestCase):
         )
         self.assertTrue(sent)
         message = smtp.send_message.call_args.args[0]
-        self.assertEqual(message["To"], "helmut.hlavacs@univie.ac.at")
+        self.assertEqual(message["To"], "recipient@example.invalid")
         smtp.starttls.assert_called_once_with()
 
 

@@ -91,7 +91,7 @@ def load_settings() -> Settings:
         gemini_model=os.getenv("AI_LOOP_GEMINI_MODEL", ""),
         controller_role_model=os.getenv("AI_LOOP_CONTROLLER_ROLE_MODEL", "").strip(),
         worker_role_model=os.getenv("AI_LOOP_WORKER_ROLE_MODEL", "").strip(),
-        notify_email=os.getenv("AI_LOOP_NOTIFY_EMAIL", "helmut.hlavacs@univie.ac.at"),
+        notify_email=os.getenv("AI_LOOP_NOTIFY_EMAIL", ""),
         smtp_host=os.getenv("AI_LOOP_SMTP_HOST", "").strip(),
         smtp_port=int(os.getenv("AI_LOOP_SMTP_PORT", "465" if env_bool("AI_LOOP_SMTP_SSL") else "587")),
         smtp_user=os.getenv("AI_LOOP_SMTP_USER", "").strip(),

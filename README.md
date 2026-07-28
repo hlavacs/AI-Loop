@@ -127,7 +127,7 @@ All settings are optional unless your environment needs an override.
 | `AI_LOOP_CONTROLLER_ROLE_MODEL` | Model selected specifically for the controller process | provider model above |
 | `AI_LOOP_WORKER_ROLE_MODEL` | Model selected specifically for the worker process | provider model above |
 | `CODEX_BYPASS_SANDBOX` | Allow unrestricted worker execution | false in Python entry points |
-| `AI_LOOP_NOTIFY_EMAIL` | Terminal notification recipient | `helmut.hlavacs@univie.ac.at` |
+| `AI_LOOP_NOTIFY_EMAIL` | Terminal notification recipient | empty |
 | `AI_LOOP_SMTP_HOST` | SMTP server. Empty uses local `sendmail` | empty |
 | `AI_LOOP_SMTP_PORT` | SMTP port | 587, or 465 with SSL |
 | `AI_LOOP_SMTP_USER`, `AI_LOOP_SMTP_PASSWORD` | SMTP authentication | empty |
@@ -143,7 +143,7 @@ export AI_LOOP_SMTP_PORT=587
 export AI_LOOP_SMTP_USER='account@example.edu'
 export AI_LOOP_SMTP_PASSWORD='application-password'
 export AI_LOOP_SMTP_FROM='account@example.edu'
-export AI_LOOP_NOTIFY_EMAIL='helmut.hlavacs@univie.ac.at'
+export AI_LOOP_NOTIFY_EMAIL='recipient@example.edu'
 ```
 
 Credentials are read from the environment and are not written to the job database. Notification delivery failures are recorded as events and do not erase a successful job result.

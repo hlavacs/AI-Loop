@@ -296,7 +296,7 @@ Terminal notification is attempted when:
 - a controller/worker exception becomes `dead`
 - promotion fails and requires human conflict resolution
 
-The default recipient is `helmut.hlavacs@univie.ac.at`. If `AI_LOOP_SMTP_HOST` is configured, `smtplib` uses SMTP, optional STARTTLS/SSL, and optional authentication. Otherwise the system looks for a local `sendmail` command.
+Email notifications are disabled until `AI_LOOP_NOTIFY_EMAIL` is set. If `AI_LOOP_SMTP_HOST` is configured, `smtplib` uses SMTP, optional STARTTLS/SSL, and optional authentication. Otherwise the system looks for a local `sendmail` command.
 
 Each attempt writes `email_notification_sent` or `email_notification_failed` with status, recipient, and delivery detail. Notification failure does not change a successfully computed terminal job state.
 
