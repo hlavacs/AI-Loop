@@ -1,8 +1,27 @@
 # AI-Loop
 
-AI-Loop is a durable development orchestrator. A controller plans and reviews work, a worker edits and verifies a repository, SQLite stores the durable state, Redis Streams wake processes, and an optional Tkinter dashboard exposes the whole lifecycle.
+AI coding agents are effective at individual changes, but substantial repository work often needs many cycles of planning, implementation, testing, review, and correction. A single interactive session can lose context, stop at a token limit, or require repeated human prompts before the complete goal is reached.
 
-Jobs normally run in isolated Git worktrees. They can use Codex, Claude, or Gemini-compatible CLIs in either role without putting a model name in the role program: the processes are always `controller.py` and `worker.py`.
+AI-Loop turns that process into a durable job. You describe the desired outcome once; a controller breaks it into testable tasks and reviews the results, while a worker changes the repository and runs validation. The loop continues until the acceptance criteria are satisfied, genuine human input is required, or you decide to stop it.
+
+## What can you use AI-Loop for?
+
+AI-Loop is intended for development work that is larger than a single prompt, including:
+
+- Implementing a feature that spans multiple files, components, tests, and documentation.
+- Refactoring or migrating an existing codebase while repeatedly checking that behavior remains correct.
+- Investigating and fixing a failing build or test suite through several diagnose-and-repair cycles.
+- Adding test coverage, resolving related defects, and reviewing the complete result against explicit acceptance criteria.
+- Running a long development task unattended while retaining enough state to inspect, stop, or resume it later.
+- Assigning different models or providers to planning/review and implementation—for example, Claude as controller and Codex as worker.
+
+AI-Loop is especially useful when success can be expressed as a clear repository goal plus an executable validation command. It does not remove the need for human judgment on product decisions, credentials, destructive operations, or requirements that cannot be verified from the repository.
+
+## Why use a durable loop?
+
+Every job has a persistent plan, task history, model decisions, run results, progress estimates, and terminal state. If a process crashes or a model reaches a token limit, the job can wait or resume without treating the entire effort as a disposable chat session. You can watch the work in the GUI, inspect controller and worker logs, change the model or task granularity, finish early, or preserve the work for later.
+
+Jobs normally run in isolated Git worktrees, protecting the original checkout while work is in progress. Codex, Claude, and Gemini-compatible CLIs can be used independently as controller or worker. SQLite stores durable state, Redis Streams coordinate the processes, and the optional Tkinter dashboard exposes the complete lifecycle.
 
 ## What you get
 
