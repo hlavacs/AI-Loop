@@ -4,6 +4,10 @@ ai-loop is a durable development orchestrator. A controller plans and reviews wo
 
 Jobs normally run in isolated Git worktrees. They can use Codex, Claude, or Gemini-compatible CLIs in either role without putting a model name in the role program: the processes are always `controller.py` and `worker.py`.
 
+## GUI
+
+![AI-Loop GUI with job creation, controller and worker selection, job status, logs, and resume controls](docs/images/ai-loop-gui.png)
+
 ## What you get
 
 - Durable jobs, tasks, runs, decisions, events, plans, estimates, and terminal state in SQLite.

@@ -5,6 +5,9 @@
 ├── README.md
 ├── WORKER_SYSTEMS.md
 ├── decision.schema.json
+├── docs/
+│   └── images/
+│       └── ai-loop-gui.png
 ├── ai_loop/
 │   ├── __init__.py
 │   ├── config.py
@@ -45,6 +48,7 @@
 - `README.md`: complete installation and user guide.
 - `WORKER_SYSTEMS.md`: sole authoritative technical architecture and lifecycle guide.
 - `decision.schema.json`: JSON schema for controller decisions.
+- `docs/images/ai-loop-gui.png`: current GUI screenshot embedded in the README.
 - `controller.py`: model-neutral planning and review controller process.
 - `worker.py`: model-neutral implementation worker process.
 - `resume_job.py`: job resume entrypoint.
