@@ -25,8 +25,9 @@ from ai_loop.planning import (
     normalize_granularity,
     replace_granularity_constraints,
 )
-from ai_loop.notifications import terminal_email
+from ai_loop.notifications import status_email, terminal_email
 from ai_loop.progress import estimate_progress
+from ai_loop.status_updates import maybe_send_status_email
 from ai_loop.token_wait import is_token_limit, replenishment_time
 
 
@@ -280,6 +281,97 @@ class NotificationTests(unittest.TestCase):
         message = smtp.send_message.call_args.args[0]
         self.assertEqual(message["To"], "recipient@example.invalid")
         smtp.starttls.assert_called_once_with()
+
+    @patch("ai_loop.notifications.smtplib.SMTP")
+    def test_status_email_contains_current_progress(self, smtp_class: MagicMock) -> None:
+        smtp = smtp_class.return_value.__enter__.return_value
+        settings = SimpleNamespace(
+            notify_email="recipient@example.invalid",
+            smtp_from="loop@example.invalid",
+            smtp_user="",
+            smtp_password="",
+            smtp_host="smtp.example.invalid",
+            smtp_port=587,
+            smtp_starttls=True,
+            smtp_ssl=False,
+        )
+        sent, _detail = status_email(
+            settings,
+            job={
+                "id": "J1",
+                "status": "implementing",
+                "controller": "claude",
+                "worker": "codex",
+                "repo_path": "/repo",
+                "worktree_path": "/work",
+                "history_summary": "Core implementation is in progress.",
+                "goal": "Ship it",
+            },
+            percent=42,
+            task_count=4,
+            run_count=3,
+            current_task="Add integration tests",
+            remaining_seconds=5400,
+        )
+        self.assertTrue(sent)
+        message = smtp.send_message.call_args.args[0]
+        self.assertIn("42%", message["Subject"])
+        self.assertIn("Current task: Add integration tests", message.get_content())
+
+
+class PeriodicStatusEmailTests(unittest.TestCase):
+    def test_active_job_gets_one_email_after_twelve_hours(self) -> None:
+        now = datetime.now(timezone.utc)
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "loop.sqlite3"
+            db.init_db(path)
+            with db.transaction(path) as conn:
+                db.create_job(
+                    conn,
+                    job_id="J-email",
+                    repo_path="/repo",
+                    worktree_path="/work",
+                    branch=None,
+                    base_ref="HEAD",
+                    goal="Long job",
+                    constraints=[],
+                    acceptance=[],
+                    test_cmd="true",
+                    max_iterations=10,
+                    use_worktree=False,
+                )
+                conn.execute(
+                    "UPDATE jobs SET created_at = ? WHERE id = ?",
+                    ((now - timedelta(hours=13)).isoformat(timespec="seconds"), "J-email"),
+                )
+
+            settings = SimpleNamespace(
+                db_path=path,
+                notify_email="recipient@example.invalid",
+            )
+            with patch("ai_loop.status_updates.status_email", return_value=(True, "sent")) as send:
+                self.assertTrue(maybe_send_status_email(settings, "J-email", now=now))
+                self.assertFalse(maybe_send_status_email(settings, "J-email", now=now))
+            send.assert_called_once()
+
+            with db.transaction(path) as conn:
+                event = conn.execute(
+                    "SELECT kind FROM events WHERE job_id = ? ORDER BY id DESC LIMIT 1",
+                    ("J-email",),
+                ).fetchone()
+            self.assertEqual(event["kind"], "email_status_sent")
+
+            with db.transaction(path) as conn:
+                db.update_job_status(conn, "J-email", "done")
+            with patch("ai_loop.status_updates.status_email") as terminal_send:
+                self.assertFalse(
+                    maybe_send_status_email(
+                        settings,
+                        "J-email",
+                        now=now + timedelta(hours=13),
+                    )
+                )
+            terminal_send.assert_not_called()
 
 
 if __name__ == "__main__":

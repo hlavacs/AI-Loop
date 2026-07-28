@@ -30,7 +30,7 @@ Jobs normally run in isolated Git worktrees, so the original checkout stays sepa
 - An immutable, enumerated overall plan created with every job.
 - Fine, normal, and coarse task granularity.
 - Automatic retry after a model token limit: the reset time is extracted, the job shows `waiting_tokens`, and execution resumes one minute after replenishment.
-- Email notification when a job is ready or automation reaches a genuine human-needed/dead condition.
+- Status email every 12 hours for long-running jobs, plus a notification when a job finishes or needs attention.
 - Live GUI status, changed-only text refresh, wrapped text, informative hover help, logs, task/run history, and work/time estimates.
 - `Finish Soon` to reduce remaining work without lowering acceptance quality, and `Finish Early` to stop immediately while preserving progress.
 - Safe promotion of successful worktree changes back to the original checkout when paths do not conflict.
@@ -127,7 +127,7 @@ All settings are optional unless your environment needs an override.
 | `AI_LOOP_CONTROLLER_ROLE_MODEL` | Model selected specifically for the controller process | provider model above |
 | `AI_LOOP_WORKER_ROLE_MODEL` | Model selected specifically for the worker process | provider model above |
 | `CODEX_BYPASS_SANDBOX` | Allow unrestricted worker execution | false in Python entry points |
-| `AI_LOOP_NOTIFY_EMAIL` | Terminal notification recipient | empty |
+| `AI_LOOP_NOTIFY_EMAIL` | Status and terminal notification recipient | empty |
 | `AI_LOOP_SMTP_HOST` | SMTP server. Empty uses local `sendmail` | empty |
 | `AI_LOOP_SMTP_PORT` | SMTP port | 587, or 465 with SSL |
 | `AI_LOOP_SMTP_USER`, `AI_LOOP_SMTP_PASSWORD` | SMTP authentication | empty |
@@ -135,18 +135,65 @@ All settings are optional unless your environment needs an override.
 | `AI_LOOP_SMTP_STARTTLS` | Upgrade SMTP connection with STARTTLS | true |
 | `AI_LOOP_SMTP_SSL` | Use SMTP-over-SSL | false |
 
-Example SMTP setup:
+### Private email launcher
+
+The easiest way to keep the mail settings out of the repository is to place a launcher beside the `AI-Loop` folder. Name it `start-ai-loop-with-email.bash`. Replace the example values with your own SMTP settings. Do not put the password in the file.
 
 ```bash
-export AI_LOOP_SMTP_HOST=smtp.example.edu
-export AI_LOOP_SMTP_PORT=587
-export AI_LOOP_SMTP_USER='account@example.edu'
-export AI_LOOP_SMTP_PASSWORD='application-password'
-export AI_LOOP_SMTP_FROM='account@example.edu'
-export AI_LOOP_NOTIFY_EMAIL='recipient@example.edu'
+#!/usr/bin/env bash
+
+set -euo pipefail
+
+AI_LOOP_NOTIFY_EMAIL="recipient@example.edu"
+AI_LOOP_SMTP_HOST="mail.example.edu"
+AI_LOOP_SMTP_PORT="465"
+AI_LOOP_SMTP_USER="account-id"
+AI_LOOP_SMTP_FROM="sender@example.edu"
+AI_LOOP_SMTP_SSL="1"
+AI_LOOP_SMTP_STARTTLS="0"
+
+read -r -s -p "SMTP password: " AI_LOOP_SMTP_PASSWORD
+printf "\n"
+
+: "${AI_LOOP_SMTP_PASSWORD:?SMTP password is required}"
+
+export AI_LOOP_NOTIFY_EMAIL
+export AI_LOOP_SMTP_HOST
+export AI_LOOP_SMTP_PORT
+export AI_LOOP_SMTP_USER
+export AI_LOOP_SMTP_PASSWORD
+export AI_LOOP_SMTP_FROM
+export AI_LOOP_SMTP_STARTTLS
+export AI_LOOP_SMTP_SSL
+
+launcher_dir="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
+repo_dir="$launcher_dir/AI-Loop"
+
+if [[ ! -x "$repo_dir/ai_gui.bash" ]]
+then
+    echo "AI-Loop launcher not found at $repo_dir/ai_gui.bash" >&2
+    exit 1
+fi
+
+cd "$repo_dir"
+exec ./ai_gui.bash "$@"
 ```
 
-Credentials are read from the environment and are not written to the job database. Notification delivery failures are recorded as events and do not erase a successful job result.
+Make the launcher private and executable:
+
+```bash
+chmod 700 ../start-ai-loop-with-email.bash
+```
+
+Run it from the repository:
+
+```bash
+../start-ai-loop-with-email.bash
+```
+
+The launcher asks only for the password. The input is hidden and exported only to the AI-Loop processes started by that script. The password is not written to the launcher or the job database. Keep the launcher outside the repository so its fixed account settings are not committed. Notification delivery failures are recorded as events and do not erase a successful job result.
+
+For an active job, the watcher sends a progress email after 12 hours and then once every 12 hours until the job reaches a terminal state. The email includes the current status, progress estimate, remaining-time estimate, controller, worker, task and run counts, current task, and latest controller summary. The last attempt is stored in SQLite, so restarting the watcher does not restart the 12-hour interval.
 
 ## Graphical user interface
 
@@ -327,13 +374,14 @@ Set an explicit command for production jobs when the inferred command does not c
 - `controller.py`: planning, review, completion, promotion, estimates, and controller token waits.
 - `worker.py`: implementation CLI execution, worker token waits, validation, and Git snapshots.
 - `start_job.py`, `resume_job.py`: job lifecycle entry points.
-- `watcher.py`: terminal Redis event observer.
+- `watcher.py`: terminal Redis event observer and 12-hour status email scheduler.
 - `ai_loop_gui.py`: Tkinter dashboard.
 - `ai_loop/db.py`: schema and durable state helpers.
 - `ai_loop/progress.py`: work/time estimate display.
 - `ai_loop/planning.py`: static plans and granularity policy.
 - `ai_loop/token_wait.py`: limit detection and replenishment-time parsing.
-- `ai_loop/notifications.py`: SMTP/sendmail terminal notifications.
+- `ai_loop/notifications.py`: SMTP/sendmail status and terminal notifications.
+- `ai_loop/status_updates.py`: durable 12-hour status email scheduling.
 - `ai_loop/queues.py`: Redis Stream JSON helpers.
 - `ai_loop/recovery.py`: internal process recovery.
 - `ai_loop.sqlite3`: default database.
@@ -361,7 +409,7 @@ This is not an error. The Status tab shows `waiting_until`. Keep the job process
 
 ### Email was not delivered
 
-Look for `email_notification_failed` in Recent events. Configure SMTP variables or install a local sendmail-compatible MTA. Test the account outside AI-Loop if authentication or network policy is uncertain.
+Look for `email_notification_failed` or `email_status_failed` in Recent events. Configure SMTP variables or install a local sendmail-compatible MTA. Test the account outside AI-Loop if authentication or network policy is uncertain.
 
 ### A provider login expired
 

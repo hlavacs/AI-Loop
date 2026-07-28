@@ -37,7 +37,7 @@ Consumes task activations. It atomically changes the task from `queued` to `runn
 
 ### `watcher.py`
 
-Observes `done`, `human`, and `dead` Redis streams and prints terminal payloads. A per-job watcher exits after observing its job's terminal event.
+Observes `done`, `human`, and `dead` Redis streams and prints terminal payloads. A per-job watcher also sends a durable status email every 12 hours while its job remains active. It exits after observing its job's terminal event.
 
 ### `ai_loop_gui.py`
 
@@ -56,7 +56,8 @@ installation of a missing standard Codex, Claude, or Gemini executable.
 - `ai_loop/planning.py`: granularity validation, constraints, and static plan construction.
 - `ai_loop/progress.py`: controller estimates with heuristic fallback and countdown ETA persistence.
 - `ai_loop/token_wait.py`: token-limit detection, replenishment-time extraction, and bounded-interval waiting.
-- `ai_loop/notifications.py`: SMTP or local-sendmail terminal email.
+- `ai_loop/notifications.py`: SMTP or local-sendmail status and terminal messages.
+- `ai_loop/status_updates.py`: durable 12-hour scheduling and job progress assembly.
 - `ai_loop/recovery.py`: one-at-a-time automatic repair attempt for internal controller/worker exceptions.
 
 ## Runtime bootstrap and shell entry points
@@ -295,6 +296,8 @@ Terminal notification is attempted when:
 - the controller or worker reaches a genuine `human_needed`
 - a controller/worker exception becomes `dead`
 - promotion fails and requires human conflict resolution
+
+The per-job watcher attempts a status email after 12 hours and every 12 hours after that while the job is in `planning`, `queued`, `implementing`, `fixing`, or `waiting_tokens`. The message includes progress, estimated remaining time, role choices, activity counts, current task, and the latest controller summary. Each attempt is stored as `email_status_sent` or `email_status_failed`. The stored event time keeps the schedule stable across watcher restarts.
 
 Email notifications are disabled until `AI_LOOP_NOTIFY_EMAIL` is set. If `AI_LOOP_SMTP_HOST` is configured, `smtplib` uses SMTP, optional STARTTLS/SSL, and optional authentication. Otherwise the system looks for a local `sendmail` command.
 

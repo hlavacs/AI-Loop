@@ -6,8 +6,10 @@ import time
 
 from redis.exceptions import ConnectionError, TimeoutError
 
+from ai_loop import db
 from ai_loop.config import DEAD_STREAM, DONE_STREAM, HUMAN_STREAM, READ_BLOCK_MS, load_settings
 from ai_loop.queues import redis_client
+from ai_loop.status_updates import maybe_send_status_email
 
 
 def scoped_job_id() -> str | None:
@@ -17,6 +19,7 @@ def scoped_job_id() -> str | None:
 
 def main() -> int:
     settings = load_settings()
+    db.init_db(settings.db_path)
     client = redis_client(settings.redis_url)
     streams = {DONE_STREAM: "$", HUMAN_STREAM: "$", DEAD_STREAM: "$"}
     job_scope = scoped_job_id()
@@ -28,6 +31,11 @@ def main() -> int:
     print(f"watching: {', '.join(streams)}")
 
     while True:
+        if job_scope:
+            try:
+                maybe_send_status_email(settings, job_scope)
+            except Exception as exc:
+                print(f"job {job_scope}: status email check failed: {exc!r}")
         try:
             messages = client.xread(streams, block=READ_BLOCK_MS, count=1)
         except (TimeoutError, ConnectionError) as exc:

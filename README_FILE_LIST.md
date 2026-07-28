@@ -17,6 +17,7 @@
 │   ├── progress.py
 │   ├── queues.py
 │   ├── recovery.py
+│   ├── status_updates.py
 │   └── token_wait.py
 ├── controller.py
 ├── worker.py
@@ -60,11 +61,12 @@
 - `ai_loop/__init__.py`: package marker.
 - `ai_loop/config.py`: configuration loading.
 - `ai_loop/db.py`: SQLite schema and database helpers.
-- `ai_loop/notifications.py`: terminal SMTP/sendmail notifications.
+- `ai_loop/notifications.py`: status and terminal SMTP/sendmail messages.
 - `ai_loop/planning.py`: immutable plans and granularity policy.
 - `ai_loop/progress.py`: progress formatting and reporting helpers.
 - `ai_loop/queues.py`: queue and stream helpers.
 - `ai_loop/recovery.py`: internal failure recovery.
+- `ai_loop/status_updates.py`: durable 12-hour status email scheduling.
 - `ai_loop/token_wait.py`: quota reset parsing and automatic waits.
 
 ## Shell Scripts

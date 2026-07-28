@@ -9,36 +9,10 @@ from email.message import EmailMessage
 from typing import Any
 
 
-def terminal_email(
-    settings: Any,
-    *,
-    job: dict[str, Any],
-    status: str,
-    reason: str,
-) -> tuple[bool, str]:
+def deliver_email(settings: Any, message: EmailMessage) -> tuple[bool, str]:
     recipient = settings.notify_email.strip()
     if not recipient:
         return False, "AI_LOOP_NOTIFY_EMAIL is empty"
-
-    message = EmailMessage()
-    message["To"] = recipient
-    message["From"] = settings.smtp_from or settings.smtp_user or recipient
-    message["Subject"] = f"ai-loop job {job['id']}: {status}"
-    message.set_content(
-        "\n".join(
-            [
-                f"Job: {job['id']}",
-                f"Status: {status}",
-                f"Repository: {job['repo_path']}",
-                f"Worktree: {job['worktree_path']}",
-                "",
-                f"Reason: {reason}",
-                "",
-                "Goal:",
-                str(job["goal"]),
-            ]
-        )
-    )
 
     try:
         if settings.smtp_host:
@@ -67,3 +41,83 @@ def terminal_email(
         return False, "configure AI_LOOP_SMTP_HOST or install a sendmail-compatible command"
     except Exception as exc:
         return False, repr(exc)
+
+
+def terminal_email(
+    settings: Any,
+    *,
+    job: dict[str, Any],
+    status: str,
+    reason: str,
+) -> tuple[bool, str]:
+    recipient = settings.notify_email.strip()
+    message = EmailMessage()
+    message["To"] = recipient
+    message["From"] = settings.smtp_from or settings.smtp_user or recipient
+    message["Subject"] = f"AI-Loop job {job['id']}: {status}"
+    message.set_content(
+        "\n".join(
+            [
+                f"Job: {job['id']}",
+                f"Status: {status}",
+                f"Repository: {job['repo_path']}",
+                f"Worktree: {job['worktree_path']}",
+                "",
+                f"Reason: {reason}",
+                "",
+                "Goal:",
+                str(job["goal"]),
+            ]
+        )
+    )
+    return deliver_email(settings, message)
+
+
+def status_email(
+    settings: Any,
+    *,
+    job: dict[str, Any],
+    percent: int,
+    task_count: int,
+    run_count: int,
+    current_task: str,
+    remaining_seconds: int | None,
+) -> tuple[bool, str]:
+    recipient = settings.notify_email.strip()
+    if remaining_seconds is None:
+        remaining = "unknown"
+    elif remaining_seconds < 3600:
+        remaining = f"{max(1, remaining_seconds // 60)} minutes"
+    else:
+        hours = remaining_seconds // 3600
+        minutes = (remaining_seconds % 3600) // 60
+        remaining = f"{hours} hours {minutes} minutes"
+
+    message = EmailMessage()
+    message["To"] = recipient
+    message["From"] = settings.smtp_from or settings.smtp_user or recipient
+    message["Subject"] = f"AI-Loop job {job['id']} update: {percent}%"
+    message.set_content(
+        "\n".join(
+            [
+                f"Job: {job['id']}",
+                f"Status: {job['status']}",
+                f"Progress: {percent}%",
+                f"Estimated time remaining: {remaining}",
+                f"Controller: {job['controller']}",
+                f"Worker: {job['worker']}",
+                f"Tasks: {task_count}",
+                f"Completed runs: {run_count}",
+                f"Current task: {current_task or 'none'}",
+                f"Repository: {job['repo_path']}",
+                f"Worktree: {job['worktree_path']}",
+                "",
+                "Latest summary:",
+                str(job.get("history_summary") or "No controller summary is available yet."),
+                "",
+                "Goal:",
+                str(job["goal"]),
+            ]
+        )
+    )
+    return deliver_email(settings, message)
