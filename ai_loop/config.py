@@ -15,14 +15,12 @@ DEAD_STREAM = "ai:dead"
 
 READ_BLOCK_MS = 5000
 
-WORKERS = {"codex", "fable", "opus", "gemini"}
+WORKERS = {"claude", "codex", "fable", "opus", "gemini"}
 CONTROLLERS = {"claude", "fable", "opus", "codex", "gemini"}
 
 
 def normalize_worker(value: str) -> str:
     worker = value.strip().lower()
-    if worker == "claude":
-        worker = "fable"
     if worker not in WORKERS:
         raise ValueError(f"unknown worker: {value!r}; expected one of {sorted(WORKERS)}")
     return worker
@@ -52,6 +50,8 @@ class Settings:
     controller_model: str
     opus_model: str
     gemini_model: str
+    controller_role_model: str
+    worker_role_model: str
     notify_email: str
     smtp_host: str
     smtp_port: int
@@ -89,6 +89,8 @@ def load_settings() -> Settings:
         controller_model=os.getenv("AI_LOOP_CONTROLLER_MODEL", ""),
         opus_model=os.getenv("AI_LOOP_OPUS_MODEL", "").strip(),
         gemini_model=os.getenv("AI_LOOP_GEMINI_MODEL", ""),
+        controller_role_model=os.getenv("AI_LOOP_CONTROLLER_ROLE_MODEL", "").strip(),
+        worker_role_model=os.getenv("AI_LOOP_WORKER_ROLE_MODEL", "").strip(),
         notify_email=os.getenv("AI_LOOP_NOTIFY_EMAIL", "helmut.hlavacs@univie.ac.at"),
         smtp_host=os.getenv("AI_LOOP_SMTP_HOST", "").strip(),
         smtp_port=int(os.getenv("AI_LOOP_SMTP_PORT", "465" if env_bool("AI_LOOP_SMTP_SSL") else "587")),

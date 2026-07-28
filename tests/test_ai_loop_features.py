@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import os
 import subprocess
 import tempfile
 import unittest
@@ -17,6 +18,7 @@ from ai_loop.auth import (
     is_auth_failure,
     provider_for_role,
 )
+from ai_loop.config import load_settings, normalize_worker
 from ai_loop.planning import (
     build_static_plan,
     granularity_constraints,
@@ -47,6 +49,23 @@ class PlanningTests(unittest.TestCase):
         self.assertNotIn(granularity_constraints("fine")[0], coarse)
         self.assertIn(granularity_constraints("coarse")[0], coarse)
         self.assertIn("Keep public APIs stable.", coarse)
+
+
+class RoleSelectionTests(unittest.TestCase):
+    def test_claude_is_a_first_class_worker_binary(self) -> None:
+        self.assertEqual(normalize_worker("Claude"), "claude")
+
+    def test_controller_and_worker_models_are_independent(self) -> None:
+        with patch.dict(
+            os.environ,
+            {
+                "AI_LOOP_CONTROLLER_ROLE_MODEL": "controller-model",
+                "AI_LOOP_WORKER_ROLE_MODEL": "worker-model",
+            },
+        ):
+            settings = load_settings()
+        self.assertEqual(settings.controller_role_model, "controller-model")
+        self.assertEqual(settings.worker_role_model, "worker-model")
 
 
 class TokenWaitTests(unittest.TestCase):

@@ -136,9 +136,7 @@ def build_gemini_command(gemini_bin: str, prompt: str, model: str, bypass_sandbo
 
 def job_worker(settings, job: dict) -> str:
     worker = str(job.get("worker") or "").strip().lower()
-    if worker == "claude":
-        worker = "fable"
-    return worker if worker in {"codex", "fable", "opus", "gemini"} else settings.worker_default
+    return worker if worker in {"claude", "codex", "fable", "opus", "gemini"} else settings.worker_default
 
 
 def text_fields(*items: object) -> str:
@@ -218,8 +216,8 @@ def referenced_existing_files(job: dict, task: dict) -> list[str]:
     return [str(path.relative_to(worktree.resolve())) for path in found]
 
 
-WORKER_NAMES = {"fable": "Claude Fable", "opus": "Claude Opus", "codex": "Codex CLI", "gemini": "Gemini CLI"}
-WORKER_LABELS = {"fable": "Fable", "opus": "Opus", "codex": "Codex", "gemini": "Gemini"}
+WORKER_NAMES = {"claude": "Claude CLI", "fable": "Claude Fable", "opus": "Claude Opus", "codex": "Codex CLI", "gemini": "Gemini CLI"}
+WORKER_LABELS = {"claude": "Claude", "fable": "Fable", "opus": "Opus", "codex": "Codex", "gemini": "Gemini"}
 
 
 def codex_prompt(job: dict, task: dict, worker: str = "codex") -> str:
@@ -362,7 +360,7 @@ def process_task(settings, client, task_id: str) -> None:
     worktree_path = job["worktree_path"]
 
     worker = job_worker(settings, job)
-    if worker in {"fable", "opus"}:
+    if worker in {"claude", "fable", "opus"}:
         worker_bin = settings.claude_bin
     elif worker == "gemini":
         worker_bin = settings.gemini_bin
@@ -379,18 +377,25 @@ def process_task(settings, client, task_id: str) -> None:
         bypass_sandbox = settings.codex_bypass_sandbox or runtime_requests_sandbox_bypass()
         if bypass_sandbox and not settings.codex_bypass_sandbox:
             print(f"sandbox bypass requested by {BYPASS_SANDBOX_MARKER} runtime marker")
-        if worker in {"fable", "opus"}:
+        if worker in {"claude", "fable", "opus"}:
+            legacy_claude_model = (
+                settings.opus_model
+                if worker == "opus"
+                else settings.fable_model
+                if worker == "fable"
+                else settings.controller_model
+            )
             codex_cmd = build_fable_command(
                 settings.claude_bin,
                 prompt,
-                settings.fable_model if worker == "fable" else settings.opus_model,
+                settings.worker_role_model or legacy_claude_model,
                 bypass_sandbox,
             )
         elif worker == "gemini":
             codex_cmd = build_gemini_command(
                 settings.gemini_bin,
                 prompt,
-                settings.gemini_model,
+                settings.worker_role_model or settings.gemini_model,
                 bypass_sandbox,
             )
         else:
@@ -398,7 +403,7 @@ def process_task(settings, client, task_id: str) -> None:
                 settings.codex_bin,
                 worktree_path,
                 prompt,
-                settings.codex_model,
+                settings.worker_role_model or settings.codex_model,
                 bypass_sandbox,
             )
         worker_stage = "fixing" if str(task["created_by"]) == "claude:repair" else "implementing"
