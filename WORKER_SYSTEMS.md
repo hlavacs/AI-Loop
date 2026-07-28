@@ -1,6 +1,9 @@
 # ai-loop system architecture
 
-This document is the technical description of ai-loop: components, persistence, queues, lifecycle, planning, execution, estimates, recovery, notifications, GUI synchronization, and operational boundaries.
+This is the sole authoritative technical description of ai-loop: components,
+persistence, queues, lifecycle, planning, execution, estimates, recovery,
+notifications, GUI synchronization, runtime bootstrap, and operational
+boundaries.
 
 ## Design goals
 
@@ -16,6 +19,7 @@ The main invariants are:
 6. Expected token replenishment waits are visible and self-resuming, not human-needed failures.
 7. Completion and genuine unsolved blockers produce an email attempt and a durable notification event.
 8. Successful worktree promotion never overwrites conflicting local target-checkout edits.
+9. Machine-specific Python virtual environments are local runtime state and are never versioned.
 
 ## Component map
 
@@ -37,7 +41,12 @@ Observes `done`, `human`, and `dead` Redis streams and prints terminal payloads.
 
 ### `ai_loop_gui.py`
 
-Provides job creation, Goal File input, a Clear Goal action, granularity selection, job/task status, immutable Plan display, wrapped logs, history, resume controls, Finish Soon/Early, cleanup, Redis startup, and macOS hibernation controls.
+Provides job creation, Goal File input, a Clear Goal action, granularity
+selection, job/task status, immutable Plan display, wrapped logs, history,
+resume controls, Finish Soon/Early, cleanup, Redis startup, and macOS
+hibernation controls. Before creating a job, it verifies the selected provider
+CLIs and attempts npm installation of a missing standard Codex, Claude, or
+Gemini executable.
 
 ### Library modules
 
@@ -49,6 +58,48 @@ Provides job creation, Goal File input, a Clear Goal action, granularity selecti
 - `ai_loop/token_wait.py`: token-limit detection, replenishment-time extraction, and bounded-interval waiting.
 - `ai_loop/notifications.py`: SMTP or local-sendmail terminal email.
 - `ai_loop/recovery.py`: one-at-a-time automatic repair attempt for internal controller/worker exceptions.
+
+## Runtime bootstrap and shell entry points
+
+`.venv/` and `.gui-venv/` are ignored machine-local directories. Neither may
+be committed because a virtual environment contains interpreter links and
+platform-specific installed files.
+
+`ai_gui.bash` is the automatic GUI bootstrap path:
+
+1. Source `ai_loop_python.bash` and select a runnable Python 3.10 or newer.
+2. On macOS, avoid executing `/usr/bin/python3` when it is only the unavailable
+   Command Line Tools stub.
+3. Check Python, Tkinter, Git, and `redis-server`.
+4. Attempt missing system-package installation with Homebrew, `apt-get`, `dnf`,
+   or `pacman`.
+5. If the selected Python cannot import `redis`, create `.gui-venv`, install
+   `redis-py`, and restart `ai_loop_gui.py` with that interpreter.
+6. If any automatic installation fails, print the underlying command error and
+   the usual manual installation command.
+
+At GUI job creation, the selected standard provider executable is checked
+before a worktree or database job is created. A missing Codex, Claude, or Gemini
+CLI is installed with its npm package. If npm is missing, the GUI first attempts
+to install Node/npm using a supported system package manager. Custom executable
+paths are never guessed or overwritten. Provider authentication remains an
+interactive user responsibility.
+
+The non-GUI launchers do not currently provide the same complete bootstrap:
+
+- `ai_job.bash`, `ai_resume_job.bash`, `ai_delete_job.bash`,
+  `ai_run_claude.bash`, `ai_run_codex.bash`, `ai_run_watcher.bash`,
+  `ai_watch_job.bash`, and `ai_run_loop_proof.bash` select Python through
+  `ai_loop_python.bash` and require that interpreter to import `redis`.
+- `ai_check_job.bash`, `ai_print_log.bash`, `ai_clear_db.bash`,
+  `ai_clear_log.bash`, and `ai_reset_loop.bash` invoke `python3` directly.
+- The shared selector considers `.venv` and installed Python commands, but not
+  the GUI-created `.gui-venv`. Therefore running the GUI does not currently
+  bootstrap the non-GUI scripts on a fresh clone.
+
+These differences are operational constraints, not intended data-model
+semantics. A future consolidation should make every Python-using script select
+the same supported local interpreter and dependency environment.
 
 ## Durable data model
 
@@ -178,7 +229,12 @@ All modes retain the same job goal, test command, acceptance criteria, maintaina
 10. Insert the run and update task state.
 11. Enqueue REVIEW, or emit a terminal event for a genuine worker-level human/dead failure.
 
-The worker timeout is two hours for the implementation CLI and 30 minutes for the task test command. Crash-prone target executables can be run through `ai_run_crash_safe.bash`.
+The worker timeout is two hours for the implementation CLI and 30 minutes for
+the task test command. Crash-prone target executables can be run through
+`ai_run_crash_safe.bash`. That wrapper uses GNU `timeout` or `gtimeout` when
+available and otherwise cannot enforce its requested wall-clock limit. On
+macOS it runs targets through LLDB; LLDB authorization and targets that perform
+an early `exec` can prevent the payload from completing.
 
 ## Live guidance refresh
 
@@ -280,7 +336,12 @@ Redis connection errors are retried by long-running consumers. Transient Claude 
 
 An unexpected controller or worker exception calls `attempt_auto_recovery`. A per-job marker prevents concurrent recovery. The recovery agent sees controller, worker, and watcher log tails, may repair the ai-loop repository, syntax-checks changes, and launches resume after success. If recovery fails, the original process records `dead`, publishes the dead stream event, and attempts email.
 
-Missing binaries are human-needed because the automation cannot install/authenticate an arbitrary selected provider safely. Fixable target-repository build/test problems should normally become REPAIR tasks instead.
+The GUI attempts to install a missing standard provider CLI before job
+creation. Missing custom binaries, failed package installation, and provider
+authentication cannot be resolved generically; those conditions are reported
+with the underlying error and a usual manual command or become human-needed if
+encountered later by a running controller or worker. Fixable target-repository
+build/test problems should normally become REPAIR tasks instead.
 
 ## Process launch and isolation
 
@@ -308,6 +369,23 @@ Automatic detection checks visible CMake presets, plain CMake, npm, then Python 
 - Per-job logs: `logs/jobs/<job-id>/`
 - Recovery marker: `run/jobs/<job-id>/auto_recovery.running`
 - Sandbox bypass marker: `run/jobs/<job-id>/bypass_sandbox`
+- Local primary environment: `.venv/`
+- GUI fallback environment: `.gui-venv/`
+
+## Known shell-platform constraints
+
+- `ai_hibernation.bash status` reads `pmset -g`. Some current macOS versions
+  expose `hibernatemode` only through `pmset -g custom`, so status can report
+  unavailable even when the mode is configured.
+- `ai_loopctl.bash` and `ai_delete_job.bash` terminate recorded parent PIDs.
+  Unlike the GUI process-group termination path, they can leave provider or
+  test subprocesses alive.
+- `ai_remove_worktrees.bash` is intentionally destructive: by default it
+  force-removes registered AI worktrees and leftover directories under the
+  configured runs directory.
+- GUI construction must be tested with access to the native window server.
+  A Tk process can abort in a headless sandbox even when the launcher works in
+  the user's desktop session.
 
 ## Maintenance checklist
 
@@ -320,4 +398,9 @@ When changing lifecycle behavior:
 5. Preserve plan immutability.
 6. Keep granularity independent of provider/model.
 7. Ensure token waits never emit premature human-needed notifications.
-8. Run Python compilation, shell syntax checks, database migration smoke tests, token-time parser tests, and a headless GUI construction test when a display harness is available.
+8. Run Python compilation, shell syntax checks, database migration smoke tests,
+   token-time parser tests, and GUI construction with a display harness.
+9. Exercise Bash help/status/dry-run paths with both a populated `.venv` and a
+   fresh-clone environment that has no local virtual environment.
+10. Keep this file as the single worker-system architecture document; do not
+    add compatibility pointer files with competing `WORKER_SYSTEM` names.

@@ -1,5 +1,0 @@
-The authoritative, complete system description is WORKER_SYSTEMS.md.
-
-This compatibility pointer is retained so older links do not break. The runtime
-roles are implemented by controller.py and worker.py; their provider/model is a
-per-job setting, not part of either Python filename.

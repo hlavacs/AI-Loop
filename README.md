@@ -316,7 +316,11 @@ Successful worktree changes are copied back only if the target checkout has no c
 
 ### GUI cannot start
 
-Run `python3 -m tkinter`. Install your platform's Tk package if it fails. To verify the rest of the system without a display, use the command-line entry points.
+Start the GUI with `./ai_gui.bash` so missing runtime dependencies can be
+installed automatically. If installation fails, the launcher prints the
+underlying error and the usual manual repair command. To test Tkinter directly,
+run `python3 -m tkinter`. To verify the rest of the system without a display,
+use the command-line entry points.
 
 ## Safety notes
 
@@ -326,4 +330,5 @@ Run `python3 -m tkinter`. Install your platform's Tk package if it fails. To ver
 - `CODEX_BYPASS_SANDBOX=1` grants broad execution authority; use it only in a trusted environment.
 - Claude-based workers do not provide the same filesystem sandbox as Codex; worktree isolation is their primary boundary.
 
-For the detailed internal design, see `WORKER_SYSTEMS.md`.
+The sole authoritative internal design document is
+[WORKER_SYSTEMS.md](WORKER_SYSTEMS.md).

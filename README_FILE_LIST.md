@@ -3,7 +3,6 @@
 ```text
 .
 ├── README.md
-├── WORKER_SYSTEM.txt
 ├── WORKER_SYSTEMS.md
 ├── decision.schema.json
 ├── ai_loop/
@@ -44,8 +43,7 @@
 ## Top-Level Files
 
 - `README.md`: complete installation and user guide.
-- `WORKER_SYSTEMS.md`: authoritative technical architecture and lifecycle guide.
-- `WORKER_SYSTEM.txt`: compatibility pointer to `WORKER_SYSTEMS.md`.
+- `WORKER_SYSTEMS.md`: sole authoritative technical architecture and lifecycle guide.
 - `decision.schema.json`: JSON schema for controller decisions.
 - `controller.py`: model-neutral planning and review controller process.
 - `worker.py`: model-neutral implementation worker process.
