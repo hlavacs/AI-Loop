@@ -1,13 +1,13 @@
-# ai-loop system architecture
+# AI-Loop system architecture
 
-This is the sole authoritative technical description of ai-loop: components,
+This is the sole authoritative technical description of AI-Loop: components,
 persistence, queues, lifecycle, planning, execution, estimates, recovery,
 notifications, GUI synchronization, runtime bootstrap, and operational
 boundaries.
 
 ## Design goals
 
-ai-loop is designed to make long development jobs durable and observable while keeping model vendors interchangeable.
+AI-Loop is designed to make long development jobs durable and observable while keeping model vendors interchangeable.
 
 The main invariants are:
 
@@ -334,7 +334,7 @@ No merge or destructive reset is used.
 
 Redis connection errors are retried by long-running consumers. Transient Claude transport failures use capped exponential backoff. Parseable token-limit failures use the explicit replenishment flow instead.
 
-An unexpected controller or worker exception calls `attempt_auto_recovery`. A per-job marker prevents concurrent recovery. The recovery agent sees controller, worker, and watcher log tails, may repair the ai-loop repository, syntax-checks changes, and launches resume after success. If recovery fails, the original process records `dead`, publishes the dead stream event, and attempts email.
+An unexpected controller or worker exception calls `attempt_auto_recovery`. A per-job marker prevents concurrent recovery. The recovery agent sees controller, worker, and watcher log tails, may repair the AI-Loop repository, syntax-checks changes, and launches resume after success. If recovery fails, the original process records `dead`, publishes the dead stream event, and attempts email.
 
 The GUI attempts to install a missing standard provider CLI before job
 creation. Missing custom binaries, failed package installation, and provider

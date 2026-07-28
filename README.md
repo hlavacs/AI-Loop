@@ -1,6 +1,6 @@
-# ai-loop
+# AI-Loop
 
-ai-loop is a durable development orchestrator. A controller plans and reviews work, a worker edits and verifies a repository, SQLite stores the durable state, Redis Streams wake processes, and an optional Tkinter dashboard exposes the whole lifecycle.
+AI-Loop is a durable development orchestrator. A controller plans and reviews work, a worker edits and verifies a repository, SQLite stores the durable state, Redis Streams wake processes, and an optional Tkinter dashboard exposes the whole lifecycle.
 
 Jobs normally run in isolated Git worktrees. They can use Codex, Claude, or Gemini-compatible CLIs in either role without putting a model name in the role program: the processes are always `controller.py` and `worker.py`.
 
@@ -234,7 +234,7 @@ The GUI checks text before rewriting a text box. Unchanged content is left alone
 
 The worker changes a queued task to `running` in the same database transaction that moves the job to `implementing` or `fixing`. GUI refresh also reconciles inconsistent active job/task rows. If a queued task has no live worker process, the list shows `queued / worker offline` instead of a misleading bare `queued` state. Expanded task rows remain expanded across refreshes.
 
-When CLI output reports a token/quota limit and includes a reset time, ai-loop records `waiting_tokens`, shows the exact `waiting_until` value, waits until that time plus one minute, restores the task/job state, and retries automatically. It does not show this expected wait as a human-needed error. If no reset time can be extracted, the ordinary human-needed flow and email notification apply.
+When CLI output reports a token/quota limit and includes a reset time, AI-Loop records `waiting_tokens`, shows the exact `waiting_until` value, waits until that time plus one minute, restores the task/job state, and retries automatically. It does not show this expected wait as a human-needed error. If no reset time can be extracted, the ordinary human-needed flow and email notification apply.
 
 ## Command-line user guide
 
@@ -293,7 +293,7 @@ Read each command's usage before destructive cleanup. Database deletion does not
 
 ## Validation-command inference
 
-When `--test-cmd auto` is used, ai-loop selects in this order:
+When `--test-cmd auto` is used, AI-Loop selects in this order:
 
 1. Visible CMake configure/build presets.
 2. Plain CMake configure and build.
@@ -342,7 +342,7 @@ This is not an error. The Status tab shows `waiting_until`. Keep the job process
 
 ### Email was not delivered
 
-Look for `email_notification_failed` in Recent events. Configure SMTP variables or install a local sendmail-compatible MTA. Test the account outside ai-loop if authentication or network policy is uncertain.
+Look for `email_notification_failed` in Recent events. Configure SMTP variables or install a local sendmail-compatible MTA. Test the account outside AI-Loop if authentication or network policy is uncertain.
 
 ### A provider login expired
 
@@ -362,7 +362,7 @@ Verify `REDIS_URL`, run `redis-cli ping`, or use the GUI `Start Redis` button fo
 
 ### Promotion failed
 
-Successful worktree changes are copied back only if the target checkout has no conflicting local edits in those paths. Resolve the reported conflict manually, preserve both sides, and resume. ai-loop never resets or discards the target repository to force promotion.
+Successful worktree changes are copied back only if the target checkout has no conflicting local edits in those paths. Resolve the reported conflict manually, preserve both sides, and resume. AI-Loop never resets or discards the target repository to force promotion.
 
 ### GUI cannot start
 
