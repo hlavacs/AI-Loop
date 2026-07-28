@@ -149,8 +149,12 @@ install command. If the selected Python lacks `redis-py`, the GUI creates
 When a job is created, the GUI also checks its selected Codex, Claude, or Gemini
 CLIs. It attempts to install a missing standard CLI through npm; if npm is
 missing, it first attempts to install npm. Provider authentication remains an
-interactive one-time step. The `System` menu provides `Start Redis` to start a
-local server when `REDIS_URL` points at localhost.
+interactive account-security step. If a Claude or Codex controller reports an
+expired or missing login, the GUI recognizes the authentication failure, offers
+`Sign In + Resume`, runs the provider login flow in the background, verifies the
+result, and resumes the same preserved job. It never silently switches providers
+or resumes before verification succeeds. The `System` menu provides `Start Redis`
+to start a local server when `REDIS_URL` points at localhost.
 
 ### Create a job
 
@@ -305,6 +309,18 @@ This is not an error. The Status tab shows `waiting_until`. Keep the job process
 ### Email was not delivered
 
 Look for `email_notification_failed` in Recent events. Configure SMTP variables or install a local sendmail-compatible MTA. Test the account outside ai-loop if authentication or network policy is uncertain.
+
+### A provider login expired
+
+Claude and Codex authentication failures put the job in `human_needed` without
+discarding its database state or worktree. Accept the GUI's sign-in prompt, or
+select the job and choose `Job Actions` → `Sign In + Resume`. The provider may
+open a browser for account approval. The GUI runs the CLI's authentication
+status check afterward and resumes only when it succeeds.
+
+Gemini authentication is detected, but its CLI does not expose the same stable
+status/login command pair; authenticate Gemini manually and then use
+`Apply + Resume`.
 
 ### Redis is unavailable
 

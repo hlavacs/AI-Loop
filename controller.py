@@ -15,6 +15,7 @@ from typing import Any
 from redis.exceptions import ConnectionError, TimeoutError
 
 from ai_loop import db
+from ai_loop.auth import auth_failure_decision, is_auth_failure
 from ai_loop.config import (
     CLAUDE_REQUEST_STREAM,
     CODEX_TASK_STREAM,
@@ -351,6 +352,8 @@ def run_claude(claude_bin: str, prompt: str, model: str = "", sizing: str = "nor
                 last_output = output
                 if proc.returncode == 0:
                     break
+                if is_auth_failure(output):
+                    break
                 if is_token_limit(output):
                     break
                 if not is_transient_claude_cli_failure(output):
@@ -377,9 +380,12 @@ def run_claude(claude_bin: str, prompt: str, model: str = "", sizing: str = "nor
         if proc is None:
             raise RuntimeError("Claude CLI subprocess was not started")
         if proc.returncode != 0:
+            reason = f"Claude CLI failed with rc={proc.returncode}: {output[-4000:]}"
+            if is_auth_failure(output):
+                return auth_failure_decision("claude", reason)
             return {
                 "action": "HUMAN_NEEDED",
-                "reason": f"Claude CLI failed with rc={proc.returncode}: {output[-4000:]}",
+                "reason": reason,
                 "history_summary": "Claude controller failed before producing a usable decision.",
             }
         try:
@@ -450,9 +456,12 @@ def run_codex_controller(codex_bin: str, prompt: str, workdir: str, model: str =
             last_message_path.unlink(missing_ok=True)
 
         if proc.returncode != 0:
+            reason = f"Codex CLI failed with rc={proc.returncode}: {output[-4000:]}"
+            if is_auth_failure(output):
+                return auth_failure_decision("codex", reason)
             return {
                 "action": "HUMAN_NEEDED",
-                "reason": f"Codex CLI failed with rc={proc.returncode}: {output[-4000:]}",
+                "reason": reason,
                 "history_summary": "Codex controller failed before producing a usable decision.",
             }
         try:
@@ -508,9 +517,12 @@ def run_gemini_controller(gemini_bin: str, prompt: str, workdir: str, model: str
         output = (proc.stdout + "\n" + proc.stderr).strip()
         last_output = output
         if proc.returncode != 0:
+            reason = f"Gemini CLI failed with rc={proc.returncode}: {output[-4000:]}"
+            if is_auth_failure(output):
+                return auth_failure_decision("gemini", reason)
             return {
                 "action": "HUMAN_NEEDED",
-                "reason": f"Gemini CLI failed with rc={proc.returncode}: {output[-4000:]}",
+                "reason": reason,
                 "history_summary": "Gemini controller failed before producing a usable decision.",
             }
         try:
