@@ -4,10 +4,6 @@ ai-loop is a durable development orchestrator. A controller plans and reviews wo
 
 Jobs normally run in isolated Git worktrees. They can use Codex, Claude, or Gemini-compatible CLIs in either role without putting a model name in the role program: the processes are always `controller.py` and `worker.py`.
 
-## GUI
-
-![AI-Loop GUI with job creation, controller and worker selection, job status, logs, and resume controls](docs/images/ai-loop-gui.png)
-
 ## What you get
 
 - Durable jobs, tasks, runs, decisions, events, plans, estimates, and terminal state in SQLite.
@@ -133,7 +129,9 @@ export AI_LOOP_NOTIFY_EMAIL='helmut.hlavacs@univie.ac.at'
 
 Credentials are read from the environment and are not written to the job database. Notification delivery failures are recorded as events and do not erase a successful job result.
 
-## Start the GUI
+## Graphical user interface
+
+### Start the GUI
 
 ```bash
 python3 ai_loop_gui.py
@@ -161,6 +159,35 @@ expired or missing login, the GUI recognizes the authentication failure, offers
 result, and resumes the same preserved job. It never silently switches providers
 or resumes before verification succeeds. The `System` menu provides `Start Redis`
 to start a local server when `REDIS_URL` points at localhost.
+
+### GUI overview
+
+![AI-Loop GUI with job creation, controller and worker selection, job status, logs, and resume controls](docs/images/ai-loop-gui.png)
+
+The window is split into a job-management area on the left and a job-inspection area on the right. Drag the divider to give either side more room; form controls reduce their minimum widths as the left side narrows.
+
+The top toolbar contains the global controls:
+
+- `Refresh` reloads job, process, and log state immediately. `Auto refresh` keeps the dashboard updated automatically.
+- `Stop` terminates the selected job's processes without deleting its database history or worktree.
+- `Finish Soon` keeps the job running but switches to coarse task granularity and removes optional polish from the remaining work.
+- `Resume` restarts the selected resumable job using the controller, worker, model, and granularity choices currently shown in the creation form.
+- `Job Actions` contains operations for provider sign-in, status explanation, finishing, promotion, deletion, and related selected-job workflows.
+- `System` contains environment-wide operations such as starting a local Redis server and macOS hibernation controls.
+- The status text at the right summarizes Redis availability, job counts, terminal states, and running processes.
+
+The left side contains two areas:
+
+- `Create Job` collects the repository, goal, validation command, controller binary/model, worker binary/model, base Git reference, iteration limit, and task granularity. Controller and worker choices are independent. `No worktree` runs directly in the selected repository, `Allow parallel` permits another active job, and `Bypass worker sandbox` removes the worker's normal sandbox restriction.
+- `Jobs` lists durable jobs and their status, progress estimate, controller, worker, task/run counts, and last update. Selecting a row loads that job into the inspection area.
+
+The right side contains the selected job's detailed views:
+
+- The tabbed notebook separates the immutable plan, current task, plain-language status, controller messages, worker reports, diagnostic details, and process logs.
+- `Resume Job` applies the controller binary/model, worker binary/model, and granularity selected on the left. Optional constraint and acceptance fields append new requirements before resumption.
+- `Fix binary` and `Fix It` run a selected CLI as an assisted repair helper, then resume the job after a successful repair.
+
+Hover over a control to see its purpose. Text views update only when their generated content changes, which preserves selections and scroll positions during automatic refresh.
 
 ### Create a job
 
