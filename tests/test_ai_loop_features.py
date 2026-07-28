@@ -191,6 +191,47 @@ class PersistenceAndEstimateTests(unittest.TestCase):
                 self.assertEqual(percent, 75)
                 self.assertEqual(remaining, 600)
 
+    def test_progress_reloads_from_durable_activity_after_gui_restart(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "loop.sqlite3"
+            db.init_db(path)
+            with db.transaction(path) as conn:
+                db.create_job(
+                    conn,
+                    job_id="J-restart",
+                    repo_path=directory,
+                    worktree_path=directory,
+                    branch=None,
+                    base_ref="HEAD",
+                    goal="Test restart progress",
+                    constraints=[],
+                    acceptance=["Pass"],
+                    test_cmd="true",
+                    max_iterations=10,
+                    use_worktree=False,
+                )
+                db.update_job_estimate(
+                    conn,
+                    "J-restart",
+                    completed_units=0,
+                    remaining_units=6,
+                    remaining_seconds=12600,
+                )
+
+            for _restart in range(2):
+                with db.transaction(path) as conn:
+                    percent, remaining = estimate_progress(
+                        conn,
+                        job_id="J-restart",
+                        status="fixing",
+                        created_at=db.get_job(conn, "J-restart")["created_at"],
+                        run_count=1,
+                        task_count=2,
+                        has_active_task=True,
+                    )
+                    self.assertEqual(percent, 6)
+                    self.assertIsNotNone(remaining)
+
     def test_decision_schema_requires_progress(self) -> None:
         schema = json.loads(Path("decision.schema.json").read_text(encoding="utf-8"))
         self.assertIn("progress", schema["required"])

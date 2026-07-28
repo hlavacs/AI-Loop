@@ -85,16 +85,21 @@ def estimate_progress(
     completed_units = int(estimate_row["estimated_completed_units"] or 0) if estimate_row else 0
     remaining_units = int(estimate_row["estimated_remaining_units"] or 0) if estimate_row else 0
     explicit_remaining = estimate_row["estimated_remaining_seconds"] if estimate_row else None
+    observed_percent = heuristic_percent(
+        status=status,
+        run_count=run_count,
+        task_count=task_count,
+        has_active_task=has_active_task,
+    )
     if completed_units + remaining_units > 0:
         percent = round(100 * completed_units / (completed_units + remaining_units))
         percent = max(1, min(99, percent))
+        # A controller may report zero completed logical units after a useful but
+        # blocked run. Durable task/run activity must still move the dashboard
+        # forward, including when a new GUI process rebuilds the view from SQLite.
+        percent = max(percent, observed_percent)
     else:
-        percent = heuristic_percent(
-            status=status,
-            run_count=run_count,
-            task_count=task_count,
-            has_active_task=has_active_task,
-        )
+        percent = observed_percent
 
     if status == "done":
         conn.execute(
