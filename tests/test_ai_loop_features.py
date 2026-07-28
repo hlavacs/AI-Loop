@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import subprocess
 import tempfile
 import unittest
 from datetime import datetime, timedelta, timezone
@@ -9,6 +10,13 @@ from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
 from ai_loop import db
+from ai_loop.auth import (
+    authenticate_provider,
+    auth_failure_decision,
+    find_auth_requirement,
+    is_auth_failure,
+    provider_for_role,
+)
 from ai_loop.planning import (
     build_static_plan,
     granularity_constraints,
@@ -60,6 +68,84 @@ class TokenWaitTests(unittest.TestCase):
         self.assertFalse(is_token_limit("ordinary compiler error"))
         self.assertIsNone(replenishment_time("ordinary compiler error", now=self.now))
 
+
+class AuthenticationRecoveryTests(unittest.TestCase):
+    def test_claude_auth_failure_is_classified(self) -> None:
+        output = "Failed to authenticate: OAuth session expired and could not be refreshed"
+        self.assertTrue(is_auth_failure(output))
+        self.assertEqual(provider_for_role("opus"), "claude")
+        decision = auth_failure_decision("claude", output)
+        self.assertEqual(decision["error_code"], "provider_auth_required")
+        self.assertEqual(decision["provider"], "claude")
+
+    def test_existing_unstructured_decision_is_recognized(self) -> None:
+        details = {
+            "job": {"status": "human_needed", "controller": "opus", "worker": "codex"},
+            "decisions": [
+                {
+                    "reason": "Claude CLI failed: OAuth session expired and could not be refreshed",
+                    "decision_json": "{}",
+                }
+            ],
+            "runs": [],
+            "events": [],
+        }
+        requirement = find_auth_requirement(details)
+        self.assertIsNotNone(requirement)
+        assert requirement is not None
+        self.assertEqual(requirement.provider, "claude")
+        self.assertEqual(requirement.role, "controller")
+
+    def test_authentication_logs_in_verifies_and_reports_success(self) -> None:
+        responses = iter(
+            [
+                subprocess.CompletedProcess(["claude", "auth", "status"], 1, "logged out", ""),
+                subprocess.CompletedProcess(["claude", "auth", "login"], 0, "login complete", ""),
+                subprocess.CompletedProcess(["claude", "auth", "status"], 0, "logged in", ""),
+            ]
+        )
+        commands: list[list[str]] = []
+
+        def runner(command: list[str], **_kwargs: object) -> subprocess.CompletedProcess[str]:
+            commands.append(command)
+            return next(responses)
+
+        result = authenticate_provider("claude", "claude", runner=runner)
+        self.assertFalse(result.already_authenticated)
+        self.assertEqual(
+            commands,
+            [
+                ["claude", "auth", "status"],
+                ["claude", "auth", "login"],
+                ["claude", "auth", "status"],
+            ],
+        )
+
+    def test_authentication_skips_login_when_status_is_healthy(self) -> None:
+        commands: list[list[str]] = []
+
+        def runner(command: list[str], **_kwargs: object) -> subprocess.CompletedProcess[str]:
+            commands.append(command)
+            return subprocess.CompletedProcess(command, 0, "logged in", "")
+
+        result = authenticate_provider("claude", "claude", runner=runner)
+        self.assertTrue(result.already_authenticated)
+        self.assertEqual(commands, [["claude", "auth", "status"]])
+
+    def test_failed_verification_does_not_report_success(self) -> None:
+        responses = iter(
+            [
+                subprocess.CompletedProcess(["claude", "auth", "status"], 1, "", ""),
+                subprocess.CompletedProcess(["claude", "auth", "login"], 0, "", ""),
+                subprocess.CompletedProcess(["claude", "auth", "status"], 1, "logged out", ""),
+            ]
+        )
+
+        def runner(command: list[str], **_kwargs: object) -> subprocess.CompletedProcess[str]:
+            return next(responses)
+
+        with self.assertRaisesRegex(RuntimeError, "could not be verified"):
+            authenticate_provider("claude", "claude", runner=runner)
 
 class PersistenceAndEstimateTests(unittest.TestCase):
     def test_job_plan_granularity_and_controller_estimate_round_trip(self) -> None:

@@ -9,6 +9,7 @@ import shutil
 import signal
 import subprocess
 import sys
+import threading
 import time
 import tkinter as tk
 from dataclasses import dataclass
@@ -98,6 +99,14 @@ bootstrap_python_dependencies()
 from redis.exceptions import ConnectionError, TimeoutError
 
 from ai_loop import db
+from ai_loop.auth import (
+    AuthRecoveryResult,
+    AuthRequirement,
+    authenticate_provider,
+    find_auth_requirement,
+    provider_display_name,
+    provider_for_role,
+)
 from ai_loop.config import (
     CLAUDE_REQUEST_STREAM,
     CODEX_TASK_STREAM,
@@ -346,6 +355,78 @@ class LoopBackend:
                 providers[provider] = models.gemini_bin
         for provider, binary in providers.items():
             cls.ensure_provider_cli(provider, binary)
+
+    @staticmethod
+    def provider_binary(provider: str, models: ModelDefaults) -> str:
+        if provider == "claude":
+            return models.claude_bin
+        if provider == "codex":
+            return models.codex_bin
+        if provider == "gemini":
+            return models.gemini_bin
+        raise RuntimeError(f"unknown authentication provider: {provider}")
+
+    def auth_requirement(self, job_id: str) -> AuthRequirement | None:
+        return find_auth_requirement(self.job_details(job_id))
+
+    def recover_provider_auth(
+        self,
+        job_id: str,
+        requirement: AuthRequirement,
+        models: ModelDefaults,
+    ) -> AuthRecoveryResult:
+        with db.transaction(self.settings.db_path) as conn:
+            job = db.get_job(conn, job_id)
+            selected_role = job["worker"] if requirement.role == "worker" else job["controller"]
+            current_provider = provider_for_role(str(selected_role))
+            if current_provider != requirement.provider:
+                raise RuntimeError(
+                    f"The job's {requirement.role} changed while authentication was pending. "
+                    "Review the selected provider and try again."
+                )
+            db.add_event(
+                conn,
+                job_id=job_id,
+                kind="provider_authentication_started",
+                payload={"provider": requirement.provider, "role": requirement.role},
+            )
+
+        binary = self.provider_binary(requirement.provider, models)
+        try:
+            result = authenticate_provider(requirement.provider, binary)
+        except Exception as exc:
+            with db.transaction(self.settings.db_path) as conn:
+                db.add_event(
+                    conn,
+                    job_id=job_id,
+                    kind="provider_authentication_failed",
+                    payload={
+                        "provider": requirement.provider,
+                        "role": requirement.role,
+                        "error": str(exc),
+                    },
+                )
+            raise
+
+        with db.transaction(self.settings.db_path) as conn:
+            db.add_event(
+                conn,
+                job_id=job_id,
+                kind="provider_authentication_succeeded",
+                payload={
+                    "provider": requirement.provider,
+                    "role": requirement.role,
+                    "already_authenticated": result.already_authenticated,
+                },
+            )
+        self.resume_job(
+            job_id,
+            worker=None,
+            controller=None,
+            granularity=None,
+            models=models,
+        )
+        return result
 
     def redis_running(self) -> bool:
         try:
@@ -1055,6 +1136,7 @@ class AiLoopGui(tk.Tk):
         self.watch_job_id: str | None = None
         self.last_status_by_job: dict[str, str] = {}
         self.alerted_human_needed: set[str] = set()
+        self.auth_recovery_jobs: set[str] = set()
         self.auto_refresh = tk.BooleanVar(value=True)
         self.status_var = tk.StringVar(value=f"DB: {self.backend.settings.db_path}")
         self._build_ui()
@@ -1096,6 +1178,7 @@ class AiLoopGui(tk.Tk):
         job_menu = tk.Menu(self, tearoff=False)
         job_menu.add_command(label="Status Details", command=self.explain_selected_status)
         job_menu.add_command(label="Wait / Notify", command=self.watch_selected_job)
+        job_menu.add_command(label="Sign In + Resume", command=self.recover_selected_auth)
         job_menu.add_separator()
         job_menu.add_command(label="Finish Early", command=self.finish_selected_job)
         job_menu.add_command(label="Delete Job", command=self.delete_selected_job)
@@ -1918,6 +2001,9 @@ class AiLoopGui(tk.Tk):
         self.refresh_log()
 
     def human_needed_actions(self, job: dict[str, Any], details: dict[str, Any]) -> list[str]:
+        requirement = find_auth_requirement(details)
+        if requirement:
+            return [f"- Use Job Actions → Sign In + Resume to authenticate {provider_display_name(requirement.provider)} and continue this same job."]
         actions = [
             "- Inspect the latest controller and worker logs in the Logs tab.",
             "- Read the controller explanation in Controller and the stored history in Details.",
@@ -1939,6 +2025,14 @@ class AiLoopGui(tk.Tk):
 
     def show_human_needed_alert(self, job: dict[str, Any]) -> None:
         job_id = str(job["id"])
+        try:
+            requirement = self.backend.auth_requirement(job_id)
+        except Exception:
+            requirement = None
+        if requirement is not None:
+            self.start_auth_recovery(job_id, requirement, ask=True)
+            return
+
         summary = str(job.get("history_summary") or "").strip()
         if len(summary) > 700:
             summary = summary[:697] + "..."
@@ -1953,6 +2047,115 @@ class AiLoopGui(tk.Tk):
             message += f"Reason/history:\n{summary}\n\n"
         message += "Possible actions:\n" + "\n".join(actions)
         messagebox.showwarning("Human Needed", message)
+
+    def recover_selected_auth(self) -> None:
+        job_id = self.selected_job_or_error()
+        if not job_id:
+            return
+        try:
+            requirement = self.backend.auth_requirement(job_id)
+        except Exception as exc:
+            messagebox.showerror("Authentication Check Failed", str(exc))
+            return
+        if requirement is None:
+            messagebox.showinfo(
+                "No Authentication Error",
+                "The selected job is not stopped by a recognized provider authentication error.",
+            )
+            return
+        self.start_auth_recovery(job_id, requirement, ask=True)
+
+    def start_auth_recovery(
+        self,
+        job_id: str,
+        requirement: AuthRequirement,
+        *,
+        ask: bool,
+    ) -> None:
+        if job_id in self.auth_recovery_jobs:
+            self.status_var.set(f"Authentication is already running for {job_id}")
+            return
+        display = provider_display_name(requirement.provider)
+        if requirement.provider == "gemini":
+            messagebox.showwarning(
+                "Gemini Sign-in Required",
+                "The Gemini CLI does not expose the verified login/status flow used by "
+                "Claude and Codex.\n\nAuthenticate Gemini in a terminal, then click "
+                "Apply + Resume. The job and worktree remain preserved.",
+            )
+            self.status_var.set(f"Gemini sign-in is required for {job_id}")
+            return
+        if ask and not messagebox.askyesno(
+            f"{display} Sign-in Required",
+            f"Job {job_id} stopped because its {requirement.role} is not authenticated.\n\n"
+            f"Start `{self.backend.provider_binary(requirement.provider, self.current_models())} "
+            f"{'auth login' if requirement.provider == 'claude' else 'login'}` now?\n\n"
+            "A browser or provider login window may open. After successful sign-in, "
+            "ai-loop will verify authentication and resume this same job automatically.",
+        ):
+            self.status_var.set(f"{display} sign-in is still required for {job_id}")
+            return
+
+        models = self.current_models()
+        self.auth_recovery_jobs.add(job_id)
+        self.status_var.set(f"Waiting for {display} sign-in for {job_id}…")
+
+        def recover() -> None:
+            try:
+                result = self.backend.recover_provider_auth(job_id, requirement, models)
+            except Exception as exc:
+                self.after(
+                    0,
+                    lambda error=str(exc): self.finish_auth_recovery(
+                        job_id,
+                        requirement,
+                        result=None,
+                        error=error,
+                    ),
+                )
+                return
+            self.after(
+                0,
+                lambda: self.finish_auth_recovery(
+                    job_id,
+                    requirement,
+                    result=result,
+                    error=None,
+                ),
+            )
+
+        threading.Thread(
+            target=recover,
+            name=f"ai-loop-auth-{job_id}",
+            daemon=True,
+        ).start()
+
+    def finish_auth_recovery(
+        self,
+        job_id: str,
+        requirement: AuthRequirement,
+        *,
+        result: AuthRecoveryResult | None,
+        error: str | None,
+    ) -> None:
+        self.auth_recovery_jobs.discard(job_id)
+        display = provider_display_name(requirement.provider)
+        if error is not None:
+            self.status_var.set(f"{display} sign-in failed for {job_id}")
+            messagebox.showerror(
+                f"{display} Sign-in Failed",
+                f"{error}\n\nThe job was preserved and was not resumed.",
+            )
+            return
+        self.alerted_human_needed.discard(job_id)
+        self.watch_job_id = job_id
+        self.status_var.set(f"{display} authenticated; resumed {job_id}")
+        messagebox.showinfo(
+            f"{display} Sign-in Complete",
+            f"{result.detail if result else f'{display} authentication succeeded.'}\n\n"
+            f"Job {job_id} has been resumed.",
+        )
+        self.refresh_all(select_job_id=job_id)
 
     def refresh_log(self) -> None:
         if not self.selected_job_id:
