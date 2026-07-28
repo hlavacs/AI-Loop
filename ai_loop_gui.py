@@ -4,6 +4,7 @@ import os
 import argparse
 import json
 import platform
+import shlex
 import shutil
 import signal
 import subprocess
@@ -25,7 +26,10 @@ def bootstrap_python_dependencies() -> None:
         pass
 
     if os.environ.get("AI_LOOP_GUI_BOOTSTRAPPED") == "1":
-        return
+        raise RuntimeError(
+            "ai-loop GUI restarted after dependency installation, but Python still cannot import 'redis'.\n"
+            f"Usual manual fix: {sys.executable} -m pip install redis"
+        )
 
     root_dir = Path(__file__).resolve().parent
     venv_dir = root_dir / ".gui-venv"
@@ -68,14 +72,22 @@ def bootstrap_python_dependencies() -> None:
         except (OSError, subprocess.SubprocessError):
             return False
 
-    if not venv_python.exists():
-        create_venv()
-    elif not venv_python_works():
-        create_venv(clear=True)
+    manual_command = f"{venv_python} -m pip install redis"
+    try:
+        if not venv_python.exists():
+            create_venv()
+        elif not venv_python_works():
+            create_venv(clear=True)
 
-    if not venv_has_redis():
-        subprocess.check_call([str(venv_python), "-m", "ensurepip", "--upgrade"])
-        subprocess.check_call([str(venv_python), "-m", "pip", "install", "redis"])
+        if not venv_has_redis():
+            subprocess.check_call([str(venv_python), "-m", "ensurepip", "--upgrade"])
+            subprocess.check_call([str(venv_python), "-m", "pip", "install", "redis"])
+    except (OSError, subprocess.SubprocessError) as exc:
+        raise RuntimeError(
+            "ai-loop GUI could not install the Python 'redis' package.\n"
+            f"Error: {exc}\n"
+            f"Usual manual fix: {manual_command}"
+        ) from exc
     env = os.environ.copy()
     env["AI_LOOP_GUI_BOOTSTRAPPED"] = "1"
     os.execve(str(venv_python), [str(venv_python), str(Path(__file__).resolve()), *sys.argv[1:]], env)
@@ -119,6 +131,11 @@ from start_job import (
 ACTIVE_STATUSES = {"planning", "queued", "implementing", "fixing", "waiting_tokens"}
 TERMINAL_STATUSES = {"done", "human_needed", "dead"}
 PROCESS_NAMES = ("controller", "worker", "watcher")
+PROVIDER_NPM_PACKAGES = {
+    "codex": "@openai/codex",
+    "claude": "@anthropic-ai/claude-code",
+    "gemini": "@google/gemini-cli",
+}
 PROCESS_LABELS = {
     "controller": "controller",
     "worker": "worker",
@@ -239,6 +256,97 @@ class LoopBackend:
             codex_bypass_sandbox=self.settings.codex_bypass_sandbox,
         )
 
+    @staticmethod
+    def _command_error(command: list[str], result: subprocess.CompletedProcess[str]) -> str:
+        output = "\n".join(part.strip() for part in (result.stdout, result.stderr) if part and part.strip())
+        if len(output) > 2000:
+            output = output[-2000:]
+        detail = output or f"command exited with status {result.returncode}"
+        return f"{shlex.join(command)}: {detail}"
+
+    @staticmethod
+    def _privileged_command(command: list[str]) -> list[str]:
+        if os.name == "nt" or (hasattr(os, "geteuid") and os.geteuid() == 0):
+            return command
+        sudo = shutil.which("sudo")
+        return [sudo, *command] if sudo else command
+
+    @classmethod
+    def install_npm(cls) -> None:
+        if shutil.which("npm"):
+            return
+        system = platform.system()
+        if system == "Darwin" and shutil.which("brew"):
+            command = ["brew", "install", "node"]
+            manual = "brew install node"
+        elif shutil.which("apt-get"):
+            command = cls._privileged_command(["apt-get", "install", "-y", "npm"])
+            manual = "sudo apt-get update && sudo apt-get install -y npm"
+        elif shutil.which("dnf"):
+            command = cls._privileged_command(["dnf", "install", "-y", "npm"])
+            manual = "sudo dnf install -y npm"
+        elif shutil.which("pacman"):
+            command = cls._privileged_command(["pacman", "-S", "--needed", "--noconfirm", "npm"])
+            manual = "sudo pacman -S --needed npm"
+        elif system == "Windows" and shutil.which("winget"):
+            command = ["winget", "install", "--id", "OpenJS.NodeJS.LTS", "-e"]
+            manual = "winget install --id OpenJS.NodeJS.LTS -e"
+        else:
+            raise RuntimeError(
+                "npm is required to install the selected AI provider CLI, but no supported "
+                "package manager was found.\nUsual manual fix: install Node.js from https://nodejs.org/"
+            )
+        result = subprocess.run(command, text=True, capture_output=True, check=False, timeout=600)
+        if result.returncode != 0 or not shutil.which("npm"):
+            raise RuntimeError(
+                "ai-loop GUI could not install npm.\n"
+                f"Error: {cls._command_error(command, result)}\n"
+                f"Usual manual fix: {manual}"
+            )
+
+    @classmethod
+    def ensure_provider_cli(cls, provider: str, binary: str) -> None:
+        if shutil.which(binary):
+            return
+        package = PROVIDER_NPM_PACKAGES[provider]
+        manual = f"npm install -g {package}"
+        if Path(binary).name != provider:
+            raise RuntimeError(
+                f"configured {provider} executable was not found: {binary}\n"
+                f"Usual manual fix: {manual}, or correct the executable setting."
+            )
+
+        cls.install_npm()
+        npm = shutil.which("npm") or "npm"
+        command = [npm, "install", "-g", package]
+        result = subprocess.run(command, text=True, capture_output=True, check=False, timeout=600)
+        if result.returncode != 0 or not shutil.which(binary):
+            raise RuntimeError(
+                f"ai-loop GUI could not install the {provider} CLI.\n"
+                f"Error: {cls._command_error(command, result)}\n"
+                f"Usual manual fix: {manual}"
+            )
+
+    @classmethod
+    def ensure_provider_clis(
+        cls,
+        *,
+        worker: str,
+        controller: str,
+        models: ModelDefaults,
+    ) -> None:
+        providers: dict[str, str] = {}
+        for role in (worker, controller):
+            provider = "claude" if role in {"fable", "opus", "claude"} else role
+            if provider == "codex":
+                providers[provider] = models.codex_bin
+            elif provider == "claude":
+                providers[provider] = models.claude_bin
+            elif provider == "gemini":
+                providers[provider] = models.gemini_bin
+        for provider, binary in providers.items():
+            cls.ensure_provider_cli(provider, binary)
+
     def redis_running(self) -> bool:
         try:
             redis_client(self.settings.redis_url).ping()
@@ -253,7 +361,21 @@ class LoopBackend:
             raise RuntimeError(f"cannot auto-start non-local Redis URL: {self.settings.redis_url}")
         redis_bin = shutil.which("redis-server")
         if redis_bin is None:
-            raise RuntimeError("redis-server is not on PATH; install Redis or set REDIS_URL to a running server")
+            if platform.system() == "Darwin":
+                manual = "brew install redis"
+            elif shutil.which("apt-get"):
+                manual = "sudo apt-get install -y redis-server"
+            elif shutil.which("dnf"):
+                manual = "sudo dnf install -y redis"
+            elif shutil.which("pacman"):
+                manual = "sudo pacman -S --needed redis"
+            else:
+                manual = "install Redis with your operating system's package manager"
+            raise RuntimeError(
+                "redis-server is not on PATH and automatic installation was unavailable.\n"
+                f"Usual manual fix: {manual}\n"
+                "Alternatively, set REDIS_URL to an existing Redis server."
+            )
 
         run_dir = self.root_dir / "run"
         log_dir = self.root_dir / "logs"
@@ -572,6 +694,7 @@ class LoopBackend:
         worker = normalize_worker(worker)
         controller = normalize_controller(controller)
         granularity = normalize_granularity(granularity)
+        self.ensure_provider_clis(worker=worker, controller=controller, models=models)
         detected_test_cmd = detect_test_cmd(repo, test_cmd)
 
         current_active = active_jobs(self.settings.db_path)

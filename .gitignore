@@ -3,3 +3,5 @@ run/
 __pycache__/
 *.pyc
 *.sqlite3
+.venv/
+.gui-venv/

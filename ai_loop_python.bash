@@ -4,8 +4,15 @@ ai_loop_python_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
 python_can_run() {
   local candidate="$1"
+  local resolved
   [ -x "$candidate" ] || command -v "$candidate" >/dev/null 2>&1 || return 1
-  "$candidate" -c 'print("ok")' >/dev/null 2>&1
+  resolved="$(command -v "$candidate" 2>/dev/null || printf '%s' "$candidate")"
+  if [ "$(uname -s)" = "Darwin" ] &&
+    [ "$resolved" = "/usr/bin/python3" ] &&
+    ! xcode-select -p >/dev/null 2>&1; then
+    return 1
+  fi
+  "$candidate" -c 'import sys; raise SystemExit(0 if sys.version_info >= (3, 10) else 1)' >/dev/null 2>&1
 }
 
 python_has_redis() {

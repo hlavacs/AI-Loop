@@ -26,9 +26,12 @@ Required:
 - `redis-py`
 - At least one supported controller CLI and one supported worker CLI
 
+Required for the GUI:
+
+- Tkinter
+
 Optional:
 
-- Tkinter for the GUI
 - A local `sendmail` command or an SMTP account for email
 - Bash for the convenience launchers
 
@@ -137,7 +140,17 @@ or:
 ./ai_gui.bash --list-themes
 ```
 
-If the selected Python lacks `redis-py`, the GUI can create `.gui-venv`, install `redis`, and restart itself. The `System` menu provides `Start Redis` to start a local server when `REDIS_URL` points at localhost.
+The Bash launcher checks Python, Tkinter, Git, and `redis-server`. When one is
+missing, it attempts installation with Homebrew, `apt-get`, `dnf`, or `pacman`.
+If installation fails, startup prints the underlying error and the usual manual
+install command. If the selected Python lacks `redis-py`, the GUI creates
+`.gui-venv`, installs `redis`, and restarts itself.
+
+When a job is created, the GUI also checks its selected Codex, Claude, or Gemini
+CLIs. It attempts to install a missing standard CLI through npm; if npm is
+missing, it first attempts to install npm. Provider authentication remains an
+interactive one-time step. The `System` menu provides `Start Redis` to start a
+local server when `REDIS_URL` points at localhost.
 
 ### Create a job
 
