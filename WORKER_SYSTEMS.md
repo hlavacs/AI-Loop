@@ -41,12 +41,12 @@ Observes `done`, `human`, and `dead` Redis streams and prints terminal payloads.
 
 ### `ai_loop_gui.py`
 
-Provides job creation, Goal File input, a Clear Goal action, granularity
-selection, job/task status, immutable Plan display, wrapped logs, history,
-resume controls, Finish Soon/Early, cleanup, Redis startup, and macOS
-hibernation controls. Before creating a job, it verifies the selected provider
-CLIs and attempts npm installation of a missing standard Codex, Claude, or
-Gemini executable.
+Provides job creation, Goal File input, a Clear Goal action, compact independent
+binary/model selectors for the controller and worker, granularity selection,
+job/task status, immutable Plan display, wrapped logs, history, resume controls,
+Finish Soon/Early, cleanup, Redis startup, and macOS hibernation controls.
+Before creating a job, it verifies the selected provider CLIs and attempts npm
+installation of a missing standard Codex, Claude, or Gemini executable.
 
 ### Library modules
 

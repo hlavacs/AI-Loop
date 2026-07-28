@@ -110,8 +110,6 @@ from ai_loop.auth import (
 from ai_loop.config import (
     CLAUDE_REQUEST_STREAM,
     CODEX_TASK_STREAM,
-    CONTROLLERS,
-    WORKERS,
     load_settings,
     normalize_controller,
     normalize_worker,
@@ -164,6 +162,7 @@ JOB_STATUS_COLORS = {
     "done": "#dff3df",
 }
 APP_WINDOW_TITLE = "AI-LOOP - Prof. Helmut Hlavacs, University of Vienna and Robimo GmbH (https://robimo.at/), Vienna, Austria"
+BINARY_CHOICES = ("codex", "claude", "gemini")
 
 
 class HoverTooltip:
@@ -241,6 +240,8 @@ class ModelDefaults:
     claude_bin: str
     gemini_bin: str
     codex_bypass_sandbox: bool
+    controller_role_model: str = ""
+    worker_role_model: str = ""
 
 
 class LoopBackend:
@@ -263,6 +264,8 @@ class LoopBackend:
             claude_bin=self.settings.claude_bin,
             gemini_bin=self.settings.gemini_bin,
             codex_bypass_sandbox=self.settings.codex_bypass_sandbox,
+            controller_role_model=self.settings.controller_role_model,
+            worker_role_model=self.settings.worker_role_model,
         )
 
     @staticmethod
@@ -663,6 +666,8 @@ class LoopBackend:
         env["AI_LOOP_OPUS_MODEL"] = models.opus_model
         env["AI_LOOP_GEMINI_MODEL"] = models.gemini_model
         env["AI_LOOP_CONTROLLER_MODEL"] = models.controller_model
+        env["AI_LOOP_CONTROLLER_ROLE_MODEL"] = models.controller_role_model
+        env["AI_LOOP_WORKER_ROLE_MODEL"] = models.worker_role_model
         env["CODEX_BYPASS_SANDBOX"] = "1" if models.codex_bypass_sandbox else "0"
         return env
 
@@ -1237,8 +1242,10 @@ class AiLoopGui(tk.Tk):
         self.test_cmd_var = tk.StringVar(value="auto")
         self.base_ref_var = tk.StringVar(value="HEAD")
         self.max_iterations_var = tk.IntVar(value=50000)
-        self.worker_var = tk.StringVar(value=self.backend.settings.worker_default)
-        self.controller_var = tk.StringVar(value=self.backend.settings.controller_default)
+        worker_default = self.backend.settings.worker_default
+        controller_default = self.backend.settings.controller_default
+        self.worker_var = tk.StringVar(value=provider_for_role(worker_default) or "codex")
+        self.controller_var = tk.StringVar(value=provider_for_role(controller_default) or "claude")
         self.granularity_var = tk.StringVar(value="normal")
         self.no_worktree_var = tk.BooleanVar(value=False)
         self.allow_parallel_var = tk.BooleanVar(value=False)
@@ -1251,9 +1258,39 @@ class AiLoopGui(tk.Tk):
         self.claude_bin_var = tk.StringVar(value=self.model_defaults.claude_bin)
         self.gemini_bin_var = tk.StringVar(value=self.model_defaults.gemini_bin)
         self.bypass_var = tk.BooleanVar(value=self.model_defaults.codex_bypass_sandbox)
+        self.role_model_values = {
+            "controller": {
+                "codex": self.model_defaults.codex_model,
+                "claude": self.configured_model_for_role(controller_default),
+                "gemini": self.model_defaults.gemini_model,
+            },
+            "worker": {
+                "codex": self.model_defaults.codex_model,
+                "claude": self.configured_model_for_role(worker_default),
+                "gemini": self.model_defaults.gemini_model,
+            },
+        }
+        self.role_model_values["controller"][self.controller_var.get()] = (
+            self.model_defaults.controller_role_model
+            or self.role_model_values["controller"][self.controller_var.get()]
+        )
+        self.role_model_values["worker"][self.worker_var.get()] = (
+            self.model_defaults.worker_role_model
+            or self.role_model_values["worker"][self.worker_var.get()]
+        )
+        self.role_binary_previous = {
+            "controller": self.controller_var.get(),
+            "worker": self.worker_var.get(),
+        }
+        self.controller_role_model_var = tk.StringVar(
+            value=self.role_model_values["controller"][self.controller_var.get()]
+        )
+        self.worker_role_model_var = tk.StringVar(
+            value=self.role_model_values["worker"][self.worker_var.get()]
+        )
 
         ttk.Label(frame, text="Repo").grid(row=0, column=0, sticky="w")
-        self.help_widget(ttk.Entry(frame, textvariable=self.repo_var), "Repository root for the job. The selected path is where the job will read and write.").grid(row=0, column=1, sticky="ew", padx=4)
+        self.help_widget(ttk.Entry(frame, textvariable=self.repo_var, width=12), "Repository root for the job. The selected path is where the job will read and write.").grid(row=0, column=1, sticky="ew", padx=4)
         browse_buttons = ttk.Frame(frame)
         browse_buttons.grid(row=0, column=2, sticky="e")
         self.help_widget(ttk.Button(browse_buttons, text="Goal File", command=self.browse_goal_file), "Pick a text file and load its contents into the goal box while setting the repo path to that file's parent directory.").pack(side="left")
@@ -1264,65 +1301,59 @@ class AiLoopGui(tk.Tk):
         self.help_widget(ttk.Button(browse_buttons, text="Repo Folder", command=self.browse_repo_folder), "Choose the repository folder that the job should modify.").pack(side="left", padx=(4, 0))
 
         ttk.Label(frame, text="Goal").grid(row=1, column=0, sticky="nw", pady=(6, 0))
-        self.goal_text = self.help_widget(tk.Text(frame, height=5, width=40, wrap="word"), "Describe the work the loop should do. This is the main job goal and should be specific enough to test.")
+        self.goal_text = self.help_widget(tk.Text(frame, height=12, width=24, wrap="word"), "Describe the work the loop should do. This is the main job goal and should be specific enough to test.")
         self.goal_text.grid(row=1, column=1, columnspan=2, sticky="ew", pady=(6, 0))
 
         ttk.Label(frame, text="Test").grid(row=2, column=0, sticky="w", pady=(6, 0))
-        self.help_widget(ttk.Entry(frame, textvariable=self.test_cmd_var), "Validation command run after each worker task. Use auto to infer a command from the target repository.").grid(row=2, column=1, columnspan=2, sticky="ew", pady=(6, 0))
+        self.help_widget(ttk.Entry(frame, textvariable=self.test_cmd_var, width=12), "Validation command run after each worker task. Use auto to infer a command from the target repository.").grid(row=2, column=1, columnspan=2, sticky="ew", pady=(6, 0))
 
         settings = ttk.Frame(frame)
         settings.grid(row=3, column=0, columnspan=3, sticky="ew", pady=(6, 0))
         settings.columnconfigure(1, weight=1)
         settings.columnconfigure(3, weight=1)
 
-        label_width = 13
-        ttk.Label(settings, text="Controller", width=label_width).grid(row=0, column=0, sticky="w")
-        self.help_widget(ttk.Combobox(settings, textvariable=self.controller_var, values=sorted(CONTROLLERS), width=12, state="readonly"), "Pick which controller plans and reviews the job after each worker run.").grid(
-            row=0, column=1, sticky="ew", padx=(4, 10)
+        ttk.Label(settings, text="Controller binary").grid(row=0, column=0, sticky="w")
+        controller_binary = self.help_widget(
+            ttk.Combobox(settings, textvariable=self.controller_var, values=BINARY_CHOICES, width=8, state="readonly"),
+            "CLI binary used by the controller that plans and reviews the job. Changing it loads the model last entered for that binary.",
         )
-        ttk.Label(settings, text="Worker", width=label_width).grid(row=0, column=2, sticky="w")
-        self.help_widget(ttk.Combobox(settings, textvariable=self.worker_var, values=sorted(WORKERS), width=12, state="readonly"), "Pick which implementation worker will edit the worktree and run the task.").grid(
+        controller_binary.grid(row=0, column=1, sticky="ew", padx=(3, 6))
+        controller_binary.bind("<<ComboboxSelected>>", lambda _event: self.on_role_binary_selected("controller"))
+        ttk.Label(settings, text="Controller model").grid(row=0, column=2, sticky="w")
+        self.help_widget(ttk.Entry(settings, textvariable=self.controller_role_model_var, width=12), "Optional model for the selected controller binary. Leave blank to use that CLI's configured default.").grid(
             row=0, column=3, sticky="ew", padx=(4, 0)
         )
 
-        ttk.Label(settings, text="Base ref", width=label_width).grid(row=1, column=0, sticky="w", pady=(5, 0))
-        self.help_widget(ttk.Entry(settings, textvariable=self.base_ref_var), "Git ref used when creating the isolated worktree.").grid(row=1, column=1, sticky="ew", padx=(4, 10), pady=(5, 0))
-        ttk.Label(settings, text="Max iterations", width=label_width).grid(row=1, column=2, sticky="w", pady=(5, 0))
-        self.help_widget(ttk.Spinbox(settings, from_=1, to=50000, textvariable=self.max_iterations_var), "Upper bound for job iterations. Lower values cut the remaining workload sooner.").grid(
+        ttk.Label(settings, text="Worker binary").grid(row=1, column=0, sticky="w", pady=(5, 0))
+        worker_binary = self.help_widget(
+            ttk.Combobox(settings, textvariable=self.worker_var, values=BINARY_CHOICES, width=8, state="readonly"),
+            "CLI binary used by the worker that edits the worktree and runs the task. Changing it loads the model last entered for that binary.",
+        )
+        worker_binary.grid(row=1, column=1, sticky="ew", padx=(3, 6), pady=(5, 0))
+        worker_binary.bind("<<ComboboxSelected>>", lambda _event: self.on_role_binary_selected("worker"))
+        ttk.Label(settings, text="Worker model").grid(row=1, column=2, sticky="w", pady=(5, 0))
+        self.help_widget(ttk.Entry(settings, textvariable=self.worker_role_model_var, width=12), "Optional model for the selected worker binary. Leave blank to use that CLI's configured default.").grid(
             row=1, column=3, sticky="ew", padx=(4, 0), pady=(5, 0)
         )
 
-        ttk.Label(settings, text="Codex model", width=label_width).grid(row=2, column=0, sticky="w", pady=(5, 0))
-        self.help_widget(ttk.Entry(settings, textvariable=self.codex_model_var), "Optional Codex CLI model override. Leave blank to use the CLI default.").grid(row=2, column=1, sticky="ew", padx=(4, 10), pady=(5, 0))
-        ttk.Label(settings, text="Codex bin", width=label_width).grid(row=2, column=2, sticky="w", pady=(5, 0))
-        self.help_widget(ttk.Entry(settings, textvariable=self.codex_bin_var), "Command used to launch Codex CLI for the job.").grid(row=2, column=3, sticky="ew", padx=(4, 0), pady=(5, 0))
-
-        ttk.Label(settings, text="Fable model", width=label_width).grid(row=3, column=0, sticky="w", pady=(5, 0))
-        self.help_widget(ttk.Entry(settings, textvariable=self.fable_model_var), "Optional Claude Fable model override. Leave blank to use the CLI default.").grid(row=3, column=1, sticky="ew", padx=(4, 10), pady=(5, 0))
-        ttk.Label(settings, text="Claude bin", width=label_width).grid(row=3, column=2, sticky="w", pady=(5, 0))
-        self.help_widget(ttk.Entry(settings, textvariable=self.claude_bin_var), "Command used to launch the Claude CLI for controller or worker roles.").grid(row=3, column=3, sticky="ew", padx=(4, 0), pady=(5, 0))
-
-        ttk.Label(settings, text="Opus model", width=label_width).grid(row=4, column=0, sticky="w", pady=(5, 0))
-        self.help_widget(ttk.Entry(settings, textvariable=self.opus_model_var), "Optional Claude Opus model override. Leave blank to use the CLI default.").grid(row=4, column=1, sticky="ew", padx=(4, 10), pady=(5, 0))
-        ttk.Label(settings, text="Claude ctrl", width=label_width).grid(row=4, column=2, sticky="w", pady=(5, 0))
-        self.help_widget(ttk.Entry(settings, textvariable=self.controller_model_var), "Optional Claude controller model override. Leave blank to use the CLI default.").grid(row=4, column=3, sticky="ew", padx=(4, 0), pady=(5, 0))
-
-        ttk.Label(settings, text="Gemini model", width=label_width).grid(row=5, column=0, sticky="w", pady=(5, 0))
-        self.help_widget(ttk.Entry(settings, textvariable=self.gemini_model_var), "Optional Gemini CLI model override. Leave blank to use the CLI default.").grid(row=5, column=1, sticky="ew", padx=(4, 10), pady=(5, 0))
-        ttk.Label(settings, text="Gemini bin", width=label_width).grid(row=5, column=2, sticky="w", pady=(5, 0))
-        self.help_widget(ttk.Entry(settings, textvariable=self.gemini_bin_var), "Command used to launch the Gemini CLI for the job.").grid(row=5, column=3, sticky="ew", padx=(4, 0), pady=(5, 0))
+        ttk.Label(settings, text="Base ref").grid(row=2, column=0, sticky="w", pady=(5, 0))
+        self.help_widget(ttk.Entry(settings, textvariable=self.base_ref_var, width=10), "Git ref used when creating the isolated worktree.").grid(row=2, column=1, sticky="ew", padx=(3, 6), pady=(5, 0))
+        ttk.Label(settings, text="Max iterations").grid(row=2, column=2, sticky="w", pady=(5, 0))
+        self.help_widget(ttk.Spinbox(settings, from_=1, to=50000, width=8, textvariable=self.max_iterations_var), "Upper bound for job iterations. Lower values cut the remaining workload sooner.").grid(
+            row=2, column=3, sticky="ew", padx=(4, 0), pady=(5, 0)
+        )
 
         toggles = ttk.Frame(settings)
-        toggles.grid(row=6, column=0, columnspan=4, sticky="ew", pady=(6, 0))
-        self.help_widget(ttk.Label(toggles, text="Granularity"), "Task sizing policy used by both controller and worker for this job.").pack(side="left", padx=(0, 4))
+        toggles.grid(row=3, column=0, columnspan=4, sticky="ew", pady=(6, 0))
+        self.help_widget(ttk.Label(toggles, text="Granularity"), "Task sizing policy used for new jobs and when resuming the selected job.").pack(side="left", padx=(0, 4))
         self.help_widget(
             ttk.Combobox(toggles, textvariable=self.granularity_var, values=GRANULARITIES, width=8, state="readonly"),
-            "Fine creates many focused tasklets; normal balances control and speed; coarse creates fewer substantial tasks without lowering quality.",
+            "Fine uses narrow tasklets and frequent controller review. Normal groups closely related changes into medium-sized, testable tasks. Coarse combines related discovery, implementation, documentation, and verification into a few substantial tasks. All choices keep the same acceptance and test-quality requirements.",
         ).pack(side="left", padx=(0, 12))
         self.help_widget(ttk.Checkbutton(toggles, text="Bypass worker sandbox", variable=self.bypass_var), "Run the worker without sandbox restrictions. Leave this off unless you need to debug or the environment is trusted.").pack(side="left", padx=(0, 12))
-        self.help_widget(ttk.Checkbutton(toggles, text="No worktree", variable=self.no_worktree_var), "Run directly in the target repository instead of creating an isolated Git worktree.").pack(side="left", padx=(0, 12))
         create_actions = ttk.Frame(settings)
-        create_actions.grid(row=7, column=0, columnspan=4, sticky="ew", pady=(5, 0))
+        create_actions.grid(row=4, column=0, columnspan=4, sticky="ew", pady=(5, 0))
+        self.help_widget(ttk.Checkbutton(create_actions, text="No worktree", variable=self.no_worktree_var), "Run directly in the target repository instead of creating an isolated Git worktree.").pack(side="left", padx=(0, 12))
         self.help_widget(ttk.Checkbutton(create_actions, text="Allow parallel", variable=self.allow_parallel_var), "Allow this job to start even if another job is already active.").pack(side="left")
         self.help_widget(ttk.Button(create_actions, text="Create Job", command=self.create_job), "Create the job with the current goal, static plan, granularity, test command, controller, worker, and environment settings.").pack(side="right")
 
@@ -1421,42 +1452,20 @@ class AiLoopGui(tk.Tk):
             self.add_scrolled_text(details_tab, 0, 0),
             "Extensive diagnostic details assembled from SQLite, process state, Redis state, progress estimates, tasks, runs, decisions, and events.",
         )
-        resume_frame = ttk.LabelFrame(parent, text="Resume / Change Controller", padding=8)
+        resume_frame = ttk.LabelFrame(parent, text="Resume Job", padding=8)
         resume_frame.grid(row=1, column=0, sticky="ew", pady=(8, 0))
         for column in range(6):
             resume_frame.columnconfigure(column, weight=1)
-        self.resume_controller_var = tk.StringVar(value=self.controller_var.get())
-        self.resume_worker_var = tk.StringVar(value=self.worker_var.get())
-        self.resume_granularity_var = tk.StringVar(value=self.granularity_var.get())
         self.extra_constraint_var = tk.StringVar()
         self.extra_acceptance_var = tk.StringVar()
-        ttk.Label(resume_frame, text="Controller").grid(row=0, column=0, sticky="w")
-        self.help_widget(
-            ttk.Combobox(
-                resume_frame,
-                textvariable=self.resume_controller_var,
-                values=sorted(CONTROLLERS),
-                width=10,
-                state="readonly",
-            ),
-            "Controller to use when the selected job is resumed.",
-        ).grid(row=0, column=1, sticky="ew", padx=3)
-        ttk.Label(resume_frame, text="Worker").grid(row=0, column=2, sticky="w")
-        self.help_widget(ttk.Combobox(resume_frame, textvariable=self.resume_worker_var, values=sorted(WORKERS), width=10, state="readonly"), "Worker to use when the selected job is resumed.").grid(
-            row=0, column=3, sticky="ew", padx=3
-        )
-        self.help_widget(ttk.Button(resume_frame, text="Apply + Resume", command=self.resume_selected_job), "Apply the selected controller and worker, then queue a new plan for the job.").grid(row=0, column=4, columnspan=2, sticky="e")
-        ttk.Label(resume_frame, text="Granularity").grid(row=1, column=0, sticky="w", pady=(5, 0))
-        self.help_widget(
-            ttk.Combobox(resume_frame, textvariable=self.resume_granularity_var, values=GRANULARITIES, width=10, state="readonly"),
-            "Task granularity to use after resuming. Coarse reduces controller round trips while retaining normal acceptance and testing requirements.",
-        ).grid(row=1, column=1, sticky="ew", pady=(5, 0))
-        ttk.Label(resume_frame, text="Extra constraint").grid(row=2, column=0, sticky="w", pady=(5, 0))
-        self.help_widget(ttk.Entry(resume_frame, textvariable=self.extra_constraint_var), "Optional extra constraint to add before resuming the job.").grid(row=2, column=1, columnspan=5, sticky="ew", pady=(5, 0))
-        ttk.Label(resume_frame, text="Extra acceptance").grid(row=3, column=0, sticky="w", pady=(5, 0))
-        self.help_widget(ttk.Entry(resume_frame, textvariable=self.extra_acceptance_var), "Optional extra acceptance criterion to add before resuming the job.").grid(row=3, column=1, columnspan=5, sticky="ew", pady=(5, 0))
+        ttk.Label(resume_frame, text="Uses the controller, worker, models, and granularity selected above.").grid(row=0, column=0, columnspan=4, sticky="w")
+        self.help_widget(ttk.Button(resume_frame, text="Apply + Resume", command=self.resume_selected_job), "Apply the controller binary/model, worker binary/model, and granularity selected above, then queue a new plan for the job.").grid(row=0, column=4, columnspan=2, sticky="e")
+        ttk.Label(resume_frame, text="Extra constraint").grid(row=1, column=0, sticky="w", pady=(5, 0))
+        self.help_widget(ttk.Entry(resume_frame, textvariable=self.extra_constraint_var), "Optional extra constraint to add before resuming the job.").grid(row=1, column=1, columnspan=5, sticky="ew", pady=(5, 0))
+        ttk.Label(resume_frame, text="Extra acceptance").grid(row=2, column=0, sticky="w", pady=(5, 0))
+        self.help_widget(ttk.Entry(resume_frame, textvariable=self.extra_acceptance_var), "Optional extra acceptance criterion to add before resuming the job.").grid(row=2, column=1, columnspan=5, sticky="ew", pady=(5, 0))
         self.fix_binary_var = tk.StringVar(value=self.codex_bin_var.get() or "codex")
-        ttk.Label(resume_frame, text="Fix binary").grid(row=4, column=0, sticky="w", pady=(5, 0))
+        ttk.Label(resume_frame, text="Fix binary").grid(row=3, column=0, sticky="w", pady=(5, 0))
         self.help_widget(
             ttk.Combobox(
                 resume_frame,
@@ -1465,8 +1474,8 @@ class AiLoopGui(tk.Tk):
                 width=18,
             ),
             "CLI binary to use for the repair helper when the selected job needs a manual or assisted fix.",
-        ).grid(row=4, column=1, columnspan=3, sticky="ew", pady=(5, 0))
-        self.help_widget(ttk.Button(resume_frame, text="Fix It", command=self.fix_selected_job), "Run the selected binary to diagnose or repair the job, then resume it if successful.").grid(row=4, column=4, columnspan=2, sticky="e", pady=(5, 0))
+        ).grid(row=3, column=1, columnspan=3, sticky="ew", pady=(5, 0))
+        self.help_widget(ttk.Button(resume_frame, text="Fix It", command=self.fix_selected_job), "Run the selected binary to diagnose or repair the job, then resume it if successful.").grid(row=3, column=4, columnspan=2, sticky="e", pady=(5, 0))
         logs.rowconfigure(0, weight=0)
         logs.rowconfigure(1, weight=1)
         logs.columnconfigure(0, weight=1)
@@ -1491,7 +1500,34 @@ class AiLoopGui(tk.Tk):
             claude_bin=self.claude_bin_var.get().strip() or "claude",
             gemini_bin=self.gemini_bin_var.get().strip() or "gemini",
             codex_bypass_sandbox=bool(self.bypass_var.get()),
+            controller_role_model=self.controller_role_model_var.get().strip(),
+            worker_role_model=self.worker_role_model_var.get().strip(),
         )
+
+    def configured_model_for_role(self, role: str) -> str:
+        role = role.strip().lower()
+        if role == "codex":
+            return self.model_defaults.codex_model
+        if role == "gemini":
+            return self.model_defaults.gemini_model
+        if role == "opus":
+            return self.model_defaults.opus_model
+        if role == "fable":
+            return self.model_defaults.fable_model
+        return self.model_defaults.controller_model
+
+    def on_role_binary_selected(self, role: str) -> None:
+        binary_var = self.controller_var if role == "controller" else self.worker_var
+        model_var = (
+            self.controller_role_model_var
+            if role == "controller"
+            else self.worker_role_model_var
+        )
+        previous_binary = self.role_binary_previous[role]
+        self.role_model_values[role][previous_binary] = model_var.get()
+        selected_binary = binary_var.get()
+        model_var.set(self.role_model_values[role][selected_binary])
+        self.role_binary_previous[role] = selected_binary
 
     def browse_goal_file(self) -> None:
         selected = filedialog.askopenfilename(
@@ -1969,10 +2005,6 @@ class AiLoopGui(tk.Tk):
         self.set_text(self.status_text, self.plain_status_text(details))
         self.status_var.set(f"Status explanation refreshed for {job_id}")
 
-    def set_choice_if_changed(self, variable: tk.StringVar, value: str) -> None:
-        if variable.get() != value:
-            variable.set(value)
-
     def show_job(self, job_id: str) -> None:
         try:
             details = self.backend.job_details(job_id)
@@ -1981,9 +2013,6 @@ class AiLoopGui(tk.Tk):
             return
         job = details["job"]
         if self.resume_fields_job_id != job_id:
-            self.set_choice_if_changed(self.resume_controller_var, str(job.get("controller")))
-            self.set_choice_if_changed(self.resume_worker_var, str(job.get("worker")))
-            self.set_choice_if_changed(self.resume_granularity_var, str(job.get("granularity")))
             self.extra_constraint_var.set("")
             self.extra_acceptance_var.set("")
             self.resume_fields_job_id = job_id
@@ -2253,9 +2282,9 @@ class AiLoopGui(tk.Tk):
         try:
             self.backend.resume_job(
                 job_id,
-                worker=self.resume_worker_var.get(),
-                controller=self.resume_controller_var.get(),
-                granularity=self.resume_granularity_var.get(),
+                worker=self.worker_var.get(),
+                controller=self.controller_var.get(),
+                granularity=self.granularity_var.get(),
                 models=self.current_models(),
                 extra_constraint=self.extra_constraint_var.get(),
                 extra_acceptance=self.extra_acceptance_var.get(),
@@ -2280,7 +2309,7 @@ class AiLoopGui(tk.Tk):
         except Exception as exc:
             messagebox.showerror("Finish Soon Failed", str(exc))
             return
-        self.resume_granularity_var.set("coarse")
+        self.granularity_var.set("coarse")
         self.refresh_all(select_job_id=job_id)
 
     def finish_selected_job(self) -> None:

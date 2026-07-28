@@ -555,7 +555,7 @@ def controller_decision(settings, job: dict[str, Any], prompt: str) -> dict[str,
                 settings.codex_bin,
                 prompt,
                 str(job["worktree_path"]),
-                settings.codex_model,
+                settings.controller_role_model or settings.codex_model,
                 sizing,
             )
         elif controller == "gemini":
@@ -563,11 +563,13 @@ def controller_decision(settings, job: dict[str, Any], prompt: str) -> dict[str,
                 settings.gemini_bin,
                 prompt,
                 str(job["worktree_path"]),
-                settings.gemini_model,
+                settings.controller_role_model or settings.gemini_model,
                 sizing,
             )
         else:
-            if controller == "fable":
+            if settings.controller_role_model:
+                model = settings.controller_role_model
+            elif controller == "fable":
                 model = settings.fable_model
             elif controller == "opus":
                 model = settings.opus_model

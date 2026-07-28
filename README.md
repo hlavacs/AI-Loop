@@ -35,7 +35,7 @@ Optional:
 - A local `sendmail` command or an SMTP account for email
 - Bash for the convenience launchers
 
-Supported role choices are `codex`, `fable`, `opus`, and `gemini` for workers, and `claude`, `fable`, `opus`, `codex`, and `gemini` for controllers. `fable` and `opus` use the Claude CLI with different optional model settings.
+Supported role choices are `claude`, `codex`, `fable`, `opus`, and `gemini` for workers and controllers. `fable` and `opus` are retained as Claude CLI aliases with separate legacy model settings; the GUI presents the simpler binary-plus-model controls.
 
 ### Linux installation
 
@@ -105,6 +105,8 @@ All settings are optional unless your environment needs an override.
 | `AI_LOOP_OPUS_MODEL` | Optional Opus override | CLI default |
 | `AI_LOOP_GEMINI_MODEL` | Optional Gemini override | CLI default |
 | `AI_LOOP_CONTROLLER_MODEL` | Optional default-Claude controller override | CLI default |
+| `AI_LOOP_CONTROLLER_ROLE_MODEL` | Model selected specifically for the controller process | provider model above |
+| `AI_LOOP_WORKER_ROLE_MODEL` | Model selected specifically for the worker process | provider model above |
 | `CODEX_BYPASS_SANDBOX` | Allow unrestricted worker execution | false in Python entry points |
 | `AI_LOOP_NOTIFY_EMAIL` | Terminal notification recipient | `helmut.hlavacs@univie.ac.at` |
 | `AI_LOOP_SMTP_HOST` | SMTP server; empty uses local `sendmail` | empty |
@@ -161,9 +163,10 @@ to start a local server when `REDIS_URL` points at localhost.
 1. Choose the repository folder.
 2. Enter the Goal. `Goal File` loads a text file; `Clear Goal` empties the existing Goal field.
 3. Set the validation command or leave `auto` selected.
-4. Choose controller, worker, and granularity.
-5. Leave worktree isolation enabled unless you deliberately want direct edits.
-6. Click `Create Job`.
+4. Choose a binary and optional model independently for the controller and worker. Switching a binary restores the model last entered for that role and binary.
+5. Choose the task granularity.
+6. Leave worktree isolation enabled unless you deliberately want direct edits.
+7. Click `Create Job`.
 
 Creation stores an immutable four-part overall plan. The `Plan` tab always displays it as an enumerated list. Controller review can adapt individual tasks, but it cannot rewrite this plan.
 
@@ -173,7 +176,7 @@ Creation stores an immutable four-part overall plan. The `Plan` tab always displ
 - `Normal`: medium-sized coherent tasks. This is the default balance.
 - `Coarse`: fewer substantial tasks that combine related discovery, implementation, documentation, and testing. This reduces round trips without relaxing acceptance criteria or test quality.
 
-Granularity is independent of the selected model. It can be changed in the resume panel.
+Granularity is independent of the selected model. The GUI's single granularity selector applies both when creating a job and when resuming the selected job, so changing it before `Apply + Resume` changes the resumed job's policy. `Finish Soon` changes it to coarse.
 
 ### Dashboard tabs
 
