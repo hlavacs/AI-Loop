@@ -30,6 +30,7 @@ from ai_loop.planning import (
     normalize_granularity,
 )
 from ai_loop.queues import ensure_group, redis_client, xadd_json
+from ai_loop.notifications import check_mail_access, delivery_outcome, job_started_email
 
 
 COMMON_CONSTRAINTS = [
@@ -606,6 +607,10 @@ def wait_for_job(db_path: Path, job_id: str, worktree: Path, timeout: int, poll_
 def main() -> int:
     args = parse_args()
     settings = load_settings()
+    mail_access = check_mail_access(settings)
+    print(f"mail account: {mail_access.detail}")
+    if mail_access.enabled and not mail_access.ok:
+        print(f"mail account access error: {mail_access.detail}", file=sys.stderr)
 
     repo = Path(args.repo).expanduser().resolve()
     if not repo.exists():
@@ -703,6 +708,17 @@ def main() -> int:
             "request",
             {"type": "PLAN", "job_id": job_id, "scope": "job"},
         )
+        with db.transaction(settings.db_path) as conn:
+            started_job = db.get_job(conn, job_id)
+        sent, detail = job_started_email(settings, job=started_job)
+        outcome = delivery_outcome(sent, detail)
+        with db.transaction(settings.db_path) as conn:
+            db.add_event(
+                conn,
+                job_id=job_id,
+                kind=f"email_started_{outcome}",
+                payload={"recipient": settings.notify_email, "detail": detail},
+            )
     except (ConnectionError, TimeoutError) as exc:
         print(f"job {job_id} created, but Redis activation failed: {exc}", file=sys.stderr)
         return 1

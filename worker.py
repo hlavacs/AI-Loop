@@ -13,7 +13,7 @@ from redis.exceptions import ConnectionError, TimeoutError
 
 from ai_loop import db
 from ai_loop.config import CLAUDE_REQUEST_STREAM, CODEX_TASK_STREAM, DEAD_STREAM, HUMAN_STREAM, load_settings
-from ai_loop.notifications import terminal_email
+from ai_loop.notifications import delivery_outcome, terminal_email
 from ai_loop.planning import normalize_granularity
 from ai_loop.queues import consumer_name, decode, ensure_group, redis_client, read_group, xadd_json
 from ai_loop.recovery import attempt_auto_recovery
@@ -533,14 +533,15 @@ def notify_terminal(settings, job_id: str, status: str, reason: str) -> None:
     with db.transaction(settings.db_path) as conn:
         job = db.get_job(conn, job_id)
     sent, detail = terminal_email(settings, job=job, status=status, reason=reason)
+    outcome = delivery_outcome(sent, detail)
     with db.transaction(settings.db_path) as conn:
         db.add_event(
             conn,
             job_id=job_id,
-            kind="email_notification_sent" if sent else "email_notification_failed",
+            kind=f"email_notification_{outcome}",
             payload={"status": status, "recipient": settings.notify_email, "detail": detail},
         )
-    print(f"job {job_id}: email notification {'sent' if sent else 'failed'} - {detail}")
+    print(f"job {job_id}: email notification {outcome} - {detail}")
 
 
 def main() -> int:

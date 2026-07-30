@@ -30,7 +30,7 @@ Jobs normally run in isolated Git worktrees, so the original checkout stays sepa
 - An immutable, enumerated overall plan created with every job.
 - Fine, normal, and coarse task granularity.
 - Automatic retry after a model token limit: the reset time is extracted, the job shows `waiting_tokens`, and execution resumes one minute after replenishment.
-- Status email every 12 hours for long-running jobs, plus a notification when a job finishes or needs attention.
+- A job-start email, status email every 12 hours, and notifications when a job finishes or needs attention. Replies can add commands and resume a human-blocked job.
 - Live GUI status, changed-only text refresh, wrapped text, informative hover help, logs, task/run history, and work/time estimates.
 - `Finish Soon` to reduce remaining work without lowering acceptance quality, and `Finish Early` to stop immediately while preserving progress.
 - Safe promotion of successful worktree changes back to the original checkout when paths do not conflict.
@@ -51,7 +51,8 @@ Required for the GUI:
 
 Optional:
 
-- A local `sendmail` command or an SMTP account for email
+- An authenticated SMTP account for outgoing email
+- An IMAP account for receiving commands in email replies
 - Bash for the convenience launchers
 
 Supported role choices are `claude`, `codex`, `fable`, `opus`, and `gemini` for workers and controllers. `fable` and `opus` remain available as Claude CLI aliases with separate legacy model settings. The GUI uses simpler binary and model controls.
@@ -127,17 +128,24 @@ All settings are optional unless your environment needs an override.
 | `AI_LOOP_CONTROLLER_ROLE_MODEL` | Model selected specifically for the controller process | provider model above |
 | `AI_LOOP_WORKER_ROLE_MODEL` | Model selected specifically for the worker process | provider model above |
 | `CODEX_BYPASS_SANDBOX` | Allow unrestricted worker execution | false in Python entry points |
-| `AI_LOOP_NOTIFY_EMAIL` | Status and terminal notification recipient | empty |
-| `AI_LOOP_SMTP_HOST` | SMTP server. Empty uses local `sendmail` | empty |
+| `AI_LOOP_NOTIFY_EMAIL` | Job-email recipient and only authorized reply sender | empty |
+| `AI_LOOP_SMTP_HOST` | SMTP server. Empty disables all email | empty |
 | `AI_LOOP_SMTP_PORT` | SMTP port | 587, or 465 with SSL |
-| `AI_LOOP_SMTP_USER`, `AI_LOOP_SMTP_PASSWORD` | SMTP authentication | empty |
+| `AI_LOOP_SMTP_USER`, `AI_LOOP_SMTP_PASSWORD` | Required SMTP authentication when email is enabled | empty |
 | `AI_LOOP_SMTP_FROM` | Sender address | SMTP user or recipient |
 | `AI_LOOP_SMTP_STARTTLS` | Upgrade SMTP connection with STARTTLS | true |
 | `AI_LOOP_SMTP_SSL` | Use SMTP-over-SSL | false |
+| `AI_LOOP_IMAP_HOST` | IMAP server used to check replies. Empty disables email commands | empty |
+| `AI_LOOP_IMAP_PORT` | IMAP port | 993 with SSL, otherwise 143 |
+| `AI_LOOP_IMAP_USER`, `AI_LOOP_IMAP_PASSWORD` | IMAP authentication | SMTP credentials |
+| `AI_LOOP_IMAP_MAILBOX` | Mailbox checked for job replies | `INBOX` |
+| `AI_LOOP_IMAP_SSL` | Use IMAP-over-SSL | true |
+| `AI_LOOP_IMAP_STARTTLS` | Upgrade non-SSL IMAP with STARTTLS | true |
+| `AI_LOOP_EMAIL_POLL_SECONDS` | Reply polling interval, minimum 5 seconds | 30 |
 
 ### Private email launcher
 
-The easiest way to keep the mail settings out of the repository is to place a launcher beside the `AI-Loop` folder. Name it `start-ai-loop-with-email.bash`. Replace the example values with your own SMTP settings. Do not put the password in the file.
+The easiest way to keep the mail settings out of the repository is to place a launcher beside the `AI-Loop` folder. Name it `start-ai-loop-with-email.bash`. Replace the example values with your SMTP and IMAP settings. Do not put the password in the file.
 
 ```bash
 #!/usr/bin/env bash
@@ -151,11 +159,15 @@ AI_LOOP_SMTP_USER="account-id"
 AI_LOOP_SMTP_FROM="sender@example.edu"
 AI_LOOP_SMTP_SSL="1"
 AI_LOOP_SMTP_STARTTLS="0"
+AI_LOOP_IMAP_HOST="mail.example.edu"
+AI_LOOP_IMAP_PORT="993"
+AI_LOOP_IMAP_USER="account-id"
+AI_LOOP_IMAP_SSL="1"
 
-read -r -s -p "SMTP password: " AI_LOOP_SMTP_PASSWORD
+read -r -s -p "Mail password: " AI_LOOP_SMTP_PASSWORD
 printf "\n"
 
-: "${AI_LOOP_SMTP_PASSWORD:?SMTP password is required}"
+: "${AI_LOOP_SMTP_PASSWORD:?Mail password is required}"
 
 export AI_LOOP_NOTIFY_EMAIL
 export AI_LOOP_SMTP_HOST
@@ -165,6 +177,10 @@ export AI_LOOP_SMTP_PASSWORD
 export AI_LOOP_SMTP_FROM
 export AI_LOOP_SMTP_STARTTLS
 export AI_LOOP_SMTP_SSL
+export AI_LOOP_IMAP_HOST
+export AI_LOOP_IMAP_PORT
+export AI_LOOP_IMAP_USER
+export AI_LOOP_IMAP_SSL
 
 launcher_dir="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 repo_dir="$launcher_dir/AI-Loop"
@@ -191,11 +207,31 @@ Run it from the repository:
 ../start-ai-loop-with-email.bash
 ```
 
-The launcher asks only for the password. The input is hidden and exported only to the AI-Loop processes started by that script. The password is not written to the launcher or the job database. Keep the launcher outside the repository so its fixed account settings are not committed. Notification delivery failures are recorded as events and do not erase a successful job result.
+The launcher asks only for the password. The input is hidden and exported only to the AI-Loop processes started by that script. `AI_LOOP_IMAP_PASSWORD` defaults to `AI_LOOP_SMTP_PASSWORD`, so a second secret is needed only when the accounts differ. The password is not written to the launcher or the job database. Keep the launcher outside the repository so its fixed account settings are not committed. Notification delivery failures are recorded as events and do not erase a successful job result.
 
 > **SMTP port remark:** The example uses implicit SSL on port `465`. If your provider uses STARTTLS, port `587` is the common choice. Set `AI_LOOP_SMTP_PORT="587"`, `AI_LOOP_SMTP_SSL="0"`, and `AI_LOOP_SMTP_STARTTLS="1"`. Use the values published by your email provider if they differ.
 
-For an active job, the watcher sends a progress email after 12 hours and then once every 12 hours until the job reaches a terminal state. The email includes the current status, progress estimate, remaining-time estimate, controller, worker, task and run counts, current task, and latest controller summary. The last attempt is stored in SQLite, so restarting the watcher does not restart the 12-hour interval.
+> **IMAP port remark:** The example uses implicit SSL on port `993`. For STARTTLS on port `143`, set `AI_LOOP_IMAP_PORT="143"`, `AI_LOOP_IMAP_SSL="0"`, and `AI_LOOP_IMAP_STARTTLS="1"`.
+
+### Email notifications and commands
+
+Email is enabled only when both `AI_LOOP_SMTP_HOST` and `AI_LOOP_SMTP_PASSWORD` are non-empty. If either is empty, AI-Loop skips the startup access check, sends no start/status/terminal emails, does not poll for reply commands, reports mail as disabled in the GUI Status tab, and records scheduled attempts as `email_*_skipped` rather than failures. There is no local `sendmail` fallback.
+
+When email is enabled, AI-Loop checks the account at application/job startup without sending a test message. It authenticates to SMTP and issues `NOOP`; when `AI_LOOP_IMAP_HOST` is configured, it also logs in and opens `AI_LOOP_IMAP_MAILBOX` read-only. A failed authentication, connection, TLS negotiation, or mailbox selection is printed as an error by the CLI and shown in a GUI error dialog. The GUI Status tab and top status box retain the SMTP and mailbox-access result. A missing IMAP host is not an outgoing-mail error: SMTP remains available, while mailbox replies are reported as not configured.
+
+Each job sends an email when it starts. For an active job, the watcher sends a progress email after 12 hours and then once every 12 hours. When the controller completes and promotes a job successfully, it sends a `done` email with the job ID, repository, worktree, reason, and goal. Terminal emails also report `human_needed` and `dead`. Status emails include progress, remaining-time estimate, controller, worker, activity counts, current task, and the latest controller summary. Attempts are stored in SQLite, so watcher restarts do not reset the 12-hour schedule.
+
+When IMAP is configured, all messages for a job use one email thread. Reply from the exact address in `AI_LOOP_NOTIFY_EMAIL` with the new command; an optional `Command:` prefix is removed. AI-Loop ignores quoted message text, deduplicates replies by message ID, and stores the command as a durable job constraint. If the job is in `human_needed`, the reply resumes that same job automatically. The GUI's Human Needed window is non-modal and closes as soon as the job resumes. For an already-running job, the command is applied to future controller/worker tasks rather than interrupting a task in progress.
+
+For example, reply with:
+
+```text
+Command: Use the fallback renderer, add a regression test, and continue.
+```
+
+Only a message whose sender exactly matches `AI_LOOP_NOTIFY_EMAIL` and whose thread headers or reply subject identify the job is accepted. AI-Loop marks its own outgoing messages so a provider's inbox copy cannot be interpreted as a command. Accepted, applied, and failed command attempts appear in Recent events as `email_command_received`, `email_command_applied`, or `email_command_failed`.
+
+The watcher keeps running while a job is in `human_needed` so it can receive a reply. It exits when the job is done/dead or when a manual resume starts a replacement watcher.
 
 ## Graphical user interface
 
@@ -376,13 +412,14 @@ Set an explicit command for production jobs when the inferred command does not c
 - `controller.py`: planning, review, completion, promotion, estimates, and controller token waits.
 - `worker.py`: implementation CLI execution, worker token waits, validation, and Git snapshots.
 - `start_job.py`, `resume_job.py`: job lifecycle entry points.
-- `watcher.py`: terminal Redis event observer and 12-hour status email scheduler.
+- `watcher.py`: terminal Redis event observer, reply poller, and 12-hour status email scheduler.
 - `ai_loop_gui.py`: Tkinter dashboard.
 - `ai_loop/db.py`: schema and durable state helpers.
+- `ai_loop/email_commands.py`: IMAP reply matching, command extraction, deduplication, and resume handling.
 - `ai_loop/progress.py`: work/time estimate display.
 - `ai_loop/planning.py`: static plans and granularity policy.
 - `ai_loop/token_wait.py`: limit detection and replenishment-time parsing.
-- `ai_loop/notifications.py`: SMTP/sendmail status and terminal notifications.
+- `ai_loop/notifications.py`: startup SMTP/IMAP access checks and authenticated SMTP notifications.
 - `ai_loop/status_updates.py`: durable 12-hour status email scheduling.
 - `ai_loop/queues.py`: Redis Stream JSON helpers.
 - `ai_loop/recovery.py`: internal process recovery.
@@ -411,7 +448,11 @@ This is not an error. The Status tab shows `waiting_until`. Keep the job process
 
 ### Email was not delivered
 
-Look for `email_notification_failed` or `email_status_failed` in Recent events. Configure SMTP variables or install a local sendmail-compatible MTA. Test the account outside AI-Loop if authentication or network policy is uncertain.
+Read the mail lines in the Status tab first. Look for `email_started_failed`, `email_notification_failed`, or `email_status_failed` in Recent events. Configure `AI_LOOP_SMTP_HOST`, user, password, TLS mode, sender, and recipient; there is no local-sendmail fallback. If mail is intentionally disabled, the status says `disabled` and events use `email_started_skipped`, `email_status_skipped`, or `email_notification_skipped`.
+
+### An emailed command was not applied
+
+Confirm that `AI_LOOP_IMAP_HOST` is set, the IMAP account can read `AI_LOOP_IMAP_MAILBOX`, and the reply was sent from the exact `AI_LOOP_NOTIFY_EMAIL` address. Inspect `logs/jobs/JOB_ID/watcher.log` for IMAP connection or authentication errors and Recent events for `email_command_received`, `email_command_applied`, or `email_command_failed`. Replies are checked every `AI_LOOP_EMAIL_POLL_SECONDS`; already-read messages are still eligible.
 
 ### A provider login expired
 

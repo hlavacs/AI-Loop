@@ -60,6 +60,14 @@ class Settings:
     smtp_from: str
     smtp_starttls: bool
     smtp_ssl: bool
+    imap_host: str
+    imap_port: int
+    imap_user: str
+    imap_password: str
+    imap_mailbox: str
+    imap_ssl: bool
+    imap_starttls: bool
+    email_poll_seconds: int
 
 
 def env_bool(name: str, default: bool = False) -> bool:
@@ -99,4 +107,12 @@ def load_settings() -> Settings:
         smtp_from=os.getenv("AI_LOOP_SMTP_FROM", "").strip(),
         smtp_starttls=env_bool("AI_LOOP_SMTP_STARTTLS", True),
         smtp_ssl=env_bool("AI_LOOP_SMTP_SSL", False),
+        imap_host=os.getenv("AI_LOOP_IMAP_HOST", "").strip(),
+        imap_port=int(os.getenv("AI_LOOP_IMAP_PORT", "993" if env_bool("AI_LOOP_IMAP_SSL", True) else "143")),
+        imap_user=os.getenv("AI_LOOP_IMAP_USER", os.getenv("AI_LOOP_SMTP_USER", "")).strip(),
+        imap_password=os.getenv("AI_LOOP_IMAP_PASSWORD", os.getenv("AI_LOOP_SMTP_PASSWORD", "")),
+        imap_mailbox=os.getenv("AI_LOOP_IMAP_MAILBOX", "INBOX").strip() or "INBOX",
+        imap_ssl=env_bool("AI_LOOP_IMAP_SSL", True),
+        imap_starttls=env_bool("AI_LOOP_IMAP_STARTTLS", True),
+        email_poll_seconds=max(5, int(os.getenv("AI_LOOP_EMAIL_POLL_SECONDS", "30"))),
     )

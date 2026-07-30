@@ -17,15 +17,16 @@ The main invariants are:
 4. Role program names are vendor-neutral: `controller.py` and `worker.py`.
 5. A job/task state change is written before the corresponding external work proceeds.
 6. Expected token replenishment waits are visible and self-resuming, not human-needed failures.
-7. Completion and genuine unsolved blockers produce an email attempt and a durable notification event.
+7. With authenticated mail enabled, job start, completion, and genuine unsolved blockers produce an email attempt and a durable notification event.
 8. Successful worktree promotion never overwrites conflicting local target-checkout edits.
 9. Machine-specific Python virtual environments are local runtime state and are never versioned.
+10. An emailed command is accepted only from the configured notification address and only for its identified job.
 
 ## Component map
 
 ### `start_job.py`
 
-Creates a job. It validates role and granularity choices, detects the test command, builds the static plan, snapshots dirty target-repository state in a pre-job commit, creates an isolated worktree unless disabled, copies the checkout overlay, initializes Redis consumer groups, starts per-job processes, and enqueues `PLAN`.
+Creates a job. It validates role and granularity choices, detects the test command, builds the static plan, snapshots dirty target-repository state in a pre-job commit, creates an isolated worktree unless disabled, copies the checkout overlay, initializes Redis consumer groups, starts per-job processes, enqueues `PLAN`, and attempts the job-start email.
 
 ### `controller.py`
 
@@ -37,7 +38,7 @@ Consumes task activations. It atomically changes the task from `queued` to `runn
 
 ### `watcher.py`
 
-Observes `done`, `human`, and `dead` Redis streams and prints terminal payloads. A per-job watcher also sends a durable status email every 12 hours while its job remains active. It exits after observing its job's terminal event.
+Observes `done`, `human`, and `dead` Redis streams and prints terminal payloads. A per-job watcher also sends a durable status email every 12 hours while its job remains active and polls for emailed commands when IMAP is configured. It exits for `done`/`dead`; after `human_needed` it remains alive until a command resumes the job or a manual resume replaces it.
 
 ### `ai_loop_gui.py`
 
@@ -52,11 +53,12 @@ installation of a missing standard Codex, Claude, or Gemini executable.
 
 - `ai_loop/config.py`: environment-backed immutable settings and role normalization.
 - `ai_loop/db.py`: schema, migrations, JSON conversion, and state mutations.
+- `ai_loop/email_commands.py`: trusted IMAP reply matching, command extraction, deduplication, and resume handling.
 - `ai_loop/queues.py`: Redis connection, consumer groups, JSON validation, and stream I/O.
 - `ai_loop/planning.py`: granularity validation, constraints, and static plan construction.
 - `ai_loop/progress.py`: controller estimates with heuristic fallback and countdown ETA persistence.
 - `ai_loop/token_wait.py`: token-limit detection, replenishment-time extraction, and bounded-interval waiting.
-- `ai_loop/notifications.py`: SMTP or local-sendmail status and terminal messages.
+- `ai_loop/notifications.py`: startup SMTP/IMAP account checks and authenticated SMTP messages.
 - `ai_loop/status_updates.py`: durable 12-hour scheduling and job progress assembly.
 - `ai_loop/recovery.py`: one-at-a-time automatic repair attempt for internal controller/worker exceptions.
 
@@ -173,6 +175,7 @@ Every message is JSON round-trip checked. Per-job processes use groups suffixed 
 9. Create job-scoped Redis groups.
 10. Launch `controller.py`, `worker.py`, and `watcher.py` with per-job runtime/log directories.
 11. Enqueue PLAN.
+12. Attempt the threaded job-start email and store `email_started_sent`, `email_started_failed`, or `email_started_skipped`.
 
 The static plan is deliberately high-level. It describes repository inspection, implementation of the goal, validation, and final acceptance review. It is stored at creation and never modified on resume or controller review.
 
@@ -288,7 +291,9 @@ The target instant always includes a one-minute safety margin. On a parseable li
 
 No HUMAN_NEEDED event, popup, or email is emitted for this expected wait. A token failure without an extractable reset time follows normal unresolved-blocker handling.
 
-## Email notifications
+## Email notifications and reply commands
+
+### Outgoing messages
 
 Terminal notification is attempted when:
 
@@ -297,11 +302,41 @@ Terminal notification is attempted when:
 - a controller/worker exception becomes `dead`
 - promotion fails and requires human conflict resolution
 
-The per-job watcher attempts a status email after 12 hours and every 12 hours after that while the job is in `planning`, `queued`, `implementing`, `fixing`, or `waiting_tokens`. The message includes progress, estimated remaining time, role choices, activity counts, current task, and the latest controller summary. Each attempt is stored as `email_status_sent` or `email_status_failed`. The stored event time keeps the schedule stable across watcher restarts.
+Job creation attempts a start email. The per-job watcher attempts a status email after 12 hours and every 12 hours after that while the job is in `planning`, `queued`, `implementing`, `fixing`, or `waiting_tokens`. The message includes progress, estimated remaining time, role choices, activity counts, current task, and the latest controller summary. Start attempts use `email_started_sent`, `email_started_failed`, or `email_started_skipped`; status attempts use the corresponding `email_status_*` event. The stored event time keeps the schedule stable across watcher restarts.
 
-Email notifications are disabled until `AI_LOOP_NOTIFY_EMAIL` is set. If `AI_LOOP_SMTP_HOST` is configured, `smtplib` uses SMTP, optional STARTTLS/SSL, and optional authentication. Otherwise the system looks for a local `sendmail` command.
+Mail is enabled only when `AI_LOOP_SMTP_HOST` and `AI_LOOP_SMTP_PASSWORD` are both non-empty. If either is empty, startup account checks are skipped, no outgoing messages are sent, reply polling is disabled, and attempts are classified as `skipped`. There is no `sendmail` fallback and no passwordless SMTP path.
 
-Each attempt writes `email_notification_sent` or `email_notification_failed` with status, recipient, and delivery detail. Notification failure does not change a successfully computed terminal job state.
+When enabled, startup calls `check_mail_access` before normal GUI/job work:
+
+1. Require SMTP user and notification recipient.
+2. Connect with SMTP SSL or STARTTLS, authenticate, and issue `NOOP` without sending a test message.
+3. If IMAP is configured, connect with IMAP SSL or STARTTLS, authenticate, and select the configured mailbox read-only.
+4. Return a structured result containing enabled/healthy flags plus separate SMTP and mailbox details.
+5. Print failures in the CLI; in the GUI, show an error dialog and retain the result in both the top status box and the selected-job Status tab. With no selected job, the Status tab still displays mail access.
+
+An absent IMAP host leaves SMTP healthy but reports mailbox access as not configured. Any configured SMTP or IMAP authentication/access failure makes the overall startup result unhealthy. The check does not stop non-mail job execution.
+
+Each terminal attempt writes `email_notification_sent`, `email_notification_failed`, or `email_notification_skipped` with status, recipient, and delivery detail. Notification failure does not change a successfully computed terminal job state.
+
+The successful `DONE` path promotes worktree changes, writes the durable `done` state/event, calls `notify_terminal(..., "done", ...)`, and then publishes `ai:done`. The email attempt intentionally precedes Redis publication so a Redis failure cannot suppress completion mail. Thus a configured account sends a completion email after successful promotion; a promotion conflict instead sends the normal `human_needed` notification.
+
+Every outgoing job message has the deterministic root thread ID and an `X-AI-Loop-Notification` marker. Status and terminal messages reference the root. This keeps replies associated with one job and prevents an inbox copy of an outgoing notification from being accepted as user input.
+
+### Incoming reply algorithm
+
+If mail is disabled or `AI_LOOP_IMAP_HOST` is empty, incoming commands are disabled. Otherwise each scoped watcher:
+
+1. Connects with IMAP-over-SSL, or STARTTLS when configured.
+2. Opens `AI_LOOP_IMAP_MAILBOX` read-only and examines recent messages without changing their read state.
+3. Rejects AI-Loop notification messages and senders other than the exact `AI_LOOP_NOTIFY_EMAIL` address.
+4. Requires the job thread ID in `In-Reply-To`/`References`, or a reply-style subject containing the scoped job ID.
+5. Extracts `text/plain`, removes quoted history and an optional `Command:` prefix, and ignores an empty result.
+6. Deduplicates by message ID using durable `email_command_received`/`email_command_applied` events.
+7. Appends the accepted text to the job constraints as `New command received by email: …`.
+
+For an active job, the new constraint affects future controller/worker tasks and does not interrupt a running task. For `human_needed`, the watcher invokes `resume_job.py` for the same job with the command as an added constraint. Normal resume changes the state to `planning`, launches replacement per-job processes, and enqueues `PLAN`. On success the old watcher exits; on failure it restores `human_needed`, records `email_command_failed`, and remains available for another reply or manual resume.
+
+The GUI Human Needed alert is a tracked, non-modal `Toplevel`. Its status check runs even when full auto-refresh is disabled, so an emailed or manual resume closes the alert. Authentication blockers use the same tracked window and expose `Sign In + Resume` explicitly.
 
 ## GUI text and help behavior
 

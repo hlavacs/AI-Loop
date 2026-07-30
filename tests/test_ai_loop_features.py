@@ -6,6 +6,7 @@ import subprocess
 import tempfile
 import unittest
 from datetime import datetime, timedelta, timezone
+from email.message import EmailMessage
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
@@ -19,13 +20,20 @@ from ai_loop.auth import (
     provider_for_role,
 )
 from ai_loop.config import load_settings, normalize_worker
+from ai_loop.email_commands import EmailCommand, apply_email_command, is_job_reply, reply_command
 from ai_loop.planning import (
     build_static_plan,
     granularity_constraints,
     normalize_granularity,
     replace_granularity_constraints,
 )
-from ai_loop.notifications import status_email, terminal_email
+from ai_loop.notifications import (
+    check_mail_access,
+    job_started_email,
+    job_thread_message_id,
+    status_email,
+    terminal_email,
+)
 from ai_loop.progress import estimate_progress
 from ai_loop.status_updates import maybe_send_status_email
 from ai_loop.token_wait import is_token_limit, replenishment_time
@@ -259,13 +267,42 @@ class PersistenceAndEstimateTests(unittest.TestCase):
 
 class NotificationTests(unittest.TestCase):
     @patch("ai_loop.notifications.smtplib.SMTP")
-    def test_ready_email_uses_configured_recipient(self, smtp_class: MagicMock) -> None:
+    def test_job_start_email_opens_a_replyable_job_thread(self, smtp_class: MagicMock) -> None:
         smtp = smtp_class.return_value.__enter__.return_value
         settings = SimpleNamespace(
             notify_email="recipient@example.invalid",
             smtp_from="loop@example.invalid",
-            smtp_user="",
-            smtp_password="",
+            smtp_user="loop-user",
+            smtp_password="secret",
+            smtp_host="smtp.example.invalid",
+            smtp_port=587,
+            smtp_starttls=True,
+            smtp_ssl=False,
+        )
+        sent, _detail = job_started_email(
+            settings,
+            job={
+                "id": "J-start",
+                "repo_path": "/repo",
+                "worktree_path": "/work",
+                "goal": "Ship it",
+                "controller": "opus",
+                "worker": "codex",
+            },
+        )
+        self.assertTrue(sent)
+        message = smtp.send_message.call_args.args[0]
+        self.assertEqual(message["Message-ID"], job_thread_message_id(settings, "J-start"))
+        self.assertIn("Reply to this email", message.get_content())
+
+    @patch("ai_loop.notifications.smtplib.SMTP")
+    def test_done_email_uses_configured_recipient(self, smtp_class: MagicMock) -> None:
+        smtp = smtp_class.return_value.__enter__.return_value
+        settings = SimpleNamespace(
+            notify_email="recipient@example.invalid",
+            smtp_from="loop@example.invalid",
+            smtp_user="loop-user",
+            smtp_password="secret",
             smtp_host="smtp.example.invalid",
             smtp_port=587,
             smtp_starttls=True,
@@ -280,6 +317,8 @@ class NotificationTests(unittest.TestCase):
         self.assertTrue(sent)
         message = smtp.send_message.call_args.args[0]
         self.assertEqual(message["To"], "recipient@example.invalid")
+        self.assertEqual(message["Subject"], "AI-Loop job J1: done")
+        self.assertIn("Status: done", message.get_content())
         smtp.starttls.assert_called_once_with()
 
     @patch("ai_loop.notifications.smtplib.SMTP")
@@ -288,8 +327,8 @@ class NotificationTests(unittest.TestCase):
         settings = SimpleNamespace(
             notify_email="recipient@example.invalid",
             smtp_from="loop@example.invalid",
-            smtp_user="",
-            smtp_password="",
+            smtp_user="loop-user",
+            smtp_password="secret",
             smtp_host="smtp.example.invalid",
             smtp_port=587,
             smtp_starttls=True,
@@ -317,6 +356,213 @@ class NotificationTests(unittest.TestCase):
         message = smtp.send_message.call_args.args[0]
         self.assertIn("42%", message["Subject"])
         self.assertIn("Current task: Add integration tests", message.get_content())
+
+    @patch("ai_loop.notifications.smtplib.SMTP")
+    def test_empty_password_disables_email_without_connecting(self, smtp_class: MagicMock) -> None:
+        settings = SimpleNamespace(
+            notify_email="recipient@example.invalid",
+            smtp_from="loop@example.invalid",
+            smtp_user="loop-user",
+            smtp_password="",
+            smtp_host="smtp.example.invalid",
+            smtp_port=587,
+            smtp_starttls=True,
+            smtp_ssl=False,
+        )
+        sent, detail = terminal_email(
+            settings,
+            job={"id": "J1", "repo_path": "/repo", "worktree_path": "/work", "goal": "Ship it"},
+            status="done",
+            reason="ready",
+        )
+        self.assertFalse(sent)
+        self.assertIn("disabled", detail)
+        smtp_class.assert_not_called()
+
+    @patch("ai_loop.notifications.imaplib.IMAP4_SSL")
+    @patch("ai_loop.notifications.smtplib.SMTP_SSL")
+    def test_startup_check_verifies_smtp_and_mailbox_access(
+        self,
+        smtp_class: MagicMock,
+        imap_class: MagicMock,
+    ) -> None:
+        smtp = smtp_class.return_value.__enter__.return_value
+        mailbox = imap_class.return_value.__enter__.return_value
+        mailbox.select.return_value = ("OK", [b"1"])
+        settings = SimpleNamespace(
+            notify_email="recipient@example.invalid",
+            smtp_host="smtp.example.invalid",
+            smtp_port=465,
+            smtp_user="loop-user",
+            smtp_password="secret",
+            smtp_starttls=False,
+            smtp_ssl=True,
+            imap_host="imap.example.invalid",
+            imap_port=993,
+            imap_user="loop-user",
+            imap_password="secret",
+            imap_mailbox="INBOX",
+            imap_ssl=True,
+            imap_starttls=False,
+        )
+        status = check_mail_access(settings)
+        self.assertTrue(status.enabled)
+        self.assertTrue(status.ok)
+        self.assertIn("SMTP account accessible", status.smtp_detail)
+        self.assertIn("IMAP mailbox accessible", status.mailbox_detail)
+        smtp.login.assert_called_once_with("loop-user", "secret")
+        smtp.noop.assert_called_once_with()
+        mailbox.login.assert_called_once_with("loop-user", "secret")
+        mailbox.select.assert_called_once_with("INBOX", readonly=True)
+
+    @patch("ai_loop.notifications.smtplib.SMTP")
+    def test_startup_check_skips_when_server_is_missing(self, smtp_class: MagicMock) -> None:
+        settings = SimpleNamespace(smtp_host="", smtp_password="")
+        status = check_mail_access(settings)
+        self.assertFalse(status.enabled)
+        self.assertTrue(status.ok)
+        self.assertIn("startup check skipped", status.detail)
+        smtp_class.assert_not_called()
+
+    @patch("ai_loop.notifications.smtplib.SMTP")
+    def test_startup_check_skips_when_password_is_empty(self, smtp_class: MagicMock) -> None:
+        settings = SimpleNamespace(smtp_host="smtp.example.invalid", smtp_password="")
+        status = check_mail_access(settings)
+        self.assertFalse(status.enabled)
+        self.assertTrue(status.ok)
+        self.assertIn("AI_LOOP_SMTP_PASSWORD is empty", status.detail)
+        smtp_class.assert_not_called()
+
+    @patch("ai_loop.notifications.smtplib.SMTP")
+    def test_startup_check_reports_account_access_error(self, smtp_class: MagicMock) -> None:
+        smtp = smtp_class.return_value.__enter__.return_value
+        smtp.login.side_effect = OSError("authentication rejected")
+        settings = SimpleNamespace(
+            notify_email="recipient@example.invalid",
+            smtp_host="smtp.example.invalid",
+            smtp_port=587,
+            smtp_user="loop-user",
+            smtp_password="wrong",
+            smtp_starttls=True,
+            smtp_ssl=False,
+        )
+        status = check_mail_access(settings)
+        self.assertTrue(status.enabled)
+        self.assertFalse(status.ok)
+        self.assertIn("SMTP account access failed", status.detail)
+
+
+class EmailCommandTests(unittest.TestCase):
+    def setUp(self) -> None:
+        self.settings = SimpleNamespace(
+            notify_email="recipient@example.invalid",
+            smtp_from="loop@example.invalid",
+            smtp_user="",
+        )
+
+    def test_extracts_new_text_and_ignores_quoted_notification(self) -> None:
+        message = EmailMessage()
+        message.set_content(
+            "Command: Try the alternate renderer and rerun the visual test.\n\n"
+            "On Thu, AI-Loop wrote:\n"
+            "> Job: J1\n"
+            "> Status: human_needed\n"
+        )
+        self.assertEqual(
+            reply_command(message),
+            "Try the alternate renderer and rerun the visual test.",
+        )
+
+    def test_accepts_only_the_configured_user_and_matching_job_thread(self) -> None:
+        message = EmailMessage()
+        message["From"] = "User <recipient@example.invalid>"
+        message["In-Reply-To"] = job_thread_message_id(self.settings, "J1")
+        message["Subject"] = "Re: AI-Loop job J1"
+        message.set_content("Continue with option B.")
+        self.assertTrue(is_job_reply(self.settings, message, "J1"))
+        self.assertFalse(is_job_reply(self.settings, message, "J2"))
+        message.replace_header("From", "attacker@example.invalid")
+        self.assertFalse(is_job_reply(self.settings, message, "J1"))
+
+    def test_outbound_notification_cannot_be_treated_as_a_command(self) -> None:
+        message = EmailMessage()
+        message["From"] = "recipient@example.invalid"
+        message["Subject"] = "AI-Loop job J1: human_needed"
+        message["In-Reply-To"] = job_thread_message_id(self.settings, "J1")
+        message["X-AI-Loop-Notification"] = "J1"
+        message.set_content("Reply to this email with a command.")
+        self.assertFalse(is_job_reply(self.settings, message, "J1"))
+
+    def test_active_job_stores_emailed_command_for_future_tasks(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "loop.sqlite3"
+            db.init_db(path)
+            with db.transaction(path) as conn:
+                db.create_job(
+                    conn,
+                    job_id="J-command",
+                    repo_path=directory,
+                    worktree_path=directory,
+                    branch=None,
+                    base_ref="HEAD",
+                    goal="Test commands",
+                    constraints=[],
+                    acceptance=[],
+                    test_cmd="true",
+                    max_iterations=10,
+                    use_worktree=False,
+                )
+            settings = SimpleNamespace(db_path=path, root_dir=Path(directory))
+            resumed = apply_email_command(
+                settings,
+                "J-command",
+                EmailCommand("<reply-1>", "recipient@example.invalid", "Use option B.", "Re: J-command"),
+            )
+            self.assertFalse(resumed)
+            with db.transaction(path) as conn:
+                job = db.get_job(conn, "J-command")
+                kinds = [
+                    row["kind"]
+                    for row in conn.execute(
+                        "SELECT kind FROM events WHERE job_id = ? ORDER BY id",
+                        ("J-command",),
+                    )
+                ]
+            self.assertIn("New command received by email: Use option B.", job["constraints"])
+            self.assertEqual(kinds, ["email_command_received", "email_command_applied"])
+
+    @patch("ai_loop.email_commands.subprocess.run")
+    def test_human_blocked_job_is_resumed_with_emailed_command(self, run: MagicMock) -> None:
+        run.return_value = subprocess.CompletedProcess(["resume"], 0, "resumed", "")
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            path = root / "loop.sqlite3"
+            db.init_db(path)
+            with db.transaction(path) as conn:
+                db.create_job(
+                    conn,
+                    job_id="J-blocked",
+                    repo_path=directory,
+                    worktree_path=directory,
+                    branch=None,
+                    base_ref="HEAD",
+                    goal="Test resume",
+                    constraints=[],
+                    acceptance=[],
+                    test_cmd="true",
+                    max_iterations=10,
+                    use_worktree=False,
+                )
+                db.update_job_status(conn, "J-blocked", "human_needed", "Choose a rendering path.")
+            resumed = apply_email_command(
+                SimpleNamespace(db_path=path, root_dir=root),
+                "J-blocked",
+                EmailCommand("<reply-2>", "recipient@example.invalid", "Use option B.", "Re: J-blocked"),
+            )
+        self.assertTrue(resumed)
+        command = run.call_args.args[0]
+        self.assertEqual(command[2], "J-blocked")
+        self.assertEqual(command[-1], "New command received by email: Use option B.")
 
 
 class PeriodicStatusEmailTests(unittest.TestCase):
@@ -372,6 +618,50 @@ class PeriodicStatusEmailTests(unittest.TestCase):
                     )
                 )
             terminal_send.assert_not_called()
+
+    def test_disabled_mail_records_status_attempt_as_skipped(self) -> None:
+        now = datetime.now(timezone.utc)
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "loop.sqlite3"
+            db.init_db(path)
+            with db.transaction(path) as conn:
+                db.create_job(
+                    conn,
+                    job_id="J-no-mail",
+                    repo_path="/repo",
+                    worktree_path="/work",
+                    branch=None,
+                    base_ref="HEAD",
+                    goal="Long job without mail",
+                    constraints=[],
+                    acceptance=[],
+                    test_cmd="true",
+                    max_iterations=10,
+                    use_worktree=False,
+                )
+                conn.execute(
+                    "UPDATE jobs SET created_at = ? WHERE id = ?",
+                    ((now - timedelta(hours=13)).isoformat(timespec="seconds"), "J-no-mail"),
+                )
+            settings = SimpleNamespace(
+                db_path=path,
+                notify_email="",
+                smtp_host="",
+                smtp_password="",
+                smtp_from="",
+                smtp_user="",
+                smtp_port=587,
+                smtp_starttls=True,
+                smtp_ssl=False,
+            )
+            self.assertTrue(maybe_send_status_email(settings, "J-no-mail", now=now))
+            self.assertFalse(maybe_send_status_email(settings, "J-no-mail", now=now))
+            with db.transaction(path) as conn:
+                event = conn.execute(
+                    "SELECT kind FROM events WHERE job_id = ? ORDER BY id DESC LIMIT 1",
+                    ("J-no-mail",),
+                ).fetchone()
+            self.assertEqual(event["kind"], "email_status_skipped")
 
 
 if __name__ == "__main__":

@@ -8,6 +8,7 @@ from redis.exceptions import ConnectionError, TimeoutError
 
 from ai_loop import db
 from ai_loop.config import DEAD_STREAM, DONE_STREAM, HUMAN_STREAM, READ_BLOCK_MS, load_settings
+from ai_loop.email_commands import apply_email_command, poll_job_commands, processed_message_ids
 from ai_loop.queues import redis_client
 from ai_loop.status_updates import maybe_send_status_email
 
@@ -29,13 +30,38 @@ def main() -> int:
     if job_scope:
         print(f"job_scope: {job_scope}")
     print(f"watching: {', '.join(streams)}")
+    if job_scope and settings.imap_host:
+        print(f"email commands: {settings.imap_user}@{settings.imap_host} mailbox={settings.imap_mailbox}")
+    next_email_poll = 0.0
+    waiting_for_human = False
+    if job_scope:
+        with db.transaction(settings.db_path) as conn:
+            waiting_for_human = str(db.get_job(conn, job_scope)["status"]) == "human_needed"
 
     while True:
         if job_scope:
+            if waiting_for_human:
+                with db.transaction(settings.db_path) as conn:
+                    current_status = str(db.get_job(conn, job_scope)["status"])
+                if current_status != "human_needed":
+                    print(f"job {job_scope}: resumed elsewhere; old watcher exiting")
+                    return 0
             try:
                 maybe_send_status_email(settings, job_scope)
             except Exception as exc:
                 print(f"job {job_scope}: status email check failed: {exc!r}")
+            if time.monotonic() >= next_email_poll:
+                next_email_poll = time.monotonic() + settings.email_poll_seconds
+                try:
+                    with db.transaction(settings.db_path) as conn:
+                        processed = processed_message_ids(conn, job_scope)
+                    for incoming in poll_job_commands(settings, job_scope, processed):
+                        processed.add(incoming.message_id)
+                        if apply_email_command(settings, job_scope, incoming):
+                            print(f"job {job_scope}: replacement watcher launched; old watcher exiting")
+                            return 0
+                except Exception as exc:
+                    print(f"job {job_scope}: email command check failed: {exc!r}")
         try:
             messages = client.xread(streams, block=READ_BLOCK_MS, count=1)
         except (TimeoutError, ConnectionError) as exc:
@@ -70,9 +96,12 @@ def main() -> int:
                         print(json.dumps(value, indent=2))
                     else:
                         print(f"{key}: {value}")
-                if job_scope:
+                if job_scope and stream != HUMAN_STREAM:
                     print(f"job {job_scope}: terminal event observed; watcher exiting")
                     return 0
+                if job_scope and stream == HUMAN_STREAM:
+                    waiting_for_human = True
+                    print(f"job {job_scope}: waiting for a command by email or a manual resume")
 
 
 if __name__ == "__main__":

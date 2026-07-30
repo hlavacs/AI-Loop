@@ -12,6 +12,7 @@
 │   ├── __init__.py
 │   ├── config.py
 │   ├── db.py
+│   ├── email_commands.py
 │   ├── notifications.py
 │   ├── planning.py
 │   ├── progress.py
@@ -61,7 +62,8 @@
 - `ai_loop/__init__.py`: package marker.
 - `ai_loop/config.py`: configuration loading.
 - `ai_loop/db.py`: SQLite schema and database helpers.
-- `ai_loop/notifications.py`: status and terminal SMTP/sendmail messages.
+- `ai_loop/email_commands.py`: secure IMAP reply matching, command extraction, deduplication, and job resume handling.
+- `ai_loop/notifications.py`: startup SMTP/IMAP access checks and authenticated SMTP messages.
 - `ai_loop/planning.py`: immutable plans and granularity policy.
 - `ai_loop/progress.py`: progress formatting and reporting helpers.
 - `ai_loop/queues.py`: queue and stream helpers.

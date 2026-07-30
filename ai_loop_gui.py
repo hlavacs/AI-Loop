@@ -123,6 +123,7 @@ from ai_loop.planning import (
     replace_granularity_constraints,
 )
 from ai_loop.queues import ensure_group, redis_client, xadd_json
+from ai_loop.notifications import MailAccessStatus, check_mail_access, delivery_outcome, job_started_email
 from start_job import (
     COMMON_CONSTRAINTS,
     DEFAULT_ACCEPTANCE,
@@ -845,6 +846,16 @@ class LoopBackend:
                 kind="job_processes_started_from_gui",
                 payload={"pids": pids},
             )
+            started_job = db.get_job(conn, job_id)
+        sent, detail = job_started_email(self.settings, job=started_job)
+        outcome = delivery_outcome(sent, detail)
+        with db.transaction(self.settings.db_path) as conn:
+            db.add_event(
+                conn,
+                job_id=job_id,
+                kind=f"email_started_{outcome}",
+                payload={"recipient": self.settings.notify_email, "detail": detail},
+            )
         return job_id
 
     def resume_job(
@@ -1132,6 +1143,7 @@ class AiLoopGui(tk.Tk):
         self.geometry("1280x820")
         self.apply_theme(theme)
         self.backend = LoopBackend()
+        self.mail_access_status: MailAccessStatus = check_mail_access(self.backend.settings)
         self.model_defaults = self.backend.model_defaults()
         self.help_tooltip = HoverTooltip(self)
         self.protocol("WM_DELETE_WINDOW", self.on_close)
@@ -1141,12 +1153,21 @@ class AiLoopGui(tk.Tk):
         self.watch_job_id: str | None = None
         self.last_status_by_job: dict[str, str] = {}
         self.alerted_human_needed: set[str] = set()
+        self.human_needed_windows: dict[str, tk.Toplevel] = {}
         self.auth_recovery_jobs: set[str] = set()
         self.auto_refresh = tk.BooleanVar(value=True)
         self.status_var = tk.StringVar(value=f"DB: {self.backend.settings.db_path}")
         self._build_ui()
         self.install_default_help(self)
         self.refresh_all()
+        if self.mail_access_status.enabled and not self.mail_access_status.ok:
+            self.after(
+                0,
+                lambda: messagebox.showerror(
+                    "Mail Account Access Failed",
+                    self.mail_access_status.detail,
+                ),
+            )
         self.after(1500, self._auto_refresh_tick)
 
     def apply_theme(self, theme: str) -> None:
@@ -1206,7 +1227,7 @@ class AiLoopGui(tk.Tk):
         system_actions.grid(row=0, column=6, padx=(0, 12))
 
         ttk.Label(toolbar, text="Status:").grid(row=0, column=7, sticky="e", padx=(0, 4))
-        status_label = self.help_widget(ttk.Label(toolbar, textvariable=self.status_var, anchor="w", width=1), "Live loop status, including Redis connectivity, job counts, and running or stale processes.")
+        status_label = self.help_widget(ttk.Label(toolbar, textvariable=self.status_var, anchor="w", width=1), "Live loop status, including Redis and mailbox connectivity, job counts, and running or stale processes.")
         status_label.grid(row=0, column=8, sticky="ew")
         toolbar.columnconfigure(8, weight=1)
 
@@ -1438,7 +1459,7 @@ class AiLoopGui(tk.Tk):
         )
         self.status_text = self.help_widget(
             self.add_scrolled_text(status_tab, 0, 0),
-            "Current controller, worker, Redis, process, blocker, and suggested-solution status in plain language.",
+            "Current controller, worker, Redis, SMTP delivery, mailbox access, process, blocker, and suggested-solution status in plain language.",
         )
         self.controller_text = self.help_widget(
             self.add_scrolled_text(controller_tab, 0, 0),
@@ -1636,10 +1657,19 @@ class AiLoopGui(tk.Tk):
             self.last_status_by_job[job_id] = status
             if status != "human_needed":
                 self.alerted_human_needed.discard(job_id)
+                alert = self.human_needed_windows.pop(job_id, None)
+                if alert is not None and alert.winfo_exists():
+                    alert.destroy()
             if status == "human_needed" and job_id not in self.alerted_human_needed:
                 self.alerted_human_needed.add(job_id)
                 self.show_human_needed_alert(job)
-            if self.watch_job_id == job_id and status in TERMINAL_STATUSES and previous and previous != status:
+            if (
+                self.watch_job_id == job_id
+                and status in TERMINAL_STATUSES
+                and status != "human_needed"
+                and previous
+                and previous != status
+            ):
                 messagebox.showinfo("Watched Job Finished", f"{job_id} is now {status}.")
             if task:
                 task_status = str(task.get("status"))
@@ -1676,6 +1706,18 @@ class AiLoopGui(tk.Tk):
                 self.log_text,
             ):
                 self.set_text(widget, "")
+            self.set_text(
+                self.status_text,
+                "\n".join(
+                    [
+                        "SYSTEM STATUS",
+                        "No job is selected.",
+                        "",
+                        f"Email delivery: {self.mail_access_status.smtp_detail}",
+                        f"Mailbox access: {self.mail_access_status.mailbox_detail}",
+                    ]
+                ),
+            )
         self.update_system_status(jobs)
         self.update_jobs_selection_style()
         self.jobs_tree.update_idletasks()
@@ -1698,10 +1740,18 @@ class AiLoopGui(tk.Tk):
                     elif info["pid"]:
                         stale_processes += 1
             redis_state = "online" if self.backend.redis_running() else "offline"
+            if not self.mail_access_status.enabled:
+                mailbox_state = "disabled"
+            elif not self.mail_access_status.ok:
+                mailbox_state = "error"
+            elif self.backend.settings.imap_host:
+                mailbox_state = "accessible"
+            else:
+                mailbox_state = "not configured"
             self.status_var.set(
                 f"Redis {redis_state} | jobs {len(jobs)} | active {active} | "
                 f"human needed {human_needed} | dead {dead} | done {done} | "
-                f"processes running {running_processes}, stale {stale_processes}"
+                f"mailbox {mailbox_state} | processes running {running_processes}, stale {stale_processes}"
             )
         except Exception as exc:
             self.status_var.set(f"System status unavailable: {exc}")
@@ -1717,6 +1767,18 @@ class AiLoopGui(tk.Tk):
     def _auto_refresh_tick(self) -> None:
         if self.auto_refresh.get():
             self.refresh_all()
+        elif self.human_needed_windows:
+            try:
+                with db.transaction(self.backend.settings.db_path) as conn:
+                    for job_id, alert in list(self.human_needed_windows.items()):
+                        if str(db.get_job(conn, job_id)["status"]) == "human_needed":
+                            continue
+                        self.human_needed_windows.pop(job_id, None)
+                        self.alerted_human_needed.discard(job_id)
+                        if alert.winfo_exists():
+                            alert.destroy()
+            except (KeyError, tk.TclError):
+                pass
         self.after(1500, self._auto_refresh_tick)
 
     def on_job_selected(self, _event: object) -> None:
@@ -1879,6 +1941,8 @@ class AiLoopGui(tk.Tk):
             status_explanations.get(status, f"The job is in state {status}."),
             f"Progress: {details.get("percent")}% complete; about {self.duration_text(details.get("remaining"))} remaining.",
             f"Redis message service: {"online" if details.get("redis_running") else "offline"}",
+            f"Email delivery: {self.mail_access_status.smtp_detail}",
+            f"Mailbox access: {self.mail_access_status.mailbox_detail}",
             "",
             "CONTROLLER",
             f"Selected controller: {job.get("controller")}",
@@ -2058,24 +2122,61 @@ class AiLoopGui(tk.Tk):
             requirement = self.backend.auth_requirement(job_id)
         except Exception:
             requirement = None
-        if requirement is not None:
-            self.start_auth_recovery(job_id, requirement, ask=True)
-            return
 
         summary = str(job.get("history_summary") or "").strip()
         if len(summary) > 700:
             summary = summary[:697] + "..."
-        actions = [
-            "1. Inspect the Logs tab for controller/worker output.",
-            "2. Select controller/worker choices and click Apply + Resume.",
-            "3. Add a constraint or acceptance criterion if needed.",
-            "4. Stop stale processes or run Full Reset if the loop is unrecoverable.",
-        ]
+        if requirement is not None:
+            actions = [
+                f"1. Click Sign In + Resume to authenticate {provider_display_name(requirement.provider)}.",
+                "2. Or reply to the job email with a different command if authentication is not required for the new path.",
+            ]
+        else:
+            actions = [
+                "1. Inspect the Logs tab for controller/worker output.",
+                "2. Select controller/worker choices and click Apply + Resume.",
+                "3. Add a constraint or acceptance criterion if needed.",
+                "4. Stop stale processes or run Full Reset if the loop is unrecoverable.",
+            ]
         message = f"Job {job_id} needs human input.\n\n"
         if summary:
             message += f"Reason/history:\n{summary}\n\n"
         message += "Possible actions:\n" + "\n".join(actions)
-        messagebox.showwarning("Human Needed", message)
+        message += "\n\nYou can also reply to this job's email with a new command. The window will close when the job resumes."
+
+        existing = self.human_needed_windows.get(job_id)
+        if existing is not None and existing.winfo_exists():
+            existing.lift()
+            return
+        window = tk.Toplevel(self)
+        self.human_needed_windows[job_id] = window
+        window.title("Human Needed")
+        window.transient(self)
+        window.resizable(True, True)
+        window.geometry("720x430")
+        frame = ttk.Frame(window, padding=16)
+        frame.pack(fill="both", expand=True)
+        ttk.Label(frame, text="Human Needed", font=("TkDefaultFont", 15, "bold")).pack(anchor="w")
+        text = tk.Text(frame, wrap="word", height=16)
+        text.pack(fill="both", expand=True, pady=(10, 12))
+        text.insert("1.0", message)
+        text.configure(state="disabled")
+
+        def close_alert() -> None:
+            self.human_needed_windows.pop(job_id, None)
+            if window.winfo_exists():
+                window.destroy()
+
+        buttons = ttk.Frame(frame)
+        buttons.pack(fill="x")
+        ttk.Button(buttons, text="Dismiss", command=close_alert).pack(side="right")
+        if requirement is not None:
+            ttk.Button(
+                buttons,
+                text="Sign In + Resume",
+                command=lambda: (close_alert(), self.start_auth_recovery(job_id, requirement, ask=False)),
+            ).pack(side="right", padx=(0, 8))
+        window.protocol("WM_DELETE_WINDOW", close_alert)
 
     def recover_selected_auth(self) -> None:
         job_id = self.selected_job_or_error()

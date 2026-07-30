@@ -25,7 +25,7 @@ from ai_loop.config import (
     load_settings,
 )
 from ai_loop.queues import consumer_name, decode, ensure_group, redis_client, read_group, xadd_json
-from ai_loop.notifications import terminal_email
+from ai_loop.notifications import delivery_outcome, terminal_email
 from ai_loop.planning import normalize_granularity
 from ai_loop.recovery import attempt_auto_recovery
 from ai_loop.token_wait import is_token_limit, replenishment_time, wait_until
@@ -911,14 +911,15 @@ def notify_terminal(settings, job_id: str, status: str, reason: str) -> None:
     with db.transaction(settings.db_path) as conn:
         job = db.get_job(conn, job_id)
     sent, detail = terminal_email(settings, job=job, status=status, reason=reason)
+    outcome = delivery_outcome(sent, detail)
     with db.transaction(settings.db_path) as conn:
         db.add_event(
             conn,
             job_id=job_id,
-            kind="email_notification_sent" if sent else "email_notification_failed",
+            kind=f"email_notification_{outcome}",
             payload={"status": status, "recipient": settings.notify_email, "detail": detail},
         )
-    print(f"job {job_id}: email notification {'sent' if sent else 'failed'} - {detail}")
+    print(f"job {job_id}: email notification {outcome} - {detail}")
 
 
 def finish_done_job(settings, client, job: dict[str, Any], decision: dict[str, Any]) -> None:
@@ -948,9 +949,9 @@ def finish_done_job(settings, client, job: dict[str, Any], decision: dict[str, A
         db.update_job_status(conn, job["id"], "done", decision.get("history_summary", ""))
         db.add_event(conn, job_id=job["id"], kind="promotion_completed", payload=promotion)
         db.add_event(conn, job_id=job["id"], kind="done", payload=done_payload)
+    notify_terminal(settings, str(job["id"]), "done", str(decision["reason"]))
     xadd_json(client, DONE_STREAM, "event", done_payload)
     print(f"job {job['id']}: done - {decision['reason']}")
-    notify_terminal(settings, str(job["id"]), "done", str(decision["reason"]))
     if promotion["promoted"]:
         print(f"job {job['id']}: promoted {len(promotion['files'])} changed files to {job['repo_path']}")
 

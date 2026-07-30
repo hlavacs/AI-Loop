@@ -6,7 +6,7 @@ from datetime import datetime, timedelta, timezone
 from typing import Any
 
 from ai_loop import db
-from ai_loop.notifications import status_email
+from ai_loop.notifications import delivery_outcome, status_email
 from ai_loop.progress import estimate_progress
 
 
@@ -35,7 +35,7 @@ def maybe_send_status_email(
             """
             SELECT created_at
             FROM events
-            WHERE job_id = ? AND kind IN ('email_status_sent', 'email_status_failed')
+            WHERE job_id = ? AND kind IN ('email_status_sent', 'email_status_failed', 'email_status_skipped')
             ORDER BY created_at DESC, id DESC
             LIMIT 1
             """,
@@ -86,11 +86,12 @@ def maybe_send_status_email(
         current_task=str(current_task["goal"]) if current_task else "",
         remaining_seconds=remaining_seconds,
     )
+    outcome = delivery_outcome(sent, detail)
     with db.transaction(settings.db_path) as conn:
         db.add_event(
             conn,
             job_id=job_id,
-            kind="email_status_sent" if sent else "email_status_failed",
+            kind=f"email_status_{outcome}",
             payload={
                 "status": job["status"],
                 "recipient": settings.notify_email,
@@ -102,6 +103,6 @@ def maybe_send_status_email(
         )
     print(
         f"job {job_id}: 12-hour status email "
-        f"{'sent' if sent else 'failed'} - {detail}"
+        f"{outcome} - {detail}"
     )
     return True
