@@ -15,5 +15,6 @@ mkdir -p "$log_dir"
 exec >> "$log_dir/worker.log" 2>&1
 
 export PYTHONUNBUFFERED="${PYTHONUNBUFFERED:-1}"
-export CODEX_BYPASS_SANDBOX="${CODEX_BYPASS_SANDBOX:-1}"
+# The worker sandbox is ON by default. Export CODEX_BYPASS_SANDBOX=1 explicitly
+# (or tick the GUI's "Bypass worker sandbox" checkbox) to disable it.
 exec "$python_bin" worker.py

@@ -22,7 +22,9 @@ def _tail(path: Path, max_bytes: int = 20000) -> str:
 
 
 def attempt_auto_recovery(settings: Any, job_id: str | None, where: str, error: str, fields: Any) -> bool:
-    if not job_id or os.getenv("AI_LOOP_AUTO_RECOVER", "1").strip().lower() in {"0", "false", "no", "off"}:
+    # Auto-recovery lets an unsandboxed agent edit the ai-loop source itself,
+    # so it is opt-in: it runs only when AI_LOOP_AUTO_RECOVER is explicitly enabled.
+    if not job_id or os.getenv("AI_LOOP_AUTO_RECOVER", "0").strip().lower() not in {"1", "true", "yes", "on"}:
         return False
 
     codex_bin = os.getenv("AI_LOOP_RECOVERY_BIN", settings.codex_bin or "codex")
@@ -80,7 +82,6 @@ Task:
             return False
 
         env = os.environ.copy()
-        env["CODEX_BYPASS_SANDBOX"] = "1"
         subprocess.Popen(
             [str(settings.root_dir / "ai_resume_job.bash"), job_id],
             cwd=str(settings.root_dir),

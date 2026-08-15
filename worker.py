@@ -12,7 +12,14 @@ from pathlib import Path
 from redis.exceptions import ConnectionError, TimeoutError
 
 from ai_loop import db
-from ai_loop.config import CLAUDE_REQUEST_STREAM, CODEX_TASK_STREAM, DEAD_STREAM, HUMAN_STREAM, load_settings
+from ai_loop.config import (
+    CLAUDE_REQUEST_STREAM,
+    CODEX_TASK_STREAM,
+    DEAD_STREAM,
+    HUMAN_STREAM,
+    load_settings,
+    sanitized_child_env,
+)
 from ai_loop.notifications import delivery_outcome, terminal_email
 from ai_loop.planning import normalize_granularity
 from ai_loop.queues import consumer_name, decode, ensure_group, redis_client, read_group, xadd_json
@@ -26,7 +33,6 @@ DIFF_LIMIT = 80000
 INSTRUCTION_FILE_LIMIT = 10
 TERMINAL_STATUSES = {"done", "human_needed", "dead"}
 PROMPT_ARG_LIMIT = 100000
-BYPASS_SANDBOX_MARKER = "bypass_sandbox"
 
 
 def scoped_job_id() -> str | None:
@@ -36,11 +42,6 @@ def scoped_job_id() -> str | None:
 
 def scoped_group(base_group: str, job_id: str | None) -> str:
     return f"{base_group}:{job_id}" if job_id else base_group
-
-
-def runtime_requests_sandbox_bypass() -> bool:
-    runtime_dir = os.getenv("AI_LOOP_RUNTIME_DIR", "").strip()
-    return bool(runtime_dir and (Path(runtime_dir) / BYPASS_SANDBOX_MARKER).is_file())
 
 
 def is_terminal_job(settings, job_id: str) -> bool:
@@ -73,6 +74,7 @@ def run_command(cmd: list[str], cwd: str, timeout: int, input_text: str | None =
             text=True,
             capture_output=True,
             timeout=timeout,
+            env=sanitized_child_env(),
         )
         output = (proc.stdout + "\n" + proc.stderr).strip()
         return {"rc": proc.returncode, "output": output, "elapsed": round(time.monotonic() - started, 2)}
@@ -127,9 +129,13 @@ def build_gemini_command(gemini_bin: str, prompt: str, model: str, bypass_sandbo
     cmd = [gemini_bin]
     if model:
         cmd.extend(["-m", model])
-    if not bypass_sandbox:
-        cmd.append("--sandbox")
-    cmd.append("--yolo")
+    if bypass_sandbox:
+        cmd.append("--yolo")
+    else:
+        # Sandboxed mode auto-approves edits only, mirroring the Claude
+        # worker's acceptEdits permission mode; --yolo is reserved for an
+        # explicit sandbox bypass.
+        cmd.extend(["--sandbox", "--approval-mode", "auto_edit"])
     cmd.extend(["-p", prompt_arg_or_file(prompt, "gemini-worker")])
     return cmd
 
@@ -374,9 +380,9 @@ def process_task(settings, client, task_id: str) -> None:
         print(error)
     else:
         prompt = codex_prompt(job, task, worker)
-        bypass_sandbox = settings.codex_bypass_sandbox or runtime_requests_sandbox_bypass()
-        if bypass_sandbox and not settings.codex_bypass_sandbox:
-            print(f"sandbox bypass requested by {BYPASS_SANDBOX_MARKER} runtime marker")
+        bypass_sandbox = settings.codex_bypass_sandbox
+        if bypass_sandbox:
+            print("sandbox bypass enabled via CODEX_BYPASS_SANDBOX")
         if worker in {"claude", "fable", "opus"}:
             legacy_claude_model = (
                 settings.opus_model

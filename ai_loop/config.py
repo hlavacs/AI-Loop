@@ -70,6 +70,25 @@ class Settings:
     email_poll_seconds: int
 
 
+SENSITIVE_ENV_KEYS = ("AI_LOOP_SMTP_PASSWORD", "AI_LOOP_IMAP_PASSWORD")
+
+
+def sanitized_child_env() -> dict[str, str]:
+    """Environment for AI-CLI and test-command subprocesses.
+
+    The worker's children (the coding-agent CLI and the repository's own test
+    command) must not inherit mail credentials: an unsandboxed agent or an
+    untrusted test script could read them with a single `env` call. Mail is
+    sent only by the controller/worker/watcher Python processes themselves,
+    which keep the full environment.
+    """
+    env = os.environ.copy()
+    for key in list(env):
+        if key in SENSITIVE_ENV_KEYS or (key.startswith("AI_LOOP_") and "PASSWORD" in key):
+            env.pop(key, None)
+    return env
+
+
 def env_bool(name: str, default: bool = False) -> bool:
     value = os.getenv(name)
     if value is None:

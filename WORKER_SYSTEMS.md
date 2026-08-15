@@ -418,9 +418,10 @@ Automatic detection checks visible CMake presets, plain CMake, npm, then Python 
 - `ai_loopctl.bash` and `ai_delete_job.bash` terminate recorded parent PIDs.
   Unlike the GUI process-group termination path, they can leave provider or
   test subprocesses alive.
-- `ai_remove_worktrees.bash` is intentionally destructive: by default it
-  force-removes registered AI worktrees and leftover directories under the
-  configured runs directory.
+- `ai_remove_worktrees.bash` refuses to delete without `--yes`, previews with
+  `--dry-run`, and keeps worktrees that still contain uncommitted work unless
+  `--force` (or `AI_LOOP_FORCE_REMOVE_WORKTREES=1`) is given. The leftover
+  sweep is skipped when no target repos are known or when worktrees were kept.
 - GUI construction must be tested with access to the native window server.
   A Tk process can abort in a headless sandbox even when the launcher works in
   the user's desktop session.

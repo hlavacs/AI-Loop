@@ -127,7 +127,8 @@ All settings are optional unless your environment needs an override.
 | `AI_LOOP_CONTROLLER_MODEL` | Optional default-Claude controller override | CLI default |
 | `AI_LOOP_CONTROLLER_ROLE_MODEL` | Model selected specifically for the controller process | provider model above |
 | `AI_LOOP_WORKER_ROLE_MODEL` | Model selected specifically for the worker process | provider model above |
-| `CODEX_BYPASS_SANDBOX` | Allow unrestricted worker execution | false in Python entry points |
+| `CODEX_BYPASS_SANDBOX` | Allow unrestricted worker execution | false everywhere; set `1` to opt in |
+| `AI_LOOP_AUTO_RECOVER` | Let an unsandboxed repair agent edit AI-Loop itself after an internal crash | false; set `1` to opt in |
 | `AI_LOOP_NOTIFY_EMAIL` | Job-email recipient and only authorized reply sender | empty |
 | `AI_LOOP_SMTP_HOST` | SMTP server. Empty disables all email | empty |
 | `AI_LOOP_SMTP_PORT` | SMTP port | 587, or 465 with SSL |
@@ -389,7 +390,8 @@ Cleanup commands:
 ```bash
 ./ai_clear_log.bash --dry-run
 ./ai_clear_db.bash --yes
-./ai_remove_worktrees.bash
+./ai_remove_worktrees.bash --dry-run
+./ai_remove_worktrees.bash --yes
 ./ai_reset_loop.bash --yes
 ```
 
@@ -487,7 +489,10 @@ use the command-line entry points.
 - New jobs create a pre-job snapshot commit when the target checkout is dirty, then copy that checkout overlay into the isolated worktree.
 - Workers are instructed not to commit or merge.
 - Successful promotion refuses paths with local target-checkout conflicts.
-- `CODEX_BYPASS_SANDBOX=1` grants broad execution authority. Use it only in a trusted environment.
+- The worker sandbox is enabled by default for every launch path. `CODEX_BYPASS_SANDBOX=1` grants broad execution authority; use it only in a trusted environment.
+- Automatic self-recovery (`AI_LOOP_AUTO_RECOVER=1`) lets an unsandboxed agent edit the AI-Loop source itself and is therefore disabled by default.
+- Mail passwords are stripped from the environment of worker/controller CLI subprocesses and of the job test command; only the AI-Loop processes that actually send or read mail keep them.
+- `ai_remove_worktrees.bash` deletes nothing without `--yes`, keeps worktrees that still contain uncommitted work unless `--force` is given, and supports `--dry-run`.
 - Claude-based workers do not provide the same filesystem sandbox as Codex. Worktree isolation is their primary boundary.
 
 The sole authoritative internal design document is

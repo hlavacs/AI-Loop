@@ -23,6 +23,7 @@ from ai_loop.config import (
     DONE_STREAM,
     HUMAN_STREAM,
     load_settings,
+    sanitized_child_env,
 )
 from ai_loop.queues import consumer_name, decode, ensure_group, redis_client, read_group, xadd_json
 from ai_loop.notifications import delivery_outcome, terminal_email
@@ -347,6 +348,7 @@ def run_claude(claude_bin: str, prompt: str, model: str = "", sizing: str = "nor
                     text=True,
                     capture_output=True,
                     timeout=7200,
+                    env=sanitized_child_env(),
                 )
                 output = (proc.stdout + "\n" + proc.stderr).strip()
                 last_output = output
@@ -439,6 +441,7 @@ def run_codex_controller(codex_bin: str, prompt: str, workdir: str, model: str =
                     text=True,
                     capture_output=True,
                     timeout=7200,
+                    env=sanitized_child_env(),
                 )
             except subprocess.TimeoutExpired as exc:
                 return {
@@ -506,6 +509,7 @@ def run_gemini_controller(gemini_bin: str, prompt: str, workdir: str, model: str
                 text=True,
                 capture_output=True,
                 timeout=7200,
+                env=sanitized_child_env(),
             )
         except subprocess.TimeoutExpired as exc:
             return {
@@ -750,7 +754,12 @@ def run_git(args: list[str], cwd: Path) -> subprocess.CompletedProcess[str]:
 
 
 def status_paths(worktree: Path) -> list[tuple[str, str | None]]:
-    proc = run_git(["status", "--porcelain=v1", "-z"], worktree)
+    # --untracked-files=all makes git list every file inside a new directory
+    # instead of collapsing it to a single "newdir/" entry. Without it,
+    # promotion would rmtree+copytree the whole directory and could destroy
+    # gitignored files (build output, local config) already present in the
+    # target repo, which the conflict check below cannot see.
+    proc = run_git(["status", "--porcelain=v1", "-z", "--untracked-files=all"], worktree)
     if proc.returncode != 0:
         raise PromotionError(f"could not inspect worktree git status: {proc.stderr.strip()}")
 
