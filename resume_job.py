@@ -53,44 +53,46 @@ def _group_has_live_member(pgid: int) -> bool:
     leader-only zombie shortcut would wrongly drop such a group from the
     survivor poll and skip the SIGKILL escalation the child needs.
 
-    Uses ``pgrep -g`` to enumerate group members (portable across Linux and
-    macOS, where ``ps -g`` semantics differ), then ``ps`` for their states.
-    pgrep exit status 1 means "no matching processes" and is trusted as "no
-    live members": on Linux zombies WOULD have been listed (and are filtered
-    by state below), so an empty match set really is an empty group; on macOS
-    pgrep does not list zombies at all, but such invisible zombies cannot be
-    signalled usefully anyway, so a zombie-only group counts as dead there
-    too. Any other failure, timeout, or unexpected exit status means "assume
-    alive": staying conservative keeps the group in the poll and lets SIGKILL
-    escalation fire; this check must never abort or block a resume.
+    Uses parsed ``ps -Ao pgid=,state=`` output ONLY: both BSD/macOS ps and
+    procps support the ``pgid`` and ``state`` keywords, and ``=`` suppresses
+    the headers, so one portable invocation lists every process's group and
+    state. pgrep is deliberately NOT used: on macOS ``pgrep -g`` was
+    empirically observed returning exit status 1 for a confirmed-live process
+    group, so trusting rc==1 as "no live members" wrongly dropped live groups
+    from the survivor poll and skipped the SIGKILL escalation they needed.
+    Zombies appear in the ps listing with state "Z" on both Linux and macOS,
+    so the state filter below handles the zombie-only-group case uniformly.
+    No rows matching the target pgid means the group is empty/gone (the
+    earlier killpg(pid, 0) success may race with the last member exiting,
+    which is acceptable). Any ps failure, timeout, or unparseable output
+    means "assume alive": staying conservative keeps the group in the poll
+    and lets SIGKILL escalation fire; this check must never abort or block a
+    resume.
     """
     try:
-        listing = subprocess.run(
-            ["pgrep", "-g", str(pgid)],
-            capture_output=True,
-            text=True,
-            timeout=5,
-        )
-        if listing.returncode == 1:
-            # No matches: the group has no live members (see docstring for
-            # the Linux-vs-macOS zombie divergence this relies on).
-            return False
-        if listing.returncode != 0:
-            return True
-        pids = [line.strip() for line in (listing.stdout or "").splitlines() if line.strip()]
-        if not pids:
-            return True
         result = subprocess.run(
-            ["ps", "-o", "state=", "-p", ",".join(pids)],
+            ["ps", "-Ao", "pgid=,state="],
             capture_output=True,
             text=True,
             timeout=5,
         )
-        states = [line.strip() for line in (result.stdout or "").splitlines() if line.strip()]
+        if result.returncode != 0:
+            return True
+        rows: list[tuple[str, str]] = []
+        for line in (result.stdout or "").splitlines():
+            parts = line.split(None, 1)
+            if len(parts) != 2:
+                continue
+            rows.append((parts[0].strip(), parts[1].strip()))
     except Exception:
         return True
-    if not states:
+    if not rows:
+        # ps produced nothing parseable: stay conservative.
         return True
+    states = [state for row_pgid, state in rows if row_pgid == str(pgid)]
+    if not states:
+        # No process belongs to the group any more: it is empty/gone.
+        return False
     return any(not state.startswith("Z") for state in states)
 
 
@@ -128,6 +130,9 @@ def _pid_identity_ok(pid: int) -> bool:
     Returns False only when ``ps`` positively reports a command line that
     looks unrelated to the AI-Loop trio. Any ps failure, timeout, or empty
     output returns True: this check must never abort or block a resume.
+    Both launch paths exec/argv the script names, so real AI-Loop processes
+    always contain one of the markers below; a bare "python" is NOT accepted,
+    because any unrelated Python process would then be signallable.
     """
     try:
         result = subprocess.run(
@@ -141,7 +146,7 @@ def _pid_identity_ok(pid: int) -> bool:
         return True
     if not output:
         return True
-    return any(marker in output for marker in ("controller.py", "worker.py", "watcher.py", "python"))
+    return any(marker in output for marker in ("controller.py", "worker.py", "watcher.py", "ai_loop"))
 
 
 def _signal_process(pid: int, sig: int) -> None:
@@ -262,6 +267,8 @@ def main() -> int:
             constraints = [*job["constraints"], *args.constraint]
             constraints = replace_granularity_constraints(constraints, granularity)
             acceptance = [*job["acceptance"], *args.acceptance]
+            # models_json reflects the last GUI-applied model settings; the CLI
+            # resume is env-based and deliberately leaves that column untouched.
             conn.execute(
                 """
                 UPDATE jobs

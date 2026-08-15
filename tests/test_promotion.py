@@ -238,5 +238,73 @@ class PromotionTests(unittest.TestCase):
             self.assertEqual((repo / "new.txt").read_text(encoding="utf-8"), "brand new\n")
 
 
+class PromotionRollbackTests(unittest.TestCase):
+    """Mid-copy failures must roll the target repo back (monkeypatch-free).
+
+    The failure is triggered deterministically: the copy loop walks the
+    sorted status paths, so "a_*" lands first, then "bdir/blocked.txt" fails
+    because the target repo contains a plain FILE named "bdir" and
+    target.parent.mkdir(parents=True, exist_ok=True) raises FileExistsError
+    on a non-directory. The blocking file "bdir" is untracked in the target
+    but never matches the conflict check's pathspec "bdir/blocked.txt", so
+    the failure happens inside the copy loop, after earlier paths applied.
+    """
+
+    def test_mid_copy_failure_rolls_back_modified_tracked_file(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            repo, worktree = make_repo_with_worktree(Path(directory), {"a_first.txt": "one\n"})
+            (worktree / "a_first.txt").write_text("modified\n", encoding="utf-8")
+            (worktree / "bdir").mkdir()
+            (worktree / "bdir" / "blocked.txt").write_text("blocked\n", encoding="utf-8")
+            (repo / "bdir").write_text("i am a file, not a directory\n", encoding="utf-8")
+
+            with self.assertRaises(PromotionError) as ctx:
+                promote_successful_worktree(job_dict(repo, worktree))
+
+            message = str(ctx.exception)
+            self.assertIn("rolled back 1 of 1", message)
+            # a_first.txt had already been copied; the rollback's
+            # `git checkout -- a_first.txt` restored the original content.
+            self.assertEqual((repo / "a_first.txt").read_text(encoding="utf-8"), "one\n")
+            # The blocking file is untouched and the blocked path never landed.
+            self.assertEqual(
+                (repo / "bdir").read_text(encoding="utf-8"),
+                "i am a file, not a directory\n",
+            )
+
+    def test_mid_copy_failure_removes_already_copied_new_file(self) -> None:
+        # An untracked-new path cannot be restored by `git checkout` (it
+        # returns nonzero); rollback must delete the copied file instead.
+        with tempfile.TemporaryDirectory() as directory:
+            repo, worktree = make_repo_with_worktree(Path(directory), {"base.txt": "base\n"})
+            (worktree / "a_new.txt").write_text("fresh\n", encoding="utf-8")
+            (worktree / "bdir").mkdir()
+            (worktree / "bdir" / "blocked.txt").write_text("blocked\n", encoding="utf-8")
+            (repo / "bdir").write_text("blocking file\n", encoding="utf-8")
+
+            with self.assertRaises(PromotionError) as ctx:
+                promote_successful_worktree(job_dict(repo, worktree))
+
+            self.assertIn("rolled back 1 of 1", str(ctx.exception))
+            self.assertFalse((repo / "a_new.txt").exists())
+            self.assertEqual((repo / "base.txt").read_text(encoding="utf-8"), "base\n")
+
+    def test_mid_copy_failure_restores_propagated_deletion(self) -> None:
+        # A deletion applied to the target before the failure must come back:
+        # checkout restores tracked files including deleted ones.
+        with tempfile.TemporaryDirectory() as directory:
+            repo, worktree = make_repo_with_worktree(Path(directory), {"a_doomed.txt": "keep me\n"})
+            (worktree / "a_doomed.txt").unlink()
+            (worktree / "bdir").mkdir()
+            (worktree / "bdir" / "blocked.txt").write_text("blocked\n", encoding="utf-8")
+            (repo / "bdir").write_text("blocking file\n", encoding="utf-8")
+
+            with self.assertRaises(PromotionError) as ctx:
+                promote_successful_worktree(job_dict(repo, worktree))
+
+            self.assertIn("rolled back 1 of 1", str(ctx.exception))
+            self.assertEqual((repo / "a_doomed.txt").read_text(encoding="utf-8"), "keep me\n")
+
+
 if __name__ == "__main__":
     unittest.main()

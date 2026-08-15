@@ -5,6 +5,7 @@ import os
 import shutil
 import signal
 import subprocess
+import sys
 import tempfile
 import time
 import unittest
@@ -228,14 +229,27 @@ class TerminatePidValidationTests(unittest.TestCase):
             signal_mock.assert_not_called()
             self.assertIn("resume's own/parent process", "\n".join(printed))
 
-    def test_pid_identity_check_accepts_python_and_rejects_reused_pid(self) -> None:
-        self.assertTrue(resume_job._pid_identity_ok(os.getpid()))
-        sleeper = subprocess.Popen(["sleep", "60"])
-        try:
-            self.assertFalse(resume_job._pid_identity_ok(sleeper.pid))
-        finally:
-            sleeper.kill()
-            sleeper.wait()
+    def test_pid_identity_check_accepts_trio_scripts_and_rejects_others(self) -> None:
+        # The bare "python" marker was dropped: any unrelated Python process
+        # (including this pytest run) must be rejected, otherwise a recycled
+        # PID pointing at someone else's Python program would be signalled.
+        # Both launch paths put the script name on the argv, so a real trio
+        # member always matches "controller.py"/"worker.py"/"watcher.py"/
+        # "ai_loop".
+        with tempfile.TemporaryDirectory() as directory:
+            script = Path(directory) / "watcher.py"
+            script.write_text("import time\ntime.sleep(60)\n", encoding="utf-8")
+            trio_like = subprocess.Popen([sys.executable, str(script)])
+            python_only = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(60)"])
+            sleeper = subprocess.Popen(["sleep", "60"])
+            try:
+                self.assertTrue(resume_job._pid_identity_ok(trio_like.pid))
+                self.assertFalse(resume_job._pid_identity_ok(python_only.pid))
+                self.assertFalse(resume_job._pid_identity_ok(sleeper.pid))
+            finally:
+                for proc in (trio_like, python_only, sleeper):
+                    proc.kill()
+                    proc.wait()
 
     def test_reused_pid_is_skipped_by_terminate(self) -> None:
         sleeper = subprocess.Popen(["sleep", "60"])
@@ -328,11 +342,11 @@ class GroupHasLiveMemberTests(unittest.TestCase):
         # Do NOT reap: without wait()/poll() the exited leader stays a zombie
         # and is the group's only member. killpg(pid, 0) still succeeds on it,
         # so only the group-wide member state check reports it as dead.
-        # The assertFalse holds on both platforms through two different paths:
-        # on Linux, pgrep lists the zombie (rc==0) and the ps state filter
-        # sees only "Z" states; on macOS, pgrep does not list zombies at all,
-        # so it exits with rc==1 ("no matches"), which is now trusted as "no
-        # live members" instead of falling into the conservative True branch.
+        # The assertFalse holds on both platforms through the SAME path now:
+        # _group_has_live_member parses `ps -Ao pgid=,state=` (no pgrep — on
+        # macOS pgrep -g was observed returning exit 1 for a confirmed-live
+        # group), and zombies DO appear in that listing with state "Z" on both
+        # Linux and macOS, so a group whose rows are all "Z" is reported dead.
         proc = subprocess.Popen(["sleep", "0.05"], start_new_session=True)
         try:
             self.assertTrue(
@@ -375,8 +389,8 @@ class GroupHasLiveMemberTests(unittest.TestCase):
     @unittest.skipUnless(shutil.which("bash"), "bash unavailable")
     def test_reaped_leader_with_live_child_keeps_group_alive(self) -> None:
         # Same shape but the leader is fully reaped: the pgid persists while
-        # the child lives, so killpg(pid, 0) succeeds and the member scan must
-        # find the live child.
+        # the child lives, so killpg(pid, 0) succeeds and the ps -Ao scan must
+        # find the live child's row (state "S"/"R", not "Z") for that pgid.
         proc = subprocess.Popen(
             ["bash", "-c", "sleep 60 & disown; exit 0"], start_new_session=True
         )

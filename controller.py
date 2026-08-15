@@ -837,30 +837,70 @@ def promote_successful_worktree(
 
     copied: list[str] = []
     removed: list[str] = []
-    for code, relative_path in changes:
-        if relative_path is None:
-            continue
-        source = worktree / relative_path
-        target = repo / relative_path
-        if "D" in code and not source.exists():
-            if target.exists():
-                if target.is_dir():
-                    shutil.rmtree(target)
-                else:
-                    target.unlink()
-            removed.append(relative_path)
-            continue
+    # After the conflict check above every promoted path is clean in the
+    # target repo, so a mid-loop failure can be rolled back safely: tracked
+    # paths (modifications AND deletions) are restored with
+    # `git checkout -- <path>`, and untracked-new paths (where checkout
+    # returns nonzero) are removed again.
+    applied: list[tuple[str, str]] = []
+    try:
+        for code, relative_path in changes:
+            if relative_path is None:
+                continue
+            source = worktree / relative_path
+            target = repo / relative_path
+            if "D" in code and not source.exists():
+                if target.exists():
+                    if target.is_dir():
+                        shutil.rmtree(target)
+                    else:
+                        target.unlink()
+                removed.append(relative_path)
+                applied.append((relative_path, "removed"))
+                continue
 
-        if not source.exists():
-            continue
-        target.parent.mkdir(parents=True, exist_ok=True)
-        if source.is_dir():
-            if target.exists():
-                shutil.rmtree(target)
-            shutil.copytree(source, target)
-        else:
-            shutil.copy2(source, target)
-        copied.append(relative_path)
+            if not source.exists():
+                continue
+            target.parent.mkdir(parents=True, exist_ok=True)
+            if source.is_dir():
+                if target.exists():
+                    shutil.rmtree(target)
+                shutil.copytree(source, target)
+            else:
+                shutil.copy2(source, target)
+            copied.append(relative_path)
+            applied.append((relative_path, "copied"))
+    except Exception as exc:
+        rolled_back = 0
+        rollback_failures: list[str] = []
+        for relative_path, _action in applied:
+            try:
+                checkout = run_git(["checkout", "--", relative_path], repo)
+            except Exception:
+                checkout = None
+            if checkout is not None and checkout.returncode == 0:
+                rolled_back += 1
+                continue
+            # checkout failed or the path was untracked-new in the target:
+            # remove the copied file/dir if it is (still) there.
+            target = repo / relative_path
+            try:
+                if target.is_dir() and not target.is_symlink():
+                    shutil.rmtree(target)
+                elif target.exists() or target.is_symlink():
+                    target.unlink()
+                rolled_back += 1
+            except OSError:
+                rollback_failures.append(relative_path)
+        detail = (
+            f"promotion failed while applying changes to the target repository: {exc}; "
+            f"rolled back {rolled_back} of {len(applied)} already-applied path(s)"
+        )
+        if rollback_failures:
+            preview = ", ".join(rollback_failures[:20])
+            extra = "" if len(rollback_failures) <= 20 else f", ... and {len(rollback_failures) - 20} more"
+            detail += f"; rollback FAILED for: {preview}{extra}"
+        raise PromotionError(detail) from exc
 
     return {
         "promoted": True,

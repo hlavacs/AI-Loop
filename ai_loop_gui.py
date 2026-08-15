@@ -728,6 +728,10 @@ class LoopBackend:
         Returns False only when ``ps`` positively reports a command line that
         looks unrelated to the AI-Loop trio. Any ps failure, timeout, or empty
         output returns True: this check must never abort or block an action.
+        Both launch paths exec/argv the script names, so real AI-Loop
+        processes always contain one of the markers below; a bare "python" is
+        NOT accepted, because any unrelated Python process would then be
+        adoptable or signallable.
         Intentionally duplicated from resume_job._pid_identity_ok so the GUI
         stays self-contained (mirroring the existing duplication convention).
         """
@@ -743,7 +747,7 @@ class LoopBackend:
             return True
         if not output:
             return True
-        return any(marker in output for marker in ("controller.py", "worker.py", "watcher.py", "python"))
+        return any(marker in output for marker in ("controller.py", "worker.py", "watcher.py", "ai_loop"))
 
     def env_for_processes(
         self,
@@ -811,8 +815,20 @@ class LoopBackend:
         return pids
 
     def stop_processes(self, job_id: str) -> dict[str, str]:
+        """SIGTERM the job's trio, then poll the process GROUPS and escalate.
+
+        A single SIGTERM is not enough: a signal-resistant provider child
+        (codex/claude CLI) can survive it and keep editing the worktree while
+        resume_job launches a replacement worker into the same worktree. After
+        the SIGTERM pass, the terminated pids' whole process groups are polled
+        for up to ~5 s; groups that are still alive get SIGKILL, and the
+        results dict notes the escalation. Called from background threads
+        (resume via _run_bg, delete/reset/finish via their _run_bg wrappers),
+        so the 5 s poll never blocks the Tk main thread.
+        """
         runtime_dir = self.runtime_dir(job_id)
         results: dict[str, str] = {}
+        terminated: list[tuple[str, int]] = []
         for name in PROCESS_NAMES:
             pid_file = runtime_dir / f"{name}.pid"
             if not pid_file.exists() and name in LEGACY_PROCESS_NAMES:
@@ -825,6 +841,7 @@ class LoopBackend:
                 if self.pid_identity_ok(pid):
                     self.terminate_pid(pid)
                     results[name] = f"stopped pid={pid}"
+                    terminated.append((name, pid))
                 else:
                     # The stored PID was recycled by an unrelated process;
                     # never killpg it. The stale pid file is still removed.
@@ -835,7 +852,67 @@ class LoopBackend:
                 pid_file.unlink()
             except OSError:
                 pass
+        if terminated:
+            deadline = time.monotonic() + 5.0
+            survivors = list(terminated)
+            while survivors and time.monotonic() < deadline:
+                time.sleep(0.2)
+                # The whole process GROUP must be gone, not just the leader:
+                # a SIGTERM-trapping CLI child keeps the group alive after the
+                # leader exits and still needs the SIGKILL escalation below.
+                survivors = [(name, pid) for name, pid in survivors if self.group_alive(pid)]
+            for name, pid in survivors:
+                self.kill_pid(pid)
+                results[name] = f"stopped pid={pid} (escalated to SIGKILL after SIGTERM grace period)"
         return results
+
+    @staticmethod
+    def group_alive(pid: int) -> bool:
+        """True while any process in ``pid``'s process group is still alive.
+
+        killpg(pid, 0) probes group existence, but succeeds against a group
+        whose remaining members are all zombies; parsed ``ps -Ao pgid=,state=``
+        output (portable across BSD/macOS and procps, ``=`` suppresses the
+        headers) filters those out. No rows for the group means it is gone;
+        ps failure/timeout/unparseable output conservatively counts as alive.
+        Intentionally duplicated from resume_job._group_alive /
+        _group_has_live_member so the GUI stays self-contained (mirroring the
+        existing duplication convention). pgrep is deliberately not used: on
+        macOS ``pgrep -g`` was observed returning exit 1 for a live group.
+        """
+        try:
+            os.killpg(pid, 0)
+        except ProcessLookupError:
+            return False
+        except PermissionError:
+            # The group exists but belongs to someone else; treat it as alive.
+            return True
+        except (AttributeError, OSError):
+            # No killpg (Windows): fall back to a single-PID liveness probe.
+            return LoopBackend.pid_running(pid)
+        try:
+            result = subprocess.run(
+                ["ps", "-Ao", "pgid=,state="],
+                capture_output=True,
+                text=True,
+                timeout=5,
+            )
+            if result.returncode != 0:
+                return True
+            rows: list[tuple[str, str]] = []
+            for line in (result.stdout or "").splitlines():
+                parts = line.split(None, 1)
+                if len(parts) != 2:
+                    continue
+                rows.append((parts[0].strip(), parts[1].strip()))
+        except Exception:
+            return True
+        if not rows:
+            return True
+        states = [state for row_pgid, state in rows if row_pgid == str(pid)]
+        if not states:
+            return False
+        return any(not state.startswith("Z") for state in states)
 
     @staticmethod
     def terminate_pid(pid: int) -> None:
@@ -852,6 +929,27 @@ class LoopBackend:
         except OSError:
             try:
                 os.kill(pid, signal.SIGTERM)
+            except OSError:
+                pass
+
+    @staticmethod
+    def kill_pid(pid: int) -> None:
+        """Forcefully kill ``pid``'s whole process group.
+
+        SIGKILL escalation for groups that survived the SIGTERM grace period
+        in stop_processes; same killpg-with-os.kill-fallback guards as
+        terminate_pid. On Windows terminate_pid's taskkill /F is already
+        forceful, so it is simply reused there.
+        """
+        if os.name == "nt":
+            LoopBackend.terminate_pid(pid)
+            return
+        force_signal = getattr(signal, "SIGKILL", signal.SIGTERM)
+        try:
+            os.killpg(pid, force_signal)
+        except OSError:
+            try:
+                os.kill(pid, force_signal)
             except OSError:
                 pass
 
@@ -997,11 +1095,15 @@ class LoopBackend:
             new_controller = normalize_controller(controller or str(job["controller"]))
             new_granularity = normalize_granularity(granularity or str(job["granularity"]))
             constraints = replace_granularity_constraints(constraints, new_granularity)
+            # models_json is refreshed to the models actually being applied to
+            # this resume (same asdict(models) shape as create_job) so a later
+            # GUI restart restores the settings the job is really running
+            # with, not the ones from job creation.
             conn.execute(
                 """
                 UPDATE jobs
                 SET worker = ?, controller = ?, granularity = ?, constraints_json = ?, acceptance_json = ?,
-                    status = 'planning', updated_at = ?
+                    models_json = ?, status = 'planning', updated_at = ?
                 WHERE id = ?
                 """,
                 (
@@ -1010,6 +1112,7 @@ class LoopBackend:
                     new_granularity,
                     db.to_json(constraints),
                     db.to_json(acceptance),
+                    db.to_json(asdict(models)),
                     db.utc_now(),
                     job_id,
                 ),
@@ -1278,6 +1381,12 @@ class AiLoopGui(tk.Tk):
         self._redis_action_running = False
         self._maintenance_running = False
         self._hibernation_running = False
+        # Stop/Delete/Finish call backend.stop_processes, whose SIGTERM->poll
+        # ->SIGKILL escalation waits up to ~5 s; they run via _run_bg so that
+        # poll never blocks the Tk main thread.
+        self._stop_job_running = False
+        self._delete_job_running = False
+        self._finish_job_running = False
         # Human-readable labels of operations currently running on background
         # threads. Additive bookkeeping next to the busy flags above: _run_bg
         # adds the label before its thread starts and the finisher/fallback
@@ -1438,6 +1547,9 @@ class AiLoopGui(tk.Tk):
             or self._maintenance_running
             or self._hibernation_running
             or self._redis_action_running
+            or self._stop_job_running
+            or self._delete_job_running
+            or self._finish_job_running
             or bool(self._active_operations)
         )
         if busy:
@@ -2884,12 +2996,39 @@ class AiLoopGui(tk.Tk):
         job_id = self.selected_job_or_error()
         if not job_id:
             return
-        try:
+        if self._stop_job_running:
+            messagebox.showinfo("Stop Job", "A stop is already in progress; wait for it to finish.")
+            return
+        conflict = self._exclusive_conflict("job")
+        if conflict is not None:
+            messagebox.showinfo("Stop Job", f"Cannot start Stop Job while {conflict} is running.")
+            return
+
+        # stop_processes escalates SIGTERM->SIGKILL with an up-to-5 s group
+        # poll, so it must never run on the Tk main thread.
+        def work() -> dict[str, str]:
             results = self.backend.stop_processes(job_id)
             self.backend.mark_stopped(job_id)
-        except Exception as exc:
-            messagebox.showerror("Stop Failed", str(exc))
+            return results
+
+        self._stop_job_running = True
+        self.status_var.set(f"Stopping {job_id}…")
+        self._run_bg(
+            work,
+            lambda results, error: self._finish_stop_job(job_id, results, error),
+            name=f"ai-loop-stop-{job_id}",
+            busy_attr="_stop_job_running",
+            label="Stop Job",
+        )
+
+    def _finish_stop_job(self, job_id: str, results: dict[str, str] | None, error: str | None) -> None:
+        self._stop_job_running = False
+        if error is not None:
+            messagebox.showerror("Stop Failed", error)
             return
+        summary = "\n".join(f"{name}: {outcome}" for name, outcome in (results or {}).items())
+        self.status_var.set(f"Stopped {job_id}")
+        messagebox.showinfo("Stop Job", f"Stopped processes for {job_id}:\n\n{summary}")
         self.refresh_all(select_job_id=job_id)
 
     def resume_selected_job(self) -> None:
@@ -2958,12 +3097,31 @@ class AiLoopGui(tk.Tk):
         job_id = self.selected_job_or_error()
         if not job_id:
             return
+        if self._finish_job_running:
+            messagebox.showinfo("Finish Job", "A finish is already in progress; wait for it to finish.")
+            return
+        conflict = self._exclusive_conflict("job")
+        if conflict is not None:
+            messagebox.showinfo("Finish Job", f"Cannot start Finish Job while {conflict} is running.")
+            return
         if not messagebox.askyesno("Finish Job", "Stop the loop and preserve current worktree/database progress for this job?"):
             return
-        try:
-            self.backend.finish_job(job_id)
-        except Exception as exc:
-            messagebox.showerror("Finish Failed", str(exc))
+        # backend.finish_job runs stop_processes (up to ~5 s of SIGKILL
+        # escalation polling), so it must never run on the Tk main thread.
+        self._finish_job_running = True
+        self.status_var.set(f"Finishing {job_id}…")
+        self._run_bg(
+            lambda: self.backend.finish_job(job_id),
+            lambda _result, error: self._finish_finish_job(job_id, error),
+            name=f"ai-loop-finish-{job_id}",
+            busy_attr="_finish_job_running",
+            label="Finish Job",
+        )
+
+    def _finish_finish_job(self, job_id: str, error: str | None) -> None:
+        self._finish_job_running = False
+        if error is not None:
+            messagebox.showerror("Finish Failed", error)
             return
         self.refresh_all(select_job_id=job_id)
 
@@ -3055,12 +3213,31 @@ class AiLoopGui(tk.Tk):
         job_id = self.selected_job_or_error()
         if not job_id:
             return
+        if self._delete_job_running:
+            messagebox.showinfo("Delete Job", "A delete is already in progress; wait for it to finish.")
+            return
+        conflict = self._exclusive_conflict("job")
+        if conflict is not None:
+            messagebox.showinfo("Delete Job", f"Cannot start Delete Job while {conflict} is running.")
+            return
         if not messagebox.askyesno("Delete Job", f"Delete job record {job_id}? Worktree files are not removed."):
             return
-        try:
-            self.backend.delete_job(job_id)
-        except Exception as exc:
-            messagebox.showerror("Delete Failed", str(exc))
+        # backend.delete_job runs stop_processes (up to ~5 s of SIGKILL
+        # escalation polling), so it must never run on the Tk main thread.
+        self._delete_job_running = True
+        self.status_var.set(f"Deleting {job_id}…")
+        self._run_bg(
+            lambda: self.backend.delete_job(job_id),
+            lambda _result, error: self._finish_delete_job(error),
+            name=f"ai-loop-delete-{job_id}",
+            busy_attr="_delete_job_running",
+            label="Delete Job",
+        )
+
+    def _finish_delete_job(self, error: str | None) -> None:
+        self._delete_job_running = False
+        if error is not None:
+            messagebox.showerror("Delete Failed", error)
             return
         self.selected_job_id = None
         self.refresh_all()
