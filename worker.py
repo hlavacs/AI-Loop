@@ -566,9 +566,16 @@ def process_message(settings, client, group, job_scope, message_id, fields) -> b
             return False
         process_task(settings, client, task_id)
         client.xack(CODEX_TASK_STREAM, group, message_id)
-        if job_scope and is_terminal_job(settings, job_scope):
-            print(f"job {job_scope}: terminal; Codex worker exiting")
-            return True
+        # The message is handled and acked: a failure in the terminal-status
+        # check below must not reach the auto-recovery/record_dead path and
+        # mark a successful run dead. The next loop iteration retries the check.
+        try:
+            if job_scope and is_terminal_job(settings, job_scope):
+                print(f"job {job_scope}: terminal; Codex worker exiting")
+                return True
+        except Exception as check_exc:
+            print(f"warning: terminal-status check failed after ack, retrying next loop: {check_exc}")
+            return False
     except Exception as exc:
         print(f"worker error: {exc}")
         if attempt_auto_recovery(settings, job_id, "worker", repr(exc), fields):

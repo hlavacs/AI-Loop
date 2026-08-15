@@ -59,15 +59,29 @@ def xadd_json(client: redis.Redis, stream: str, field: str, payload: dict[str, A
     return client.xadd(stream, {field: encoded})
 
 
-def claim_pending(client, stream: str, group: str, consumer: str, min_idle_ms: int = 0) -> list[tuple[str, dict]]:
+def claim_pending(client, stream: str, group: str, consumer: str, min_idle_ms: int = 30_000) -> list[tuple[str, dict]]:
+    # Default min_idle_ms of 30 s: a just-crashed job is resumed minutes later,
+    # so its pending entries are comfortably idle by then, while a concurrently
+    # starting duplicate consumer will not steal a freshly delivered message
+    # that another consumer is actively working on.
     claimed: list[tuple[str, dict]] = []
     start = "0-0"
     try:
-        while True:
+        # Hard safety cap against pathological servers that keep advancing the
+        # cursor forever.
+        for _ in range(10_000):
             reply = client.xautoclaim(stream, group, consumer, min_idle_time=min_idle_ms, start_id=start)
             next_start, messages = reply[0], reply[1]
-            claimed.extend((message_id, fields) for message_id, fields in messages if fields is not None)
-            if next_start in ("0-0", "0") or not messages:
+            for message_id, fields in messages:
+                if fields is None:
+                    # Deleted-entry tombstone: ack it so it stops reappearing
+                    # in the pending list on every startup.
+                    client.xack(stream, group, message_id)
+                else:
+                    claimed.append((message_id, fields))
+            # Keep paging while the cursor advances, even if this page had no
+            # usable messages (e.g. it was all tombstones).
+            if next_start in ("0-0", "0") or next_start == start:
                 break
             start = next_start
     except redis.ResponseError as exc:

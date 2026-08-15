@@ -676,6 +676,17 @@ Rules:
 - Return JSON only. Do not use Markdown."""
 
 
+def prompt_safe_job(job: dict[str, Any]) -> dict[str, Any]:
+    """Copy of a job row that is safe to serialize into an LLM prompt.
+
+    Job rows come from `SELECT *` and therefore carry the secret `email_token`
+    column, which must never leak into model input or transcripts.
+    """
+    safe = dict(job)
+    safe.pop("email_token", None)
+    return safe
+
+
 def plan_prompt(job: dict[str, Any]) -> str:
     instruction_files = refreshed_instruction_files(job)
     sizing = job_sizing(job)
@@ -690,7 +701,7 @@ Preserve the job's constraints and acceptance criteria, and keep task acceptance
 {schema_text(sizing)}
 
 Job state:
-{json.dumps(job, indent=2)}
+{json.dumps(prompt_safe_job(job), indent=2)}
 
 Refreshed referenced guidance files:
 {json.dumps(instruction_files, indent=2)}
@@ -701,7 +712,7 @@ Refreshed referenced guidance files:
 
 def review_prompt(job: dict[str, Any], task: dict[str, Any], run: dict[str, Any]) -> str:
     review_state = {
-        "job": job,
+        "job": prompt_safe_job(job),
         "task": task,
         "refreshed_referenced_guidance_files": refreshed_instruction_files(job, task),
         "run": {
@@ -1063,9 +1074,16 @@ def process_message(settings, client, group, job_scope, message_id, fields) -> b
             return False
         handle_request(settings, client, request)
         client.xack(CLAUDE_REQUEST_STREAM, group, message_id)
-        if job_scope and is_terminal_job(settings, job_scope):
-            print(f"job {job_scope}: terminal; Claude controller exiting")
-            return True
+        # The message is handled and acked: a failure in the terminal-status
+        # check below must not reach the auto-recovery/record_dead path and
+        # mark a successful run dead. The next loop iteration retries the check.
+        try:
+            if job_scope and is_terminal_job(settings, job_scope):
+                print(f"job {job_scope}: terminal; Claude controller exiting")
+                return True
+        except Exception as check_exc:
+            print(f"warning: terminal-status check failed after ack, retrying next loop: {check_exc}")
+            return False
     except Exception as exc:
         print(f"controller error: {exc}")
         if attempt_auto_recovery(settings, job_id, "controller", repr(exc), fields):

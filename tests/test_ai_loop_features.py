@@ -260,6 +260,29 @@ class PersistenceAndEstimateTests(unittest.TestCase):
                     self.assertEqual(percent, 6)
                     self.assertIsNotNone(remaining)
 
+    def test_create_job_without_email_token_auto_generates_one(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "loop.sqlite3"
+            db.init_db(path)
+            with db.transaction(path) as conn:
+                db.create_job(
+                    conn,
+                    job_id="J-auto-token",
+                    repo_path=directory,
+                    worktree_path=directory,
+                    branch=None,
+                    base_ref="HEAD",
+                    goal="Test token auto-generation",
+                    constraints=[],
+                    acceptance=[],
+                    test_cmd="true",
+                    max_iterations=10,
+                    use_worktree=False,
+                )
+                job = db.get_job(conn, "J-auto-token")
+            self.assertIsInstance(job["email_token"], str)
+            self.assertGreater(len(job["email_token"]), 0)
+
     def test_decision_schema_requires_progress(self) -> None:
         schema = json.loads(Path("decision.schema.json").read_text(encoding="utf-8"))
         self.assertIn("progress", schema["required"])
@@ -516,6 +539,9 @@ class EmailCommandTests(unittest.TestCase):
                     max_iterations=10,
                     use_worktree=False,
                 )
+                # This test exercises command storage, not token auth: strip the
+                # auto-generated token so the tokenless command is accepted.
+                conn.execute("UPDATE jobs SET email_token = NULL WHERE id = ?", ("J-command",))
             settings = SimpleNamespace(db_path=path, root_dir=Path(directory))
             resumed = apply_email_command(
                 settings,
@@ -638,6 +664,9 @@ class EmailCommandTests(unittest.TestCase):
                     max_iterations=10,
                     use_worktree=False,
                 )
+                # Simulate a legacy row created before token support:
+                # create_job now always auto-generates a token, so remove it.
+                conn.execute("UPDATE jobs SET email_token = NULL WHERE id = ?", ("J-legacy",))
             settings = SimpleNamespace(db_path=path, root_dir=Path(directory))
             resumed = apply_email_command(
                 settings,
@@ -680,6 +709,9 @@ class EmailCommandTests(unittest.TestCase):
                     use_worktree=False,
                 )
                 db.update_job_status(conn, "J-blocked", "human_needed", "Choose a rendering path.")
+                # This test exercises resume-on-command, not token auth: strip
+                # the auto-generated token so the tokenless command is accepted.
+                conn.execute("UPDATE jobs SET email_token = NULL WHERE id = ?", ("J-blocked",))
             resumed = apply_email_command(
                 SimpleNamespace(db_path=path, root_dir=root),
                 "J-blocked",

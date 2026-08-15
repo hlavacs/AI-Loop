@@ -120,6 +120,7 @@ from ai_loop.config import (
     load_settings,
     normalize_controller,
     normalize_worker,
+    sanitized_child_env,
 )
 from ai_loop.progress import estimate_progress
 from ai_loop.planning import (
@@ -661,8 +662,13 @@ class LoopBackend:
         except OSError:
             return False
 
-    def env_for_processes(self, job_id: str, models: ModelDefaults) -> dict[str, str]:
-        env = os.environ.copy()
+    def env_for_processes(
+        self,
+        job_id: str,
+        models: ModelDefaults,
+        base_env: dict[str, str] | None = None,
+    ) -> dict[str, str]:
+        env = dict(base_env) if base_env is not None else os.environ.copy()
         env["AI_LOOP_JOB_ID"] = job_id
         env["AI_LOOP_RUNTIME_DIR"] = str(self.runtime_dir(job_id))
         env["AI_LOOP_LOG_DIR"] = str(self.log_dir(job_id))
@@ -1083,7 +1089,9 @@ class LoopBackend:
         job = details["job"]
         binary = binary.strip() or models.codex_bin or "codex"
         prompt = self.fix_prompt(details)
-        env = self.env_for_processes(job_id, models)
+        # The fix-it binary is an unsandboxed agent working inside the target
+        # worktree; never hand it the GUI's mail credentials.
+        env = self.env_for_processes(job_id, models, base_env=sanitized_child_env())
         env["CODEX_BYPASS_SANDBOX"] = "1"
         if Path(binary).name.startswith("codex") or binary == "codex":
             cmd = [binary, "exec", "--cd", str(job["worktree_path"]), "--dangerously-bypass-approvals-and-sandbox", "-"]
@@ -1620,6 +1628,19 @@ class AiLoopGui(tk.Tk):
             messagebox.showerror("Create Job Failed", str(exc))
             return
         models = self.current_models()
+        # Snapshot every form value at click time so edits made while the
+        # provider-CLI check runs in the background cannot mix into this job.
+        try:
+            repo = Path(self.repo_var.get())
+            test_cmd = self.test_cmd_var.get().strip() or "auto"
+            max_iterations = int(self.max_iterations_var.get())
+            base_ref = self.base_ref_var.get().strip() or "HEAD"
+            use_worktree = not self.no_worktree_var.get()
+            allow_parallel = bool(self.allow_parallel_var.get())
+            granularity = self.granularity_var.get()
+        except Exception as exc:
+            messagebox.showerror("Create Job Failed", str(exc))
+            return
         self._create_job_running = True
         self.status_var.set("Checking AI provider command-line tools…")
 
@@ -1635,6 +1656,13 @@ class AiLoopGui(tk.Tk):
                             worker,
                             controller,
                             models,
+                            repo=repo,
+                            test_cmd=test_cmd,
+                            max_iterations=max_iterations,
+                            base_ref=base_ref,
+                            use_worktree=use_worktree,
+                            allow_parallel=allow_parallel,
+                            granularity=granularity,
                             error=error,
                         ),
                     )
@@ -1649,6 +1677,13 @@ class AiLoopGui(tk.Tk):
                         worker,
                         controller,
                         models,
+                        repo=repo,
+                        test_cmd=test_cmd,
+                        max_iterations=max_iterations,
+                        base_ref=base_ref,
+                        use_worktree=use_worktree,
+                        allow_parallel=allow_parallel,
+                        granularity=granularity,
                         error=None,
                     ),
                 )
@@ -1668,6 +1703,13 @@ class AiLoopGui(tk.Tk):
         controller: str,
         models: ModelDefaults,
         *,
+        repo: Path,
+        test_cmd: str,
+        max_iterations: int,
+        base_ref: str,
+        use_worktree: bool,
+        allow_parallel: bool,
+        granularity: str,
         error: str | None,
     ) -> None:
         self._create_job_running = False
@@ -1676,18 +1718,18 @@ class AiLoopGui(tk.Tk):
             return
         try:
             job_id = self.backend.create_job(
-                repo=Path(self.repo_var.get()),
+                repo=repo,
                 goal=goal,
-                test_cmd=self.test_cmd_var.get().strip() or "auto",
+                test_cmd=test_cmd,
                 constraints=[],
                 acceptance=[],
-                max_iterations=int(self.max_iterations_var.get()),
-                base_ref=self.base_ref_var.get().strip() or "HEAD",
-                use_worktree=not self.no_worktree_var.get(),
-                allow_parallel=self.allow_parallel_var.get(),
+                max_iterations=max_iterations,
+                base_ref=base_ref,
+                use_worktree=use_worktree,
+                allow_parallel=allow_parallel,
                 worker=worker,
                 controller=controller,
-                granularity=self.granularity_var.get(),
+                granularity=granularity,
                 models=models,
             )
         except Exception as exc:
@@ -1719,6 +1761,14 @@ class AiLoopGui(tk.Tk):
             self._refresh_all_body(select_job_id)
         finally:
             self._refresh_all_active = False
+            if self._refreshing_jobs:
+                # _refresh_all_body normally clears the flag via after_idle; if
+                # it raised before scheduling that reset, job-row clicks would
+                # stay ignored forever. Scheduling a second reset is harmless.
+                try:
+                    self.after_idle(lambda: setattr(self, "_refreshing_jobs", False))
+                except (tk.TclError, RuntimeError):
+                    self._refreshing_jobs = False
 
     def _refresh_all_body(self, select_job_id: str | None = None) -> None:
         try:
@@ -2350,25 +2400,31 @@ class AiLoopGui(tk.Tk):
             try:
                 result = self.backend.recover_provider_auth(job_id, requirement, models)
             except Exception as exc:
+                try:
+                    self.after(
+                        0,
+                        lambda error=str(exc): self.finish_auth_recovery(
+                            job_id,
+                            requirement,
+                            result=None,
+                            error=error,
+                        ),
+                    )
+                except (tk.TclError, RuntimeError):
+                    pass
+                return
+            try:
                 self.after(
                     0,
-                    lambda error=str(exc): self.finish_auth_recovery(
+                    lambda: self.finish_auth_recovery(
                         job_id,
                         requirement,
-                        result=None,
-                        error=error,
+                        result=result,
+                        error=None,
                     ),
                 )
-                return
-            self.after(
-                0,
-                lambda: self.finish_auth_recovery(
-                    job_id,
-                    requirement,
-                    result=result,
-                    error=None,
-                ),
-            )
+            except (tk.TclError, RuntimeError):
+                pass
 
         threading.Thread(
             target=recover,

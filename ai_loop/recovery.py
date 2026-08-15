@@ -9,6 +9,7 @@ from pathlib import Path
 from typing import Any
 
 from ai_loop import db
+from ai_loop.config import sanitized_child_env
 
 
 def _tail(path: Path, max_bytes: int = 20000) -> str:
@@ -69,6 +70,8 @@ Task:
             text=True,
             capture_output=True,
             timeout=7200,
+            # The recovery agent runs unsandboxed; never hand it mail passwords.
+            env=sanitized_child_env(),
         )
         output = (proc.stdout + "\n" + proc.stderr).strip()
         with db.transaction(settings.db_path) as conn:

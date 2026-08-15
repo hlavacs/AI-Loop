@@ -46,11 +46,10 @@ def verify_command_token(command: str, email_token: str | None) -> str | None:
 
 def apply_email_command(settings: Any, job_id: str, incoming: EmailCommand) -> bool:
     """Apply a command; return True when a replacement watcher was launched."""
-    command = incoming.command[:20000]
     with db.transaction(settings.db_path) as conn:
         job = db.get_job(conn, job_id)
         status = str(job["status"])
-        verified = verify_command_token(command, job.get("email_token"))
+        verified = verify_command_token(incoming.command, job.get("email_token"))
         if verified is None:
             db.add_event(
                 conn,
@@ -66,7 +65,22 @@ def apply_email_command(settings: Any, job_id: str, incoming: EmailCommand) -> b
             )
             print(f"job {job_id}: rejected emailed command without a valid command token")
             return False
-        command = verified
+        if not verified.strip():
+            db.add_event(
+                conn,
+                job_id=job_id,
+                kind="email_command_rejected",
+                payload={
+                    "message_id": incoming.message_id,
+                    "sender": incoming.sender,
+                    "subject": incoming.subject,
+                    "status": status,
+                    "reason": "empty command after token removal",
+                },
+            )
+            print(f"job {job_id}: rejected emailed reply that contained only the command token")
+            return False
+        command = verified[:20000]
         db.add_event(
             conn,
             job_id=job_id,
@@ -166,6 +180,8 @@ def reply_command(message: Message) -> str:
         if re.match(r"^On .+wrote:\s*$", stripped, flags=re.IGNORECASE):
             break
         if re.match(r"^-{2,}\s*(Original Message|Forwarded message)\s*-{2,}$", stripped, flags=re.IGNORECASE):
+            break
+        if re.match(r"^_{5,}\s*$", stripped):
             break
         lines.append(line.rstrip())
 

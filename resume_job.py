@@ -1,7 +1,66 @@
 from __future__ import annotations
 
 import argparse
+import os
+import signal
 import sys
+import time
+
+
+def _pid_alive(pid: int) -> bool:
+    try:
+        os.kill(pid, 0)
+    except (ProcessLookupError, ValueError):
+        return False
+    except PermissionError:
+        # The process exists but belongs to someone else; treat it as alive.
+        return True
+    except OSError:
+        return False
+    return True
+
+
+def terminate_previous_job_processes(root_dir, job_id: str) -> None:
+    """Kill the job's previous controller/worker/watcher trio before relaunch.
+
+    Without this, resuming leaves the old trio running: two consumers per
+    stream fight over messages and the old processes keep mutating job state.
+    Every per-PID step is exception-guarded so a stale or garbage PID file can
+    never abort the resume.
+    """
+    runtime_dir = root_dir / "run" / "jobs" / job_id
+    terminated: list[tuple[str, int]] = []
+    for name in ("controller", "worker", "watcher"):
+        pid_file = runtime_dir / f"{name}.pid"
+        try:
+            pid = int(pid_file.read_text(encoding="utf-8").strip())
+        except (OSError, ValueError):
+            continue
+        try:
+            if not _pid_alive(pid):
+                continue
+            os.kill(pid, signal.SIGTERM)
+            terminated.append((name, pid))
+        except (ProcessLookupError, PermissionError, ValueError, OSError):
+            continue
+    if not terminated:
+        return
+    deadline = time.monotonic() + 5.0
+    survivors = list(terminated)
+    while survivors and time.monotonic() < deadline:
+        time.sleep(0.2)
+        survivors = [(name, pid) for name, pid in survivors if _pid_alive(pid)]
+    # SIGKILL does not exist on Windows; fall back to a second SIGTERM there.
+    force_signal = getattr(signal, "SIGKILL", signal.SIGTERM)
+    for name, pid in survivors:
+        try:
+            os.kill(pid, force_signal)
+        except (ProcessLookupError, PermissionError, ValueError, OSError):
+            pass
+    forced = {pid for _name, pid in survivors}
+    for name, pid in terminated:
+        how = "SIGKILL" if pid in forced else "SIGTERM"
+        print(f"terminated previous {name} process (pid {pid}) with {how}")
 
 
 def parse_args() -> argparse.Namespace:
@@ -80,6 +139,7 @@ def main() -> int:
 
         client = redis_client(settings.redis_url)
         prepare_job_consumer_groups(client, args.job_id)
+        terminate_previous_job_processes(settings.root_dir, args.job_id)
         job_processes = launch_job_processes(settings.root_dir, args.job_id)
         with db.transaction(settings.db_path) as conn:
             db.add_event(

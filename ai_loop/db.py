@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import secrets
 import sqlite3
 from contextlib import contextmanager
 from datetime import datetime, timezone
@@ -212,6 +213,10 @@ def create_job(
     plan: list[str] | None = None,
     email_token: str | None = None,
 ) -> None:
+    # Every new job gets an email command token, regardless of which entry
+    # point (CLI, GUI, tests) created it. Callers may still pass their own.
+    if not email_token:
+        email_token = secrets.token_urlsafe(9)
     now = utc_now()
     conn.execute(
         """
