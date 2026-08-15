@@ -40,6 +40,54 @@ def _pid_alive(pid: int) -> bool:
     return True
 
 
+def _pid_zombie(pid: int) -> bool:
+    """Best-effort: True only if ``ps`` positively reports a zombie leader.
+
+    A zombie group leader is dead for polling purposes (it will never react
+    to another signal), but os.kill(pid, 0) still succeeds on it, so without
+    this check it burns the whole 5 s SIGTERM grace period. Any ps failure,
+    timeout, or empty output means "not a zombie": this check must never
+    abort or block a resume.
+    """
+    try:
+        result = subprocess.run(
+            ["ps", "-p", str(pid), "-o", "state="],
+            capture_output=True,
+            text=True,
+            timeout=5,
+        )
+        output = (result.stdout or "").strip()
+    except Exception:
+        return False
+    return output.startswith("Z")
+
+
+def _group_alive(pid: int) -> bool:
+    """True while any process in ``pid``'s process group is still alive.
+
+    Survivor polling must track the whole group, not just the leader: a
+    SIGTERM-trapping CLI child keeps the group alive after the leader exits,
+    and keying liveness to the leader alone would skip the SIGKILL escalation
+    that the child needs. A zombie leader counts as dead for polling. Falls
+    back to _pid_alive where killpg is unavailable (Windows).
+    """
+    try:
+        os.killpg(pid, 0)
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        # The group exists but belongs to someone else; treat it as alive.
+        return True
+    except (AttributeError, OSError):
+        return _pid_alive(pid)
+    # killpg succeeds against a group whose only member is the zombie leader;
+    # treat a zombie leader as dead so polling does not burn the full grace
+    # period waiting for a corpse that can never react to another signal.
+    if _pid_zombie(pid):
+        return False
+    return True
+
+
 def _pid_identity_ok(pid: int) -> bool:
     """Best-effort guard against PID reuse before signalling a stored PID.
 
@@ -117,7 +165,10 @@ def terminate_previous_job_processes(root_dir, job_id: str) -> None:
         survivors = list(terminated)
         while survivors and time.monotonic() < deadline:
             time.sleep(0.2)
-            survivors = [(name, pid) for name, pid in survivors if _pid_alive(pid)]
+            # The whole process GROUP must be gone, not just the leader: a
+            # SIGTERM-trapping CLI child keeps editing the worktree after the
+            # leader exits and still needs the SIGKILL escalation below.
+            survivors = [(name, pid) for name, pid in survivors if _group_alive(pid)]
         # SIGKILL does not exist on Windows; fall back to a second SIGTERM there.
         force_signal = getattr(signal, "SIGKILL", signal.SIGTERM)
         for name, pid in survivors:

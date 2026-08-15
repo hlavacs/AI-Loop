@@ -103,6 +103,8 @@ def bootstrap_python_dependencies() -> None:
 
 bootstrap_python_dependencies()
 
+import redis as redis_module
+
 from redis.exceptions import ConnectionError, TimeoutError
 
 from ai_loop import db
@@ -257,6 +259,13 @@ class LoopBackend:
     def __init__(self) -> None:
         self.settings = load_settings()
         db.init_db(self.settings.db_path)
+        # Cached short-timeout Redis client plus the last known reachability
+        # sample. The Tk main thread must only ever read the sample; the real
+        # network PING happens in background threads (see redis_running).
+        self._redis_client: redis_module.Redis | None = None
+        self._redis_lock = threading.Lock()
+        self._redis_last_ok = False
+        self._redis_last_checked = 0.0
 
     @property
     def root_dir(self) -> Path:
@@ -440,12 +449,45 @@ class LoopBackend:
         )
         return result
 
+    def _cached_redis_client(self) -> redis_module.Redis:
+        with self._redis_lock:
+            if self._redis_client is None:
+                # One client (and connection pool) per backend instead of a new
+                # pool per call; short timeouts so an unreachable-but-routable
+                # Redis cannot stall a caller for the default 5-10 seconds.
+                self._redis_client = redis_module.Redis.from_url(
+                    self.settings.redis_url,
+                    decode_responses=True,
+                    socket_connect_timeout=1,
+                    socket_timeout=1,
+                )
+            return self._redis_client
+
+    def _invalidate_redis_client(self) -> None:
+        with self._redis_lock:
+            client = self._redis_client
+            self._redis_client = None
+        if client is not None:
+            try:
+                client.close()
+            except Exception:
+                pass
+
     def redis_running(self) -> bool:
+        """PING Redis (blocks up to ~2 s). Call from a background thread only."""
         try:
-            redis_client(self.settings.redis_url).ping()
-            return True
+            self._cached_redis_client().ping()
+            ok = True
         except Exception:
-            return False
+            self._invalidate_redis_client()
+            ok = False
+        self._redis_last_ok = ok
+        self._redis_last_checked = time.time()
+        return ok
+
+    def redis_sample(self) -> tuple[bool, float]:
+        """Last known Redis reachability without touching the network."""
+        return self._redis_last_ok, self._redis_last_checked
 
     def start_redis_server(self) -> int:
         parsed = urlparse(self.settings.redis_url)
@@ -607,7 +649,9 @@ class LoopBackend:
                 "decisions": decisions,
                 "events": events,
                 "processes": self.process_status(job_id),
-                "redis_running": self.redis_running(),
+                # Cached sample only: job_details runs on the Tk main thread
+                # (refresh tick) and must never touch the network.
+                "redis_running": self._redis_last_ok,
                 "task_count": task_count,
                 "run_count": run_count,
                 "percent": percent,
@@ -1171,6 +1215,11 @@ class AiLoopGui(tk.Tk):
         self._refresh_all_active = False
         self._fix_job_running = False
         self._create_job_running = False
+        self._resume_job_running = False
+        self._redis_action_running = False
+        self._maintenance_running = False
+        self._hibernation_running = False
+        self._redis_sampler_inflight = False
         self.watch_job_id: str | None = None
         self.last_status_by_job: dict[str, str] = {}
         self.alerted_human_needed: set[str] = set()
@@ -1180,9 +1229,57 @@ class AiLoopGui(tk.Tk):
         self.status_var = tk.StringVar(value=f"DB: {self.backend.settings.db_path}")
         self._build_ui()
         self.install_default_help(self)
+        self._sample_redis_status()
         self.refresh_all()
         self._start_mail_access_check()
         self.after(1500, self._auto_refresh_tick)
+
+    def _run_bg(
+        self,
+        work: Any,
+        on_done: Any,
+        *,
+        name: str = "ai-loop-bg",
+        busy_attr: str | None = None,
+    ) -> None:
+        """Run work() on a daemon thread and marshal (result, error) back to
+        on_done on the Tk main thread. on_done must reset the busy flag on all
+        paths; the direct reset here only covers a destroyed Tk loop."""
+
+        def runner() -> None:
+            result: Any = None
+            error: str | None = None
+            try:
+                result = work()
+            except Exception as exc:
+                error = str(exc) or repr(exc)
+            try:
+                self.after(0, lambda: on_done(result, error))
+            except (tk.TclError, RuntimeError):
+                if busy_attr is not None:
+                    setattr(self, busy_attr, False)
+
+        threading.Thread(target=runner, name=name, daemon=True).start()
+
+    def _sample_redis_status(self) -> None:
+        # Ping Redis in a background thread at most once every 3 seconds and
+        # store the result in the backend; the refresh tick and job_details
+        # read that cached sample and never touch the network themselves.
+        if not self._redis_sampler_inflight:
+            self._redis_sampler_inflight = True
+
+            def sample() -> None:
+                try:
+                    self.backend.redis_running()
+                finally:
+                    # Plain attribute write, no Tk access: safe from the thread.
+                    self._redis_sampler_inflight = False
+
+            threading.Thread(target=sample, name="ai-loop-redis-sample", daemon=True).start()
+        try:
+            self.after(3000, self._sample_redis_status)
+        except tk.TclError:
+            pass
 
     def _start_mail_access_check(self) -> None:
         def check() -> None:
@@ -1712,12 +1809,17 @@ class AiLoopGui(tk.Tk):
         granularity: str,
         error: str | None,
     ) -> None:
-        self._create_job_running = False
         if error is not None:
+            self._create_job_running = False
             messagebox.showerror("Create Job Failed", error)
             return
-        try:
-            job_id = self.backend.create_job(
+        # Keep the busy flag set: backend.create_job (pre-job git commit,
+        # worktree add, checkout overlay copy, process launch, notification
+        # email) can take a long time on big repos, so it runs in a second
+        # background thread. All values were snapshotted at click time.
+        self.status_var.set("Creating job (snapshot commit, worktree, processes)…")
+        self._run_bg(
+            lambda: self.backend.create_job(
                 repo=repo,
                 goal=goal,
                 test_cmd=test_cmd,
@@ -1731,9 +1833,16 @@ class AiLoopGui(tk.Tk):
                 controller=controller,
                 granularity=granularity,
                 models=models,
-            )
-        except Exception as exc:
-            messagebox.showerror("Create Job Failed", str(exc))
+            ),
+            self._finish_create_job_done,
+            name="ai-loop-create-job",
+            busy_attr="_create_job_running",
+        )
+
+    def _finish_create_job_done(self, job_id: str | None, error: str | None) -> None:
+        self._create_job_running = False
+        if error is not None:
+            messagebox.showerror("Create Job Failed", error)
             return
         self.watch_job_id = job_id
         self.refresh_all(select_job_id=job_id)
@@ -1896,7 +2005,8 @@ class AiLoopGui(tk.Tk):
                         running_processes += 1
                     elif info["pid"]:
                         stale_processes += 1
-            redis_state = "online" if self.backend.redis_running() else "offline"
+            redis_ok, redis_checked = self.backend.redis_sample()
+            redis_state = "checking…" if not redis_checked else ("online" if redis_ok else "offline")
             if not self._mail_check_done:
                 mailbox_state = "checking…"
             elif not self.mail_access_status.enabled:
@@ -1916,11 +2026,24 @@ class AiLoopGui(tk.Tk):
             self.status_var.set(f"System status unavailable: {exc}")
 
     def start_redis(self) -> None:
-        try:
-            pid = self.backend.start_redis_server()
-        except Exception as exc:
-            messagebox.showerror("Start Redis Failed", str(exc))
+        if self._redis_action_running:
+            messagebox.showinfo("Start Redis", "Redis is already being started; wait for it to finish.")
             return
+        self._redis_action_running = True
+        self.status_var.set("Starting Redis server…")
+        self._run_bg(
+            self.backend.start_redis_server,
+            self._finish_start_redis,
+            name="ai-loop-start-redis",
+            busy_attr="_redis_action_running",
+        )
+
+    def _finish_start_redis(self, pid: Any, error: str | None) -> None:
+        self._redis_action_running = False
+        if error is not None:
+            messagebox.showerror("Start Redis Failed", error)
+            return
+        self.status_var.set(f"Redis server is running (pid {pid})")
         self.refresh_all()
 
     def _auto_refresh_tick(self) -> None:
@@ -2552,18 +2675,38 @@ class AiLoopGui(tk.Tk):
         job_id = self.selected_job_or_error()
         if not job_id:
             return
-        try:
-            self.backend.resume_job(
+        if self._resume_job_running:
+            messagebox.showinfo("Resume", "A resume is already in progress; wait for it to finish.")
+            return
+        # Snapshot all Tk values on the main thread; backend.resume_job may
+        # auto-start Redis (up to ~10 s of polling), so it runs in a thread.
+        worker = self.worker_var.get()
+        controller = self.controller_var.get()
+        granularity = self.granularity_var.get()
+        models = self.current_models()
+        extra_constraint = self.extra_constraint_var.get()
+        extra_acceptance = self.extra_acceptance_var.get()
+        self._resume_job_running = True
+        self.status_var.set(f"Resuming {job_id}…")
+        self._run_bg(
+            lambda: self.backend.resume_job(
                 job_id,
-                worker=self.worker_var.get(),
-                controller=self.controller_var.get(),
-                granularity=self.granularity_var.get(),
-                models=self.current_models(),
-                extra_constraint=self.extra_constraint_var.get(),
-                extra_acceptance=self.extra_acceptance_var.get(),
-            )
-        except Exception as exc:
-            messagebox.showerror("Resume Failed", str(exc))
+                worker=worker,
+                controller=controller,
+                granularity=granularity,
+                models=models,
+                extra_constraint=extra_constraint,
+                extra_acceptance=extra_acceptance,
+            ),
+            lambda _result, error: self._finish_resume_job(job_id, error),
+            name=f"ai-loop-resume-{job_id}",
+            busy_attr="_resume_job_running",
+        )
+
+    def _finish_resume_job(self, job_id: str, error: str | None) -> None:
+        self._resume_job_running = False
+        if error is not None:
+            messagebox.showerror("Resume Failed", error)
             return
         self.watch_job_id = job_id
         self.refresh_all(select_job_id=job_id)
@@ -2688,29 +2831,57 @@ class AiLoopGui(tk.Tk):
         self.selected_job_id = None
         self.refresh_all()
 
+    def _maintenance_busy(self, title: str) -> bool:
+        if self._maintenance_running:
+            messagebox.showinfo(title, "Another cleanup or reset is still running; wait for it to finish.")
+            return True
+        return False
+
     def reset_loop(self) -> None:
+        if self._maintenance_busy("Reset Loop"):
+            return
         if not messagebox.askyesno("Reset Loop", "Stop all job processes and clear all ai-loop database records?"):
             return
-        try:
-            self.backend.reset_loop()
-        except Exception as exc:
-            messagebox.showerror("Reset Failed", str(exc))
+        self._maintenance_running = True
+        self.status_var.set("Resetting ai-loop database…")
+        self._run_bg(
+            self.backend.reset_loop,
+            lambda _result, error: self._finish_reset_loop(error),
+            name="ai-loop-reset-db",
+            busy_attr="_maintenance_running",
+        )
+
+    def _finish_reset_loop(self, error: str | None) -> None:
+        self._maintenance_running = False
+        if error is not None:
+            messagebox.showerror("Reset Failed", error)
             return
         self.selected_job_id = None
         self.watch_job_id = None
         self.refresh_all()
 
     def clear_worktrees(self) -> None:
+        if self._maintenance_busy("Clear Worktrees"):
+            return
         runs_dir = self.backend.settings.runs_dir
         if not messagebox.askyesno(
             "Clear Worktrees",
             f"Remove all registered ai-loop worktrees and leftover folders under:\n\n{runs_dir}\n\nDatabase records are not deleted.",
         ):
             return
-        try:
-            summary = self.backend.remove_ai_worktrees(force=True)
-        except Exception as exc:
-            messagebox.showerror("Clear Worktrees Failed", str(exc))
+        self._maintenance_running = True
+        self.status_var.set("Removing ai-loop worktrees…")
+        self._run_bg(
+            lambda: self.backend.remove_ai_worktrees(force=True),
+            self._finish_clear_worktrees,
+            name="ai-loop-clear-worktrees",
+            busy_attr="_maintenance_running",
+        )
+
+    def _finish_clear_worktrees(self, summary: dict[str, Any] | None, error: str | None) -> None:
+        self._maintenance_running = False
+        if error is not None:
+            messagebox.showerror("Clear Worktrees Failed", error)
             return
         removed = len(summary["removed_worktrees"])
         leftovers = len(summary["leftover_folders"])
@@ -2722,28 +2893,52 @@ class AiLoopGui(tk.Tk):
         self.refresh_all()
 
     def full_reset(self) -> None:
+        if self._maintenance_busy("Full Reset"):
+            return
+        # Confirmation stays on the main thread BEFORE the worker thread runs:
+        # full_reset deletes worktrees and database rows.
         if not messagebox.askyesno(
             "Full Reset",
             "Stop all job processes, remove ai-loop worktrees, and clear all database records?",
         ):
             return
-        try:
-            summary = self.backend.full_reset()
-        except Exception as exc:
-            messagebox.showerror("Full Reset Failed", str(exc))
+        self._maintenance_running = True
+        self.status_var.set("Running full reset…")
+        self._run_bg(
+            self.backend.full_reset,
+            self._finish_full_reset,
+            name="ai-loop-full-reset",
+            busy_attr="_maintenance_running",
+        )
+
+    def _finish_full_reset(self, summary: dict[str, Any] | None, error: str | None) -> None:
+        self._maintenance_running = False
+        if error is not None:
+            messagebox.showerror("Full Reset Failed", error)
             return
-        worktrees = summary["worktrees"]
+        worktrees = summary.get("worktrees", {})
+        messagebox.showinfo(
+            "Full Reset Complete",
+            f"Stopped jobs: {len(summary.get('stopped_jobs', []))}\n"
+            f"Removed worktrees: {len(worktrees.get('removed_worktrees', []))}\n"
+            f"Deleted leftover folders: {len(worktrees.get('leftover_folders', []))}\n"
+            "All database records were cleared.",
+        )
         self.selected_job_id = None
         self.watch_job_id = None
         self.refresh_all()
 
     def hibernation_status_text(self) -> str:
+        """Blocking (runs pmset); call from a background thread."""
         if platform.system() != "Darwin":
             return "Hibernation control works on macOS only."
         pmset = shutil.which("pmset")
         if pmset is None:
             return "pmset was not found."
-        result = subprocess.run([pmset, "-g"], text=True, capture_output=True, check=False)
+        try:
+            result = subprocess.run([pmset, "-g"], text=True, capture_output=True, check=False, timeout=10)
+        except subprocess.TimeoutExpired:
+            return "pmset -g did not answer within 10 seconds."
         if result.returncode != 0:
             return result.stderr.strip() or result.stdout.strip() or "pmset failed."
         mode = "unavailable"
@@ -2770,23 +2965,59 @@ class AiLoopGui(tk.Tk):
         if pmset is None:
             messagebox.showerror("Missing pmset", "pmset was not found.", parent=parent)
             return
+        if self._hibernation_running:
+            messagebox.showinfo("Hibernation", "A hibernation change is already running; wait for it to finish.", parent=parent)
+            return
         if not messagebox.askyesno(
             "Confirm Hibernation Change",
-            f"This will run:\n\nsudo pmset -a hibernatemode {mode}\n\n"
+            f"This will run:\n\nsudo -n pmset -a hibernatemode {mode}\n\n"
             f"Mode {mode}: {self.hibernation_mode_description(mode)}\n\nContinue?",
             parent=parent,
         ):
             return
-        result = subprocess.run(
-            ["sudo", pmset, "-a", "hibernatemode", str(mode)],
-            text=True,
-            capture_output=True,
-            check=False,
+        self._hibernation_running = True
+
+        def apply_mode() -> None:
+            # sudo -n: never prompt for a password. A password prompt would
+            # otherwise block this call (and, before, the whole GUI) forever.
+            try:
+                result = subprocess.run(
+                    ["sudo", "-n", pmset, "-a", "hibernatemode", str(mode)],
+                    text=True,
+                    capture_output=True,
+                    check=False,
+                    timeout=10,
+                )
+            except subprocess.TimeoutExpired:
+                raise RuntimeError("sudo pmset did not finish within 10 seconds.")
+            if result.returncode != 0:
+                detail = result.stderr.strip() or result.stdout.strip() or f"sudo pmset exited with status {result.returncode}"
+                if "password" in detail.lower():
+                    detail += (
+                        "\n\nsudo needs a password, which the GUI cannot enter. "
+                        "Run ai_hibernation.bash from a terminal instead."
+                    )
+                raise RuntimeError(detail)
+
+        self._run_bg(
+            apply_mode,
+            lambda _result, error: self._finish_set_hibernation(parent, error),
+            name="ai-loop-hibernation",
+            busy_attr="_hibernation_running",
         )
-        if result.returncode != 0:
-            messagebox.showerror("Hibernation Change Failed", result.stderr.strip() or result.stdout.strip(), parent=parent)
+
+    def _finish_set_hibernation(self, parent: tk.Toplevel, error: str | None) -> None:
+        self._hibernation_running = False
+        dialog_parent: tk.Misc = self
+        try:
+            if parent.winfo_exists():
+                dialog_parent = parent
+        except tk.TclError:
+            pass
+        if error is not None:
+            messagebox.showerror("Hibernation Change Failed", error, parent=dialog_parent)
             return
-        self.open_hibernation_window(parent)
+        self.open_hibernation_window(parent if dialog_parent is parent else None)
         self.refresh_all()
 
     def open_hibernation_window(self, existing: tk.Toplevel | None = None) -> None:
@@ -2807,8 +3038,24 @@ class AiLoopGui(tk.Tk):
             "3: enabled (default portable mode)\n"
             "25: enabled (deep hibernation mode)"
         )
-        text.insert("1.0", self.hibernation_status_text() + mode_help)
+        text.insert("1.0", "Loading hibernation status…" + mode_help)
         text.configure(state="disabled")
+
+        def show_status(status: str | None, error: str | None) -> None:
+            content = (status if error is None else f"Could not read hibernation status: {error}") + mode_help
+            try:
+                if not text.winfo_exists():
+                    return
+                text.configure(state="normal")
+                text.delete("1.0", "end")
+                text.insert("1.0", content)
+                text.configure(state="disabled")
+            except tk.TclError:
+                pass
+
+        # pmset runs in a background thread so opening/refreshing this window
+        # never blocks the GUI.
+        self._run_bg(self.hibernation_status_text, show_status, name="ai-loop-hibernation-status")
         controls = ttk.Frame(window, padding=(10, 0, 10, 10))
         controls.grid(row=1, column=0, sticky="ew")
         selected_mode = tk.StringVar(value="3")

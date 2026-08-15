@@ -630,9 +630,13 @@ def main() -> int:
                 print(f"job {job_scope}: terminal; Codex worker exiting")
                 return 0
             # Startup-only reclaim misses messages delivered <30 s before a
-            # hard kill; retry roughly once a minute while idle.
+            # hard kill; retry after ~12 consecutive empty reads while idle.
+            # Only when job_scope is set: scoped per-job groups have exactly
+            # one consumer, so reclaim is safe; in unscoped mode the group is
+            # shared across hosts and reclaim would steal in-flight tasks
+            # from live remote consumers.
             idle_reads += 1
-            if idle_reads >= 12:
+            if job_scope and idle_reads >= 12:
                 idle_reads = 0
                 pending = claim_pending(client, CODEX_TASK_STREAM, group, consumer)
                 if pending:
@@ -642,6 +646,7 @@ def main() -> int:
                         return 0
             continue
 
+        idle_reads = 0
         _, entries = messages[0]
         for message_id, fields in entries:
             if process_message(settings, client, group, job_scope, message_id, fields):

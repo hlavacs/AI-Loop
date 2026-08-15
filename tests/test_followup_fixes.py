@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import os
+import signal
 import subprocess
 import tempfile
 import unittest
@@ -246,6 +247,38 @@ class TerminatePidValidationTests(unittest.TestCase):
         finally:
             sleeper.kill()
             sleeper.wait()
+
+
+class GroupAliveTests(unittest.TestCase):
+    def test_dead_pid_is_not_alive_and_own_process_is(self) -> None:
+        proc = subprocess.Popen(["sleep", "0.05"], start_new_session=True)
+        proc.wait()
+        self.assertFalse(resume_job._group_alive(proc.pid))
+        # Under some launchers the test process is not its own group leader;
+        # probe whichever of pid/pgid names our (definitely alive) group.
+        own = os.getpid() if os.getpgid(0) == os.getpid() else os.getpgid(0)
+        self.assertTrue(resume_job._group_alive(own))
+
+    @unittest.skipUnless(hasattr(os, "killpg"), "os.killpg not available")
+    def test_session_leader_group_alive_then_dead_after_killpg(self) -> None:
+        try:
+            proc = subprocess.Popen(["sleep", "60"], start_new_session=True)
+        except (AttributeError, OSError) as exc:
+            self.skipTest(f"cannot spawn session leader: {exc}")
+        try:
+            self.assertTrue(resume_job._group_alive(proc.pid))
+            try:
+                os.killpg(proc.pid, signal.SIGKILL)
+            except AttributeError:
+                self.skipTest("os.killpg not available")
+            proc.wait()
+            self.assertFalse(resume_job._group_alive(proc.pid))
+        finally:
+            try:
+                proc.kill()
+            except OSError:
+                pass
+            proc.wait()
 
 
 class ClaimPendingTombstoneTests(unittest.TestCase):
