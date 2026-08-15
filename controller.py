@@ -1122,6 +1122,7 @@ def main() -> int:
         if process_message(settings, client, group, job_scope, message_id, fields):
             return 0
 
+    idle_reads = 0
     while True:
         try:
             messages = read_group(client, group, consumer, CLAUDE_REQUEST_STREAM)
@@ -1134,6 +1135,17 @@ def main() -> int:
             if job_scope and is_terminal_job(settings, job_scope):
                 print(f"job {job_scope}: terminal; Claude controller exiting")
                 return 0
+            # Startup-only reclaim misses messages delivered <30 s before a
+            # hard kill; retry roughly once a minute while idle.
+            idle_reads += 1
+            if idle_reads >= 12:
+                idle_reads = 0
+                pending = claim_pending(client, CLAUDE_REQUEST_STREAM, group, consumer)
+                if pending:
+                    print(f"reclaimed {len(pending)} pending message(s)")
+                for message_id, fields in pending:
+                    if process_message(settings, client, group, job_scope, message_id, fields):
+                        return 0
             continue
 
         _, entries = messages[0]

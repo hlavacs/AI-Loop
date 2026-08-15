@@ -1,10 +1,30 @@
 from __future__ import annotations
 
 import argparse
+import errno
 import os
 import signal
+import subprocess
 import sys
 import time
+
+
+def safe_print(*args, **kwargs) -> None:
+    """Print, but never die on a closed pipe.
+
+    resume_job is often launched by the very watcher it is about to
+    terminate, with stdout/stderr captured through a pipe. When that parent
+    dies, the pipe closes and (with PYTHONUNBUFFERED=1) an ordinary print
+    raises BrokenPipeError, aborting the resume between the kill and the
+    relaunch. Output is best-effort; the resume itself must always proceed.
+    """
+    try:
+        print(*args, **kwargs)
+    except BrokenPipeError:
+        pass
+    except OSError as exc:
+        if exc.errno != errno.EPIPE:
+            raise
 
 
 def _pid_alive(pid: int) -> bool:
@@ -20,13 +40,53 @@ def _pid_alive(pid: int) -> bool:
     return True
 
 
+def _pid_identity_ok(pid: int) -> bool:
+    """Best-effort guard against PID reuse before signalling a stored PID.
+
+    Returns False only when ``ps`` positively reports a command line that
+    looks unrelated to the AI-Loop trio. Any ps failure, timeout, or empty
+    output returns True: this check must never abort or block a resume.
+    """
+    try:
+        result = subprocess.run(
+            ["ps", "-p", str(pid), "-o", "command="],
+            capture_output=True,
+            text=True,
+            timeout=5,
+        )
+        output = (result.stdout or "").strip()
+    except Exception:
+        return True
+    if not output:
+        return True
+    return any(marker in output for marker in ("controller.py", "worker.py", "watcher.py", "python"))
+
+
+def _signal_process(pid: int, sig: int) -> None:
+    """Signal the whole process group, falling back to the single PID.
+
+    The trio processes are started with start_new_session=True, so each is a
+    session (and process-group) leader: killpg also reaches CLI children
+    (codex/claude subprocesses) that would otherwise survive and keep editing
+    the worktree. AttributeError covers Windows, where os.killpg is absent.
+    """
+    try:
+        os.killpg(pid, sig)
+        return
+    except (ProcessLookupError, PermissionError, OSError, AttributeError):
+        pass
+    os.kill(pid, sig)
+
+
 def terminate_previous_job_processes(root_dir, job_id: str) -> None:
     """Kill the job's previous controller/worker/watcher trio before relaunch.
 
     Without this, resuming leaves the old trio running: two consumers per
     stream fight over messages and the old processes keep mutating job state.
     Every per-PID step is exception-guarded so a stale or garbage PID file can
-    never abort the resume.
+    never abort the resume. The resume's own process and its parent are never
+    signalled: when the watcher itself launches the resume, killing the parent
+    would break the output pipe and abort the resume before the relaunch.
     """
     runtime_dir = root_dir / "run" / "jobs" / job_id
     terminated: list[tuple[str, int]] = []
@@ -36,31 +96,46 @@ def terminate_previous_job_processes(root_dir, job_id: str) -> None:
             pid = int(pid_file.read_text(encoding="utf-8").strip())
         except (OSError, ValueError):
             continue
+        if pid <= 1:
+            safe_print(f"skipped stale {name} pid file (pid {pid} is not a signallable process id)")
+            continue
+        if pid in (os.getpid(), os.getppid()):
+            safe_print(f"skipped {name} process (pid {pid}): it is the resume's own/parent process")
+            continue
         try:
             if not _pid_alive(pid):
                 continue
-            os.kill(pid, signal.SIGTERM)
+            if not _pid_identity_ok(pid):
+                safe_print(f"skipped {name} process (pid {pid}): PID reused by another process")
+                continue
+            _signal_process(pid, signal.SIGTERM)
             terminated.append((name, pid))
         except (ProcessLookupError, PermissionError, ValueError, OSError):
             continue
-    if not terminated:
-        return
-    deadline = time.monotonic() + 5.0
-    survivors = list(terminated)
-    while survivors and time.monotonic() < deadline:
-        time.sleep(0.2)
-        survivors = [(name, pid) for name, pid in survivors if _pid_alive(pid)]
-    # SIGKILL does not exist on Windows; fall back to a second SIGTERM there.
-    force_signal = getattr(signal, "SIGKILL", signal.SIGTERM)
-    for name, pid in survivors:
+    if terminated:
+        deadline = time.monotonic() + 5.0
+        survivors = list(terminated)
+        while survivors and time.monotonic() < deadline:
+            time.sleep(0.2)
+            survivors = [(name, pid) for name, pid in survivors if _pid_alive(pid)]
+        # SIGKILL does not exist on Windows; fall back to a second SIGTERM there.
+        force_signal = getattr(signal, "SIGKILL", signal.SIGTERM)
+        for name, pid in survivors:
+            try:
+                _signal_process(pid, force_signal)
+            except (ProcessLookupError, PermissionError, ValueError, OSError):
+                pass
+        forced = {pid for _name, pid in survivors}
+        for name, pid in terminated:
+            how = "SIGKILL" if pid in forced else "SIGTERM"
+            safe_print(f"terminated previous {name} process (pid {pid}) with {how}")
+    # Stale PID files are now dealt with; remove them so a later resume cannot
+    # signal a recycled PID. launch_job_processes writes fresh ones.
+    for name in ("controller", "worker", "watcher"):
         try:
-            os.kill(pid, force_signal)
-        except (ProcessLookupError, PermissionError, ValueError, OSError):
+            (runtime_dir / f"{name}.pid").unlink(missing_ok=True)
+        except OSError:
             pass
-    forced = {pid for _name, pid in survivors}
-    for name, pid in terminated:
-        how = "SIGKILL" if pid in forced else "SIGTERM"
-        print(f"terminated previous {name} process (pid {pid}) with {how}")
 
 
 def parse_args() -> argparse.Namespace:
@@ -156,23 +231,23 @@ def main() -> int:
             )
         xadd_json(client, CLAUDE_REQUEST_STREAM, "request", {"type": "PLAN", "job_id": args.job_id, "scope": "job"})
     except KeyError:
-        print(f"job {args.job_id} is not in the system", file=sys.stderr)
+        safe_print(f"job {args.job_id} is not in the system", file=sys.stderr)
         return 1
     except (ConnectionError, TimeoutError) as exc:
-        print(f"job {args.job_id} updated, but Redis activation failed: {exc}", file=sys.stderr)
+        safe_print(f"job {args.job_id} updated, but Redis activation failed: {exc}", file=sys.stderr)
         return 1
     except Exception as exc:
-        print(f"could not resume job {args.job_id}: {exc}", file=sys.stderr)
+        safe_print(f"could not resume job {args.job_id}: {exc}", file=sys.stderr)
         return 1
 
-    print(f"resumed job {args.job_id}")
-    print("status: planning - the controller is choosing the next implementation task.")
-    print(f"goal: {goal}")
-    print(f"test_cmd: {test_cmd}")
-    print(f"max_iterations: {max_iterations}")
-    print(f"granularity: {granularity}")
-    print(f"processes: {job_processes}")
-    print(f"queued PLAN on {CLAUDE_REQUEST_STREAM}")
+    safe_print(f"resumed job {args.job_id}")
+    safe_print("status: planning - the controller is choosing the next implementation task.")
+    safe_print(f"goal: {goal}")
+    safe_print(f"test_cmd: {test_cmd}")
+    safe_print(f"max_iterations: {max_iterations}")
+    safe_print(f"granularity: {granularity}")
+    safe_print(f"processes: {job_processes}")
+    safe_print(f"queued PLAN on {CLAUDE_REQUEST_STREAM}")
     if args.wait:
         return wait_for_job(settings.db_path, args.job_id, job["worktree_path"], args.timeout, args.poll_interval)
     return 0

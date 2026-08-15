@@ -76,7 +76,12 @@ def claim_pending(client, stream: str, group: str, consumer: str, min_idle_ms: i
                 if fields is None:
                     # Deleted-entry tombstone: ack it so it stops reappearing
                     # in the pending list on every startup.
-                    client.xack(stream, group, message_id)
+                    try:
+                        client.xack(stream, group, message_id)
+                    except Exception:
+                        # A failed tombstone ack must not discard the real
+                        # messages already claimed or crash the caller.
+                        pass
                 else:
                     claimed.append((message_id, fields))
             # Keep paging while the cursor advances, even if this page had no
