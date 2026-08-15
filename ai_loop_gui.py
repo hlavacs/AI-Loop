@@ -19,7 +19,7 @@ import threading
 import time
 import tkinter as tk
 import traceback
-from dataclasses import dataclass
+from dataclasses import asdict, dataclass
 from pathlib import Path
 from tkinter import filedialog, messagebox, ttk
 from typing import Any
@@ -721,6 +721,30 @@ class LoopBackend:
         except OSError:
             return False
 
+    @staticmethod
+    def pid_identity_ok(pid: int) -> bool:
+        """Best-effort guard against PID reuse before adopting or signalling a stored PID.
+
+        Returns False only when ``ps`` positively reports a command line that
+        looks unrelated to the AI-Loop trio. Any ps failure, timeout, or empty
+        output returns True: this check must never abort or block an action.
+        Intentionally duplicated from resume_job._pid_identity_ok so the GUI
+        stays self-contained (mirroring the existing duplication convention).
+        """
+        try:
+            result = subprocess.run(
+                ["ps", "-p", str(pid), "-o", "command="],
+                capture_output=True,
+                text=True,
+                timeout=5,
+            )
+            output = (result.stdout or "").strip()
+        except Exception:
+            return True
+        if not output:
+            return True
+        return any(marker in output for marker in ("controller.py", "worker.py", "watcher.py", "python"))
+
     def env_for_processes(
         self,
         job_id: str,
@@ -762,7 +786,10 @@ class LoopBackend:
             old_pid = self.read_pid(pid_file)
             if not self.pid_running(old_pid) and name in LEGACY_PROCESS_NAMES:
                 old_pid = self.read_pid(runtime_dir / f"{LEGACY_PROCESS_NAMES[name]}.pid")
-            if self.pid_running(old_pid):
+            # A live-but-foreign old PID (the number was recycled by an
+            # unrelated process) must never be adopted as the job's process;
+            # treat it as stale and launch a fresh one instead.
+            if self.pid_running(old_pid) and self.pid_identity_ok(int(old_pid)):
                 pids[name] = int(old_pid)
                 continue
             log_path = log_dir / f"{name}.log"
@@ -795,8 +822,13 @@ class LoopBackend:
                 results[name] = "no pid"
                 continue
             if self.pid_running(pid):
-                self.terminate_pid(pid)
-                results[name] = f"stopped pid={pid}"
+                if self.pid_identity_ok(pid):
+                    self.terminate_pid(pid)
+                    results[name] = f"stopped pid={pid}"
+                else:
+                    # The stored PID was recycled by an unrelated process;
+                    # never killpg it. The stale pid file is still removed.
+                    results[name] = f"pid reused, skipped pid={pid}"
             else:
                 results[name] = f"stale pid={pid}"
             try:
@@ -892,6 +924,10 @@ class LoopBackend:
                 controller=controller,
                 granularity=granularity,
                 plan=plan,
+                # Persist the model/binary selections as durable job state so
+                # a resume after a GUI restart can restore the original
+                # choices instead of silently using whatever the form shows.
+                models=asdict(models),
             )
             db.add_event(
                 conn,
@@ -941,6 +977,14 @@ class LoopBackend:
         extra_constraint: str = "",
         extra_acceptance: str = "",
     ) -> None:
+        # Terminate the whole previous trio BEFORE the status update: reusing
+        # live PIDs would keep the old human-wait watcher, which exits as soon
+        # as the status leaves human_needed ("resumed elsewhere"), leaving the
+        # job with no watcher at all. A full stop also removes the duplicate
+        # controller/worker hazard, mirroring the CLI resume's
+        # terminate_previous_job_processes. stop_processes skips recycled PIDs
+        # via the identity check, so this can never kill a foreign process.
+        self.stop_processes(job_id)
         with db.transaction(self.settings.db_path) as conn:
             job = db.get_job(conn, job_id)
             constraints = list(job["constraints"])
@@ -2181,6 +2225,59 @@ class AiLoopGui(tk.Tk):
         self.selected_job_id = job_id
         self.update_jobs_selection_style()
         self.show_job(job_id)
+        self.populate_form_models_from_job(job_id)
+
+    def populate_form_models_from_job(self, job_id: str) -> None:
+        """Populate the form's binary/model fields from the job's stored models_json.
+
+        Always applied on selection: Resume applies the form's selections, so
+        loading the job's stored choices into the form makes the shown values
+        BE the ones the job was created with (instead of whatever the form
+        happened to show after a GUI restart). Edits made after selecting the
+        job still override before resuming. Jobs without stored models (older
+        jobs, CLI-created before this column) leave the form untouched.
+        """
+        try:
+            with db.transaction(self.backend.settings.db_path) as conn:
+                job = db.get_job(conn, job_id)
+        except Exception:
+            return
+        models = job.get("models")
+        if not isinstance(models, dict):
+            return
+        for var, key in (
+            (self.codex_model_var, "codex_model"),
+            (self.fable_model_var, "fable_model"),
+            (self.opus_model_var, "opus_model"),
+            (self.gemini_model_var, "gemini_model"),
+            (self.controller_model_var, "controller_model"),
+            (self.codex_bin_var, "codex_bin"),
+            (self.claude_bin_var, "claude_bin"),
+            (self.gemini_bin_var, "gemini_bin"),
+        ):
+            value = models.get(key)
+            if isinstance(value, str):
+                var.set(value)
+        if isinstance(models.get("codex_bypass_sandbox"), bool):
+            self.bypass_var.set(models["codex_bypass_sandbox"])
+        # Restore the role binary comboboxes and their visible model entries
+        # the same way on_role_binary_selected does when switching a binary:
+        # remember the model under role_model_values for that binary, set the
+        # tk vars, and keep role_binary_previous consistent so a later manual
+        # binary switch saves/restores the correct per-binary model.
+        for role, role_var, model_var, model_key, job_key in (
+            ("controller", self.controller_var, self.controller_role_model_var, "controller_role_model", "controller"),
+            ("worker", self.worker_var, self.worker_role_model_var, "worker_role_model", "worker"),
+        ):
+            binary = provider_for_role(str(job.get(job_key) or "")) or role_var.get()
+            role_var.set(binary)
+            stored_model = models.get(model_key)
+            if isinstance(stored_model, str) and binary in self.role_model_values[role]:
+                self.role_model_values[role][binary] = stored_model
+                model_var.set(stored_model)
+            else:
+                model_var.set(self.role_model_values[role].get(binary, ""))
+            self.role_binary_previous[role] = binary
 
     def current_task(self, details: dict[str, Any]) -> dict[str, Any] | None:
         tasks = details.get("tasks", [])

@@ -671,6 +671,25 @@ def main() -> int:
                 plan=plan,
                 # email_token is auto-generated inside db.create_job; the
                 # started-job email below re-fetches the row to read it.
+                # models_json records the binary/model settings in effect at
+                # create time (same keys as the GUI's ModelDefaults). For the
+                # CLI path this is informational: the CLI wrappers keep
+                # reading their configuration from the environment, and the
+                # CLI resume does not consume this column. The GUI reads it
+                # to restore a job's original selections into the form.
+                models={
+                    "codex_model": settings.codex_model,
+                    "fable_model": settings.fable_model,
+                    "opus_model": settings.opus_model,
+                    "gemini_model": settings.gemini_model,
+                    "controller_model": settings.controller_model,
+                    "codex_bin": settings.codex_bin,
+                    "claude_bin": settings.claude_bin,
+                    "gemini_bin": settings.gemini_bin,
+                    "codex_bypass_sandbox": settings.codex_bypass_sandbox,
+                    "controller_role_model": settings.controller_role_model,
+                    "worker_role_model": settings.worker_role_model,
+                },
             )
             db.add_event(
                 conn,

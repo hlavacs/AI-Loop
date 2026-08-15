@@ -55,9 +55,14 @@ def _group_has_live_member(pgid: int) -> bool:
 
     Uses ``pgrep -g`` to enumerate group members (portable across Linux and
     macOS, where ``ps -g`` semantics differ), then ``ps`` for their states.
-    Any tool failure, timeout, or empty output means "assume alive": staying
-    conservative keeps the group in the poll and lets SIGKILL escalation
-    fire; this check must never abort or block a resume.
+    pgrep exit status 1 means "no matching processes" and is trusted as "no
+    live members": on Linux zombies WOULD have been listed (and are filtered
+    by state below), so an empty match set really is an empty group; on macOS
+    pgrep does not list zombies at all, but such invisible zombies cannot be
+    signalled usefully anyway, so a zombie-only group counts as dead there
+    too. Any other failure, timeout, or unexpected exit status means "assume
+    alive": staying conservative keeps the group in the poll and lets SIGKILL
+    escalation fire; this check must never abort or block a resume.
     """
     try:
         listing = subprocess.run(
@@ -66,6 +71,12 @@ def _group_has_live_member(pgid: int) -> bool:
             text=True,
             timeout=5,
         )
+        if listing.returncode == 1:
+            # No matches: the group has no live members (see docstring for
+            # the Linux-vs-macOS zombie divergence this relies on).
+            return False
+        if listing.returncode != 0:
+            return True
         pids = [line.strip() for line in (listing.stdout or "").splitlines() if line.strip()]
         if not pids:
             return True

@@ -208,6 +208,35 @@ class PromotionTests(unittest.TestCase):
     def test_promotion_error_is_a_runtime_error(self) -> None:
         self.assertTrue(issubclass(controller.PromotionError, RuntimeError))
 
+    def test_on_before_copy_receives_changed_paths_before_any_file_lands(self) -> None:
+        # Crash-atomicity mitigation: the callback (which finish_done_job uses
+        # to durably record a promotion_started event) must fire with the full
+        # changed-path list BEFORE the copy loop touches the target repo.
+        with tempfile.TemporaryDirectory() as directory:
+            repo, worktree = make_repo_with_worktree(Path(directory), {"a.txt": "one\n"})
+            (worktree / "a.txt").write_text("modified\n", encoding="utf-8")
+            (worktree / "new.txt").write_text("brand new\n", encoding="utf-8")
+            observed: dict = {}
+
+            def on_before_copy(changed_paths: list[str]) -> None:
+                observed["paths"] = list(changed_paths)
+                # Marker of the target state at callback time: nothing has
+                # landed yet.
+                observed["a_at_callback"] = (repo / "a.txt").read_text(encoding="utf-8")
+                observed["new_exists_at_callback"] = (repo / "new.txt").exists()
+
+            result = promote_successful_worktree(
+                job_dict(repo, worktree), on_before_copy=on_before_copy
+            )
+
+            self.assertTrue(result["promoted"])
+            self.assertEqual(observed["paths"], ["a.txt", "new.txt"])
+            self.assertEqual(observed["a_at_callback"], "one\n")
+            self.assertFalse(observed["new_exists_at_callback"])
+            # After promotion the target repo is updated.
+            self.assertEqual((repo / "a.txt").read_text(encoding="utf-8"), "modified\n")
+            self.assertEqual((repo / "new.txt").read_text(encoding="utf-8"), "brand new\n")
+
 
 if __name__ == "__main__":
     unittest.main()

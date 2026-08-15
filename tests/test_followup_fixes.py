@@ -328,6 +328,11 @@ class GroupHasLiveMemberTests(unittest.TestCase):
         # Do NOT reap: without wait()/poll() the exited leader stays a zombie
         # and is the group's only member. killpg(pid, 0) still succeeds on it,
         # so only the group-wide member state check reports it as dead.
+        # The assertFalse holds on both platforms through two different paths:
+        # on Linux, pgrep lists the zombie (rc==0) and the ps state filter
+        # sees only "Z" states; on macOS, pgrep does not list zombies at all,
+        # so it exits with rc==1 ("no matches"), which is now trusted as "no
+        # live members" instead of falling into the conservative True branch.
         proc = subprocess.Popen(["sleep", "0.05"], start_new_session=True)
         try:
             self.assertTrue(

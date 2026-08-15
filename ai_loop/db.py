@@ -78,6 +78,7 @@ def init_db(db_path: str | Path) -> None:
                 estimated_remaining_seconds INTEGER,
                 waiting_until TEXT,
                 email_token TEXT,
+                models_json TEXT,
                 status TEXT NOT NULL,
                 history_summary TEXT NOT NULL DEFAULT '',
                 created_at TEXT NOT NULL,
@@ -162,6 +163,7 @@ def init_db(db_path: str | Path) -> None:
         ensure_column(conn, "jobs", "estimated_remaining_seconds", "estimated_remaining_seconds INTEGER")
         ensure_column(conn, "jobs", "waiting_until", "waiting_until TEXT")
         ensure_column(conn, "jobs", "email_token", "email_token TEXT")
+        ensure_column(conn, "jobs", "models_json", "models_json TEXT")
 
 
 def ensure_column(conn: sqlite3.Connection, table: str, column: str, ddl: str) -> None:
@@ -175,6 +177,7 @@ def row_to_job(row: sqlite3.Row) -> dict[str, Any]:
     data["constraints"] = from_json(data.pop("constraints_json"), [])
     data["acceptance"] = from_json(data.pop("acceptance_json"), [])
     data["plan"] = from_json(data.pop("plan_json"), [])
+    data["models"] = from_json(data.pop("models_json", None), None)
     data["use_worktree"] = bool(data["use_worktree"])
     data["finish_requested"] = bool(data["finish_requested"])
     return data
@@ -212,6 +215,7 @@ def create_job(
     granularity: str = "normal",
     plan: list[str] | None = None,
     email_token: str | None = None,
+    models: dict | None = None,
 ) -> None:
     # Every new job gets an email command token, regardless of which entry
     # point (CLI, GUI, tests) created it. Callers may still pass their own.
@@ -224,9 +228,9 @@ def create_job(
             id, repo_path, worktree_path, branch, base_ref, goal, constraints_json,
             acceptance_json, test_cmd, max_iterations, use_worktree, worker,
             controller, granularity, plan_json, estimated_remaining_units,
-            email_token, status, created_at, updated_at
+            email_token, models_json, status, created_at, updated_at
         )
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'planning', ?, ?)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'planning', ?, ?)
         """,
         (
             job_id,
@@ -246,6 +250,7 @@ def create_job(
             to_json(plan or []),
             len(plan or []),
             email_token,
+            None if models is None else to_json(models),
             now,
             now,
         ),

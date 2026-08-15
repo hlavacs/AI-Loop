@@ -10,7 +10,7 @@ import time
 import uuid
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
 from redis.exceptions import ConnectionError, TimeoutError
 
@@ -808,7 +808,10 @@ def repo_has_local_change(repo: Path, relative_path: str) -> bool:
     return bool(proc.stdout.strip())
 
 
-def promote_successful_worktree(job: dict[str, Any]) -> dict[str, Any]:
+def promote_successful_worktree(
+    job: dict[str, Any],
+    on_before_copy: Callable[[list[str]], None] | None = None,
+) -> dict[str, Any]:
     repo = Path(str(job["repo_path"]))
     worktree = Path(str(job["worktree_path"]))
     if not bool(job["use_worktree"]) or repo.resolve() == worktree.resolve():
@@ -824,6 +827,13 @@ def promote_successful_worktree(job: dict[str, Any]) -> dict[str, Any]:
         preview = ", ".join(conflicting[:20])
         extra = "" if len(conflicting) <= 20 else f", ... and {len(conflicting) - 20} more"
         raise PromotionError(f"target repo has local changes in promoted paths: {preview}{extra}")
+
+    # Crash-atomicity mitigation (full atomicity is deferred by design): let
+    # the caller durably record which paths are about to be copied BEFORE the
+    # first file lands in the target repo. After a crash mid-copy, that
+    # record tells exactly which paths were in flight.
+    if on_before_copy is not None:
+        on_before_copy(changed_paths)
 
     copied: list[str] = []
     removed: list[str] = []
@@ -949,8 +959,20 @@ def notify_terminal(settings, job_id: str, status: str, reason: str) -> None:
 
 
 def finish_done_job(settings, client, job: dict[str, Any], decision: dict[str, Any]) -> None:
+    def record_promotion_started(changed_paths: list[str]) -> None:
+        # Written in its own committed transaction immediately before the
+        # copy loop starts: if the promotion crashes mid-copy, this event
+        # tells exactly which paths were in flight.
+        with db.transaction(settings.db_path) as conn:
+            db.add_event(
+                conn,
+                job_id=job["id"],
+                kind="promotion_started",
+                payload={"job_id": job["id"], "files": changed_paths},
+            )
+
     try:
-        promotion = promote_successful_worktree(job)
+        promotion = promote_successful_worktree(job, on_before_copy=record_promotion_started)
     except PromotionError as exc:
         human_decision = {
             "action": "HUMAN_NEEDED",
