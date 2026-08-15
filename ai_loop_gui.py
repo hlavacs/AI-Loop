@@ -463,9 +463,19 @@ class LoopBackend:
                 )
             return self._redis_client
 
-    def _invalidate_redis_client(self) -> None:
+    def _invalidate_redis_client(self, failed_client: Any = None) -> None:
+        """Drop (and close) the cached Redis client after a failure.
+
+        ``failed_client`` is the client the caller was actually using when it
+        observed the failure. If the cache already holds a DIFFERENT client,
+        another thread has invalidated and replaced it in the meantime, and
+        closing the current one would kill a healthy fresh client mid-ping;
+        in that case do nothing. ``None`` invalidates unconditionally.
+        """
         with self._redis_lock:
             client = self._redis_client
+            if failed_client is not None and client is not failed_client:
+                return
             self._redis_client = None
         if client is not None:
             try:
@@ -475,11 +485,13 @@ class LoopBackend:
 
     def redis_running(self) -> bool:
         """PING Redis (blocks up to ~2 s). Call from a background thread only."""
+        client = None
         try:
-            self._cached_redis_client().ping()
+            client = self._cached_redis_client()
+            client.ping()
             ok = True
         except Exception:
-            self._invalidate_redis_client()
+            self._invalidate_redis_client(client)
             ok = False
         self._redis_last_ok = ok
         self._redis_last_checked = time.time()
@@ -651,7 +663,10 @@ class LoopBackend:
                 "processes": self.process_status(job_id),
                 # Cached sample only: job_details runs on the Tk main thread
                 # (refresh tick) and must never touch the network.
+                # redis_checked == 0.0 means "no PING has completed yet":
+                # readers must present that as unknown/checking, not offline.
                 "redis_running": self._redis_last_ok,
+                "redis_checked": self._redis_last_checked,
                 "task_count": task_count,
                 "run_count": run_count,
                 "percent": percent,
@@ -1219,6 +1234,12 @@ class AiLoopGui(tk.Tk):
         self._redis_action_running = False
         self._maintenance_running = False
         self._hibernation_running = False
+        # Human-readable labels of operations currently running on background
+        # threads. Additive bookkeeping next to the busy flags above: _run_bg
+        # adds the label before its thread starts and the finisher/fallback
+        # removes it. Read by on_close (warn before killing daemon threads
+        # mid-destructive-work) and _exclusive_conflict.
+        self._active_operations: set[str] = set()
         self._redis_sampler_inflight = False
         self.watch_job_id: str | None = None
         self.last_status_by_job: dict[str, str] = {}
@@ -1241,10 +1262,23 @@ class AiLoopGui(tk.Tk):
         *,
         name: str = "ai-loop-bg",
         busy_attr: str | None = None,
+        label: str | None = None,
     ) -> None:
         """Run work() on a daemon thread and marshal (result, error) back to
         on_done on the Tk main thread. on_done must reset the busy flag on all
-        paths; the direct reset here only covers a destroyed Tk loop."""
+        paths; the direct reset here only covers a destroyed Tk loop.
+
+        label, when given, is a human-readable operation name kept in
+        self._active_operations while the work runs (added before the thread
+        starts, removed just before on_done or in the destroyed-Tk fallback);
+        on_close and _exclusive_conflict read that set."""
+        if label is not None:
+            self._active_operations.add(label)
+
+        def finish(result: Any, error: str | None) -> None:
+            if label is not None:
+                self._active_operations.discard(label)
+            on_done(result, error)
 
         def runner() -> None:
             result: Any = None
@@ -1254,12 +1288,45 @@ class AiLoopGui(tk.Tk):
             except Exception as exc:
                 error = str(exc) or repr(exc)
             try:
-                self.after(0, lambda: on_done(result, error))
+                self.after(0, lambda: finish(result, error))
             except (tk.TclError, RuntimeError):
                 if busy_attr is not None:
                     setattr(self, busy_attr, False)
+                if label is not None:
+                    self._active_operations.discard(label)
 
         threading.Thread(target=runner, name=name, daemon=True).start()
+
+    # Destructive maintenance labels (stop processes / delete worktrees /
+    # clear database) as passed to _run_bg via label=.
+    _MAINTENANCE_OPERATIONS = frozenset({"Reset Loop", "Clear Worktrees", "Full Reset"})
+    # Harmless operations that never participate in cross-exclusion (they are
+    # still tracked in _active_operations so on_close can name them).
+    _NON_EXCLUSIVE_OPERATIONS = frozenset({"Start Redis", "Hibernation change"})
+
+    def _exclusive_conflict(self, kind: str) -> str | None:
+        """Return the label of a running operation that forbids starting an
+        operation of category ``kind``, or None when there is no conflict.
+
+        kind is "maintenance" (Reset Loop / Clear Worktrees / Full Reset) or
+        a job-actions kind such as "job" or "Auth Recovery" (Create Job /
+        Resume Job / Fix It / Auth Recovery). Exclusion matrix: starting
+        maintenance conflicts with ANY running exclusive operation (a reset
+        must not delete worktrees or database rows under a job being created,
+        resumed, fixed, or auth-recovered); starting a job operation conflicts with running
+        maintenance only (create/resume/fix may coexist with each other, and
+        same-kind reentry is already guarded by the busy flags). Start Redis
+        and hibernation changes are harmless and never conflict.
+
+        Reads only self._active_operations (a plain set, no Tk state) so it
+        is unit-testable on an AiLoopGui.__new__-created instance.
+        """
+        active = self._active_operations - self._NON_EXCLUSIVE_OPERATIONS
+        if kind != "maintenance":
+            active = active & self._MAINTENANCE_OPERATIONS
+        for operation in sorted(active):
+            return operation
+        return None
 
     def _sample_redis_status(self) -> None:
         # Ping Redis in a background thread at most once every 3 seconds and
@@ -1316,6 +1383,28 @@ class AiLoopGui(tk.Tk):
         style.theme_use(theme)
 
     def on_close(self) -> None:
+        # Destructive work (full reset mid-rmtree, create_job between the
+        # `git add -A` and the snapshot commit, ...) runs on daemon threads,
+        # which die silently with the window. Never close over them without
+        # an explicit user confirmation.
+        busy = (
+            self._create_job_running
+            or self._resume_job_running
+            or self._fix_job_running
+            or self._maintenance_running
+            or self._hibernation_running
+            or self._redis_action_running
+            or bool(self._active_operations)
+        )
+        if busy:
+            names = sorted(self._active_operations)
+            listed = ", ".join(names) if names else "A background operation"
+            verb = "are" if len(names) > 1 else "is"
+            if not messagebox.askyesno(
+                "Operation in progress",
+                f"{listed} {verb} still running. Closing now may leave it half-finished. Close anyway?",
+            ):
+                return
         self.auto_refresh.set(False)
         self.help_tooltip.hide()
         self.quit()
@@ -1718,6 +1807,10 @@ class AiLoopGui(tk.Tk):
         if self._create_job_running:
             messagebox.showinfo("Create Job", "A job is already being created; wait for it to finish.")
             return
+        conflict = self._exclusive_conflict("job")
+        if conflict is not None:
+            messagebox.showinfo("Create Job", f"Cannot start Create Job while {conflict} is running.")
+            return
         try:
             worker = normalize_worker(self.worker_var.get())
             controller = normalize_controller(self.controller_var.get())
@@ -1739,6 +1832,10 @@ class AiLoopGui(tk.Tk):
             messagebox.showerror("Create Job Failed", str(exc))
             return
         self._create_job_running = True
+        # The provider-CLI check below runs on a raw thread, not _run_bg, so
+        # track the label manually; finish_create_job's _run_bg call re-adds
+        # the same label (set semantics) and its finisher removes it.
+        self._active_operations.add("Create Job")
         self.status_var.set("Checking AI provider command-line tools…")
 
         def ensure_clis() -> None:
@@ -1811,6 +1908,7 @@ class AiLoopGui(tk.Tk):
     ) -> None:
         if error is not None:
             self._create_job_running = False
+            self._active_operations.discard("Create Job")
             messagebox.showerror("Create Job Failed", error)
             return
         # Keep the busy flag set: backend.create_job (pre-job git commit,
@@ -1837,6 +1935,7 @@ class AiLoopGui(tk.Tk):
             self._finish_create_job_done,
             name="ai-loop-create-job",
             busy_attr="_create_job_running",
+            label="Create Job",
         )
 
     def _finish_create_job_done(self, job_id: str | None, error: str | None) -> None:
@@ -2036,6 +2135,7 @@ class AiLoopGui(tk.Tk):
             self._finish_start_redis,
             name="ai-loop-start-redis",
             busy_attr="_redis_action_running",
+            label="Start Redis",
         )
 
     def _finish_start_redis(self, pid: Any, error: str | None) -> None:
@@ -2187,7 +2287,14 @@ class AiLoopGui(tk.Tk):
         latest_run = details.get("runs", [None])[0] if details.get("runs") else None
         latest_decision = details.get("decisions", [None])[0] if details.get("decisions") else None
         result: list[tuple[str, str]] = []
-        if not details.get("redis_running", False) and status in ACTIVE_STATUSES:
+        # Before the first background PING completes (redis_checked == 0) the
+        # reachability is unknown, not offline: suppress the blocker instead
+        # of flashing a false "Redis is offline" during the first ~1.5 s.
+        if (
+            not details.get("redis_running", False)
+            and details.get("redis_checked", 0)
+            and status in ACTIVE_STATUSES
+        ):
             result.append(("Redis is offline, so controller and worker messages cannot be delivered.", "Open System and choose Start Redis, or start the configured Redis service."))
         if status == "waiting_tokens":
             until = job.get("waiting_until") or "the recorded reset time"
@@ -2229,7 +2336,10 @@ class AiLoopGui(tk.Tk):
             f"State: {status}",
             status_explanations.get(status, f"The job is in state {status}."),
             f"Progress: {details.get('percent')}% complete; about {self.duration_text(details.get('remaining'))} remaining.",
-            f"Redis message service: {'online' if details.get('redis_running') else 'offline'}",
+            "Redis message service: " + (
+                "checking…" if not details.get("redis_checked", 0)
+                else ("online" if details.get("redis_running") else "offline")
+            ),
             f"Email delivery: {self.mail_access_status.smtp_detail}",
             f"Mailbox access: {self.mail_access_status.mailbox_detail}",
             "",
@@ -2494,6 +2604,13 @@ class AiLoopGui(tk.Tk):
         if job_id in self.auth_recovery_jobs:
             self.status_var.set(f"Authentication is already running for {job_id}")
             return
+        conflict = self._exclusive_conflict("Auth Recovery")
+        if conflict is not None:
+            messagebox.showinfo(
+                "Auth Recovery",
+                f"Cannot start authentication recovery while {conflict} is running.",
+            )
+            return
         display = provider_display_name(requirement.provider)
         if requirement.provider == "gemini":
             messagebox.showwarning(
@@ -2517,6 +2634,10 @@ class AiLoopGui(tk.Tk):
 
         models = self.current_models()
         self.auth_recovery_jobs.add(job_id)
+        # recover() uses a raw thread, not _run_bg, so track the label manually;
+        # finish_auth_recovery discards it on every main-thread path, and the
+        # destroyed-Tk except branches below discard it when after() fails.
+        self._active_operations.add("Auth Recovery")
         self.status_var.set(f"Waiting for {display} sign-in for {job_id}…")
 
         def recover() -> None:
@@ -2534,7 +2655,9 @@ class AiLoopGui(tk.Tk):
                         ),
                     )
                 except (tk.TclError, RuntimeError):
-                    pass
+                    # Tk is destroyed: finish_auth_recovery never runs, so
+                    # drop the operation label here (plain set, no Tk access).
+                    self._active_operations.discard("Auth Recovery")
                 return
             try:
                 self.after(
@@ -2547,7 +2670,7 @@ class AiLoopGui(tk.Tk):
                     ),
                 )
             except (tk.TclError, RuntimeError):
-                pass
+                self._active_operations.discard("Auth Recovery")
 
         threading.Thread(
             target=recover,
@@ -2564,6 +2687,7 @@ class AiLoopGui(tk.Tk):
         error: str | None,
     ) -> None:
         self.auth_recovery_jobs.discard(job_id)
+        self._active_operations.discard("Auth Recovery")
         display = provider_display_name(requirement.provider)
         if error is not None:
             self.status_var.set(f"{display} sign-in failed for {job_id}")
@@ -2678,6 +2802,10 @@ class AiLoopGui(tk.Tk):
         if self._resume_job_running:
             messagebox.showinfo("Resume", "A resume is already in progress; wait for it to finish.")
             return
+        conflict = self._exclusive_conflict("job")
+        if conflict is not None:
+            messagebox.showinfo("Resume", f"Cannot start Resume Job while {conflict} is running.")
+            return
         # Snapshot all Tk values on the main thread; backend.resume_job may
         # auto-start Redis (up to ~10 s of polling), so it runs in a thread.
         worker = self.worker_var.get()
@@ -2701,6 +2829,7 @@ class AiLoopGui(tk.Tk):
             lambda _result, error: self._finish_resume_job(job_id, error),
             name=f"ai-loop-resume-{job_id}",
             busy_attr="_resume_job_running",
+            label="Resume Job",
         )
 
     def _finish_resume_job(self, job_id: str, error: str | None) -> None:
@@ -2748,10 +2877,17 @@ class AiLoopGui(tk.Tk):
         if self._fix_job_running:
             messagebox.showinfo("Fix It", "A Fix It run is already in progress; wait for it to finish.")
             return
+        conflict = self._exclusive_conflict("job")
+        if conflict is not None:
+            messagebox.showinfo("Fix It", f"Cannot start Fix It while {conflict} is running.")
+            return
         binary = self.fix_binary_var.get().strip() or "codex"
         if not messagebox.askyesno("Fix It", f"Run {binary!r} to diagnose/fix and then resume this job if successful?"):
             return
         self._fix_job_running = True
+        # run_fix uses a raw thread, not _run_bg, so track the label manually;
+        # finish_fix_job discards it on every path.
+        self._active_operations.add("Fix It")
         self.status_var.set(f"Running {binary} to fix {job_id}…")
         models = self.current_models()
 
@@ -2800,6 +2936,7 @@ class AiLoopGui(tk.Tk):
         error: str | None,
     ) -> None:
         self._fix_job_running = False
+        self._active_operations.discard("Fix It")
         if error is not None:
             self.status_var.set(f"Fix It failed for {job_id}")
             messagebox.showerror("Fix It Failed", error)
@@ -2840,6 +2977,10 @@ class AiLoopGui(tk.Tk):
     def reset_loop(self) -> None:
         if self._maintenance_busy("Reset Loop"):
             return
+        conflict = self._exclusive_conflict("maintenance")
+        if conflict is not None:
+            messagebox.showinfo("Reset Loop", f"Cannot start Reset Loop while {conflict} is running.")
+            return
         if not messagebox.askyesno("Reset Loop", "Stop all job processes and clear all ai-loop database records?"):
             return
         self._maintenance_running = True
@@ -2849,6 +2990,7 @@ class AiLoopGui(tk.Tk):
             lambda _result, error: self._finish_reset_loop(error),
             name="ai-loop-reset-db",
             busy_attr="_maintenance_running",
+            label="Reset Loop",
         )
 
     def _finish_reset_loop(self, error: str | None) -> None:
@@ -2863,6 +3005,10 @@ class AiLoopGui(tk.Tk):
     def clear_worktrees(self) -> None:
         if self._maintenance_busy("Clear Worktrees"):
             return
+        conflict = self._exclusive_conflict("maintenance")
+        if conflict is not None:
+            messagebox.showinfo("Clear Worktrees", f"Cannot start Clear Worktrees while {conflict} is running.")
+            return
         runs_dir = self.backend.settings.runs_dir
         if not messagebox.askyesno(
             "Clear Worktrees",
@@ -2876,6 +3022,7 @@ class AiLoopGui(tk.Tk):
             self._finish_clear_worktrees,
             name="ai-loop-clear-worktrees",
             busy_attr="_maintenance_running",
+            label="Clear Worktrees",
         )
 
     def _finish_clear_worktrees(self, summary: dict[str, Any] | None, error: str | None) -> None:
@@ -2895,6 +3042,10 @@ class AiLoopGui(tk.Tk):
     def full_reset(self) -> None:
         if self._maintenance_busy("Full Reset"):
             return
+        conflict = self._exclusive_conflict("maintenance")
+        if conflict is not None:
+            messagebox.showinfo("Full Reset", f"Cannot start Full Reset while {conflict} is running.")
+            return
         # Confirmation stays on the main thread BEFORE the worker thread runs:
         # full_reset deletes worktrees and database rows.
         if not messagebox.askyesno(
@@ -2909,6 +3060,7 @@ class AiLoopGui(tk.Tk):
             self._finish_full_reset,
             name="ai-loop-full-reset",
             busy_attr="_maintenance_running",
+            label="Full Reset",
         )
 
     def _finish_full_reset(self, summary: dict[str, Any] | None, error: str | None) -> None:
@@ -3004,6 +3156,7 @@ class AiLoopGui(tk.Tk):
             lambda _result, error: self._finish_set_hibernation(parent, error),
             name="ai-loop-hibernation",
             busy_attr="_hibernation_running",
+            label="Hibernation change",
         )
 
     def _finish_set_hibernation(self, parent: tk.Toplevel, error: str | None) -> None:

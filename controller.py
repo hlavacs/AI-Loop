@@ -785,11 +785,17 @@ def status_paths(worktree: Path) -> list[tuple[str, str | None]]:
         code = item[:2]
         path = item[3:]
         if code[0] in {"R", "C"} or code[1] in {"R", "C"}:
+            # Porcelain -z rename/copy entries are "XY NEW\0ORIG\0": the FIRST
+            # field is the new path (the file that now exists) and the SECOND
+            # is the original. Promote the new path; for a rename also emit a
+            # synthetic deletion for the original so the target drops it.
             if index >= len(items):
                 raise PromotionError(f"malformed rename/copy status entry for {path}")
-            new_path = items[index]
+            original_path = items[index]
             index += 1
-            paths.append((code, new_path))
+            paths.append((code, path))
+            if "R" in code:
+                paths.append((" D", original_path))
         else:
             paths.append((code, path))
     return paths

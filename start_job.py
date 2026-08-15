@@ -379,8 +379,9 @@ def dirty_paths(repo: Path) -> list[tuple[str, str]]:
         code = entry[:2]
         path = entry[3:]
         if code[0] in {"R", "C"} or code[1] in {"R", "C"}:
+            # "XY NEW\0ORIG\0": first field is the new path (exists on disk);
+            # consume and drop the original-path field to stay aligned.
             if index < len(entries):
-                path = entries[index]
                 index += 1
         paths.append((code, path))
     return paths

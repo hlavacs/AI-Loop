@@ -40,26 +40,47 @@ def _pid_alive(pid: int) -> bool:
     return True
 
 
-def _pid_zombie(pid: int) -> bool:
-    """Best-effort: True only if ``ps`` positively reports a zombie leader.
+def _group_has_live_member(pgid: int) -> bool:
+    """Best-effort: True unless EVERY process in ``pgid``'s group is a zombie.
 
-    A zombie group leader is dead for polling purposes (it will never react
-    to another signal), but os.kill(pid, 0) still succeeds on it, so without
-    this check it burns the whole 5 s SIGTERM grace period. Any ps failure,
-    timeout, or empty output means "not a zombie": this check must never
-    abort or block a resume.
+    A group whose members are all zombies is dead for polling purposes (no
+    member will ever react to another signal), but os.killpg(pgid, 0) still
+    succeeds on it, so without this check polling burns the whole 5 s SIGTERM
+    grace period. The check must be group-wide, never leader-only: "leader is
+    a zombie but a SIGTERM-trapping CLI child is still running" is exactly the
+    case the group probe exists for (GUI-launched trios are never reaped, so
+    their leaders zombify while children keep editing the worktree), and a
+    leader-only zombie shortcut would wrongly drop such a group from the
+    survivor poll and skip the SIGKILL escalation the child needs.
+
+    Uses ``pgrep -g`` to enumerate group members (portable across Linux and
+    macOS, where ``ps -g`` semantics differ), then ``ps`` for their states.
+    Any tool failure, timeout, or empty output means "assume alive": staying
+    conservative keeps the group in the poll and lets SIGKILL escalation
+    fire; this check must never abort or block a resume.
     """
     try:
-        result = subprocess.run(
-            ["ps", "-p", str(pid), "-o", "state="],
+        listing = subprocess.run(
+            ["pgrep", "-g", str(pgid)],
             capture_output=True,
             text=True,
             timeout=5,
         )
-        output = (result.stdout or "").strip()
+        pids = [line.strip() for line in (listing.stdout or "").splitlines() if line.strip()]
+        if not pids:
+            return True
+        result = subprocess.run(
+            ["ps", "-o", "state=", "-p", ",".join(pids)],
+            capture_output=True,
+            text=True,
+            timeout=5,
+        )
+        states = [line.strip() for line in (result.stdout or "").splitlines() if line.strip()]
     except Exception:
-        return False
-    return output.startswith("Z")
+        return True
+    if not states:
+        return True
+    return any(not state.startswith("Z") for state in states)
 
 
 def _group_alive(pid: int) -> bool:
@@ -68,8 +89,9 @@ def _group_alive(pid: int) -> bool:
     Survivor polling must track the whole group, not just the leader: a
     SIGTERM-trapping CLI child keeps the group alive after the leader exits,
     and keying liveness to the leader alone would skip the SIGKILL escalation
-    that the child needs. A zombie leader counts as dead for polling. Falls
-    back to _pid_alive where killpg is unavailable (Windows).
+    that the child needs. A group whose members are all zombies counts as
+    dead for polling. Falls back to _pid_alive where killpg is unavailable
+    (Windows).
     """
     try:
         os.killpg(pid, 0)
@@ -80,12 +102,13 @@ def _group_alive(pid: int) -> bool:
         return True
     except (AttributeError, OSError):
         return _pid_alive(pid)
-    # killpg succeeds against a group whose only member is the zombie leader;
-    # treat a zombie leader as dead so polling does not burn the full grace
-    # period waiting for a corpse that can never react to another signal.
-    if _pid_zombie(pid):
-        return False
-    return True
+    # killpg succeeds against a group whose remaining members are all zombies;
+    # treat such a group as dead so polling does not burn the full grace
+    # period waiting for corpses that can never react to another signal. The
+    # member check is group-wide on purpose: a leader-only zombie check would
+    # misreport "zombie leader + live CLI child" as dead and skip the SIGKILL
+    # escalation that the surviving child needs.
+    return _group_has_live_member(pid)
 
 
 def _pid_identity_ok(pid: int) -> bool:

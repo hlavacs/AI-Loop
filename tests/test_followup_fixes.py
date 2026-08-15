@@ -2,9 +2,11 @@ from __future__ import annotations
 
 import json
 import os
+import shutil
 import signal
 import subprocess
 import tempfile
+import time
 import unittest
 from email.message import EmailMessage
 from pathlib import Path
@@ -12,6 +14,12 @@ from types import SimpleNamespace
 from unittest.mock import patch
 
 import resume_job
+
+try:  # ai_loop_gui needs tkinter, which some test environments lack
+    import ai_loop_gui
+except Exception:  # pragma: no cover - environment-dependent
+    ai_loop_gui = None
+
 from ai_loop import db
 from ai_loop.email_commands import EmailCommand, apply_email_command, reply_command
 from ai_loop.queues import claim_pending
@@ -279,6 +287,148 @@ class GroupAliveTests(unittest.TestCase):
             except OSError:
                 pass
             proc.wait()
+
+
+def _wait_for_process_state(pid: int, prefix: str, timeout: float = 5.0) -> bool:
+    """Poll ps until the process state starts with ``prefix`` (e.g. \"Z\")."""
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        result = subprocess.run(
+            ["ps", "-p", str(pid), "-o", "state="],
+            capture_output=True,
+            text=True,
+            timeout=5,
+        )
+        if (result.stdout or "").strip().startswith(prefix):
+            return True
+        time.sleep(0.05)
+    return False
+
+
+def _wait_for_group_dead(pgid: int, timeout: float = 5.0) -> None:
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline and resume_job._group_alive(pgid):
+        time.sleep(0.05)
+
+
+@unittest.skipUnless(hasattr(os, "killpg"), "os.killpg not available")
+class GroupHasLiveMemberTests(unittest.TestCase):
+    def test_live_session_leader_group_has_live_member(self) -> None:
+        proc = subprocess.Popen(["sleep", "60"], start_new_session=True)
+        try:
+            self.assertTrue(resume_job._group_has_live_member(proc.pid))
+            self.assertTrue(resume_job._group_alive(proc.pid))
+        finally:
+            os.killpg(proc.pid, signal.SIGKILL)
+            proc.wait()
+        _wait_for_group_dead(proc.pid)
+        self.assertFalse(resume_job._group_alive(proc.pid))
+
+    def test_zombie_only_group_counts_as_dead(self) -> None:
+        # Do NOT reap: without wait()/poll() the exited leader stays a zombie
+        # and is the group's only member. killpg(pid, 0) still succeeds on it,
+        # so only the group-wide member state check reports it as dead.
+        proc = subprocess.Popen(["sleep", "0.05"], start_new_session=True)
+        try:
+            self.assertTrue(
+                _wait_for_process_state(proc.pid, "Z"), "leader never became a zombie"
+            )
+            self.assertFalse(resume_job._group_has_live_member(proc.pid))
+            self.assertFalse(resume_job._group_alive(proc.pid))
+        finally:
+            proc.wait()
+
+    @unittest.skipUnless(shutil.which("bash"), "bash unavailable")
+    def test_zombie_leader_with_live_child_keeps_group_alive(self) -> None:
+        # V5-1 regression: the leader exits (and stays an unreaped zombie)
+        # while a child it spawned into the same group keeps running. A
+        # leader-only zombie check would wrongly report the group dead and
+        # skip the SIGKILL escalation the surviving child needs.
+        proc = subprocess.Popen(
+            ["bash", "-c", "sleep 60 & disown; exit 0"], start_new_session=True
+        )
+        killed = False
+        try:
+            self.assertTrue(
+                _wait_for_process_state(proc.pid, "Z"), "leader never became a zombie"
+            )
+            self.assertTrue(resume_job._group_has_live_member(proc.pid))
+            self.assertTrue(resume_job._group_alive(proc.pid))
+            os.killpg(proc.pid, signal.SIGKILL)
+            killed = True
+            proc.wait()
+            _wait_for_group_dead(proc.pid)
+            self.assertFalse(resume_job._group_alive(proc.pid))
+        finally:
+            if not killed:
+                try:
+                    os.killpg(proc.pid, signal.SIGKILL)
+                except OSError:
+                    pass
+                proc.wait()
+
+    @unittest.skipUnless(shutil.which("bash"), "bash unavailable")
+    def test_reaped_leader_with_live_child_keeps_group_alive(self) -> None:
+        # Same shape but the leader is fully reaped: the pgid persists while
+        # the child lives, so killpg(pid, 0) succeeds and the member scan must
+        # find the live child.
+        proc = subprocess.Popen(
+            ["bash", "-c", "sleep 60 & disown; exit 0"], start_new_session=True
+        )
+        proc.wait()
+        try:
+            self.assertTrue(resume_job._group_has_live_member(proc.pid))
+            self.assertTrue(resume_job._group_alive(proc.pid))
+        finally:
+            try:
+                os.killpg(proc.pid, signal.SIGKILL)
+            except OSError:
+                pass
+        _wait_for_group_dead(proc.pid)
+        self.assertFalse(resume_job._group_alive(proc.pid))
+
+
+@unittest.skipUnless(ai_loop_gui is not None, "ai_loop_gui (tkinter) not importable")
+class ExclusiveConflictTests(unittest.TestCase):
+    """Pure-logic tests: _exclusive_conflict reads only _active_operations,
+    so an __init__-less (no Tk) instance is enough."""
+
+    def _gui(self, active: set[str]):
+        gui = ai_loop_gui.AiLoopGui.__new__(ai_loop_gui.AiLoopGui)
+        gui._active_operations = set(active)
+        return gui
+
+    def test_idle_gui_has_no_conflicts(self) -> None:
+        gui = self._gui(set())
+        self.assertIsNone(gui._exclusive_conflict("maintenance"))
+        self.assertIsNone(gui._exclusive_conflict("job"))
+
+    def test_job_operation_blocks_maintenance_but_not_other_jobs(self) -> None:
+        gui = self._gui({"Create Job"})
+        self.assertEqual(gui._exclusive_conflict("maintenance"), "Create Job")
+        self.assertIsNone(gui._exclusive_conflict("job"))
+
+    def test_maintenance_blocks_jobs_and_other_maintenance(self) -> None:
+        gui = self._gui({"Full Reset"})
+        self.assertEqual(gui._exclusive_conflict("job"), "Full Reset")
+        self.assertEqual(gui._exclusive_conflict("maintenance"), "Full Reset")
+
+    def test_harmless_operations_never_conflict(self) -> None:
+        gui = self._gui({"Start Redis", "Hibernation change"})
+        self.assertIsNone(gui._exclusive_conflict("maintenance"))
+        self.assertIsNone(gui._exclusive_conflict("job"))
+
+    def test_first_conflict_is_reported_deterministically(self) -> None:
+        gui = self._gui({"Resume Job", "Fix It", "Start Redis"})
+        self.assertEqual(gui._exclusive_conflict("maintenance"), "Fix It")
+        self.assertIsNone(gui._exclusive_conflict("job"))
+
+    def test_auth_recovery_blocks_maintenance_and_vice_versa(self) -> None:
+        gui = self._gui({"Auth Recovery"})
+        self.assertEqual(gui._exclusive_conflict("maintenance"), "Auth Recovery")
+        self.assertIsNone(gui._exclusive_conflict("job"))
+        gui = self._gui({"Full Reset"})
+        self.assertEqual(gui._exclusive_conflict("Auth Recovery"), "Full Reset")
 
 
 class ClaimPendingTombstoneTests(unittest.TestCase):

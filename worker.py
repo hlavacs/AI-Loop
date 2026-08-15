@@ -308,8 +308,9 @@ def git_snapshot(cwd: str) -> dict[str, object]:
         code = entry[:2]
         path = entry[3:]
         if code[0] in {"R", "C"} or code[1] in {"R", "C"}:
+            # "XY NEW\0ORIG\0": first field is the new path; consume and drop
+            # the original-path field so iteration stays aligned.
             if index < len(entries):
-                path = entries[index]
                 index += 1
         changed.append(path)
         if code == "??":

@@ -1,0 +1,12 @@
+[project]
+name = "ai-loop"
+version = "0.1.0"
+description = "AI-Loop: autonomous multi-agent coding loop with GUI, watcher, and Redis-backed queues"
+requires-python = ">=3.10"
+dependencies = [
+    "redis",
+]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["."]
