@@ -26,12 +26,47 @@ class EmailCommand:
     subject: str
 
 
+def verify_command_token(command: str, email_token: str | None) -> str | None:
+    """Check a reply against the job's secret token.
+
+    Returns the command with the token (and any ``Command token:`` prefix)
+    stripped when verification succeeds, or None when the job has a token and
+    the reply does not contain it. Jobs without a token (legacy rows) accept
+    every reply unchanged.
+    """
+    token = str(email_token or "").strip()
+    if not token:
+        return command.strip()
+    if token not in command:
+        return None
+    cleaned = re.sub(rf"(?i:command\s+token\s*:?\s*)?{re.escape(token)}", "", command)
+    cleaned = "\n".join(line.rstrip() for line in cleaned.splitlines()).strip()
+    return re.sub(r"\n{3,}", "\n\n", cleaned)
+
+
 def apply_email_command(settings: Any, job_id: str, incoming: EmailCommand) -> bool:
     """Apply a command; return True when a replacement watcher was launched."""
     command = incoming.command[:20000]
     with db.transaction(settings.db_path) as conn:
         job = db.get_job(conn, job_id)
         status = str(job["status"])
+        verified = verify_command_token(command, job.get("email_token"))
+        if verified is None:
+            db.add_event(
+                conn,
+                job_id=job_id,
+                kind="email_command_rejected",
+                payload={
+                    "message_id": incoming.message_id,
+                    "sender": incoming.sender,
+                    "subject": incoming.subject,
+                    "status": status,
+                    "reason": "reply does not contain the job's command token",
+                },
+            )
+            print(f"job {job_id}: rejected emailed command without a valid command token")
+            return False
+        command = verified
         db.add_event(
             conn,
             job_id=job_id,
@@ -165,7 +200,7 @@ def processed_message_ids(conn: Any, job_id: str) -> set[str]:
         """
         SELECT payload_json
         FROM events
-        WHERE job_id = ? AND kind IN ('email_command_received', 'email_command_applied')
+        WHERE job_id = ? AND kind IN ('email_command_received', 'email_command_applied', 'email_command_rejected')
         ORDER BY id DESC
         LIMIT 1000
         """,

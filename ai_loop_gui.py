@@ -1,5 +1,11 @@
 from __future__ import annotations
 
+import sys
+
+if sys.version_info < (3, 10):
+    sys.stderr.write("ai_loop_gui.py requires Python 3.10 or newer; you are running Python %d.%d.\n" % sys.version_info[:2])
+    sys.exit(1)
+
 import os
 import argparse
 import json
@@ -12,6 +18,7 @@ import sys
 import threading
 import time
 import tkinter as tk
+import traceback
 from dataclasses import dataclass
 from pathlib import Path
 from tkinter import filedialog, messagebox, ttk
@@ -1143,13 +1150,19 @@ class AiLoopGui(tk.Tk):
         self.geometry("1280x820")
         self.apply_theme(theme)
         self.backend = LoopBackend()
-        self.mail_access_status: MailAccessStatus = check_mail_access(self.backend.settings)
+        self.mail_access_status: MailAccessStatus = MailAccessStatus(
+            False, True, "mail: checking…", "checking…", "checking…"
+        )
+        self._mail_check_done = False
         self.model_defaults = self.backend.model_defaults()
         self.help_tooltip = HoverTooltip(self)
         self.protocol("WM_DELETE_WINDOW", self.on_close)
         self.selected_job_id: str | None = None
         self.resume_fields_job_id: str | None = None
         self._refreshing_jobs = False
+        self._refresh_all_active = False
+        self._fix_job_running = False
+        self._create_job_running = False
         self.watch_job_id: str | None = None
         self.last_status_by_job: dict[str, str] = {}
         self.alerted_human_needed: set[str] = set()
@@ -1160,15 +1173,33 @@ class AiLoopGui(tk.Tk):
         self._build_ui()
         self.install_default_help(self)
         self.refresh_all()
-        if self.mail_access_status.enabled and not self.mail_access_status.ok:
-            self.after(
-                0,
-                lambda: messagebox.showerror(
-                    "Mail Account Access Failed",
-                    self.mail_access_status.detail,
-                ),
-            )
+        self._start_mail_access_check()
         self.after(1500, self._auto_refresh_tick)
+
+    def _start_mail_access_check(self) -> None:
+        def check() -> None:
+            try:
+                status = check_mail_access(self.backend.settings)
+            except Exception as exc:
+                detail = f"error: mail account check failed: {exc!r}"
+                status = MailAccessStatus(True, False, detail, detail, detail)
+            try:
+                self.after(0, lambda: self._finish_mail_access_check(status))
+            except (tk.TclError, RuntimeError):
+                pass
+
+        threading.Thread(
+            target=check,
+            name="ai-loop-mail-check",
+            daemon=True,
+        ).start()
+
+    def _finish_mail_access_check(self, status: MailAccessStatus) -> None:
+        self.mail_access_status = status
+        self._mail_check_done = True
+        self.refresh_all()
+        if status.enabled and not status.ok:
+            messagebox.showerror("Mail Account Access Failed", status.detail)
 
     def apply_theme(self, theme: str) -> None:
         if theme in {"", "default", "native", "current"}:
@@ -1579,6 +1610,70 @@ class AiLoopGui(tk.Tk):
         if not goal:
             messagebox.showerror("Missing Goal", "Enter a job goal.")
             return
+        if self._create_job_running:
+            messagebox.showinfo("Create Job", "A job is already being created; wait for it to finish.")
+            return
+        try:
+            worker = normalize_worker(self.worker_var.get())
+            controller = normalize_controller(self.controller_var.get())
+        except Exception as exc:
+            messagebox.showerror("Create Job Failed", str(exc))
+            return
+        models = self.current_models()
+        self._create_job_running = True
+        self.status_var.set("Checking AI provider command-line tools…")
+
+        def ensure_clis() -> None:
+            try:
+                self.backend.ensure_provider_clis(worker=worker, controller=controller, models=models)
+            except Exception as exc:
+                try:
+                    self.after(
+                        0,
+                        lambda error=str(exc): self.finish_create_job(
+                            goal,
+                            worker,
+                            controller,
+                            models,
+                            error=error,
+                        ),
+                    )
+                except (tk.TclError, RuntimeError):
+                    pass
+                return
+            try:
+                self.after(
+                    0,
+                    lambda: self.finish_create_job(
+                        goal,
+                        worker,
+                        controller,
+                        models,
+                        error=None,
+                    ),
+                )
+            except (tk.TclError, RuntimeError):
+                pass
+
+        threading.Thread(
+            target=ensure_clis,
+            name="ai-loop-provider-cli",
+            daemon=True,
+        ).start()
+
+    def finish_create_job(
+        self,
+        goal: str,
+        worker: str,
+        controller: str,
+        models: ModelDefaults,
+        *,
+        error: str | None,
+    ) -> None:
+        self._create_job_running = False
+        if error is not None:
+            messagebox.showerror("Create Job Failed", error)
+            return
         try:
             job_id = self.backend.create_job(
                 repo=Path(self.repo_var.get()),
@@ -1590,10 +1685,10 @@ class AiLoopGui(tk.Tk):
                 base_ref=self.base_ref_var.get().strip() or "HEAD",
                 use_worktree=not self.no_worktree_var.get(),
                 allow_parallel=self.allow_parallel_var.get(),
-                worker=self.worker_var.get(),
-                controller=self.controller_var.get(),
+                worker=worker,
+                controller=controller,
                 granularity=self.granularity_var.get(),
-                models=self.current_models(),
+                models=models,
             )
         except Exception as exc:
             messagebox.showerror("Create Job Failed", str(exc))
@@ -1617,6 +1712,15 @@ class AiLoopGui(tk.Tk):
         style.map("Jobs.Treeview", background=[("selected", selected_color)], foreground=[("selected", "black")])
 
     def refresh_all(self, select_job_id: str | None = None) -> None:
+        if self._refresh_all_active:
+            return
+        self._refresh_all_active = True
+        try:
+            self._refresh_all_body(select_job_id)
+        finally:
+            self._refresh_all_active = False
+
+    def _refresh_all_body(self, select_job_id: str | None = None) -> None:
         try:
             jobs = self.backend.list_jobs()
         except Exception as exc:
@@ -1624,6 +1728,7 @@ class AiLoopGui(tk.Tk):
             return
         selected = select_job_id or self.selected_job_id
         self._refreshing_jobs = True
+        finished_watch_notices: list[str] = []
         expanded = {
             item
             for item in self.jobs_tree.get_children()
@@ -1670,7 +1775,7 @@ class AiLoopGui(tk.Tk):
                 and previous
                 and previous != status
             ):
-                messagebox.showinfo("Watched Job Finished", f"{job_id} is now {status}.")
+                finished_watch_notices.append(f"{job_id} is now {status}.")
             if task:
                 task_status = str(task.get("status"))
                 if task_status == "queued" and job.get("status_display") == "queued / worker offline":
@@ -1721,6 +1826,8 @@ class AiLoopGui(tk.Tk):
         self.update_system_status(jobs)
         self.update_jobs_selection_style()
         self.jobs_tree.update_idletasks()
+        for notice in finished_watch_notices:
+            self.after_idle(lambda message=notice: messagebox.showinfo("Watched Job Finished", message))
         self.after_idle(lambda: setattr(self, "_refreshing_jobs", False))
 
     def update_system_status(self, jobs: list[dict[str, Any]] | None = None) -> None:
@@ -1740,7 +1847,9 @@ class AiLoopGui(tk.Tk):
                     elif info["pid"]:
                         stale_processes += 1
             redis_state = "online" if self.backend.redis_running() else "offline"
-            if not self.mail_access_status.enabled:
+            if not self._mail_check_done:
+                mailbox_state = "checking…"
+            elif not self.mail_access_status.enabled:
                 mailbox_state = "disabled"
             elif not self.mail_access_status.ok:
                 mailbox_state = "error"
@@ -1765,21 +1874,28 @@ class AiLoopGui(tk.Tk):
         self.refresh_all()
 
     def _auto_refresh_tick(self) -> None:
-        if self.auto_refresh.get():
-            self.refresh_all()
-        elif self.human_needed_windows:
+        try:
+            if self.auto_refresh.get():
+                self.refresh_all()
+            elif self.human_needed_windows:
+                try:
+                    with db.transaction(self.backend.settings.db_path) as conn:
+                        for job_id, alert in list(self.human_needed_windows.items()):
+                            if str(db.get_job(conn, job_id)["status"]) == "human_needed":
+                                continue
+                            self.human_needed_windows.pop(job_id, None)
+                            self.alerted_human_needed.discard(job_id)
+                            if alert.winfo_exists():
+                                alert.destroy()
+                except (KeyError, tk.TclError):
+                    pass
+        except Exception:
+            traceback.print_exc(file=sys.stderr)
+        finally:
             try:
-                with db.transaction(self.backend.settings.db_path) as conn:
-                    for job_id, alert in list(self.human_needed_windows.items()):
-                        if str(db.get_job(conn, job_id)["status"]) == "human_needed":
-                            continue
-                        self.human_needed_windows.pop(job_id, None)
-                        self.alerted_human_needed.discard(job_id)
-                        if alert.winfo_exists():
-                            alert.destroy()
-            except (KeyError, tk.TclError):
+                self.after(1500, self._auto_refresh_tick)
+            except tk.TclError:
                 pass
-        self.after(1500, self._auto_refresh_tick)
 
     def on_job_selected(self, _event: object) -> None:
         if self._refreshing_jobs:
@@ -1864,9 +1980,9 @@ class AiLoopGui(tk.Tk):
             "",
             "What is happening",
             explanations.get(status, f"The task is in state {status}."),
-            f"Task number: {task.get("iteration")}",
-            f"Task id: {task.get("id")}",
-            f"Last update: {task.get("updated_at")}",
+            f"Task number: {task.get('iteration')}",
+            f"Task id: {task.get('id')}",
+            f"Last update: {task.get('updated_at')}",
             "",
             "Detailed instructions",
         ]
@@ -1875,7 +1991,7 @@ class AiLoopGui(tk.Tk):
         lines.extend(["", "How completion will be checked"])
         acceptance = list(task.get("acceptance") or [])
         lines.extend([f"{index}. {item}" for index, item in enumerate(acceptance, start=1)] or ["No task-specific acceptance checks were recorded."])
-        lines.extend(["", f"Validation command: {task.get("test_cmd") or "none"}"])
+        lines.extend(["", f"Validation command: {task.get('test_cmd') or 'none'}"])
         matching_run = next((run for run in details.get("runs", []) if run.get("task_id") == task.get("id")), None)
         if matching_run:
             changed = ", ".join(matching_run.get("changed_files") or []) or "none recorded"
@@ -1883,12 +1999,12 @@ class AiLoopGui(tk.Tk):
             lines.extend([
                 "",
                 "Latest result for this task",
-                f"Worker result: {matching_run.get("status")}",
+                f"Worker result: {matching_run.get('status')}",
                 f"Tests: {test_result}",
                 f"Changed files: {changed}",
             ])
             if matching_run.get("error"):
-                lines.append(f"Problem reported: {matching_run.get("error")}")
+                lines.append(f"Problem reported: {matching_run.get('error')}")
         return "\n".join(lines)
 
     def blockers(self, details: dict[str, Any]) -> list[tuple[str, str]]:
@@ -1915,7 +2031,7 @@ class AiLoopGui(tk.Tk):
         if status in {"queued", "implementing", "fixing"} and not worker.get("running"):
             result.append(("Worker work is pending but the worker process is not running.", "Use Resume. If the worker exits again, inspect the Worker tab and worker log."))
         if latest_run and latest_run.get("error"):
-            result.append((f"The latest worker run reported: {latest_run.get("error")}", "Inspect the Worker and Logs tabs, then let the controller create a repair or use Fix It."))
+            result.append((f"The latest worker run reported: {latest_run.get('error')}", "Inspect the Worker and Logs tabs, then let the controller create a repair or use Fix It."))
         elif latest_run and latest_run.get("test_rc") not in {None, 0}:
             result.append(("The latest validation command failed.", "Read the Worker test result and let the controller issue a repair task."))
         return result
@@ -1936,24 +2052,24 @@ class AiLoopGui(tk.Tk):
         }
         lines = [
             "SYSTEM STATUS",
-            f"Job: {job.get("id")}",
+            f"Job: {job.get('id')}",
             f"State: {status}",
             status_explanations.get(status, f"The job is in state {status}."),
-            f"Progress: {details.get("percent")}% complete; about {self.duration_text(details.get("remaining"))} remaining.",
-            f"Redis message service: {"online" if details.get("redis_running") else "offline"}",
+            f"Progress: {details.get('percent')}% complete; about {self.duration_text(details.get('remaining'))} remaining.",
+            f"Redis message service: {'online' if details.get('redis_running') else 'offline'}",
             f"Email delivery: {self.mail_access_status.smtp_detail}",
             f"Mailbox access: {self.mail_access_status.mailbox_detail}",
             "",
             "CONTROLLER",
-            f"Selected controller: {job.get("controller")}",
+            f"Selected controller: {job.get('controller')}",
         ]
         controller_info = details.get("processes", {}).get("controller", {})
-        lines.append(f"Process: {"running" if controller_info.get("running") else "stopped"}; pid {controller_info.get("pid") or "-"}")
+        lines.append(f"Process: {'running' if controller_info.get('running') else 'stopped'}; pid {controller_info.get('pid') or '-'}")
         lines.append("Role: reviews worker results and sends the next task or marks the job complete.")
-        lines.extend(["", "WORKER", f"Selected worker: {job.get("worker")}"])
+        lines.extend(["", "WORKER", f"Selected worker: {job.get('worker')}"])
         worker_info = details.get("processes", {}).get("worker", {})
-        lines.append(f"Process: {"running" if worker_info.get("running") else "stopped"}; pid {worker_info.get("pid") or "-"}")
-        lines.append(f"Current task: {task.get("goal") if task else "none"}")
+        lines.append(f"Process: {'running' if worker_info.get('running') else 'stopped'}; pid {worker_info.get('pid') or '-'}")
+        lines.append(f"Current task: {task.get('goal') if task else 'none'}")
         lines.extend(["", "BLOCKERS AND SOLUTIONS"])
         blockers = self.blockers(details)
         if blockers:
@@ -1989,9 +2105,9 @@ class AiLoopGui(tk.Tk):
             action = str(decision.get("action") or "unknown")
             next_task = payload.get("next_task") if isinstance(payload, dict) else None
             lines.extend([
-                f"MESSAGE {index} — {decision.get("created_at")}",
+                f"MESSAGE {index} — {decision.get('created_at')}",
                 action_text.get(action, f"Controller action: {action}."),
-                f"Why: {decision.get("reason") or "No explanation was recorded."}",
+                f"Why: {decision.get('reason') or 'No explanation was recorded.'}",
             ])
             if isinstance(next_task, dict):
                 lines.extend(["Instruction sent to the worker:", str(next_task.get("goal") or "No task goal was recorded.")])
@@ -1999,7 +2115,7 @@ class AiLoopGui(tk.Tk):
                 if acceptance:
                     lines.append("The controller will accept this task when:")
                     lines.extend(f"- {item}" for item in acceptance)
-                lines.append(f"Validation command: {next_task.get("test_cmd") or "none"}")
+                lines.append(f"Validation command: {next_task.get('test_cmd') or 'none'}")
             else:
                 lines.append("No new worker instruction was sent with this message.")
             lines.append("")
@@ -2007,9 +2123,9 @@ class AiLoopGui(tk.Tk):
 
     def worker_view_text(self, details: dict[str, Any]) -> str:
         task = self.current_task(details)
-        lines = ["WORKER ACTIVITY", f"Worker: {details["job"].get("worker")}"]
+        lines = ["WORKER ACTIVITY", f"Worker: {details['job'].get('worker')}"]
         if task and str(task.get("status")) in {"queued", "running", "waiting_tokens"}:
-            lines.extend([f"Current task state: {task.get("status")}", f"What it is doing: {task.get("goal")}"])
+            lines.extend([f"Current task state: {task.get('status')}", f"What it is doing: {task.get('goal')}"])
         else:
             lines.append("The worker has no active task right now.")
         runs = details.get("runs", [])
@@ -2024,15 +2140,15 @@ class AiLoopGui(tk.Tk):
             changed = ", ".join(run.get("changed_files") or []) or "none recorded"
             lines.extend([
                 "",
-                f"RESULT {index} — task {run.get("task_id")}",
-                f"Worker execution: {"completed" if worker_ok else "failed"}",
+                f"RESULT {index} — task {run.get('task_id')}",
+                f"Worker execution: {'completed' if worker_ok else 'failed'}",
                 f"Validation: {test_text}",
                 f"Changed files: {changed}",
             ])
             if run.get("diff_stat"):
-                lines.append(f"Change summary: {str(run.get("diff_stat")).strip()}")
+                lines.append(f"Change summary: {str(run.get('diff_stat')).strip()}")
             if run.get("error"):
-                lines.append(f"Problem: {run.get("error")}")
+                lines.append(f"Problem: {run.get('error')}")
             lines.extend(["Worker report:", self.compact_output(run.get("codex_output"))])
             if test_rc not in {None, 0}:
                 lines.extend(["Validation output:", self.compact_output(run.get("test_output"), 1200)])
@@ -2430,13 +2546,64 @@ class AiLoopGui(tk.Tk):
         job_id = self.selected_job_or_error()
         if not job_id:
             return
+        if self._fix_job_running:
+            messagebox.showinfo("Fix It", "A Fix It run is already in progress; wait for it to finish.")
+            return
         binary = self.fix_binary_var.get().strip() or "codex"
         if not messagebox.askyesno("Fix It", f"Run {binary!r} to diagnose/fix and then resume this job if successful?"):
             return
-        try:
-            proc = self.backend.fix_job_with_binary(job_id, binary, self.current_models())
-        except Exception as exc:
-            messagebox.showerror("Fix It Failed", str(exc))
+        self._fix_job_running = True
+        self.status_var.set(f"Running {binary} to fix {job_id}…")
+        models = self.current_models()
+
+        def run_fix() -> None:
+            try:
+                proc = self.backend.fix_job_with_binary(job_id, binary, models)
+            except Exception as exc:
+                try:
+                    self.after(
+                        0,
+                        lambda error=str(exc): self.finish_fix_job(
+                            job_id,
+                            binary,
+                            proc=None,
+                            error=error,
+                        ),
+                    )
+                except (tk.TclError, RuntimeError):
+                    pass
+                return
+            try:
+                self.after(
+                    0,
+                    lambda: self.finish_fix_job(
+                        job_id,
+                        binary,
+                        proc=proc,
+                        error=None,
+                    ),
+                )
+            except (tk.TclError, RuntimeError):
+                pass
+
+        threading.Thread(
+            target=run_fix,
+            name=f"ai-loop-fix-{job_id}",
+            daemon=True,
+        ).start()
+
+    def finish_fix_job(
+        self,
+        job_id: str,
+        binary: str,
+        *,
+        proc: subprocess.CompletedProcess[str] | None,
+        error: str | None,
+    ) -> None:
+        self._fix_job_running = False
+        if error is not None:
+            self.status_var.set(f"Fix It failed for {job_id}")
+            messagebox.showerror("Fix It Failed", error)
             return
         output = (proc.stdout + "\n" + proc.stderr).strip()
         if proc.returncode == 0:

@@ -4,6 +4,7 @@ import argparse
 import json
 import os
 import platform
+import secrets
 import shutil
 import time
 import subprocess
@@ -632,6 +633,7 @@ def main() -> int:
         return 2
 
     job_id = timestamp_id("J")
+    email_token = secrets.token_urlsafe(9)
     constraints = [*granularity_constraints(granularity), *COMMON_CONSTRAINTS, *args.constraint]
     acceptance = [*DEFAULT_ACCEPTANCE, *args.acceptance]
     plan = build_static_plan(args.goal, acceptance, test_cmd)
@@ -668,6 +670,7 @@ def main() -> int:
                 controller=controller,
                 granularity=granularity,
                 plan=plan,
+                email_token=email_token,
             )
             db.add_event(
                 conn,

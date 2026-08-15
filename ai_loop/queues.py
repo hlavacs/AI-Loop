@@ -59,6 +59,23 @@ def xadd_json(client: redis.Redis, stream: str, field: str, payload: dict[str, A
     return client.xadd(stream, {field: encoded})
 
 
+def claim_pending(client, stream: str, group: str, consumer: str, min_idle_ms: int = 0) -> list[tuple[str, dict]]:
+    claimed: list[tuple[str, dict]] = []
+    start = "0-0"
+    try:
+        while True:
+            reply = client.xautoclaim(stream, group, consumer, min_idle_time=min_idle_ms, start_id=start)
+            next_start, messages = reply[0], reply[1]
+            claimed.extend((message_id, fields) for message_id, fields in messages if fields is not None)
+            if next_start in ("0-0", "0") or not messages:
+                break
+            start = next_start
+    except redis.ResponseError as exc:
+        print(f"XAUTOCLAIM unavailable, skipping pending reclaim: {exc}")
+        return []
+    return claimed
+
+
 def read_group(client: redis.Redis, group: str, consumer: str, stream: str):
     return client.xreadgroup(
         group,

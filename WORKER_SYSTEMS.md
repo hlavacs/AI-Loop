@@ -54,7 +54,7 @@ installation of a missing standard Codex, Claude, or Gemini executable.
 - `ai_loop/config.py`: environment-backed immutable settings and role normalization.
 - `ai_loop/db.py`: schema, migrations, JSON conversion, and state mutations.
 - `ai_loop/email_commands.py`: trusted IMAP reply matching, command extraction, deduplication, and resume handling.
-- `ai_loop/queues.py`: Redis connection, consumer groups, JSON validation, and stream I/O.
+- `ai_loop/queues.py`: Redis connection, consumer groups, JSON validation, and stream I/O. At startup, controller and worker reclaim their group's pending (delivered-but-unacknowledged) entries with `XAUTOCLAIM` and process them through the normal message path, so a crash between read and acknowledgment no longer strands a task.
 - `ai_loop/planning.py`: granularity validation, constraints, and static plan construction.
 - `ai_loop/progress.py`: controller estimates with heuristic fallback and countdown ETA persistence.
 - `ai_loop/token_wait.py`: token-limit detection, replenishment-time extraction, and bounded-interval waiting.

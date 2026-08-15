@@ -76,6 +76,7 @@ def init_db(db_path: str | Path) -> None:
                 estimated_remaining_units INTEGER NOT NULL DEFAULT 0,
                 estimated_remaining_seconds INTEGER,
                 waiting_until TEXT,
+                email_token TEXT,
                 status TEXT NOT NULL,
                 history_summary TEXT NOT NULL DEFAULT '',
                 created_at TEXT NOT NULL,
@@ -159,6 +160,7 @@ def init_db(db_path: str | Path) -> None:
         ensure_column(conn, "jobs", "estimated_remaining_units", "estimated_remaining_units INTEGER NOT NULL DEFAULT 0")
         ensure_column(conn, "jobs", "estimated_remaining_seconds", "estimated_remaining_seconds INTEGER")
         ensure_column(conn, "jobs", "waiting_until", "waiting_until TEXT")
+        ensure_column(conn, "jobs", "email_token", "email_token TEXT")
 
 
 def ensure_column(conn: sqlite3.Connection, table: str, column: str, ddl: str) -> None:
@@ -208,6 +210,7 @@ def create_job(
     controller: str = "claude",
     granularity: str = "normal",
     plan: list[str] | None = None,
+    email_token: str | None = None,
 ) -> None:
     now = utc_now()
     conn.execute(
@@ -216,9 +219,9 @@ def create_job(
             id, repo_path, worktree_path, branch, base_ref, goal, constraints_json,
             acceptance_json, test_cmd, max_iterations, use_worktree, worker,
             controller, granularity, plan_json, estimated_remaining_units,
-            status, created_at, updated_at
+            email_token, status, created_at, updated_at
         )
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'planning', ?, ?)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'planning', ?, ?)
         """,
         (
             job_id,
@@ -237,6 +240,7 @@ def create_job(
             granularity,
             to_json(plan or []),
             len(plan or []),
+            email_token,
             now,
             now,
         ),

@@ -25,7 +25,7 @@ from ai_loop.config import (
     load_settings,
     sanitized_child_env,
 )
-from ai_loop.queues import consumer_name, decode, ensure_group, redis_client, read_group, xadd_json
+from ai_loop.queues import claim_pending, consumer_name, decode, ensure_group, redis_client, read_group, xadd_json
 from ai_loop.notifications import delivery_outcome, terminal_email
 from ai_loop.planning import normalize_granularity
 from ai_loop.recovery import attempt_auto_recovery
@@ -1050,6 +1050,37 @@ def record_dead(settings, client, job_id: str | None, payload: dict[str, Any]) -
         notify_terminal(settings, job_id, "dead", str(payload.get("error") or payload))
 
 
+def process_message(settings, client, group, job_scope, message_id, fields) -> bool:
+    job_id = None
+    try:
+        request = decode(fields["request"])
+        job_id = request.get("job_id")
+        if not job_scope and request.get("scope") == "job":
+            client.xack(CLAUDE_REQUEST_STREAM, group, message_id)
+            return False
+        if job_scope and job_id != job_scope:
+            client.xack(CLAUDE_REQUEST_STREAM, group, message_id)
+            return False
+        handle_request(settings, client, request)
+        client.xack(CLAUDE_REQUEST_STREAM, group, message_id)
+        if job_scope and is_terminal_job(settings, job_scope):
+            print(f"job {job_scope}: terminal; Claude controller exiting")
+            return True
+    except Exception as exc:
+        print(f"controller error: {exc}")
+        if attempt_auto_recovery(settings, job_id, "controller", repr(exc), fields):
+            client.xack(CLAUDE_REQUEST_STREAM, group, message_id)
+            print(f"job {job_id}: auto recovery launched; Claude controller exiting")
+            return True
+        payload = {"where": "controller", "error": repr(exc), "fields": fields}
+        try:
+            record_dead(settings, client, job_id, payload)
+            client.xack(CLAUDE_REQUEST_STREAM, group, message_id)
+        except Exception as inner:
+            print(f"could not record dead event: {inner}")
+    return False
+
+
 def main() -> int:
     settings = load_settings()
     db.init_db(settings.db_path)
@@ -1065,6 +1096,13 @@ def main() -> int:
     if job_scope:
         print(f"job_scope: {job_scope}")
     print(f"listening: {CLAUDE_REQUEST_STREAM} group={group} consumer={consumer}")
+
+    pending = claim_pending(client, CLAUDE_REQUEST_STREAM, group, consumer)
+    if pending:
+        print(f"reclaimed {len(pending)} pending message(s)")
+    for message_id, fields in pending:
+        if process_message(settings, client, group, job_scope, message_id, fields):
+            return 0
 
     while True:
         try:
@@ -1082,33 +1120,8 @@ def main() -> int:
 
         _, entries = messages[0]
         for message_id, fields in entries:
-            job_id = None
-            try:
-                request = decode(fields["request"])
-                job_id = request.get("job_id")
-                if not job_scope and request.get("scope") == "job":
-                    client.xack(CLAUDE_REQUEST_STREAM, group, message_id)
-                    continue
-                if job_scope and job_id != job_scope:
-                    client.xack(CLAUDE_REQUEST_STREAM, group, message_id)
-                    continue
-                handle_request(settings, client, request)
-                client.xack(CLAUDE_REQUEST_STREAM, group, message_id)
-                if job_scope and is_terminal_job(settings, job_scope):
-                    print(f"job {job_scope}: terminal; Claude controller exiting")
-                    return 0
-            except Exception as exc:
-                print(f"controller error: {exc}")
-                if attempt_auto_recovery(settings, job_id, "controller", repr(exc), fields):
-                    client.xack(CLAUDE_REQUEST_STREAM, group, message_id)
-                    print(f"job {job_id}: auto recovery launched; Claude controller exiting")
-                    return 0
-                payload = {"where": "controller", "error": repr(exc), "fields": fields}
-                try:
-                    record_dead(settings, client, job_id, payload)
-                    client.xack(CLAUDE_REQUEST_STREAM, group, message_id)
-                except Exception as inner:
-                    print(f"could not record dead event: {inner}")
+            if process_message(settings, client, group, job_scope, message_id, fields):
+                return 0
 
 
 if __name__ == "__main__":

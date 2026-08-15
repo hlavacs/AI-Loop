@@ -107,6 +107,16 @@ def thread_job_message(settings: Any, message: EmailMessage, job_id: str, *, roo
         message["References"] = thread_id
 
 
+def command_token_lines(job: dict[str, Any]) -> list[str]:
+    token = str(job.get("email_token") or "").strip()
+    if not token:
+        return []
+    return [
+        f"Command token: {token}",
+        "Include this token in any reply so AI-Loop can verify the command came from you.",
+    ]
+
+
 def deliver_email(settings: Any, message: EmailMessage) -> tuple[bool, str]:
     if not settings.smtp_host.strip():
         return False, "email disabled: AI_LOOP_SMTP_HOST is empty"
@@ -151,6 +161,7 @@ def job_started_email(settings: Any, *, job: dict[str, Any]) -> tuple[bool, str]
                 "",
                 "Reply to this email with a new command for this job.",
                 "If the job is waiting for human input, AI-Loop will resume it automatically.",
+                *command_token_lines(job),
             ]
         )
     )
@@ -184,6 +195,7 @@ def terminal_email(
                 str(job["goal"]),
                 "",
                 "Reply to this email with a new command for this job.",
+                *command_token_lines(job),
             ]
         )
     )
@@ -237,6 +249,7 @@ def status_email(
                 str(job["goal"]),
                 "",
                 "Reply to this email with a new command for this job.",
+                *command_token_lines(job),
             ]
         )
     )

@@ -230,7 +230,7 @@ For example, reply with:
 Command: Use the fallback renderer, add a regression test, and continue.
 ```
 
-Only a message whose sender exactly matches `AI_LOOP_NOTIFY_EMAIL` and whose thread headers or reply subject identify the job is accepted. AI-Loop marks its own outgoing messages so a provider's inbox copy cannot be interpreted as a command. Accepted, applied, and failed command attempts appear in Recent events as `email_command_received`, `email_command_applied`, or `email_command_failed`.
+Only a message whose sender exactly matches `AI_LOOP_NOTIFY_EMAIL` and whose thread headers or reply subject identify the job is accepted. In addition, every job created with the current version carries a secret per-job command token. Each outgoing job email that invites a reply shows it as `Command token: <token>`; a reply must contain that token anywhere in its new (unquoted) text or the command is rejected and recorded as an `email_command_rejected` event, so a spoofed `From` header alone is not enough to inject a command. The token (and any `Command token:` prefix) is stripped before the command is stored. Jobs created before the token existed have no stored token and keep the previous sender-and-thread-only behavior. AI-Loop marks its own outgoing messages so a provider's inbox copy cannot be interpreted as a command. Accepted, applied, rejected, and failed command attempts appear in Recent events as `email_command_received`, `email_command_applied`, `email_command_rejected`, or `email_command_failed`.
 
 The watcher keeps running while a job is in `human_needed` so it can receive a reply. It exits when the job is done/dead or when a manual resume starts a replacement watcher.
 

@@ -288,12 +288,14 @@ class NotificationTests(unittest.TestCase):
                 "goal": "Ship it",
                 "controller": "opus",
                 "worker": "codex",
+                "email_token": "tok-start-1",
             },
         )
         self.assertTrue(sent)
         message = smtp.send_message.call_args.args[0]
         self.assertEqual(message["Message-ID"], job_thread_message_id(settings, "J-start"))
         self.assertIn("Reply to this email", message.get_content())
+        self.assertIn("Command token: tok-start-1", message.get_content())
 
     @patch("ai_loop.notifications.smtplib.SMTP")
     def test_done_email_uses_configured_recipient(self, smtp_class: MagicMock) -> None:
@@ -345,6 +347,7 @@ class NotificationTests(unittest.TestCase):
                 "worktree_path": "/work",
                 "history_summary": "Core implementation is in progress.",
                 "goal": "Ship it",
+                "email_token": "tok-status-1",
             },
             percent=42,
             task_count=4,
@@ -356,6 +359,7 @@ class NotificationTests(unittest.TestCase):
         message = smtp.send_message.call_args.args[0]
         self.assertIn("42%", message["Subject"])
         self.assertIn("Current task: Add integration tests", message.get_content())
+        self.assertIn("Command token: tok-status-1", message.get_content())
 
     @patch("ai_loop.notifications.smtplib.SMTP")
     def test_empty_password_disables_email_without_connecting(self, smtp_class: MagicMock) -> None:
@@ -526,6 +530,128 @@ class EmailCommandTests(unittest.TestCase):
                     for row in conn.execute(
                         "SELECT kind FROM events WHERE job_id = ? ORDER BY id",
                         ("J-command",),
+                    )
+                ]
+            self.assertIn("New command received by email: Use option B.", job["constraints"])
+            self.assertEqual(kinds, ["email_command_received", "email_command_applied"])
+
+    def test_reply_with_correct_token_is_accepted_and_token_stripped(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "loop.sqlite3"
+            db.init_db(path)
+            with db.transaction(path) as conn:
+                db.create_job(
+                    conn,
+                    job_id="J-token",
+                    repo_path=directory,
+                    worktree_path=directory,
+                    branch=None,
+                    base_ref="HEAD",
+                    goal="Test token acceptance",
+                    constraints=[],
+                    acceptance=[],
+                    test_cmd="true",
+                    max_iterations=10,
+                    use_worktree=False,
+                    email_token="tok-secret-9",
+                )
+            settings = SimpleNamespace(db_path=path, root_dir=Path(directory))
+            resumed = apply_email_command(
+                settings,
+                "J-token",
+                EmailCommand(
+                    "<reply-token-1>",
+                    "recipient@example.invalid",
+                    "Command token: tok-secret-9\nUse option B.",
+                    "Re: J-token",
+                ),
+            )
+            self.assertFalse(resumed)
+            with db.transaction(path) as conn:
+                job = db.get_job(conn, "J-token")
+                kinds = [
+                    row["kind"]
+                    for row in conn.execute(
+                        "SELECT kind FROM events WHERE job_id = ? ORDER BY id",
+                        ("J-token",),
+                    )
+                ]
+            self.assertIn("New command received by email: Use option B.", job["constraints"])
+            self.assertNotIn("tok-secret-9", json.dumps(job["constraints"]))
+            self.assertEqual(kinds, ["email_command_received", "email_command_applied"])
+
+    def test_reply_without_token_is_rejected_when_job_has_a_token(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "loop.sqlite3"
+            db.init_db(path)
+            with db.transaction(path) as conn:
+                db.create_job(
+                    conn,
+                    job_id="J-reject",
+                    repo_path=directory,
+                    worktree_path=directory,
+                    branch=None,
+                    base_ref="HEAD",
+                    goal="Test token rejection",
+                    constraints=[],
+                    acceptance=[],
+                    test_cmd="true",
+                    max_iterations=10,
+                    use_worktree=False,
+                    email_token="tok-secret-9",
+                )
+            settings = SimpleNamespace(db_path=path, root_dir=Path(directory))
+            resumed = apply_email_command(
+                settings,
+                "J-reject",
+                EmailCommand("<reply-token-2>", "recipient@example.invalid", "Use option B.", "Re: J-reject"),
+            )
+            self.assertFalse(resumed)
+            with db.transaction(path) as conn:
+                job = db.get_job(conn, "J-reject")
+                events = conn.execute(
+                    "SELECT kind, payload_json FROM events WHERE job_id = ? ORDER BY id",
+                    ("J-reject",),
+                ).fetchall()
+            self.assertEqual(job["constraints"], [])
+            self.assertEqual([row["kind"] for row in events], ["email_command_rejected"])
+            payload = json.loads(events[0]["payload_json"])
+            self.assertEqual(payload["message_id"], "<reply-token-2>")
+            self.assertIn("command token", payload["reason"])
+
+    def test_legacy_job_without_token_still_accepts_commands(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "loop.sqlite3"
+            db.init_db(path)
+            with db.transaction(path) as conn:
+                db.create_job(
+                    conn,
+                    job_id="J-legacy",
+                    repo_path=directory,
+                    worktree_path=directory,
+                    branch=None,
+                    base_ref="HEAD",
+                    goal="Test legacy acceptance",
+                    constraints=[],
+                    acceptance=[],
+                    test_cmd="true",
+                    max_iterations=10,
+                    use_worktree=False,
+                )
+            settings = SimpleNamespace(db_path=path, root_dir=Path(directory))
+            resumed = apply_email_command(
+                settings,
+                "J-legacy",
+                EmailCommand("<reply-token-3>", "recipient@example.invalid", "Use option B.", "Re: J-legacy"),
+            )
+            self.assertFalse(resumed)
+            with db.transaction(path) as conn:
+                job = db.get_job(conn, "J-legacy")
+                kinds = [
+                    row["kind"]
+                    for row in conn.execute(
+                        "SELECT kind FROM events WHERE job_id = ? ORDER BY id",
+                        ("J-legacy",),
                     )
                 ]
             self.assertIn("New command received by email: Use option B.", job["constraints"])

@@ -22,7 +22,7 @@ from ai_loop.config import (
 )
 from ai_loop.notifications import delivery_outcome, terminal_email
 from ai_loop.planning import normalize_granularity
-from ai_loop.queues import consumer_name, decode, ensure_group, redis_client, read_group, xadd_json
+from ai_loop.queues import claim_pending, consumer_name, decode, ensure_group, redis_client, read_group, xadd_json
 from ai_loop.recovery import attempt_auto_recovery
 from ai_loop.token_wait import replenishment_time, wait_until
 
@@ -550,6 +550,42 @@ def notify_terminal(settings, job_id: str, status: str, reason: str) -> None:
     print(f"job {job_id}: email notification {outcome} - {detail}")
 
 
+def process_message(settings, client, group, job_scope, message_id, fields) -> bool:
+    job_id = None
+    task_id = None
+    try:
+        payload = decode(fields["task"])
+        task_id = payload["task_id"]
+        with db.transaction(settings.db_path) as conn:
+            job_id = db.get_task(conn, task_id)["job_id"]
+        if not job_scope and payload.get("scope") == "job":
+            client.xack(CODEX_TASK_STREAM, group, message_id)
+            return False
+        if job_scope and job_id != job_scope:
+            client.xack(CODEX_TASK_STREAM, group, message_id)
+            return False
+        process_task(settings, client, task_id)
+        client.xack(CODEX_TASK_STREAM, group, message_id)
+        if job_scope and is_terminal_job(settings, job_scope):
+            print(f"job {job_scope}: terminal; Codex worker exiting")
+            return True
+    except Exception as exc:
+        print(f"worker error: {exc}")
+        if attempt_auto_recovery(settings, job_id, "worker", repr(exc), fields):
+            client.xack(CODEX_TASK_STREAM, group, message_id)
+            print(f"job {job_id}: auto recovery launched; Codex worker exiting")
+            return True
+        payload = {"where": "worker", "error": repr(exc), "fields": fields}
+        try:
+            record_dead(settings, client, job_id, payload, task_id)
+            if job_id:
+                notify_terminal(settings, job_id, "dead", repr(exc))
+            client.xack(CODEX_TASK_STREAM, group, message_id)
+        except Exception as inner:
+            print(f"could not record dead event: {inner}")
+    return False
+
+
 def main() -> int:
     settings = load_settings()
     db.init_db(settings.db_path)
@@ -565,6 +601,13 @@ def main() -> int:
     if job_scope:
         print(f"job_scope: {job_scope}")
     print(f"listening: {CODEX_TASK_STREAM} group={group} consumer={consumer}")
+
+    pending = claim_pending(client, CODEX_TASK_STREAM, group, consumer)
+    if pending:
+        print(f"reclaimed {len(pending)} pending message(s)")
+    for message_id, fields in pending:
+        if process_message(settings, client, group, job_scope, message_id, fields):
+            return 0
 
     while True:
         try:
@@ -582,38 +625,8 @@ def main() -> int:
 
         _, entries = messages[0]
         for message_id, fields in entries:
-            job_id = None
-            task_id = None
-            try:
-                payload = decode(fields["task"])
-                task_id = payload["task_id"]
-                with db.transaction(settings.db_path) as conn:
-                    job_id = db.get_task(conn, task_id)["job_id"]
-                if not job_scope and payload.get("scope") == "job":
-                    client.xack(CODEX_TASK_STREAM, group, message_id)
-                    continue
-                if job_scope and job_id != job_scope:
-                    client.xack(CODEX_TASK_STREAM, group, message_id)
-                    continue
-                process_task(settings, client, task_id)
-                client.xack(CODEX_TASK_STREAM, group, message_id)
-                if job_scope and is_terminal_job(settings, job_scope):
-                    print(f"job {job_scope}: terminal; Codex worker exiting")
-                    return 0
-            except Exception as exc:
-                print(f"worker error: {exc}")
-                if attempt_auto_recovery(settings, job_id, "worker", repr(exc), fields):
-                    client.xack(CODEX_TASK_STREAM, group, message_id)
-                    print(f"job {job_id}: auto recovery launched; Codex worker exiting")
-                    return 0
-                payload = {"where": "worker", "error": repr(exc), "fields": fields}
-                try:
-                    record_dead(settings, client, job_id, payload, task_id)
-                    if job_id:
-                        notify_terminal(settings, job_id, "dead", repr(exc))
-                    client.xack(CODEX_TASK_STREAM, group, message_id)
-                except Exception as inner:
-                    print(f"could not record dead event: {inner}")
+            if process_message(settings, client, group, job_scope, message_id, fields):
+                return 0
 
 
 if __name__ == "__main__":
