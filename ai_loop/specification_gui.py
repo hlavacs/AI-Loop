@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import copy
 import difflib
+import json
 import math
 import re
 import threading
@@ -73,6 +74,15 @@ class MetricAssertionParseError(ValueError):
         super().__init__(f"line {line_number}: {message}")
 
 
+class StructuredRecordParseError(ValueError):
+    """A structured-list error carrying its one-based source line."""
+
+    def __init__(self, line_number: int, message: str):
+        self.line_number = line_number
+        self.detail = message
+        super().__init__(f"line {line_number}: {message}")
+
+
 def parse_list_text(value: str) -> tuple[str, ...]:
     """Return one exact item per non-empty line, stripping only line endings."""
 
@@ -81,6 +91,66 @@ def parse_list_text(value: str) -> tuple[str, ...]:
 
 def format_list_text(values: Iterable[str]) -> str:
     return "\n".join(values)
+
+
+def parse_structured_records(value: str) -> tuple[str | dict[str, Any], ...]:
+    """Parse one descriptive string or JSON object per non-empty line.
+
+    Verification coverage and evidence collections support both legacy prose
+    entries and structured records.  Object-shaped lines are parsed eagerly so
+    malformed edits cannot silently become descriptive strings.
+    """
+
+    records: list[str | dict[str, Any]] = []
+    for line_number, raw_line in enumerate(value.splitlines(), 1):
+        if raw_line == "":
+            continue
+        candidate = raw_line.strip()
+        if not candidate.startswith(("{", '"')):
+            records.append(raw_line)
+            continue
+        try:
+            parsed = json.loads(raw_line)
+        except (json.JSONDecodeError, TypeError, ValueError) as exc:
+            raise StructuredRecordParseError(
+                line_number, f"expected a valid JSON object or descriptive text: {exc}"
+            ) from exc
+        if not isinstance(parsed, (str, dict)):
+            raise StructuredRecordParseError(
+                line_number, "expected a JSON object or descriptive string"
+            )
+        records.append(parsed)
+    return tuple(records)
+
+
+def format_structured_records(values: Iterable[str | Mapping[str, Any]]) -> str:
+    """Render mixed prose/structured records without dropping object fields."""
+
+    lines: list[str] = []
+    for value in values:
+        if isinstance(value, Mapping):
+            lines.append(
+                json.dumps(
+                    dict(value),
+                    sort_keys=True,
+                    separators=(",", ":"),
+                    ensure_ascii=False,
+                    allow_nan=False,
+                )
+            )
+            continue
+        if not isinstance(value, str):
+            raise TypeError("structured record must be a string or object")
+        stripped = value.strip()
+        if (
+            any(character in value for character in "\r\n")
+            or not stripped
+            or stripped.startswith(("{", '"'))
+        ):
+            lines.append(json.dumps(value, ensure_ascii=False))
+        else:
+            lines.append(value)
+    return "\n".join(lines)
 
 
 def _parse_finite_number(token: str, *, line_number: int, field: str) -> int | float:
@@ -321,8 +391,16 @@ VERIFICATION_FIELDS = (
     _Field("pass_criteria", "Pass criteria", "list"),
     _Field("declared_metrics", "Declared metric names", "list"),
     _Field("metric_assertions", "Metric assertions: name operator threshold [tolerance]", "metrics"),
-    _Field("coverage_targets", "Coverage targets", "list"),
-    _Field("required_evidence", "Required evidence declarations", "list"),
+    _Field(
+        "coverage_targets",
+        "Coverage targets: prose or one JSON object per line",
+        "records",
+    ),
+    _Field(
+        "required_evidence",
+        "Required evidence: prose or one JSON object per line",
+        "records",
+    ),
     _Field("automation", "Automation", "enum", tuple(item.value for item in AutomationLevel), "automated"),
     _Field("blocking", "Blocks autonomous completion", "bool", default=False),
     _Field("command_override", "Command override", group="Advanced execution and validation loop"),
@@ -341,11 +419,24 @@ def _verification_for_dialog(record: Mapping[str, Any] | None) -> dict[str, Any]
     loop = result.pop("validation_loop", {})
     result.update(loop)
     result["metric_assertions"] = format_metric_assertions(result.get("metric_assertions", ()))
+    result["coverage_targets"] = format_structured_records(
+        result.get("coverage_targets", ())
+    )
+    result["required_evidence"] = format_structured_records(
+        result.get("required_evidence", ())
+    )
     return result
 
 
 def _verification_from_dialog(record: Mapping[str, Any]) -> dict[str, Any]:
     result = copy.deepcopy(dict(record))
+    if isinstance(result.get("metric_assertions"), str):
+        result["metric_assertions"] = [
+            item.__dict__ for item in parse_metric_assertions(result["metric_assertions"])
+        ]
+    for key in ("coverage_targets", "required_evidence"):
+        if isinstance(result.get(key), str):
+            result[key] = list(parse_structured_records(result[key]))
     loop_keys = (
         "maximum_correction_attempts",
         "repetitions_per_attempt",
@@ -359,7 +450,7 @@ def _verification_from_dialog(record: Mapping[str, Any]) -> dict[str, Any]:
 
 
 class _RecordDialog:
-    """Scrollable structured-record dialog; callers never expose raw JSON."""
+    """Scrollable record dialog with lossless nested verification records."""
 
     def __init__(
         self,
@@ -408,13 +499,16 @@ class _RecordDialog:
             ttk.Label(body, text=field.label).grid(row=row, column=0, sticky="nw", padx=(0, 8), pady=4)
             value = initial_values.get(field.key, field.default)
             control: Any
-            if field.kind in {"text", "list", "metrics"}:
+            if field.kind in {"text", "list", "metrics", "records"}:
                 control = tk.Text(body, height=4 if field.kind == "text" else 5, wrap="word")
-                rendered = (
-                    value
-                    if isinstance(value, str)
-                    else format_list_text(value or ())
-                )
+                if isinstance(value, str):
+                    rendered = value
+                elif field.kind == "metrics":
+                    rendered = format_metric_assertions(value or ())
+                elif field.kind == "records":
+                    rendered = format_structured_records(value or ())
+                else:
+                    rendered = format_list_text(value or ())
                 control.insert("1.0", rendered)
             elif field.kind == "enum":
                 variable = tk.StringVar(value=str(value or field.default))
@@ -444,12 +538,14 @@ class _RecordDialog:
         result: dict[str, Any] = {}
         try:
             for key, (field, control) in self._controls.items():
-                if field.kind in {"text", "list", "metrics"}:
+                if field.kind in {"text", "list", "metrics", "records"}:
                     value: Any = control.get("1.0", "end-1c")
                     if field.kind == "list":
                         value = list(parse_list_text(value))
                     elif field.kind == "metrics":
                         value = [item.__dict__ for item in parse_metric_assertions(value)]
+                    elif field.kind == "records":
+                        value = list(parse_structured_records(value))
                 elif field.kind == "positive_int":
                     value = int(control.get())
                     if value <= 0:
@@ -1947,16 +2043,19 @@ def open_specification_editor(
 
 __all__ = [
     "MetricAssertionParseError",
+    "StructuredRecordParseError",
     "SpecificationEditor",
     "VerificationDashboardView",
     "document_to_record",
     "format_list_text",
     "format_metric_assertions",
+    "format_structured_records",
     "issues_by_tab",
     "model_to_record",
     "open_specification_editor",
     "parse_list_text",
     "parse_metric_assertions",
+    "parse_structured_records",
     "record_to_document",
     "record_to_model",
     "render_choice_summary",

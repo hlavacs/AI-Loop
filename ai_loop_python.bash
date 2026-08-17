@@ -32,7 +32,7 @@ choose_ai_loop_python() {
     return 0
   fi
 
-  for candidate in "$ai_loop_python_dir/.venv/bin/python" "$ai_loop_python_dir/.venv/bin/python3.14" "$ai_loop_python_dir/.venv/bin/python3.12" "$ai_loop_python_dir/.venv/bin/python3.11" "$ai_loop_python_dir/.venv/bin/python3.10" python3.14 python3.12 python3.11 python3.10 python3; do
+  for candidate in "$ai_loop_python_dir/.venv/bin/python" "$ai_loop_python_dir/.gui-venv/bin/python" "$ai_loop_python_dir/.venv/bin/python3.14" "$ai_loop_python_dir/.venv/bin/python3.12" "$ai_loop_python_dir/.venv/bin/python3.11" "$ai_loop_python_dir/.venv/bin/python3.10" python3.14 python3.12 python3.11 python3.10 python3; do
     if python_can_run "$candidate"; then
       printf '%s\n' "$candidate"
       return 0

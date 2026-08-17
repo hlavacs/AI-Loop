@@ -7,10 +7,14 @@ import pytest
 
 from ai_loop.specification_gui import (
     MetricAssertionParseError,
+    _verification_for_dialog,
+    _verification_from_dialog,
     document_to_record,
     format_metric_assertions,
+    format_structured_records,
     issues_by_tab,
     parse_metric_assertions,
+    parse_structured_records,
     record_to_document,
     render_choice_summary,
     render_specification_json_diff,
@@ -137,6 +141,78 @@ def test_metric_assertion_expression_round_trip_and_numeric_normalization() -> N
     assert format_metric_assertions(parsed) == (
         "duration_seconds <= 5 0.25\nrequests != 0\nerror_rate < 0.01"
     )
+
+
+def test_structured_verification_records_survive_edit_persist_reload_round_trip(
+    tmp_path: Path,
+) -> None:
+    payload = editable_document(tmp_path).to_dict()
+    verification = payload["verification"][0]
+    verification["coverage_targets"] = [
+        {
+            "name": "scenario-coverage",
+            "coverage_type": "scenario",
+            "description": "Original scenario observation",
+            "measurement_key": "scenario.rate",
+            "operator": ">=",
+            "threshold": 0.9,
+            "tolerance": 0.01,
+            "required_scenarios": ["ordinary", "invalid"],
+            "evidence_kind": "coverage",
+        }
+    ]
+    verification["required_evidence"] = [
+        {
+            "name": "scenario-observations",
+            "kind": "structured-data",
+            "media_type": "application/json",
+            "description": "Original structured observations",
+            "requirement_ids": ["R1", "R2"],
+        }
+    ]
+    document = SpecificationDocument.from_dict(payload, worktree=tmp_path)
+    service = SpecificationService(tmp_path / "loop.sqlite3", tmp_path / "artifacts")
+    created = service.create(
+        tmp_path,
+        document,
+        creator="author",
+        specification_id="SPEC-ROUND-TRIP",
+    )
+
+    record = document_to_record(created.document)
+    dialog_record = _verification_for_dialog(record["verification"][0])
+    dialog_record["metric_assertions"] = "changed_fields == 1 0"
+
+    coverage_records = list(parse_structured_records(dialog_record["coverage_targets"]))
+    coverage_records[0]["description"] = "Edited scenario observation"
+    coverage_records[0]["threshold"] = 0.95
+    dialog_record["coverage_targets"] = format_structured_records(coverage_records)
+
+    evidence_records = list(parse_structured_records(dialog_record["required_evidence"]))
+    evidence_records[0]["description"] = "Edited structured observations"
+    evidence_records[0]["media_type"] = "application/vnd.ai-loop.observations+json"
+    dialog_record["required_evidence"] = format_structured_records(evidence_records)
+
+    record["verification"][0] = _verification_from_dialog(dialog_record)
+    edited = record_to_document(record, worktree=tmp_path)
+    service.revise(
+        created.specification_id,
+        edited,
+        change_summary="Edit assertions and observation evidence",
+        creator="author",
+    )
+    reloaded = service.load(created.specification_id).document.to_dict()["verification"][0]
+
+    assert reloaded["metric_assertions"] == [
+        {
+            "metric": "changed_fields",
+            "operator": "==",
+            "threshold": 1,
+            "tolerance": 0,
+        }
+    ]
+    assert reloaded["coverage_targets"] == coverage_records
+    assert reloaded["required_evidence"] == evidence_records
 
 
 @pytest.mark.parametrize(
