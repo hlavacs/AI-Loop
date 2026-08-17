@@ -1,0 +1,264 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://ai-loop.local/schemas/verification_manifest.schema.json",
+  "title": "AI-Loop Verification Manifest",
+  "type": "object",
+  "additionalProperties": false,
+  "properties": {
+    "schema_version": { "const": "1.0" },
+    "specification": { "$ref": "#/$defs/specificationReference" },
+    "work_items": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/workItem" }
+    },
+    "verification": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/verificationEntry" }
+    }
+  },
+  "required": ["schema_version", "specification", "work_items", "verification"],
+  "$defs": {
+    "stableId": {
+      "type": "string",
+      "pattern": "^[A-Z][A-Z0-9]*(?:[-_][A-Z0-9]+)*$",
+      "maxLength": 64
+    },
+    "sha256": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$"
+    },
+    "stableIdArray": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/stableId" },
+      "uniqueItems": true
+    },
+    "stringArray": {
+      "type": "array",
+      "items": { "type": "string" }
+    },
+    "metricNameArray": {
+      "type": "array",
+      "items": { "type": "string", "minLength": 1 },
+      "uniqueItems": true
+    },
+    "specificationReference": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "id": { "$ref": "#/$defs/stableId" },
+        "version": { "type": "integer", "minimum": 1 },
+        "schema_version": { "type": "string", "minLength": 1 },
+        "content_hash": { "$ref": "#/$defs/sha256" }
+      },
+      "required": ["id", "version", "schema_version", "content_hash"]
+    },
+    "workItem": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "requirement_id": { "$ref": "#/$defs/stableId" },
+        "category": {
+          "type": "string",
+          "enum": ["functional", "quality", "interface", "data", "operational", "compliance"]
+        },
+        "priority": {
+          "type": "string",
+          "enum": ["must", "should", "could"]
+        },
+        "title": { "type": "string" },
+        "statement": { "type": "string" },
+        "acceptance_criteria": { "$ref": "#/$defs/stringArray" },
+        "linked_use_case_ids": { "$ref": "#/$defs/stableIdArray" },
+        "linked_risk_ids": { "$ref": "#/$defs/stableIdArray" },
+        "linked_verification_ids": { "$ref": "#/$defs/stableIdArray" }
+      },
+      "required": [
+        "requirement_id",
+        "category",
+        "priority",
+        "title",
+        "statement",
+        "acceptance_criteria",
+        "linked_use_case_ids",
+        "linked_risk_ids",
+        "linked_verification_ids"
+      ]
+    },
+    "metricAssertion": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "metric": { "type": "string", "minLength": 1 },
+        "operator": {
+          "type": "string",
+          "enum": ["<", "<=", "==", "!=", ">=", ">"]
+        },
+        "threshold": { "type": "number" },
+        "tolerance": {
+          "anyOf": [
+            { "type": "number", "minimum": 0 },
+            { "type": "null" }
+          ]
+        }
+      },
+      "required": ["metric", "operator", "threshold", "tolerance"]
+    },
+    "evidenceDeclaration": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "name": { "type": "string", "pattern": "^[A-Za-z][A-Za-z0-9._-]{0,127}$" },
+        "kind": {
+          "type": "string",
+          "enum": ["log", "structured-data", "intermediate-state", "trace", "image", "snapshot", "benchmark", "coverage", "reference-output", "comparison-result"]
+        },
+        "media_type": { "type": "string", "minLength": 1 },
+        "description": { "type": "string", "minLength": 1 },
+        "requirement_ids": { "$ref": "#/$defs/stableIdArray" }
+      },
+      "required": ["name", "kind", "media_type", "description", "requirement_ids"]
+    },
+    "coverageTarget": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "name": { "type": "string", "pattern": "^[A-Za-z][A-Za-z0-9._-]{0,127}$" },
+        "coverage_type": {
+          "type": "string",
+          "enum": ["source-line", "branch", "interface", "scenario", "state-transition", "requirement", "fixture", "invariant", "platform"]
+        },
+        "description": { "type": "string", "minLength": 1 },
+        "measurement_key": { "type": ["string", "null"] },
+        "operator": {
+          "anyOf": [
+            { "type": "string", "enum": ["<", "<=", "==", "!=", ">=", ">"] },
+            { "type": "null" }
+          ]
+        },
+        "threshold": { "type": ["number", "null"] },
+        "tolerance": {
+          "anyOf": [
+            { "type": "number", "minimum": 0 },
+            { "type": "null" }
+          ]
+        },
+        "required_scenarios": {
+          "type": "array",
+          "items": { "type": "string", "minLength": 1 },
+          "uniqueItems": true
+        },
+        "evidence_kind": {
+          "anyOf": [
+            { "const": "coverage" },
+            { "type": "null" }
+          ]
+        }
+      },
+      "required": ["name", "coverage_type", "description", "measurement_key", "operator", "threshold", "tolerance", "required_scenarios", "evidence_kind"]
+    },
+    "validationLoop": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "maximum_correction_attempts": { "type": "integer", "minimum": 1 },
+        "repetitions_per_attempt": { "type": "integer", "minimum": 1 },
+        "stagnation_limit": { "type": "integer", "minimum": 1 },
+        "escalation_condition": { "type": "string" },
+        "retain_evidence": { "type": "boolean" }
+      },
+      "required": [
+        "maximum_correction_attempts",
+        "repetitions_per_attempt",
+        "stagnation_limit",
+        "escalation_condition",
+        "retain_evidence"
+      ]
+    },
+    "verificationEntry": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "verification_id": { "$ref": "#/$defs/stableId" },
+        "title": { "type": "string" },
+        "requirement_ids": { "$ref": "#/$defs/stableIdArray" },
+        "risk_ids": { "$ref": "#/$defs/stableIdArray" },
+        "test_level": {
+          "type": "string",
+          "enum": ["static", "unit", "integration", "system", "acceptance", "property", "performance", "security", "visual"]
+        },
+        "method": {
+          "type": "string",
+          "enum": ["deterministic", "differential", "metamorphic", "statistical", "snapshot", "manual", "hybrid"]
+        },
+        "automation": {
+          "type": "string",
+          "enum": ["automated", "manual", "hybrid"]
+        },
+        "blocking": { "type": "boolean" },
+        "command": {
+          "anyOf": [
+            { "type": "string", "minLength": 1, "pattern": "\\S" },
+            { "type": "null" }
+          ]
+        },
+        "command_source": {
+          "type": "string",
+          "enum": ["specification", "job_default", "manual"]
+        },
+        "working_directory": { "type": "string", "minLength": 1 },
+        "timeout": { "type": "integer", "minimum": 1 },
+        "oracle": { "type": "string" },
+        "fixtures": { "$ref": "#/$defs/stringArray" },
+        "procedure": { "$ref": "#/$defs/stringArray" },
+        "pass_criteria": { "$ref": "#/$defs/stringArray" },
+        "metrics": { "$ref": "#/$defs/metricNameArray" },
+        "metric_assertions": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/metricAssertion" }
+        },
+        "coverage_targets": {
+          "type": "array",
+          "items": {
+            "oneOf": [
+              { "type": "string" },
+              { "$ref": "#/$defs/coverageTarget" }
+            ]
+          }
+        },
+        "required_evidence": {
+          "type": "array",
+          "items": {
+            "oneOf": [
+              { "type": "string" },
+              { "$ref": "#/$defs/evidenceDeclaration" }
+            ]
+          }
+        },
+        "validation_loop": { "$ref": "#/$defs/validationLoop" }
+      },
+      "required": [
+        "verification_id",
+        "title",
+        "requirement_ids",
+        "risk_ids",
+        "test_level",
+        "method",
+        "automation",
+        "blocking",
+        "command",
+        "command_source",
+        "working_directory",
+        "timeout",
+        "oracle",
+        "fixtures",
+        "procedure",
+        "pass_criteria",
+        "metrics",
+        "metric_assertions",
+        "coverage_targets",
+        "required_evidence",
+        "validation_loop"
+      ]
+    }
+  }
+}

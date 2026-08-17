@@ -125,6 +125,13 @@ from ai_loop.config import (
     sanitized_child_env,
 )
 from ai_loop.progress import estimate_progress
+from ai_loop.elicitation import CliStructuredOutputProvider
+from ai_loop.specification_gui import VerificationDashboardView, open_specification_editor
+from ai_loop.specifications import SpecificationService
+from ai_loop.verification_orchestrator import (
+    load_verification_dashboard_projection,
+    record_manual_verification_acknowledgement,
+)
 from ai_loop.planning import (
     GRANULARITIES,
     build_static_plan,
@@ -672,6 +679,29 @@ class LoopBackend:
                 "percent": percent,
                 "remaining": remaining,
             }
+
+    def verification_dashboard(self, job_id: str) -> tuple[dict[str, Any], ...] | None:
+        """Blocking integrity/data projection; call only from a background thread."""
+
+        return load_verification_dashboard_projection(self.settings.db_path, job_id)
+
+    def acknowledge_manual_verification(
+        self,
+        job_id: str,
+        verification_id: str,
+        *,
+        acknowledged_by: str,
+        note: str,
+    ) -> dict[str, Any]:
+        """Blocking audited write; call only from a background thread."""
+
+        return record_manual_verification_acknowledgement(
+            self.settings.db_path,
+            job_id,
+            verification_id,
+            acknowledged_by=acknowledged_by,
+            note=note,
+        )
 
     def process_status(self, job_id: str) -> dict[str, dict[str, Any]]:
         runtime_dir = self.runtime_dir(job_id)
@@ -1393,6 +1423,11 @@ class AiLoopGui(tk.Tk):
         # removes it. Read by on_close (warn before killing daemon threads
         # mid-destructive-work) and _exclusive_conflict.
         self._active_operations: set[str] = set()
+        self._specification_editors: set[Any] = set()
+        self._verification_load_running = False
+        self._verification_request_serial = 0
+        self._verification_last_loaded_at = 0.0
+        self._verification_last_loaded_job: str | None = None
         self._redis_sampler_inflight = False
         self.watch_job_id: str | None = None
         self.last_status_by_job: dict[str, str] = {}
@@ -1757,7 +1792,9 @@ class AiLoopGui(tk.Tk):
         create_actions.grid(row=4, column=0, columnspan=4, sticky="ew", pady=(5, 0))
         self.help_widget(ttk.Checkbutton(create_actions, text="No worktree", variable=self.no_worktree_var), "Run directly in the target repository instead of creating an isolated Git worktree.").pack(side="left", padx=(0, 12))
         self.help_widget(ttk.Checkbutton(create_actions, text="Allow parallel", variable=self.allow_parallel_var), "Allow this job to start even if another job is already active.").pack(side="left")
-        self.help_widget(ttk.Button(create_actions, text="Create Job", command=self.create_job), "Create the job with the current goal, static plan, granularity, test command, controller, worker, and environment settings.").pack(side="right")
+        self.help_widget(ttk.Button(create_actions, text="Quick Job", command=self.create_job), "Immediately create a normal text-goal job with the current goal, static plan, granularity, test command, controller, worker, and environment settings.").pack(side="right")
+        self.formal_spec_button = self.help_widget(ttk.Button(create_actions, text="Formal Spec", command=self.open_formal_specification), "Open the guided formal-specification editor using the current repository and optional Goal text. This does not create a job.")
+        self.formal_spec_button.pack(side="right", padx=(0, 6))
 
     def _build_jobs_frame(self, parent: ttk.Frame) -> None:
         frame = ttk.LabelFrame(parent, text="Jobs", padding=6)
@@ -1807,8 +1844,9 @@ class AiLoopGui(tk.Tk):
     def _build_detail_frame(self, parent: ttk.Frame) -> None:
         notebook = self.help_widget(
             ttk.Notebook(parent),
-            "Switch between the plain-language plan, current task, system status, controller messages, worker reports, database details, and raw process logs.",
+            "Switch between the plain-language plan, current task, system status, controller messages, worker reports, formal verification, database details, and raw process logs.",
         )
+        self.detail_notebook = notebook
         notebook.grid(row=0, column=0, sticky="nsew")
         plan_tab = ttk.Frame(notebook, padding=8)
         task_tab = ttk.Frame(notebook, padding=8)
@@ -1816,6 +1854,7 @@ class AiLoopGui(tk.Tk):
         controller_tab = ttk.Frame(notebook, padding=8)
         worker_tab = ttk.Frame(notebook, padding=8)
         details_tab = ttk.Frame(notebook, padding=8)
+        verification_tab = ttk.Frame(notebook)
         logs = ttk.Frame(notebook, padding=8)
         for tab, label in (
             (plan_tab, "Plan"),
@@ -1824,11 +1863,21 @@ class AiLoopGui(tk.Tk):
             (controller_tab, "Controller"),
             (worker_tab, "Worker"),
             (details_tab, "Details"),
+            (verification_tab, "Verification"),
             (logs, "Logs"),
         ):
             notebook.add(tab, text=label)
             tab.rowconfigure(0, weight=1)
             tab.columnconfigure(0, weight=1)
+        self.verification_tab = verification_tab
+        notebook.tab(verification_tab, state="hidden")
+        self.verification_dashboard_view = VerificationDashboardView(
+            verification_tab,
+            refresh_command=lambda: self.refresh_verification_dashboard(force=True),
+            acknowledge_command=self.acknowledge_selected_manual_verification,
+            default_actor=os.environ.get("USER") or os.environ.get("USERNAME") or "gui-user",
+        )
+        self.verification_dashboard_view.frame.grid(row=0, column=0, sticky="nsew")
         self.plan_text = self.help_widget(
             self.add_scrolled_text(plan_tab, 0, 0),
             "The fixed overall job plan in simple language. The highlighted line is the plan item most closely matching the current task.",
@@ -1954,6 +2003,69 @@ class AiLoopGui(tk.Tk):
         selected_dir = filedialog.askdirectory(initialdir=self.repo_var.get() or str(Path.home()), title="Choose repository folder")
         if selected_dir:
             self.repo_var.set(selected_dir)
+
+    def open_formal_specification(self) -> None:
+        """Open the additive formal workflow without entering the job lifecycle."""
+
+        try:
+            repository = Path(self.repo_var.get()).expanduser().resolve()
+            goal = self.goal_text.get("1.0", "end-1c")
+        except Exception as exc:
+            messagebox.showerror("Formal Specification", str(exc))
+            return
+
+        self.formal_spec_button.configure(state="disabled")
+        self._run_bg(
+            lambda: SpecificationService(self.backend.settings.db_path),
+            lambda service, error: self._finish_open_formal_specification(
+                service, error, repository=repository, goal=goal
+            ),
+            name="ai-loop-open-formal-specification",
+            label="Opening Formal Spec",
+        )
+
+    def _formal_elicitation_provider(self) -> CliStructuredOutputProvider:
+        """Snapshot the currently selected controller CLI/model on the Tk thread."""
+
+        provider = self.controller_var.get().strip().lower()
+        models = self.current_models()
+        return CliStructuredOutputProvider(
+            provider=provider,
+            binary=self.backend.provider_binary(provider, models),
+            model=models.controller_role_model,
+        )
+
+    def _finish_open_formal_specification(
+        self,
+        service: SpecificationService | None,
+        error: str | None,
+        *,
+        repository: Path,
+        goal: str,
+    ) -> None:
+        self.formal_spec_button.configure(state="normal")
+        if error is not None or service is None:
+            messagebox.showerror("Formal Specification", error or "Service initialization failed")
+            return
+
+        def editor_closed(editor: Any) -> None:
+            self._specification_editors.discard(editor)
+
+        try:
+            editor = open_specification_editor(
+                self,
+                service=service,
+                repository_path=repository,
+                initial_goal=goal,
+                creator=os.environ.get("USER") or os.environ.get("USERNAME") or "gui-user",
+                run_background=self._run_bg,
+                elicitation_provider_factory=self._formal_elicitation_provider,
+                on_close=editor_closed,
+            )
+        except Exception as exc:
+            messagebox.showerror("Formal Specification", str(exc))
+            return
+        self._specification_editors.add(editor)
 
     def create_job(self) -> None:
         goal = self.goal_text.get("1.0", "end").strip()
@@ -2215,6 +2327,7 @@ class AiLoopGui(tk.Tk):
             self.show_job(first)
         else:
             self.selected_job_id = None
+            self._set_verification_dashboard_visible(False)
             for widget in (
                 self.plan_text,
                 self.task_text,
@@ -2699,7 +2812,108 @@ class AiLoopGui(tk.Tk):
         self.set_text(self.controller_text, self.controller_view_text(details))
         self.set_text(self.worker_text, self.worker_view_text(details))
         self.set_text(self.detail_text, self.details_view_text(details))
+        formal = job.get("specification_id") is not None
+        self._set_verification_dashboard_visible(formal)
+        if formal:
+            self.refresh_verification_dashboard(job_id)
         self.refresh_log()
+
+    def _set_verification_dashboard_visible(self, visible: bool) -> None:
+        state = "normal" if visible else "hidden"
+        try:
+            self.detail_notebook.tab(self.verification_tab, state=state)
+        except tk.TclError:
+            return
+        if not visible:
+            self._verification_request_serial += 1
+            self._verification_last_loaded_job = None
+            self.verification_dashboard_view.clear(
+                "Quick Goal job selected. Formal verification does not apply."
+            )
+
+    def refresh_verification_dashboard(
+        self,
+        job_id: str | None = None,
+        *,
+        force: bool = False,
+    ) -> None:
+        selected = job_id or self.selected_job_id
+        if not selected or self._verification_load_running:
+            return
+        if (
+            not force
+            and self._verification_last_loaded_job == selected
+            and time.monotonic() - self._verification_last_loaded_at < 3.0
+        ):
+            return
+        self._verification_load_running = True
+        self._verification_request_serial += 1
+        request_serial = self._verification_request_serial
+        self.verification_dashboard_view.set_loading(
+            True, f"Loading trusted verification data for {selected}…"
+        )
+
+        def done(rows: Any, error: str | None) -> None:
+            self._verification_load_running = False
+            if request_serial != self._verification_request_serial or selected != self.selected_job_id:
+                return
+            self.verification_dashboard_view.set_loading(False)
+            if error is not None:
+                self.verification_dashboard_view.status_var.set(
+                    f"Could not load formal verification: {error}"
+                )
+                return
+            if rows is None:
+                self._set_verification_dashboard_visible(False)
+                return
+            self._verification_last_loaded_job = selected
+            self._verification_last_loaded_at = time.monotonic()
+            self.verification_dashboard_view.show_rows(selected, rows)
+
+        self._run_bg(
+            lambda: self.backend.verification_dashboard(selected),
+            done,
+            name=f"ai-loop-verification-dashboard-{selected}",
+            busy_attr="_verification_load_running",
+            label="Loading Formal Verification",
+        )
+
+    def acknowledge_selected_manual_verification(
+        self,
+        verification_id: str,
+        acknowledged_by: str,
+        note: str,
+    ) -> None:
+        job_id = self.selected_job_id
+        if not job_id or self._verification_load_running:
+            return
+        self._verification_load_running = True
+        self.verification_dashboard_view.set_loading(
+            True, f"Recording audited acknowledgement for {verification_id}…"
+        )
+
+        def done(_result: Any, error: str | None) -> None:
+            self._verification_load_running = False
+            self.verification_dashboard_view.set_loading(False)
+            if error is not None:
+                messagebox.showerror("Manual Acknowledgement Failed", error)
+                return
+            self.verification_dashboard_view.ack_note_var.set("")
+            self._verification_last_loaded_at = 0.0
+            self.refresh_verification_dashboard(job_id, force=True)
+
+        self._run_bg(
+            lambda: self.backend.acknowledge_manual_verification(
+                job_id,
+                verification_id,
+                acknowledged_by=acknowledged_by,
+                note=note,
+            ),
+            done,
+            name=f"ai-loop-manual-verification-{job_id}-{verification_id}",
+            busy_attr="_verification_load_running",
+            label="Recording Manual Verification Acknowledgement",
+        )
 
     def human_needed_actions(self, job: dict[str, Any], details: dict[str, Any]) -> list[str]:
         requirement = find_auth_requirement(details)

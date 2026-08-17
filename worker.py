@@ -24,7 +24,12 @@ from ai_loop.notifications import delivery_outcome, terminal_email
 from ai_loop.planning import normalize_granularity
 from ai_loop.queues import claim_pending, consumer_name, decode, ensure_group, redis_client, read_group, xadd_json
 from ai_loop.recovery import attempt_auto_recovery
+from ai_loop.specifications import SpecificationService
 from ai_loop.token_wait import replenishment_time, wait_until
+from ai_loop.verification_orchestrator import (
+    SubprocessVerificationRunner,
+    run_task_verification,
+)
 
 
 GROUP = "codex-workers"
@@ -226,7 +231,12 @@ WORKER_NAMES = {"claude": "Claude CLI", "fable": "Claude Fable", "opus": "Claude
 WORKER_LABELS = {"claude": "Claude", "fable": "Fable", "opus": "Opus", "codex": "Codex", "gemini": "Gemini"}
 
 
-def codex_prompt(job: dict, task: dict, worker: str = "codex") -> str:
+def codex_prompt(
+    job: dict,
+    task: dict,
+    worker: str = "codex",
+    formal_context: object | None = None,
+) -> str:
     guidance_files = referenced_existing_files(job, task)
     crash_safe_runner = Path(__file__).resolve().parent / "ai_run_crash_safe.bash"
     worker_name = WORKER_NAMES.get(worker, "Codex CLI")
@@ -243,7 +253,7 @@ def codex_prompt(job: dict, task: dict, worker: str = "codex") -> str:
         scope_rules = """- Implement this medium-sized coherent task completely.
 - Group directly related changes, but do not expand into independent features or broad cleanup.
 - Stop once this task's acceptance criteria are met."""
-    return f"""You are {worker_name}, the implementation worker in a controller-managed loop.
+    prompt = f"""You are {worker_name}, the implementation worker in a controller-managed loop.
 
 Repository: {job["worktree_path"]}
 Job: {job["id"]}
@@ -277,6 +287,36 @@ Rules:
 - Do not commit changes.
 - Do not merge branches.
 - If blocked by missing tools, sandboxing, permissions, or unclear requirements, stop and explain the blocker.
+"""
+    if formal_context is None:
+        return prompt
+    specification = getattr(formal_context, "specification")
+    manifest = getattr(formal_context, "manifest")
+    runtime_summary = getattr(formal_context, "runtime_verification_summary")
+    traceability = {
+        "requirement_ids": list(task.get("requirement_ids") or []),
+        "verification_ids": list(task.get("verification_ids") or []),
+    }
+    return prompt + f"""
+Formal execution contract:
+
+Approved immutable specification (authoritative, complete structured contract):
+{db.to_json(specification)}
+
+Immutable execution manifest (authoritative traceability and verification contract):
+{db.to_json(manifest)}
+
+Current task traceability:
+{db.to_json(traceability)}
+
+Runtime verification summary:
+{db.to_json(list(runtime_summary))}
+
+Additional formal-job rules:
+- Treat the pinned specification and execution manifest as authoritative. Implement only the linked requirement and verification contracts while preserving their stable IDs.
+- The linked formal verification cases REQUIRE their declared test targets, fixtures, independent oracle support, metric emitters, and evidence producers. Implement all of them; production code without that verification infrastructure is incomplete.
+- Ensure the work can emit the metrics and evidence explicitly demanded by every linked case, and keep each implementation/test/evidence change traceable to the current task IDs.
+- Give each executable case a traceable `AI_LOOP_CASE={{"verification_id":"..."}}` marker (or an equivalent adapter declaration). A broad test command that merely exits successfully does not realize a case.
 """
 
 
@@ -351,6 +391,12 @@ def process_task(settings, client, task_id: str) -> None:
     with db.transaction(settings.db_path) as conn:
         task = db.get_task(conn, task_id)
         job = db.get_job(conn, task["job_id"])
+
+    formal_context = SpecificationService(settings.db_path).load_job_prompt_context(
+        str(job["id"])
+    )
+
+    with db.transaction(settings.db_path) as conn:
         db.update_task_status(conn, task_id, "running")
         running_status = "fixing" if str(task["created_by"]) == "claude:repair" else "implementing"
         db.update_job_status(conn, job["id"], running_status)
@@ -380,7 +426,11 @@ def process_task(settings, client, task_id: str) -> None:
         status = "human_needed"
         print(error)
     else:
-        prompt = codex_prompt(job, task, worker)
+        prompt = (
+            codex_prompt(job, task, worker)
+            if formal_context is None
+            else codex_prompt(job, task, worker, formal_context=formal_context)
+        )
         bypass_sandbox = settings.codex_bypass_sandbox
         if bypass_sandbox:
             print("sandbox bypass enabled via CODEX_BYPASS_SANDBOX")
@@ -515,6 +565,34 @@ def process_task(settings, client, task_id: str) -> None:
             kind="codex_run_finished",
             payload={"run_id": run_id, "task_id": task_id, "status": status, "error": error},
         )
+
+    if status != "human_needed" and formal_context is not None:
+        verification_results = run_task_verification(
+            settings.db_path,
+            str(job["id"]),
+            task_id,
+            formal_context.manifest,
+            SubprocessVerificationRunner(),
+            worker_run_id=run_id,
+        )
+        with db.transaction(settings.db_path) as conn:
+            db.add_event(
+                conn,
+                job_id=str(job["id"]),
+                kind="formal_task_verification_finished",
+                payload={
+                    "task_id": task_id,
+                    "worker_run_id": run_id,
+                    "cases": [
+                        {
+                            "verification_id": result.verification_id,
+                            "attempt": result.attempt,
+                            "status": result.status,
+                        }
+                        for result in verification_results
+                    ],
+                },
+            )
 
     if status == "human_needed":
         payload = {

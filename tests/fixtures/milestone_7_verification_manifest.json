@@ -1,0 +1,81 @@
+{
+  "schema_version": "1.0",
+  "specification": {
+    "content_hash": "16686255d3e8946316e26ac6684aa256d15e6be3fd401da323c3b0e03993060c",
+    "id": "SPEC7",
+    "schema_version": "1.0",
+    "version": 7
+  },
+  "verification": [
+    {
+      "automation": "automated",
+      "blocking": true,
+      "command": "python -m pytest -q tests/test_contract.py",
+      "command_source": "specification",
+      "coverage_targets": [
+        "Focused scenario"
+      ],
+      "fixtures": [
+        "tests/fixtures/input.json"
+      ],
+      "method": "deterministic",
+      "metric_assertions": [
+        {
+          "metric": "duration_seconds",
+          "operator": "<=",
+          "threshold": 5,
+          "tolerance": 0
+        }
+      ],
+      "metrics": [
+        "duration_seconds"
+      ],
+      "oracle": "Expected result encoded independently in the fixture",
+      "pass_criteria": [
+        "The command exits zero and the metric is within bounds"
+      ],
+      "procedure": [
+        "Run the focused command",
+        "Evaluate the emitted metric"
+      ],
+      "required_evidence": [
+        "Focused test log"
+      ],
+      "requirement_ids": [
+        "R1"
+      ],
+      "risk_ids": [],
+      "test_level": "acceptance",
+      "timeout": 45,
+      "title": "Focused command contract",
+      "validation_loop": {
+        "escalation_condition": "Escalate after bounded attempts",
+        "maximum_correction_attempts": 2,
+        "repetitions_per_attempt": 2,
+        "retain_evidence": true,
+        "stagnation_limit": 1
+      },
+      "verification_id": "VT1",
+      "working_directory": "tests"
+    }
+  ],
+  "work_items": [
+    {
+      "acceptance_criteria": [
+        "The focused command passes"
+      ],
+      "category": "functional",
+      "linked_risk_ids": [],
+      "linked_use_case_ids": [
+        "UC1"
+      ],
+      "linked_verification_ids": [
+        "VT1"
+      ],
+      "priority": "must",
+      "requirement_id": "R1",
+      "statement": "The system shall run the focused verification command.",
+      "title": "Focused execution"
+    }
+  ]
+}

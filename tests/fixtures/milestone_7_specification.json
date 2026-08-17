@@ -1,0 +1,121 @@
+{
+  "assumptions": [
+    "Python is available"
+  ],
+  "constraints": [
+    "Keep the command portable"
+  ],
+  "decisions": [],
+  "dependencies": [],
+  "in_scope": [
+    "One deterministic command"
+  ],
+  "objectives": [
+    "Retain the approved execution contract"
+  ],
+  "open_questions": [],
+  "out_of_scope": [
+    "Unrelated commands"
+  ],
+  "requirements": [
+    {
+      "acceptance_criteria": [
+        "The focused command passes"
+      ],
+      "category": "functional",
+      "id": "R1",
+      "priority": "must",
+      "rationale": "The behavior must remain executable",
+      "source": "Milestone 7 fixture",
+      "statement": "The system shall run the focused verification command.",
+      "title": "Focused execution"
+    }
+  ],
+  "risks": [],
+  "schema_version": "1.0",
+  "stakeholders": [
+    "Maintainers"
+  ],
+  "summary": "Frozen before Milestone 8 to verify serialization compatibility.",
+  "title": "Milestone 7 execution contract",
+  "use_cases": [
+    {
+      "actors": [
+        "Maintainer"
+      ],
+      "alternate_flows": [
+        "Use the pinned command override"
+      ],
+      "error_and_edge_cases": [
+        "A failed assertion blocks completion"
+      ],
+      "id": "UC1",
+      "main_flow": [
+        "Run the verification case",
+        "Read the emitted metric"
+      ],
+      "postconditions": [
+        "The result is recorded"
+      ],
+      "preconditions": [
+        "The worktree exists"
+      ],
+      "requirement_ids": [
+        "R1"
+      ],
+      "title": "Verify the command",
+      "trigger": "A worker run completes"
+    }
+  ],
+  "verification": [
+    {
+      "automation": "automated",
+      "blocking": true,
+      "command_override": "python -m pytest -q tests/test_contract.py",
+      "coverage_targets": [
+        "Focused scenario"
+      ],
+      "declared_metrics": [
+        "duration_seconds"
+      ],
+      "fixtures": [
+        "tests/fixtures/input.json"
+      ],
+      "id": "VT1",
+      "method": "deterministic",
+      "metric_assertions": [
+        {
+          "metric": "duration_seconds",
+          "operator": "<=",
+          "threshold": 5,
+          "tolerance": 0
+        }
+      ],
+      "oracle": "Expected result encoded independently in the fixture",
+      "pass_criteria": [
+        "The command exits zero and the metric is within bounds"
+      ],
+      "procedure": [
+        "Run the focused command",
+        "Evaluate the emitted metric"
+      ],
+      "required_evidence": [
+        "Focused test log"
+      ],
+      "requirement_ids": [
+        "R1"
+      ],
+      "test_level": "acceptance",
+      "timeout": 45,
+      "title": "Focused command contract",
+      "validation_loop": {
+        "escalation_condition": "Escalate after bounded attempts",
+        "maximum_correction_attempts": 2,
+        "repetitions_per_attempt": 2,
+        "retain_evidence": true,
+        "stagnation_limit": 1
+      },
+      "working_directory": "tests"
+    }
+  ]
+}

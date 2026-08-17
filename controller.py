@@ -10,7 +10,7 @@ import time
 import uuid
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Callable
+from typing import Any, Callable, Mapping, Sequence
 
 from redis.exceptions import ConnectionError, TimeoutError
 
@@ -29,7 +29,9 @@ from ai_loop.queues import claim_pending, consumer_name, decode, ensure_group, r
 from ai_loop.notifications import delivery_outcome, terminal_email
 from ai_loop.planning import normalize_granularity
 from ai_loop.recovery import attempt_auto_recovery
+from ai_loop.specifications import SpecificationService
 from ai_loop.token_wait import is_token_limit, replenishment_time, wait_until
+from ai_loop.verification_orchestrator import evaluate_completion_gate
 
 
 GROUP = "claude-controllers"
@@ -101,6 +103,14 @@ def is_terminal_job(settings, job_id: str) -> bool:
 
 class PromotionError(RuntimeError):
     pass
+
+
+class CompletionDecisionError(ValueError):
+    """A formal controller decision violates the fresh-run completion gate."""
+
+    def __init__(self, message: str, *, final_verification_required: bool = False):
+        self.final_verification_required = final_verification_required
+        super().__init__(message)
 
 
 def timestamp_id(prefix: str) -> str:
@@ -175,9 +185,315 @@ def validate_json_round_trip(payload: dict[str, Any]) -> None:
         raise ValueError("decision JSON failed round-trip validation")
 
 
-def parse_and_validate_decision(text: str) -> dict[str, Any]:
+def _manifest_payload(manifest: Any) -> dict[str, Any]:
+    if isinstance(manifest, dict):
+        return manifest
+    to_dict = getattr(manifest, "to_dict", None)
+    if callable(to_dict):
+        payload = to_dict()
+        if isinstance(payload, dict):
+            return payload
+    raise ValueError("formal task traceability requires a verification manifest object")
+
+
+def _traceability_ids(next_task: dict[str, Any], field: str) -> list[str]:
+    value = next_task.get(field, [])
+    if not isinstance(value, list):
+        raise ValueError(f"next_task.{field} must be an array")
+    if any(not isinstance(item, str) for item in value):
+        raise ValueError(f"next_task.{field} must contain only strings")
+    seen: set[str] = set()
+    duplicates: set[str] = set()
+    for item in value:
+        if item in seen:
+            duplicates.add(item)
+        seen.add(item)
+    if duplicates:
+        raise ValueError(
+            f"next_task.{field} contains duplicate IDs: {', '.join(sorted(duplicates))}"
+        )
+    return value
+
+
+def validate_decision_traceability(
+    decision: dict[str, Any], manifest: Any | None
+) -> None:
+    """Validate task IDs against a formal manifest or Quick Goal isolation."""
+
+    if decision.get("action") not in {"CONTINUE", "REPAIR"}:
+        return
+    next_task = decision.get("next_task")
+    if not isinstance(next_task, dict):
+        return  # The base validator reports this with its established message.
+    requirement_ids = _traceability_ids(next_task, "requirement_ids")
+    verification_ids = _traceability_ids(next_task, "verification_ids")
+    if manifest is None:
+        if requirement_ids or verification_ids:
+            raise ValueError(
+                "Quick Goal next_task must keep requirement_ids and verification_ids empty"
+            )
+        return
+
+    payload = _manifest_payload(manifest)
+    known_requirements = {
+        str(item.get("requirement_id"))
+        for item in payload.get("work_items", [])
+        if isinstance(item, dict)
+    }
+    known_verifications = {
+        str(item.get("verification_id"))
+        for item in payload.get("verification", [])
+        if isinstance(item, dict)
+    }
+    unknown_requirements = sorted(set(requirement_ids) - known_requirements)
+    if unknown_requirements:
+        raise ValueError(
+            "next_task.requirement_ids contains IDs absent from the verification manifest: "
+            + ", ".join(unknown_requirements)
+        )
+    unknown_verifications = sorted(set(verification_ids) - known_verifications)
+    if unknown_verifications:
+        raise ValueError(
+            "next_task.verification_ids contains IDs absent from the verification manifest: "
+            + ", ".join(unknown_verifications)
+        )
+    if not requirement_ids and not verification_ids:
+        raise ValueError(
+            "formal next_task must advance at least one manifest requirement_id or verification_id"
+        )
+
+
+def unrealized_automated_cases(
+    realization_summary: Sequence[Mapping[str, Any]] | None,
+) -> tuple[Mapping[str, Any], ...]:
+    """Return formal cases whose verification infrastructure is incomplete."""
+
+    if realization_summary is None:
+        return ()
+    return tuple(
+        item
+        for item in realization_summary
+        if item.get("automation") != "manual"
+        and item.get("status", item.get("realization_state")) == "unrealized"
+    )
+
+
+def validate_decision_realization(
+    decision: dict[str, Any],
+    realization_summary: Sequence[Mapping[str, Any]] | None,
+) -> None:
+    """Prefer infrastructure work and prevent completion while cases are unrealized."""
+
+    if any(
+        bool(item.get("blocking"))
+        and item.get("status") == "executable_but_failing"
+        and int(item.get("remaining_attempt_budget") or 0) > 0
+        for item in realization_summary or ()
+    ):
+        # A concrete bounded failure takes precedence over unrelated missing
+        # infrastructure; the correction validator below enforces its exact ID.
+        return
+    pending = unrealized_automated_cases(realization_summary)
+    if not pending:
+        return
+    pending_ids = {
+        str(item.get("verification_id"))
+        for item in pending
+        if item.get("verification_id")
+    }
+    if decision.get("action") in {"CONTINUE", "REPAIR"}:
+        next_task = decision.get("next_task")
+        if not isinstance(next_task, dict):
+            return
+        verification_ids = next_task.get("verification_ids", [])
+        if not isinstance(verification_ids, list):
+            return
+        if pending_ids.isdisjoint(
+            item for item in verification_ids if isinstance(item, str)
+        ):
+            raise ValueError(
+                "formal work must prioritize a focused verification-infrastructure "
+                "task carrying one of these unrealized verification IDs: "
+                + ", ".join(sorted(pending_ids))
+            )
+        return
+    if decision.get("action") != "DONE":
+        return
+    details: list[str] = []
+    for item in pending:
+        verification_id = str(item.get("verification_id") or "unknown")
+        missing = item.get("missing_infrastructure")
+        if isinstance(missing, list) and missing:
+            details.append(f"{verification_id}: {', '.join(map(str, missing))}")
+        else:
+            details.append(verification_id)
+    raise ValueError(
+        "formal DONE is invalid because automated verification infrastructure is "
+        "unrealized; create a focused verification-infrastructure task for "
+        + "; ".join(details)
+    )
+
+
+def build_focused_repair_context(
+    verification_summary: Sequence[Mapping[str, Any]] | None,
+) -> tuple[dict[str, Any], ...]:
+    """Assemble only retryable blocking failures; ``None`` is Quick Goal isolation."""
+
+    if verification_summary is None:
+        return ()
+    contexts: list[dict[str, Any]] = []
+    for item in verification_summary:
+        if not bool(item.get("blocking")) or item.get("automation") == "manual":
+            continue
+        if item.get("status") != "executable_but_failing":
+            continue
+        remaining = int(item.get("remaining_attempt_budget") or 0)
+        if remaining <= 0:
+            continue
+        failed = item.get("latest_failed_repetition")
+        if not isinstance(failed, Mapping):
+            continue
+        contexts.append(
+            {
+                "failed_case": {
+                    "verification_id": str(item.get("verification_id") or ""),
+                    "title": str(item.get("title") or ""),
+                    "requirement_ids": list(item.get("requirement_ids") or []),
+                },
+                "failed_repetition": failed.get("repetition"),
+                "expected_vs_actual": list(failed.get("expected_vs_actual") or []),
+                "retained_evidence_paths": list(failed.get("evidence_paths") or []),
+                "recent_metric_trend": str(item.get("metric_trend") or "insufficient"),
+                "metric_history": list(item.get("metric_history") or []),
+                "previous_repair_goals": list(item.get("previous_repair_goals") or []),
+                "remaining_attempt_budget": remaining,
+                "consecutive_failures": int(item.get("consecutive_failures") or 0),
+                "stagnation": {
+                    "count": int(item.get("stagnation_count") or 0),
+                    "limit": int(item.get("stagnation_limit") or 0),
+                    "series": int(item.get("stagnation_series") or 0),
+                },
+                "last_error": item.get("last_error"),
+                "failure_fingerprint": item.get("failure_fingerprint"),
+            }
+        )
+    return tuple(contexts)
+
+
+def validate_decision_correction(
+    decision: dict[str, Any],
+    verification_summary: Sequence[Mapping[str, Any]] | None,
+) -> None:
+    """Keep remaining retries focused and prevent broad replanning."""
+
+    contexts = build_focused_repair_context(verification_summary)
+    if not contexts:
+        return
+    context = contexts[0]
+    verification_id = context["failed_case"]["verification_id"]
+    next_task = decision.get("next_task")
+    if decision.get("action") != "REPAIR" or not isinstance(next_task, dict):
+        raise ValueError(
+            "blocking verification has retry budget remaining; return REPAIR for the "
+            f"focused failure {verification_id}, not broad replanning"
+        )
+    verification_ids = next_task.get("verification_ids")
+    if verification_ids != [verification_id]:
+        raise ValueError(
+            "focused correction task must carry exactly the failed verification ID: "
+            + verification_id
+        )
+
+
+def validate_decision_completion(
+    decision: dict[str, Any],
+    verification_summary: Sequence[Mapping[str, Any]] | None,
+    *,
+    worker_run_id: str | None,
+    require_final_verification_task: bool = False,
+) -> None:
+    """Enforce fresh formal evidence without affecting Quick Goal decisions."""
+
+    gate = evaluate_completion_gate(
+        verification_summary,
+        worker_run_id=worker_run_id,
+    )
+    if gate is None:
+        return
+    if gate.escalated_verification_ids:
+        if decision.get("action") != "HUMAN_NEEDED":
+            raise CompletionDecisionError(
+                "formal blocking verification is escalated and requires HUMAN_NEEDED: "
+                + ", ".join(gate.escalated_verification_ids)
+            )
+        reports = [
+            item.get("escalation_report")
+            for item in verification_summary or ()
+            if str(item.get("verification_id")) in gate.escalated_verification_ids
+        ]
+        if reports and all(isinstance(item, Mapping) for item in reports):
+            decision["escalation_report"] = (
+                dict(reports[0])
+                if len(reports) == 1
+                else {"reports": [dict(item) for item in reports]}
+            )
+        return
+    if require_final_verification_task:
+        next_task = decision.get("next_task")
+        if decision.get("action") != "CONTINUE" or not isinstance(next_task, dict):
+            raise CompletionDecisionError(
+                "replace premature formal DONE with exactly one CONTINUE final "
+                "verification-only task"
+            )
+        requirement_ids = next_task.get("requirement_ids")
+        verification_ids = next_task.get("verification_ids")
+        if requirement_ids != [] or verification_ids != list(
+            gate.blocking_verification_ids
+        ):
+            raise CompletionDecisionError(
+                "the final verification-only task must have no requirement_ids and "
+                "must carry every blocking verification ID exactly once in manifest "
+                "order: "
+                + ", ".join(gate.blocking_verification_ids)
+            )
+        return
+    if decision.get("action") != "DONE" or gate.ready:
+        return
+    if gate.failing_verification_ids:
+        raise CompletionDecisionError(
+            "formal DONE is invalid because blocking verification is failing; "
+            "return REPAIR for: " + ", ".join(gate.failing_verification_ids)
+        )
+    pending_or_stale = (*gate.pending_verification_ids, *gate.stale_verification_ids)
+    raise CompletionDecisionError(
+        "formal DONE is invalid because blocking evidence is pending or stale for "
+        f"worker run {worker_run_id!r}; remake the decision as exactly one CONTINUE "
+        "final verification-only task with empty requirement_ids and every blocking "
+        "verification_id: "
+        + ", ".join(pending_or_stale),
+        final_verification_required=True,
+    )
+
+
+def parse_and_validate_decision(
+    text: str,
+    traceability_manifest: Any | None = None,
+    realization_summary: Sequence[Mapping[str, Any]] | None = None,
+    *,
+    worker_run_id: str | None = None,
+    require_final_verification_task: bool = False,
+) -> dict[str, Any]:
     decision = extract_json(text)
     validate_decision(decision)
+    validate_decision_traceability(decision, traceability_manifest)
+    validate_decision_realization(decision, realization_summary)
+    validate_decision_correction(decision, realization_summary)
+    validate_decision_completion(
+        decision,
+        realization_summary,
+        worker_run_id=worker_run_id,
+        require_final_verification_task=require_final_verification_task,
+    )
     validate_json_round_trip(decision)
     return decision
 
@@ -197,7 +513,14 @@ def claude_transient_retry_delay(attempt: int) -> float:
     return min(delay, CLAUDE_TRANSIENT_RETRY_MAX_BACKOFF_SECONDS)
 
 
-def json_remake_prompt(original_prompt: str, invalid_output: str, error: Exception, sizing: str = "normal") -> str:
+def json_remake_prompt(
+    original_prompt: str,
+    invalid_output: str,
+    error: Exception,
+    sizing: str = "normal",
+    *,
+    formal: bool = False,
+) -> str:
     return f"""Your previous response could not be accepted because it was not valid decision JSON.
 
 JSON/parser/schema error:
@@ -208,7 +531,7 @@ Invalid response tail:
 
 Remake the response now. Return one valid JSON object only, with no prose before or after it.
 The JSON must parse with json.loads and must satisfy this schema:
-{schema_text(sizing)}
+{schema_text(sizing, formal=formal)}
 
 Use the same planning/review context as before:
 {original_prompt}
@@ -312,7 +635,15 @@ def refreshed_instruction_files(job: dict[str, Any], task: dict[str, Any] | None
     return snapshots
 
 
-def run_claude(claude_bin: str, prompt: str, model: str = "", sizing: str = "normal") -> dict[str, Any]:
+def run_claude(
+    claude_bin: str,
+    prompt: str,
+    model: str = "",
+    sizing: str = "normal",
+    traceability_manifest: Any | None = None,
+    realization_summary: Sequence[Mapping[str, Any]] | None = None,
+    worker_run_id: str | None = None,
+) -> dict[str, Any]:
     if shutil.which(claude_bin) is None:
         return {
             "action": "HUMAN_NEEDED",
@@ -334,6 +665,7 @@ def run_claude(claude_bin: str, prompt: str, model: str = "", sizing: str = "nor
     current_prompt = prompt
     last_output = ""
     last_error: Exception | None = None
+    require_final_verification_task = False
     for attempt in range(CLAUDE_JSON_REMAKE_ATTEMPTS + 1):
         label = "running Claude controller" if attempt == 0 else f"remaking Claude JSON decision attempt {attempt}"
         print(label)
@@ -391,12 +723,25 @@ def run_claude(claude_bin: str, prompt: str, model: str = "", sizing: str = "nor
                 "history_summary": "Claude controller failed before producing a usable decision.",
             }
         try:
-            return parse_and_validate_decision(proc.stdout)
+            return parse_and_validate_decision(
+                proc.stdout,
+                traceability_manifest,
+                realization_summary,
+                worker_run_id=worker_run_id,
+                require_final_verification_task=require_final_verification_task,
+            )
         except (json.JSONDecodeError, ValueError) as exc:
             last_error = exc
+            if isinstance(exc, CompletionDecisionError):
+                require_final_verification_task = (
+                    require_final_verification_task
+                    or exc.final_verification_required
+                )
             if attempt >= CLAUDE_JSON_REMAKE_ATTEMPTS:
                 break
-            current_prompt = json_remake_prompt(prompt, output, exc, sizing)
+            current_prompt = json_remake_prompt(
+                prompt, output, exc, sizing, formal=traceability_manifest is not None
+            )
 
     raise ValueError(
         "Claude did not produce valid decision JSON after "
@@ -404,7 +749,16 @@ def run_claude(claude_bin: str, prompt: str, model: str = "", sizing: str = "nor
     )
 
 
-def run_codex_controller(codex_bin: str, prompt: str, workdir: str, model: str = "", sizing: str = "normal") -> dict[str, Any]:
+def run_codex_controller(
+    codex_bin: str,
+    prompt: str,
+    workdir: str,
+    model: str = "",
+    sizing: str = "normal",
+    traceability_manifest: Any | None = None,
+    realization_summary: Sequence[Mapping[str, Any]] | None = None,
+    worker_run_id: str | None = None,
+) -> dict[str, Any]:
     if shutil.which(codex_bin) is None:
         return {
             "action": "HUMAN_NEEDED",
@@ -415,6 +769,7 @@ def run_codex_controller(codex_bin: str, prompt: str, workdir: str, model: str =
     current_prompt = prompt
     last_output = ""
     last_error: Exception | None = None
+    require_final_verification_task = False
     for attempt in range(CLAUDE_JSON_REMAKE_ATTEMPTS + 1):
         label = "running Codex controller" if attempt == 0 else f"remaking Codex JSON decision attempt {attempt}"
         print(label)
@@ -468,12 +823,29 @@ def run_codex_controller(codex_bin: str, prompt: str, workdir: str, model: str =
                 "history_summary": "Codex controller failed before producing a usable decision.",
             }
         try:
-            return parse_and_validate_decision(last_message or output)
+            return parse_and_validate_decision(
+                last_message or output,
+                traceability_manifest,
+                realization_summary,
+                worker_run_id=worker_run_id,
+                require_final_verification_task=require_final_verification_task,
+            )
         except (json.JSONDecodeError, ValueError) as exc:
             last_error = exc
+            if isinstance(exc, CompletionDecisionError):
+                require_final_verification_task = (
+                    require_final_verification_task
+                    or exc.final_verification_required
+                )
             if attempt >= CLAUDE_JSON_REMAKE_ATTEMPTS:
                 break
-            current_prompt = json_remake_prompt(prompt, last_message or output, exc, sizing)
+            current_prompt = json_remake_prompt(
+                prompt,
+                last_message or output,
+                exc,
+                sizing,
+                formal=traceability_manifest is not None,
+            )
 
     raise ValueError(
         "Codex did not produce valid decision JSON after "
@@ -481,7 +853,16 @@ def run_codex_controller(codex_bin: str, prompt: str, workdir: str, model: str =
     )
 
 
-def run_gemini_controller(gemini_bin: str, prompt: str, workdir: str, model: str = "", sizing: str = "normal") -> dict[str, Any]:
+def run_gemini_controller(
+    gemini_bin: str,
+    prompt: str,
+    workdir: str,
+    model: str = "",
+    sizing: str = "normal",
+    traceability_manifest: Any | None = None,
+    realization_summary: Sequence[Mapping[str, Any]] | None = None,
+    worker_run_id: str | None = None,
+) -> dict[str, Any]:
     if shutil.which(gemini_bin) is None:
         return {
             "action": "HUMAN_NEEDED",
@@ -497,6 +878,7 @@ def run_gemini_controller(gemini_bin: str, prompt: str, workdir: str, model: str
     current_prompt = prompt
     last_output = ""
     last_error: Exception | None = None
+    require_final_verification_task = False
     for attempt in range(CLAUDE_JSON_REMAKE_ATTEMPTS + 1):
         label = "running Gemini controller" if attempt == 0 else f"remaking Gemini JSON decision attempt {attempt}"
         print(label)
@@ -530,12 +912,25 @@ def run_gemini_controller(gemini_bin: str, prompt: str, workdir: str, model: str
                 "history_summary": "Gemini controller failed before producing a usable decision.",
             }
         try:
-            return parse_and_validate_decision(proc.stdout)
+            return parse_and_validate_decision(
+                proc.stdout,
+                traceability_manifest,
+                realization_summary,
+                worker_run_id=worker_run_id,
+                require_final_verification_task=require_final_verification_task,
+            )
         except (json.JSONDecodeError, ValueError) as exc:
             last_error = exc
+            if isinstance(exc, CompletionDecisionError):
+                require_final_verification_task = (
+                    require_final_verification_task
+                    or exc.final_verification_required
+                )
             if attempt >= CLAUDE_JSON_REMAKE_ATTEMPTS:
                 break
-            current_prompt = json_remake_prompt(prompt, output, exc, sizing)
+            current_prompt = json_remake_prompt(
+                prompt, output, exc, sizing, formal=traceability_manifest is not None
+            )
 
     raise ValueError(
         "Gemini did not produce valid decision JSON after "
@@ -550,25 +945,52 @@ def job_controller(settings, job: dict[str, Any]) -> str:
     return controller
 
 
-def controller_decision(settings, job: dict[str, Any], prompt: str) -> dict[str, Any]:
+def controller_decision(
+    settings,
+    job: dict[str, Any],
+    prompt: str,
+    traceability_manifest: Any | None = None,
+    realization_summary: Sequence[Mapping[str, Any]] | None = None,
+    worker_run_id: str | None = None,
+) -> dict[str, Any]:
     while True:
         controller = job_controller(settings, job)
         sizing = job_sizing(job)
         if controller == "codex":
-            decision = run_codex_controller(
+            controller_args = (
                 settings.codex_bin,
                 prompt,
                 str(job["worktree_path"]),
                 settings.controller_role_model or settings.codex_model,
                 sizing,
             )
+            decision = (
+                run_codex_controller(*controller_args)
+                if traceability_manifest is None
+                else run_codex_controller(
+                    *controller_args,
+                    traceability_manifest=traceability_manifest,
+                    realization_summary=realization_summary,
+                    worker_run_id=worker_run_id,
+                )
+            )
         elif controller == "gemini":
-            decision = run_gemini_controller(
+            controller_args = (
                 settings.gemini_bin,
                 prompt,
                 str(job["worktree_path"]),
                 settings.controller_role_model or settings.gemini_model,
                 sizing,
+            )
+            decision = (
+                run_gemini_controller(*controller_args)
+                if traceability_manifest is None
+                else run_gemini_controller(
+                    *controller_args,
+                    traceability_manifest=traceability_manifest,
+                    realization_summary=realization_summary,
+                    worker_run_id=worker_run_id,
+                )
             )
         else:
             if settings.controller_role_model:
@@ -579,7 +1001,17 @@ def controller_decision(settings, job: dict[str, Any], prompt: str) -> dict[str,
                 model = settings.opus_model
             else:
                 model = settings.controller_model
-            decision = run_claude(settings.claude_bin, prompt, model, sizing)
+            controller_args = (settings.claude_bin, prompt, model, sizing)
+            decision = (
+                run_claude(*controller_args)
+                if traceability_manifest is None
+                else run_claude(
+                    *controller_args,
+                    traceability_manifest=traceability_manifest,
+                    realization_summary=realization_summary,
+                    worker_run_id=worker_run_id,
+                )
+            )
 
         reason = str(decision.get("reason") or "")
         retry_at = replenishment_time(reason)
@@ -632,7 +1064,16 @@ def sizing_rules(sizing: str) -> str:
 - Keep acceptance provable in one worker run without turning each file into a separate task."""
 
 
-def schema_text(sizing: str = "normal") -> str:
+def schema_text(sizing: str = "normal", *, formal: bool = False) -> str:
+    task_fields = '    "test_cmd": "string"'
+    formal_rules = ""
+    if formal:
+        task_fields += """,
+    "requirement_ids": ["R1"],
+    "verification_ids": ["VT1"]"""
+        formal_rules = """- For every CONTINUE or REPAIR task, include requirement_ids and verification_ids arrays. At least one array must be non-empty, every ID must exist in the supplied immutable manifest, and neither array may contain duplicates.
+- Group tasks by coherent requirement, architecture, dependency, and risk boundaries rather than by individual files. State in next_task.goal which requirement or verification contract the task advances.
+"""
     return """Return JSON only with this schema:
 {
   "action": "CONTINUE | REPAIR | DONE | HUMAN_NEEDED",
@@ -647,15 +1088,15 @@ def schema_text(sizing: str = "normal") -> str:
     "goal": "string",
     "constraints": ["string"],
     "acceptance": ["string"],
-    "test_cmd": "string"
+%s
   }
 }
 
 Rules:
 - next_task is required for CONTINUE and REPAIR.
-- progress is required for every action. Estimate logical work units already completed, units still remaining, and remaining wall-clock minutes. Keep the work-unit scale consistent with earlier decisions so the estimate remains comparable. Use null only when time cannot yet be estimated.
+%s- progress is required for every action. Estimate logical work units already completed, units still remaining, and remaining wall-clock minutes. Keep the work-unit scale consistent with earlier decisions so the estimate remains comparable. Use null only when time cannot yet be estimated.
 - You are controller/planner/reviewer only, never a code editor.
-""" + sizing_rules(sizing) + """
+""" % (task_fields, formal_rules) + sizing_rules(sizing) + """
 - Write next_task.goal as a specific imperative, not a project summary. Name the exact directory, file, symbol, or test target when known.
 - Project instruction files such as AGENTS.md are optional. If they exist and are relevant, require the worker to follow them; if they are absent, continue using the job goal, constraints, local code patterns, and tests.
 - File-like paths mentioned in the original job description, job constraints, or job acceptance criteria may be live guidance files. The prompt includes a refreshed snapshot of those files when they exist. Treat that snapshot as current guidance and prefer it over earlier summaries if it changed.
@@ -687,14 +1128,56 @@ def prompt_safe_job(job: dict[str, Any]) -> dict[str, Any]:
     return safe
 
 
-def plan_prompt(job: dict[str, Any]) -> str:
+def _formal_prompt_state(formal_context: Any, task: dict[str, Any] | None) -> str:
+    traceability: dict[str, Any] = {
+        "requirement_ids": [] if task is None else list(task.get("requirement_ids") or []),
+        "verification_ids": [] if task is None else list(task.get("verification_ids") or []),
+    }
+    if task is None:
+        traceability["note"] = "No task exists yet; assign manifest IDs to the next task."
+    runtime_summary = tuple(formal_context.runtime_verification_summary)
+    worker_run_id = next(
+        (
+            item.get("worker_run_under_review")
+            for item in runtime_summary
+            if isinstance(item, Mapping) and item.get("worker_run_under_review")
+        ),
+        None,
+    )
+    completion_gate = evaluate_completion_gate(
+        runtime_summary,
+        worker_run_id=worker_run_id,
+    )
+    focused_repairs = build_focused_repair_context(runtime_summary)
+    return f"""Approved immutable specification (authoritative, complete structured contract):
+{json.dumps(formal_context.specification, indent=2)}
+
+Immutable execution manifest (authoritative traceability and verification contract):
+{json.dumps(formal_context.manifest, indent=2)}
+
+Current task traceability:
+{json.dumps(traceability, indent=2)}
+
+Runtime verification summary:
+{json.dumps(list(runtime_summary), indent=2)}
+
+Fresh-run completion gate:
+{json.dumps(None if completion_gate is None else completion_gate.to_summary(), indent=2)}
+
+Focused adaptive-correction context:
+{json.dumps(list(focused_repairs), indent=2)}
+"""
+
+
+def plan_prompt(job: dict[str, Any], formal_context: Any | None = None) -> str:
     instruction_files = refreshed_instruction_files(job)
     sizing = job_sizing(job)
     intro = f"Create exactly one {sizing}-granularity first task for this job."
     tail = """For PLAN, choose action CONTINUE unless the job is impossible or requires a human before any code work.
 Use the immutable overall plan as milestone guidance; do not rewrite or replace it.
 Preserve the job's constraints and acceptance criteria, and keep task acceptance provable by the test command."""
-    return f"""You are the controller/planner in a generic continuous development loop.
+    if formal_context is None:
+        return f"""You are the controller/planner in a generic continuous development loop.
 
 {intro}
 
@@ -708,9 +1191,32 @@ Refreshed referenced guidance files:
 
 {tail}
 """
+    formal_state = _formal_prompt_state(formal_context, None)
+    return f"""You are the controller/planner in a generic continuous development loop.
+
+{intro}
+
+{schema_text(sizing, formal=True)}
+
+Job state:
+{json.dumps(prompt_safe_job(job), indent=2)}
+
+{formal_state}
+Refreshed referenced guidance files:
+{json.dumps(instruction_files, indent=2)}
+
+{tail}
+Plan against the immutable specification and manifest. Every task must name the requirement or verification contract it advances and carry the corresponding IDs.
+If any automated case is unrealized, prioritize a focused verification-infrastructure task for its verification ID. Missing test targets, fixtures, metric emitters, evidence producers, or AI_LOOP_CASE markers are implementation work, not product-test failures and not grounds for DONE.
+"""
 
 
-def review_prompt(job: dict[str, Any], task: dict[str, Any], run: dict[str, Any]) -> str:
+def review_prompt(
+    job: dict[str, Any],
+    task: dict[str, Any],
+    run: dict[str, Any],
+    formal_context: Any | None = None,
+) -> str:
     review_state = {
         "job": prompt_safe_job(job),
         "task": task,
@@ -729,7 +1235,8 @@ The immutable overall plan is milestone guidance and must not be rewritten."""
     if job.get("finish_requested"):
         guidance += """
 Finish-soon mode is active. Drop optional polish and speculative follow-up work. If the core goal and acceptance criteria are met, return DONE now; otherwise create at most one consolidated final task containing only the work required for acceptance."""
-    return f"""You are the controller/reviewer in a generic continuous development loop.
+    if formal_context is None:
+        return f"""You are the controller/reviewer in a generic continuous development loop.
 
 {guidance}
 
@@ -737,6 +1244,25 @@ Finish-soon mode is active. Drop optional polish and speculative follow-up work.
 
 State to review:
 {json.dumps(review_state, indent=2)}
+"""
+    formal_state = _formal_prompt_state(formal_context, task)
+    return f"""You are the controller/reviewer in a generic continuous development loop.
+
+{guidance}
+
+{schema_text(sizing, formal=True)}
+
+{formal_state}
+State to review:
+{json.dumps(review_state, indent=2)}
+
+Review and plan against the immutable specification and manifest. Every new task must name the requirement or verification contract it advances and carry the corresponding IDs.
+Do not return DONE while an automated case is unrealized. Create a focused verification-infrastructure task for the affected verification IDs, using the runtime summary's exact missing-infrastructure findings; do not misclassify missing infrastructure as a product defect.
+Every blocking case must pass with evidence produced by the worker run in this REVIEW. Older passing evidence is stale after later implementation work and cannot complete the job.
+If implementation is otherwise complete and blocking evidence is pending or stale, return exactly one CONTINUE final verification-only task with empty requirement_ids and every blocking verification ID exactly once. Do not include implementation work in that task.
+If a blocking case is escalated, return HUMAN_NEEDED. Return DONE only when the fresh-run completion gate reports ready.
+When focused adaptive-correction context is non-empty, return REPAIR for the first listed failed case only. Carry exactly that verification ID and use its failed repetition, expected/actual values, retained evidence, metric trend, previous repair goals, and remaining budget to diagnose that failure. Do not replan broadly.
+An escalated case has exhausted a hard bound. Never emit another retry; the trusted structured escalation report will be attached to HUMAN_NEEDED automatically.
 """
 
 
@@ -945,6 +1471,8 @@ def create_next_task(settings, client, job: dict[str, Any], decision: dict[str, 
             acceptance=acceptance,
             test_cmd=job_test_cmd,
             created_by=created_by,
+            requirement_ids=list(next_task.get("requirement_ids") or []),
+            verification_ids=list(next_task.get("verification_ids") or []),
         )
         db.update_job_status(conn, job["id"], next_status, decision["history_summary"])
         db.add_event(
@@ -959,6 +1487,8 @@ def create_next_task(settings, client, job: dict[str, Any], decision: dict[str, 
                 "reason": decision["reason"],
                 "goal": str(next_task["goal"]),
                 "test_cmd": str(job["test_cmd"]),
+                "requirement_ids": list(next_task.get("requirement_ids") or []),
+                "verification_ids": list(next_task.get("verification_ids") or []),
             },
         )
     task_payload = {"task_id": task_id, "job_id": job["id"]}
@@ -1052,23 +1582,74 @@ def handle_request(settings, client, request: dict[str, Any]) -> None:
         job = db.get_job(conn, job_id)
         task = db.get_task(conn, request["task_id"]) if request_type == "REVIEW" else None
         run = db.get_run(conn, request["run_id"]) if request_type == "REVIEW" else None
+    worker_run_id = None if run is None else str(run["id"])
+    formal_context = SpecificationService(settings.db_path).load_job_prompt_context(
+        job_id,
+        worker_run_id=worker_run_id,
+    )
+    traceability_manifest = (
+        None if formal_context is None else formal_context.manifest
+    )
+    realization_summary = (
+        None if formal_context is None else formal_context.runtime_verification_summary
+    )
 
     print(f"Claude request: {request_type} job={job_id}")
 
     if request_type == "PLAN":
-        decision = controller_decision(settings, job, plan_prompt(job))
+        prompt = (
+            plan_prompt(job)
+            if formal_context is None
+            else plan_prompt(job, formal_context)
+        )
+        decision = (
+            controller_decision(settings, job, prompt)
+            if traceability_manifest is None
+            else controller_decision(
+                settings,
+                job,
+                prompt,
+                traceability_manifest,
+                realization_summary,
+                worker_run_id,
+            )
+        )
         task_id = None
         run_id = None
     elif request_type == "REVIEW":
         if task is None or run is None:
             raise ValueError("REVIEW requires task_id and run_id")
-        decision = controller_decision(settings, job, review_prompt(job, task, run))
+        prompt = (
+            review_prompt(job, task, run)
+            if formal_context is None
+            else review_prompt(job, task, run, formal_context)
+        )
+        decision = (
+            controller_decision(settings, job, prompt)
+            if traceability_manifest is None
+            else controller_decision(
+                settings,
+                job,
+                prompt,
+                traceability_manifest,
+                realization_summary,
+                worker_run_id,
+            )
+        )
         task_id = task["id"]
         run_id = run["id"]
     else:
         raise ValueError(f"unknown Claude request type: {request_type}")
 
     validate_decision(decision)
+    validate_decision_traceability(decision, traceability_manifest)
+    validate_decision_realization(decision, realization_summary)
+    validate_decision_correction(decision, realization_summary)
+    validate_decision_completion(
+        decision,
+        realization_summary,
+        worker_run_id=worker_run_id,
+    )
 
     with db.transaction(settings.db_path) as conn:
         db.create_decision(

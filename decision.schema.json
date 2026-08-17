@@ -33,7 +33,15 @@
           "type": "array",
           "items": { "type": "string" }
         },
-        "test_cmd": { "type": "string" }
+        "test_cmd": { "type": "string" },
+        "requirement_ids": {
+          "type": "array",
+          "items": { "type": "string" }
+        },
+        "verification_ids": {
+          "type": "array",
+          "items": { "type": "string" }
+        }
       },
       "required": ["goal", "constraints", "acceptance", "test_cmd"],
       "additionalProperties": false
