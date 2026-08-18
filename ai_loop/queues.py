@@ -8,7 +8,11 @@ from typing import Any
 
 import redis
 
-from .config import READ_BLOCK_MS
+from .config import (
+    CLAUDE_REQUEST_STREAM,
+    CODEX_TASK_STREAM,
+    READ_BLOCK_MS,
+)
 
 
 def redis_client(redis_url: str) -> redis.Redis:
@@ -57,6 +61,130 @@ def xadd_json(client: redis.Redis, stream: str, field: str, payload: dict[str, A
     encoded = encode(payload)
     decode(encoded)
     return client.xadd(stream, {field: encoded})
+
+
+_XADD_ONCE_SCRIPT = """
+local prior = redis.call('HGET', KEYS[2], ARGV[1])
+if prior then
+    local separator = string.find(prior, string.char(10), 1, true)
+    local prior_id = string.sub(prior, 1, separator - 1)
+    local prior_payload = string.sub(prior, separator + 1)
+    if prior_payload ~= ARGV[3] then
+        return redis.error_reply('publication key reused with different payload')
+    end
+    return {prior_id, 0}
+end
+local message_id = redis.call('XADD', KEYS[1], '*', ARGV[2], ARGV[3])
+redis.call('HSET', KEYS[2], ARGV[1], message_id .. string.char(10) .. ARGV[3])
+return {message_id, 1}
+"""
+
+
+def xadd_json_once(
+    client: redis.Redis,
+    stream: str,
+    field: str,
+    payload: dict[str, Any],
+    *,
+    publication_key: str,
+) -> tuple[str, bool]:
+    """Atomically publish one logical message at most once.
+
+    Redis Streams can redeliver an unacknowledged message, but a producer retry
+    must not append a second message for the same durable task.  The Lua script
+    records the canonical payload and stream ID in the same Redis transaction
+    as XADD.  Reusing a key with a different payload is rejected rather than
+    silently publishing corrupt metadata.
+    """
+
+    if not publication_key:
+        raise ValueError("publication_key must not be empty")
+    encoded = encode(payload)
+    decode(encoded)
+    result = client.eval(
+        _XADD_ONCE_SCRIPT,
+        2,
+        stream,
+        f"{stream}:publication-ids",
+        publication_key,
+        field,
+        encoded,
+    )
+    if not isinstance(result, (list, tuple)) or len(result) != 2:
+        raise RuntimeError("atomic stream publication returned an invalid result")
+    return str(result[0]), bool(int(result[1]))
+
+
+def publish_controller_plan(
+    client: redis.Redis,
+    job_id: str,
+    *,
+    publication_key: str | None = None,
+) -> bool:
+    """Publish a PLAN request through the ordinary controller stream."""
+
+    ensure_group(
+        client,
+        CLAUDE_REQUEST_STREAM,
+        f"claude-controllers:{job_id}",
+        start_id="$",
+    )
+    ensure_group(
+        client,
+        CODEX_TASK_STREAM,
+        f"codex-workers:{job_id}",
+        start_id="$",
+    )
+    payload = {"type": "PLAN", "job_id": job_id, "scope": "job"}
+    if publication_key is None:
+        xadd_json(client, CLAUDE_REQUEST_STREAM, "request", payload)
+        return True
+    _message_id, created = xadd_json_once(
+        client,
+        CLAUDE_REQUEST_STREAM,
+        "request",
+        payload,
+        publication_key=publication_key,
+    )
+    return created
+
+
+def publish_worker_task(
+    client: redis.Redis,
+    task: dict[str, Any],
+    *,
+    scoped: bool = False,
+) -> bool:
+    """Publish one persisted task through the normal Codex worker stream."""
+
+    task_id = str(task["id"])
+    job_id = str(task["job_id"])
+    payload: dict[str, Any] = {
+        "task_id": task_id,
+        "job_id": job_id,
+        "iteration": int(task["iteration"]),
+        "created_by": str(task["created_by"]),
+        "constraints": [str(item) for item in task["constraints"]],
+        "acceptance": [str(item) for item in task["acceptance"]],
+        "requirement_ids": [str(item) for item in task.get("requirement_ids", [])],
+        "verification_ids": [str(item) for item in task.get("verification_ids", [])],
+    }
+    if scoped:
+        payload["scope"] = "job"
+    ensure_group(
+        client,
+        CODEX_TASK_STREAM,
+        f"codex-workers:{job_id}",
+        start_id="$",
+    )
+    _message_id, created = xadd_json_once(
+        client,
+        CODEX_TASK_STREAM,
+        "task",
+        payload,
+        publication_key=f"task:{task_id}",
+    )
+    return created
 
 
 def claim_pending(client, stream: str, group: str, consumer: str, min_idle_ms: int = 30_000) -> list[tuple[str, dict]]:

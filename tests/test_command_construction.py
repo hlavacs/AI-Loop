@@ -4,8 +4,8 @@ Covers:
 - worker.build_codex_command / build_fable_command / build_gemini_command for
   both sandbox-bypass values, asserting the exact flags.
 - controller.run_claude / run_codex_controller / run_gemini_controller: the
-  command lists are built inline right before subprocess.run, so the smallest
-  seam available is patching controller.subprocess.run to capture the argv
+  command lists are built inline right before the bounded runner, so the
+  smallest seam available is patching controller.run_bounded_process
   (and returning a canned valid decision) - no real subprocess ever runs.
 - LoopBackend.stop_processes sequencing with REAL dummy processes (bash
   session leaders plus pid files in a temp runtime dir): SIGTERM, group poll,
@@ -27,6 +27,7 @@ from unittest.mock import patch
 import controller
 import worker
 from ai_loop import db
+from ai_loop.process_runner import BoundedProcessResult
 
 try:  # ai_loop_gui needs tkinter (or the AILOOP_TK_STUB), which may be absent
     import ai_loop_gui
@@ -116,18 +117,18 @@ DECISION_JSON = json.dumps(
 
 class ControllerCommandConstructionTests(unittest.TestCase):
     """The controller cmd lists are built inline inside run_* right before
-    subprocess.run, so there is no extractable builder; capturing the argv via
-    a patched controller.subprocess.run is the smallest available seam."""
+    run_bounded_process, so there is no extractable builder; capturing the argv
+    via a patched controller.run_bounded_process is the smallest available seam."""
 
     def _capture(self, fn, *args, **kwargs):
         calls: list[tuple[list[str], dict]] = []
 
         def fake_run(cmd, **run_kwargs):
             calls.append((list(cmd), run_kwargs))
-            return subprocess.CompletedProcess(cmd, 0, stdout=DECISION_JSON, stderr="")
+            return BoundedProcessResult(cmd, 0, stdout=DECISION_JSON, stderr="")
 
         with patch.object(controller.shutil, "which", return_value="/usr/bin/fake"), patch.object(
-            controller.subprocess, "run", side_effect=fake_run
+            controller, "run_bounded_process", side_effect=fake_run
         ):
             decision = fn(*args, **kwargs)
         self.assertEqual(decision["action"], "DONE")
@@ -141,7 +142,7 @@ class ControllerCommandConstructionTests(unittest.TestCase):
         self.assertEqual(cmd[6:8], ["--model", "test-model"])
         # The prompt is passed as the final argument, not on stdin.
         self.assertEqual(cmd[-1], "PROMPT")
-        self.assertNotIn("input", kwargs)
+        self.assertNotIn("input_text", kwargs)
 
     def test_run_claude_omits_model_flag_when_model_empty(self) -> None:
         cmd, _kwargs = self._capture(controller.run_claude, "claude", "PROMPT")
@@ -157,7 +158,7 @@ class ControllerCommandConstructionTests(unittest.TestCase):
         self.assertEqual(cmd[8:10], ["-m", "codex-model"])
         self.assertEqual(cmd[-1], "-")
         # The controller runs read-only: the prompt goes in via stdin.
-        self.assertEqual(kwargs.get("input"), "PROMPT")
+        self.assertEqual(kwargs.get("input_text"), "PROMPT")
 
     def test_run_gemini_controller_command_flags(self) -> None:
         cmd, kwargs = self._capture(

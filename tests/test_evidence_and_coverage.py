@@ -582,5 +582,9 @@ def test_evidence_columns_are_additive_and_idempotent(tmp_path: Path) -> None:
         marker = conn.execute(
             "SELECT evidence_marker FROM verification_repetitions WHERE id = 1"
         ).fetchone()[0]
-    assert {"evidence_json", "coverage_results_json"} <= columns
+    assert {
+        "evidence_json",
+        "coverage_results_json",
+        "execution_proof_json",
+    } <= columns
     assert marker == "untouched"

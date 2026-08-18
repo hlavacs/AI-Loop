@@ -10,6 +10,7 @@ from typing import Any
 
 from ai_loop import db
 from ai_loop.config import sanitized_child_env
+from ai_loop.process_runner import run_bounded_process
 
 
 def _tail(path: Path, max_bytes: int = 20000) -> str:
@@ -64,15 +65,16 @@ Task:
 4. Do not alter the target job worktree unless the failure is clearly there.
 5. If the blocker is quota, credentials, or external service availability, do not fabricate a fix; explain it.
 """
-        proc = subprocess.run(
+        proc = run_bounded_process(
             [codex_bin, "exec", "--cd", str(settings.root_dir), "--dangerously-bypass-approvals-and-sandbox", "-"],
-            input=prompt,
-            text=True,
-            capture_output=True,
+            input_text=prompt,
             timeout=7200,
             # The recovery agent runs unsandboxed; never hand it mail passwords.
             env=sanitized_child_env(),
+            max_output_bytes=40_000,
         )
+        if proc.timed_out:
+            raise TimeoutError("auto-recovery command timed out after 7200 seconds")
         output = (proc.stdout + "\n" + proc.stderr).strip()
         with db.transaction(settings.db_path) as conn:
             db.add_event(

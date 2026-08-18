@@ -317,6 +317,7 @@ def init_db(db_path: str | Path) -> None:
                 assertion_results_json TEXT NOT NULL,
                 evidence_json TEXT NOT NULL DEFAULT '[]',
                 coverage_results_json TEXT NOT NULL DEFAULT '[]',
+                execution_proof_json TEXT NOT NULL DEFAULT '{}',
                 elapsed_seconds REAL NOT NULL,
                 timed_out INTEGER NOT NULL,
                 error TEXT,
@@ -422,6 +423,12 @@ def init_db(db_path: str | Path) -> None:
             "verification_repetitions",
             "coverage_results_json",
             "coverage_results_json TEXT NOT NULL DEFAULT '[]'",
+        )
+        ensure_column(
+            conn,
+            "verification_repetitions",
+            "execution_proof_json",
+            "execution_proof_json TEXT NOT NULL DEFAULT '{}'",
         )
         ensure_column(
             conn,
@@ -532,6 +539,7 @@ def row_to_verification_repetition(row: sqlite3.Row) -> dict[str, Any]:
     data["assertion_results"] = from_json(data.pop("assertion_results_json"), [])
     data["evidence"] = from_json(data.pop("evidence_json", None), [])
     data["coverage_results"] = from_json(data.pop("coverage_results_json", None), [])
+    data["execution_proof"] = from_json(data.pop("execution_proof_json", None), {})
     _verify_evidence_metadata(data["evidence"])
     return data
 
@@ -908,6 +916,7 @@ def create_verification_repetition(
     termination_details: str | None,
     started_at: str,
     finished_at: str,
+    execution_proof: dict[str, Any] | None = None,
 ) -> int:
     """Append one immutable formal-verification repetition row."""
 
@@ -941,9 +950,9 @@ def create_verification_repetition(
             repetition, command, working_directory, timeout_seconds, status,
             return_code, output, output_truncated, metrics_json,
             assertion_results_json, evidence_json, coverage_results_json,
-            elapsed_seconds, timed_out, error,
+            execution_proof_json, elapsed_seconds, timed_out, error,
             termination_details, started_at, finished_at
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """,
         (
             job_id,
@@ -963,6 +972,7 @@ def create_verification_repetition(
             to_json(assertion_results),
             to_json(evidence),
             to_json(coverage_results),
+            to_json(execution_proof or {}),
             elapsed_seconds,
             1 if timed_out else 0,
             error,

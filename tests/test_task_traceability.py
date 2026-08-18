@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import json
-import subprocess
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
@@ -11,6 +10,7 @@ import pytest
 import controller
 import worker
 from ai_loop import db
+from ai_loop.process_runner import BoundedProcessResult
 
 
 MANIFEST = {
@@ -203,10 +203,10 @@ def test_invalid_formal_traceability_uses_existing_bounded_remake_loop() -> None
     def fake_run(command, **_kwargs):
         calls.append(list(command))
         output = invalid if len(calls) == 1 else valid
-        return subprocess.CompletedProcess(command, 0, stdout=output, stderr="")
+        return BoundedProcessResult(command, 0, stdout=output, stderr="")
 
     with patch.object(controller.shutil, "which", return_value="/usr/bin/claude"), patch.object(
-        controller.subprocess, "run", side_effect=fake_run
+        controller, "run_bounded_process", side_effect=fake_run
     ):
         result = controller.run_claude(
             "claude", "ORIGINAL FORMAL PROMPT", traceability_manifest=MANIFEST
@@ -222,10 +222,24 @@ def test_invalid_formal_traceability_uses_existing_bounded_remake_loop() -> None
 class FakeRedis:
     def __init__(self) -> None:
         self.messages: list[tuple[str, dict[str, str]]] = []
+        self.publications: dict[str, tuple[str, str]] = {}
+
+    def xgroup_create(self, *_args, **_kwargs) -> None:
+        return None
 
     def xadd(self, stream: str, fields: dict[str, str]) -> str:
         self.messages.append((stream, fields))
-        return "1-0"
+        return f"{len(self.messages)}-0"
+
+    def eval(self, _script, _numkeys, stream, _dedupe_hash, key, field, payload):
+        if key in self.publications:
+            message_id, prior_payload = self.publications[key]
+            if prior_payload != payload:
+                raise ValueError("publication key reused with different payload")
+            return [message_id, 0]
+        message_id = self.xadd(stream, {field: payload})
+        self.publications[key] = (message_id, payload)
+        return [message_id, 1]
 
 
 def test_create_next_task_persists_and_round_trips_formal_ids(tmp_path: Path) -> None:
@@ -248,9 +262,10 @@ def test_create_next_task_persists_and_round_trips_formal_ids(tmp_path: Path) ->
         )
         stored_job = db.get_job(conn, "J1")
 
+    client = FakeRedis()
     task_id = controller.create_next_task(
         SimpleNamespace(db_path=database),
-        FakeRedis(),
+        client,
         stored_job,
         decision(requirement_ids=["R1"], verification_ids=["VT1"]),
         "test",
@@ -259,6 +274,12 @@ def test_create_next_task_persists_and_round_trips_formal_ids(tmp_path: Path) ->
         stored_task = db.get_task(conn, task_id)
     assert stored_task["requirement_ids"] == ["R1"]
     assert stored_task["verification_ids"] == ["VT1"]
+    assert len(client.messages) == 1
+    queued = json.loads(client.messages[0][1]["task"])
+    assert queued["task_id"] == task_id
+    assert queued["job_id"] == "J1"
+    assert queued["iteration"] == stored_task["iteration"]
+    assert queued["created_by"] == "test"
 
 
 def test_formal_controller_prompts_include_complete_contract_and_traceability(

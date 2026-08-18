@@ -12,7 +12,6 @@ from __future__ import annotations
 import copy
 import json
 import shutil
-import subprocess
 import tempfile
 import uuid
 from dataclasses import dataclass
@@ -20,6 +19,11 @@ from pathlib import Path
 from typing import Any, Mapping, Protocol
 
 from ai_loop.config import sanitized_child_env
+from ai_loop.process_runner import (
+    DEFAULT_MAX_OUTPUT_BYTES,
+    read_bounded_text_tail,
+    run_bounded_process,
+)
 from ai_loop.specifications import (
     SpecificationDocument,
     SpecificationError,
@@ -235,15 +239,18 @@ class CliStructuredOutputProvider:
             command.extend(["--sandbox", "-p", request.prompt, "--output-format", "json"])
 
         try:
-            process = subprocess.run(
+            process = run_bounded_process(
                 command,
                 cwd=str(repository),
-                input=stdin,
-                text=True,
-                capture_output=True,
+                input_text=stdin,
                 timeout=self.timeout,
                 env=sanitized_child_env(),
+                max_output_bytes=DEFAULT_MAX_OUTPUT_BYTES,
             )
+            if process.timed_out:
+                raise ElicitationError(
+                    f"{provider} elicitation timed out after {self.timeout:g} seconds"
+                )
             combined = (process.stdout + "\n" + process.stderr).strip()
             if process.returncode != 0:
                 raise ElicitationError(
@@ -253,14 +260,14 @@ class CliStructuredOutputProvider:
             output = process.stdout.strip()
             if provider == "codex":
                 try:
-                    output = result_path.read_text(encoding="utf-8").strip() or output
+                    file_output, _file_output_truncated = read_bounded_text_tail(
+                        result_path,
+                        max_bytes=DEFAULT_MAX_OUTPUT_BYTES,
+                    )
+                    output = file_output.strip() or output
                 except OSError:
                     pass
             return self._unwrap_cli_output(output)
-        except subprocess.TimeoutExpired as exc:
-            raise ElicitationError(
-                f"{provider} elicitation timed out after {exc.timeout:g} seconds"
-            ) from exc
         finally:
             for path in temporary_paths:
                 path.unlink(missing_ok=True)

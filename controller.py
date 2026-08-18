@@ -18,16 +18,31 @@ from ai_loop import db
 from ai_loop.auth import auth_failure_decision, is_auth_failure
 from ai_loop.config import (
     CLAUDE_REQUEST_STREAM,
-    CODEX_TASK_STREAM,
     DEAD_STREAM,
     DONE_STREAM,
     HUMAN_STREAM,
     load_settings,
     sanitized_child_env,
 )
-from ai_loop.queues import claim_pending, consumer_name, decode, ensure_group, redis_client, read_group, xadd_json
+from ai_loop.queues import (
+    claim_pending,
+    consumer_name,
+    decode,
+    ensure_group,
+    publish_worker_task,
+    redis_client,
+    read_group,
+    xadd_json,
+)
 from ai_loop.notifications import delivery_outcome, terminal_email
 from ai_loop.planning import normalize_granularity
+from ai_loop.process_runner import (
+    DEFAULT_MAX_OUTPUT_BYTES,
+    BoundedProcessResult,
+    read_bounded_text_tail,
+    run_bounded_process,
+)
+from ai_loop.prompt_profiles import configured_prompt_guidance
 from ai_loop.recovery import attempt_auto_recovery
 from ai_loop.specifications import SpecificationService
 from ai_loop.token_wait import is_token_limit, replenishment_time, wait_until
@@ -438,6 +453,15 @@ def validate_decision_completion(
                 else {"reports": [dict(item) for item in reports]}
             )
         return
+    if gate.unautomated_requirement_ids:
+        if decision.get("action") == "DONE":
+            raise CompletionDecisionError(
+                "formal DONE is invalid because mandatory/high-risk requirements lack "
+                "a linked automated verification: "
+                + ", ".join(gate.unautomated_requirement_ids)
+                + "; return CONTINUE or REPAIR to add executable automated coverage"
+            )
+        return
     if require_final_verification_task:
         next_task = decision.get("next_task")
         if decision.get("action") != "CONTINUE" or not isinstance(next_task, dict):
@@ -460,14 +484,44 @@ def validate_decision_completion(
     if decision.get("action") != "DONE" or gate.ready:
         return
     if gate.failing_verification_ids:
+        execution_proof_errors = []
+        for item in verification_summary or ():
+            verification_id = str(item.get("verification_id"))
+            if verification_id not in gate.failing_verification_ids:
+                continue
+            proof = item.get("execution_proof")
+            proof_error = proof.get("error") if isinstance(proof, Mapping) else None
+            if not proof_error and "runtime execution proof missing" in str(
+                item.get("last_error") or ""
+            ):
+                proof_error = item.get("last_error")
+            if proof_error:
+                execution_proof_errors.append(
+                    f"{verification_id}: {str(proof_error)}"
+                )
         raise CompletionDecisionError(
-            "formal DONE is invalid because blocking verification is failing; "
-            "return REPAIR for: " + ", ".join(gate.failing_verification_ids)
+            "formal DONE is invalid because blocking or mandatory/high-risk "
+            "verification is failing; "
+            "return REPAIR for: "
+            + ", ".join(gate.failing_verification_ids)
+            + (
+                "; execution proof rejection: " + "; ".join(execution_proof_errors)
+                if execution_proof_errors
+                else ""
+            )
         )
     pending_or_stale = (*gate.pending_verification_ids, *gate.stale_verification_ids)
+    requirement_detail = (
+        " for mandatory/high-risk requirements "
+        + ", ".join(gate.missing_requirement_ids)
+        if gate.missing_requirement_ids
+        else ""
+    )
     raise CompletionDecisionError(
-        "formal DONE is invalid because blocking evidence is pending or stale for "
-        f"worker run {worker_run_id!r}; remake the decision as exactly one CONTINUE "
+        "formal DONE is invalid because blocking or mandatory/high-risk evidence is "
+        "pending or stale"
+        + requirement_detail
+        + f" for worker run {worker_run_id!r}; remake the decision as exactly one CONTINUE "
         "final verification-only task with empty requirement_ids and every blocking "
         "verification_id: "
         + ", ".join(pending_or_stale),
@@ -669,35 +723,32 @@ def run_claude(
     for attempt in range(CLAUDE_JSON_REMAKE_ATTEMPTS + 1):
         label = "running Claude controller" if attempt == 0 else f"remaking Claude JSON decision attempt {attempt}"
         print(label)
-        proc: subprocess.CompletedProcess[str] | None = None
+        proc: BoundedProcessResult | None = None
         output = ""
         cli_attempt = 0
         while True:
             prompt_arg, prompt_file = prompt_arg_or_file(current_prompt, "claude-controller")
             try:
-                proc = subprocess.run(
+                proc = run_bounded_process(
                     [*claude_cmd, prompt_arg],
-                    text=True,
-                    capture_output=True,
                     timeout=7200,
                     env=sanitized_child_env(),
+                    max_output_bytes=DEFAULT_MAX_OUTPUT_BYTES,
                 )
                 output = (proc.stdout + "\n" + proc.stderr).strip()
                 last_output = output
-                if proc.returncode == 0:
+                if proc.timed_out:
+                    output = f"Claude CLI timed out after 7200s\n{output}".strip()
+                    last_output = output
+                    proc = None
+                elif proc.returncode == 0:
                     break
-                if is_auth_failure(output):
+                elif is_auth_failure(output):
                     break
-                if is_token_limit(output):
+                elif is_token_limit(output):
                     break
-                if not is_transient_claude_cli_failure(output):
+                elif not is_transient_claude_cli_failure(output):
                     break
-            except subprocess.TimeoutExpired as exc:
-                stdout = exc.stdout or ""
-                stderr = exc.stderr or ""
-                output = f"Claude CLI timed out after {exc.timeout:g}s\n{stdout}\n{stderr}".strip()
-                last_output = output
-                proc = None
             finally:
                 if prompt_file is not None:
                     prompt_file.unlink(missing_ok=True)
@@ -776,38 +827,40 @@ def run_codex_controller(
         with tempfile.NamedTemporaryFile("w", suffix=".txt", delete=False) as handle:
             last_message_path = Path(handle.name)
         try:
-            try:
-                cmd = [
-                    codex_bin,
-                    "exec",
-                    "--cd",
-                    workdir,
-                    "--sandbox",
-                    "read-only",
-                    "--output-last-message",
-                    str(last_message_path),
-                ]
-                if model:
-                    cmd.extend(["-m", model])
-                cmd.append("-")
-                proc = subprocess.run(
-                    cmd,
-                    input=current_prompt,
-                    text=True,
-                    capture_output=True,
-                    timeout=7200,
-                    env=sanitized_child_env(),
-                )
-            except subprocess.TimeoutExpired as exc:
+            cmd = [
+                codex_bin,
+                "exec",
+                "--cd",
+                workdir,
+                "--sandbox",
+                "read-only",
+                "--output-last-message",
+                str(last_message_path),
+            ]
+            if model:
+                cmd.extend(["-m", model])
+            cmd.append("-")
+            proc = run_bounded_process(
+                cmd,
+                input_text=current_prompt,
+                timeout=7200,
+                env=sanitized_child_env(),
+                max_output_bytes=DEFAULT_MAX_OUTPUT_BYTES,
+            )
+            if proc.timed_out:
                 return {
                     "action": "HUMAN_NEEDED",
-                    "reason": f"Codex CLI timed out after {exc.timeout:g}s",
+                    "reason": "Codex CLI timed out after 7200s",
                     "history_summary": "Codex controller timed out before producing a usable decision.",
                 }
             output = (proc.stdout + "\n" + proc.stderr).strip()
             last_output = output
             try:
-                last_message = last_message_path.read_text(encoding="utf-8").strip()
+                last_message, _last_message_truncated = read_bounded_text_tail(
+                    last_message_path,
+                    max_bytes=DEFAULT_MAX_OUTPUT_BYTES,
+                )
+                last_message = last_message.strip()
             except OSError:
                 last_message = ""
         finally:
@@ -882,21 +935,19 @@ def run_gemini_controller(
     for attempt in range(CLAUDE_JSON_REMAKE_ATTEMPTS + 1):
         label = "running Gemini controller" if attempt == 0 else f"remaking Gemini JSON decision attempt {attempt}"
         print(label)
-        try:
-            cmd = [*gemini_cmd]
-            cmd[cmd.index("-p") + 1] = current_prompt
-            proc = subprocess.run(
-                cmd,
-                cwd=workdir,
-                text=True,
-                capture_output=True,
-                timeout=7200,
-                env=sanitized_child_env(),
-            )
-        except subprocess.TimeoutExpired as exc:
+        cmd = [*gemini_cmd]
+        cmd[cmd.index("-p") + 1] = current_prompt
+        proc = run_bounded_process(
+            cmd,
+            cwd=workdir,
+            timeout=7200,
+            env=sanitized_child_env(),
+            max_output_bytes=DEFAULT_MAX_OUTPUT_BYTES,
+        )
+        if proc.timed_out:
             return {
                 "action": "HUMAN_NEEDED",
-                "reason": f"Gemini CLI timed out after {exc.timeout:g}s",
+                "reason": "Gemini CLI timed out after 7200s",
                 "history_summary": "Gemini controller timed out before producing a usable decision.",
             }
 
@@ -1177,7 +1228,7 @@ def plan_prompt(job: dict[str, Any], formal_context: Any | None = None) -> str:
 Use the immutable overall plan as milestone guidance; do not rewrite or replace it.
 Preserve the job's constraints and acceptance criteria, and keep task acceptance provable by the test command."""
     if formal_context is None:
-        return f"""You are the controller/planner in a generic continuous development loop.
+        prompt = f"""You are the controller/planner in a generic continuous development loop.
 
 {intro}
 
@@ -1191,8 +1242,9 @@ Refreshed referenced guidance files:
 
 {tail}
 """
-    formal_state = _formal_prompt_state(formal_context, None)
-    return f"""You are the controller/planner in a generic continuous development loop.
+    else:
+        formal_state = _formal_prompt_state(formal_context, None)
+        prompt = f"""You are the controller/planner in a generic continuous development loop.
 
 {intro}
 
@@ -1209,6 +1261,7 @@ Refreshed referenced guidance files:
 Plan against the immutable specification and manifest. Every task must name the requirement or verification contract it advances and carry the corresponding IDs.
 If any automated case is unrealized, prioritize a focused verification-infrastructure task for its verification ID. Missing test targets, fixtures, metric emitters, evidence producers, or AI_LOOP_CASE markers are implementation work, not product-test failures and not grounds for DONE.
 """
+    return prompt + configured_prompt_guidance("plan", job)
 
 
 def review_prompt(
@@ -1236,7 +1289,7 @@ The immutable overall plan is milestone guidance and must not be rewritten."""
         guidance += """
 Finish-soon mode is active. Drop optional polish and speculative follow-up work. If the core goal and acceptance criteria are met, return DONE now; otherwise create at most one consolidated final task containing only the work required for acceptance."""
     if formal_context is None:
-        return f"""You are the controller/reviewer in a generic continuous development loop.
+        prompt = f"""You are the controller/reviewer in a generic continuous development loop.
 
 {guidance}
 
@@ -1245,8 +1298,9 @@ Finish-soon mode is active. Drop optional polish and speculative follow-up work.
 State to review:
 {json.dumps(review_state, indent=2)}
 """
-    formal_state = _formal_prompt_state(formal_context, task)
-    return f"""You are the controller/reviewer in a generic continuous development loop.
+    else:
+        formal_state = _formal_prompt_state(formal_context, task)
+        prompt = f"""You are the controller/reviewer in a generic continuous development loop.
 
 {guidance}
 
@@ -1264,6 +1318,7 @@ If a blocking case is escalated, return HUMAN_NEEDED. Return DONE only when the 
 When focused adaptive-correction context is non-empty, return REPAIR for the first listed failed case only. Carry exactly that verification ID and use its failed repetition, expected/actual values, retained evidence, metric trend, previous repair goals, and remaining budget to diagnose that failure. Do not replan broadly.
 An escalated case has exhausted a hard bound. Never emit another retry; the trusted structured escalation report will be attached to HUMAN_NEEDED automatically.
 """
+    return prompt + configured_prompt_guidance("review", job, task)
 
 
 def next_iteration(conn, job_id: str) -> int:
@@ -1491,10 +1546,9 @@ def create_next_task(settings, client, job: dict[str, Any], decision: dict[str, 
                 "verification_ids": list(next_task.get("verification_ids") or []),
             },
         )
-    task_payload = {"task_id": task_id, "job_id": job["id"]}
-    if scoped_job_id():
-        task_payload["scope"] = "job"
-    xadd_json(client, CODEX_TASK_STREAM, "task", task_payload)
+    with db.transaction(settings.db_path) as conn:
+        persisted_task = db.get_task(conn, task_id)
+    publish_worker_task(client, persisted_task, scoped=bool(scoped_job_id()))
     if next_status == "fixing":
         print(f"job {job['id']}: fixing - {decision['reason']}")
         print(f"job {job['id']}: fixing task {task_id} - {next_task['goal']}")

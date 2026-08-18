@@ -1086,6 +1086,29 @@ class VerificationManifestService:
                         requirement_ids=affected_requirement_ids,
                         verification_ids=affected_verification_ids,
                     )
+                    db.add_event(
+                        conn,
+                        job_id=job_id,
+                        kind="task_queued",
+                        payload={
+                            "task_id": task_id,
+                            "iteration": next_iteration,
+                            "action": "RETARGET",
+                            "status": "queued",
+                            "reason": (
+                                f"Approved specification version {newer.version} "
+                                "changed verified contracts."
+                            ),
+                            "goal": (
+                                f"Implement and verify only the contracts affected by approved "
+                                f"specification version {newer.version}."
+                            ),
+                            "test_cmd": str(job["test_cmd"]),
+                            "requirement_ids": affected_requirement_ids,
+                            "verification_ids": affected_verification_ids,
+                            "created_by": "specification_change_impact",
+                        },
+                    )
                 impact_canonical = canonical_json(impact_payload)
                 conn.execute(
                     """
@@ -1298,6 +1321,7 @@ class VerificationManifestService:
                 """,
                 (job_id,),
             ).fetchall()
+            repetitions = db.list_verification_repetitions(conn, job_id)
         # This is a dry repository inspection only.  Keeping it behind the
         # trusted manifest-loading boundary ensures Quick Goal jobs never
         # receive realization state and immutable manifest bytes are untouched.
@@ -1305,6 +1329,46 @@ class VerificationManifestService:
             build_runtime_verification_summary,
             check_manifest_realization,
             persist_realization_checks,
+        )
+        from ai_loop.evidence_adapters import (
+            EvidenceAdapterAudit,
+            collect_realization_signals,
+            evidence_artifact_from_mapping,
+            load_evidence_adapters,
+        )
+
+        def audit_adapter(item: EvidenceAdapterAudit) -> None:
+            with db.transaction(self.db_path) as audit_conn:
+                db.add_event(
+                    audit_conn,
+                    job_id=job_id,
+                    kind="evidence_adapter_error",
+                    payload=item.to_dict(),
+                )
+
+        loaded_adapters = load_evidence_adapters(audit=audit_adapter)
+        adapter_artifacts = []
+        for repetition in repetitions:
+            for value in repetition.get("evidence", ()):
+                if not isinstance(value, Mapping):
+                    continue
+                try:
+                    adapter_artifacts.append(evidence_artifact_from_mapping(value))
+                except (KeyError, TypeError, ValueError) as exc:
+                    audit_adapter(
+                        EvidenceAdapterAudit(
+                            adapter="persisted-evidence",
+                            stage="rehydrate",
+                            error=f"{type(exc).__name__}: {exc}",
+                            verification_id=str(repetition.get("verification_id", "")) or None,
+                            evidence_name=str(value.get("name", "")) or None,
+                        )
+                    )
+        adapter_results = collect_realization_signals(
+            loaded_adapters.adapters,
+            adapter_artifacts,
+            worktree=Path(str(job["worktree_path"])).resolve(),
+            audit=audit_adapter,
         )
 
         previous_states = {
@@ -1314,6 +1378,7 @@ class VerificationManifestService:
             stored.manifest,
             str(job["worktree_path"]),
             previous_states=previous_states,
+            adapter_results=adapter_results,
         )
         persist_realization_checks(self.db_path, job_id, realization_checks)
         realization_by_id = {
@@ -1324,6 +1389,7 @@ class VerificationManifestService:
             job_id,
             stored.manifest,
             worker_run_id=worker_run_id,
+            specification=snapshot.document,
         )
         if runtime_summary is None:  # pragma: no cover - stored is formal above
             raise ManifestIntegrityError("formal job lost its verification runtime state")

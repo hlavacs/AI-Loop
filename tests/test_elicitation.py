@@ -3,7 +3,6 @@ from __future__ import annotations
 import copy
 import hashlib
 import json
-import subprocess
 from dataclasses import replace
 from pathlib import Path
 from typing import Any, Callable
@@ -22,6 +21,7 @@ from ai_loop.elicitation import (
     elicitation_result_schema,
     validate_elicitation_result,
 )
+from ai_loop.process_runner import BoundedProcessResult
 from ai_loop.specifications import (
     Requirement,
     RequirementCategory,
@@ -201,9 +201,9 @@ def test_cli_provider_uses_selected_model_and_read_only_command_contract(
         if "--output-last-message" in command:
             result_path = Path(command[command.index("--output-last-message") + 1])
             result_path.write_text('{"accepted":true}', encoding="utf-8")
-        return subprocess.CompletedProcess(command, 0, stdout='{"accepted":true}', stderr="")
+        return BoundedProcessResult(command, 0, stdout='{"accepted":true}', stderr="")
 
-    monkeypatch.setattr("ai_loop.elicitation.subprocess.run", fake_run)
+    monkeypatch.setattr("ai_loop.elicitation.run_bounded_process", fake_run)
     adapter = CliStructuredOutputProvider(
         provider=provider,
         binary=f"custom-{provider}",
@@ -230,7 +230,7 @@ def test_cli_provider_uses_selected_model_and_read_only_command_contract(
         ]
         assert "--output-schema" in command
         assert ["-m", "selected-controller-model"] == command[-3:-1]
-        assert captured["kwargs"]["input"] == "Inspect only"
+        assert captured["kwargs"]["input_text"] == "Inspect only"
     elif provider == "claude":
         assert ["--permission-mode", "plan"] == command[
             command.index("--permission-mode") : command.index("--permission-mode") + 2

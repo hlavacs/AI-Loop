@@ -18,7 +18,7 @@ from dataclasses import dataclass, fields
 from decimal import Decimal
 from enum import Enum
 from pathlib import Path, PurePosixPath, PureWindowsPath
-from typing import Any, Iterable, Mapping, Sequence
+from typing import Any, Callable, Iterable, Mapping, Sequence
 
 from ai_loop import db
 
@@ -1959,14 +1959,32 @@ class SpecificationService:
         job_id: str,
         specification_id: str,
         version: int,
+        *,
+        task_publisher: Callable[[str], bool],
     ) -> Any:
-        """Retarget an existing formal job through the change-impact boundary."""
+        """Retarget a formal job and publish its task through the queue boundary."""
 
         from ai_loop.specification_compiler import VerificationManifestService
 
-        return VerificationManifestService(self).retarget_approved_revision(
+        result = VerificationManifestService(self).retarget_approved_revision(
             job_id, specification_id, version
         )
+        if result.task_id is not None:
+            try:
+                task_publisher(result.task_id)
+            except Exception as exc:
+                with db.transaction(self.db_path) as conn:
+                    db.add_event(
+                        conn,
+                        job_id=job_id,
+                        kind="task_queue_publication_failed",
+                        payload={"task_id": result.task_id, "error": str(exc)},
+                    )
+                raise SpecificationStateError(
+                    f"retarget task {result.task_id} was persisted but queue publication "
+                    "failed; retry publication with LoopBackend.publish_task"
+                ) from exc
+        return result
 
     def verify_job_change_impact(self, impact_id: str) -> Any:
         """Integrity-load an immutable formal-job change-impact artifact."""

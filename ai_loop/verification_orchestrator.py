@@ -29,7 +29,6 @@ import os
 import re
 import shlex
 import shutil
-import subprocess
 import time
 from dataclasses import dataclass, replace
 from enum import Enum
@@ -38,6 +37,7 @@ from typing import Any, Callable, Iterable, Mapping, Protocol, Sequence
 
 from ai_loop import db
 from ai_loop.config import sanitized_child_env
+from ai_loop.process_runner import run_bounded_process
 from ai_loop.specifications import (
     CoverageTarget,
     EvidenceKind,
@@ -55,6 +55,7 @@ MAX_EVIDENCE_ARTIFACT_BYTES = 25_000_000
 MAX_INLINE_EVIDENCE_BYTES = 64_000
 MAX_EVIDENCE_PREVIEW_CHARACTERS = 4_000
 MAX_FAILURE_OUTPUT_TAIL_CHARACTERS = 4_000
+MAX_PROCESS_OUTPUT_BYTES = 2 * MAX_METRIC_SCAN_CHARACTERS
 VERIFICATION_DASHBOARD_ENFORCEMENT = frozenset(
     {"DESCRIPTIVE", "REALIZED", "MACHINE-ENFORCED"}
 )
@@ -67,6 +68,16 @@ _ENVELOPE = re.compile(
     r"AI_LOOP_(CASE|FIXTURE_GENERATOR|METRIC_EMITTER|EVIDENCE_PRODUCER|"
     r"REALIZATION|METRICS|EVIDENCE)\s*="
 )
+_PYTEST_COUNT = re.compile(
+    r"(?<![\w.])(?P<count>\d+)\s+"
+    r"(?P<kind>passed|failed|errors?|skipped|xfailed|xpassed|deselected)\b",
+    re.IGNORECASE,
+)
+_PYTEST_COLLECTED = re.compile(r"\bcollected\s+(\d+)\s+items?\b", re.IGNORECASE)
+_PYTEST_SELECTED = re.compile(r"\b(\d+)\s+selected\b", re.IGNORECASE)
+_PYTEST_NO_TESTS = re.compile(r"\bno tests? ran\b", re.IGNORECASE)
+_UNITTEST_RAN = re.compile(r"\bRan\s+(\d+)\s+tests?\b", re.IGNORECASE)
+_UNITTEST_SKIPPED = re.compile(r"\bskipped\s*=\s*(\d+)\b", re.IGNORECASE)
 
 
 class RealizationState(str, Enum):
@@ -167,6 +178,39 @@ class RunnerResult:
     timed_out: bool = False
     launch_error: str | None = None
     termination_details: str | None = None
+    output_truncated: bool = False
+    selected_case_count: int | None = None
+    executed_case_count: int | None = None
+    skipped_case_count: int | None = None
+
+
+@dataclass(frozen=True)
+class RuntimeExecutionProof:
+    """Positive runtime evidence that a verification did substantive work."""
+
+    selected_case_count: int | None
+    executed_case_count: int | None
+    skipped_case_count: int | None
+    assertion_record_count: int
+    observation_record_count: int
+    sources: tuple[str, ...]
+    error: str | None = None
+
+    @property
+    def passed(self) -> bool:
+        return self.error is None
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "selected_case_count": self.selected_case_count,
+            "executed_case_count": self.executed_case_count,
+            "skipped_case_count": self.skipped_case_count,
+            "assertion_record_count": self.assertion_record_count,
+            "observation_record_count": self.observation_record_count,
+            "sources": list(self.sources),
+            "passed": self.passed,
+            "error": self.error,
+        }
 
 
 class VerificationRunner(Protocol):
@@ -267,6 +311,7 @@ class EvidenceAdapterResult:
     metrics: Mapping[str, int | float]
     evidence: tuple[Mapping[str, Any], ...] = ()
     error: str | None = None
+    realization_signals: tuple[RealizationSignals, ...] = ()
 
 
 class EvidenceAdapter(Protocol):
@@ -317,6 +362,7 @@ class VerificationRepetitionResult:
     assertion_results: tuple[AssertionResult, ...]
     evidence: tuple[EvidenceArtifact, ...]
     coverage_results: tuple[CoverageResult, ...]
+    execution_proof: RuntimeExecutionProof
     elapsed_seconds: float
     timed_out: bool
     errors: tuple[str, ...]
@@ -354,6 +400,9 @@ class CompletionGate:
     stale_verification_ids: tuple[str, ...]
     failing_verification_ids: tuple[str, ...]
     escalated_verification_ids: tuple[str, ...]
+    required_requirement_ids: tuple[str, ...]
+    missing_requirement_ids: tuple[str, ...]
+    unautomated_requirement_ids: tuple[str, ...]
 
     def to_summary(self) -> dict[str, Any]:
         return {
@@ -365,6 +414,9 @@ class CompletionGate:
             "stale_verification_ids": list(self.stale_verification_ids),
             "failing_verification_ids": list(self.failing_verification_ids),
             "escalated_verification_ids": list(self.escalated_verification_ids),
+            "required_requirement_ids": list(self.required_requirement_ids),
+            "missing_requirement_ids": list(self.missing_requirement_ids),
+            "unautomated_requirement_ids": list(self.unautomated_requirement_ids),
         }
 
 
@@ -594,6 +646,91 @@ def _manifest_payload(manifest: Any) -> Mapping[str, Any]:
     raise ValueError("realization checking requires a verification manifest object")
 
 
+def _specification_payload(specification: Any) -> Mapping[str, Any]:
+    if isinstance(specification, Mapping):
+        return specification
+    to_dict = getattr(specification, "to_dict", None)
+    if callable(to_dict):
+        payload = to_dict()
+        if isinstance(payload, Mapping):
+            return payload
+    raise VerificationExecutionError(
+        "completion coverage requires a specification document object"
+    )
+
+
+def _completion_requirement_links(
+    specification: Any | None,
+    cases: Sequence[Mapping[str, Any]],
+) -> dict[str, dict[str, tuple[str, ...]]]:
+    """Map mandatory/high-risk requirements onto their linked verification cases."""
+
+    if specification is None:
+        return {}
+    payload = _specification_payload(specification)
+    raw_requirements = payload.get("requirements")
+    raw_risks = payload.get("risks")
+    if not isinstance(raw_requirements, list) or not isinstance(raw_risks, list):
+        raise VerificationExecutionError(
+            "specification completion coverage requires requirement and risk arrays"
+        )
+
+    mandatory_ids = {
+        str(item.get("id"))
+        for item in raw_requirements
+        if isinstance(item, Mapping)
+        and isinstance(item.get("id"), str)
+        and item.get("priority") == "must"
+    }
+    high_risk_verification_ids: set[str] = set()
+    for risk in raw_risks:
+        if not isinstance(risk, Mapping):
+            raise VerificationExecutionError("specification risks must be objects")
+        if risk.get("severity") not in {"high", "critical"} and risk.get(
+            "uncertainty"
+        ) != "high":
+            continue
+        verification_ids = risk.get("verification_ids")
+        if not isinstance(verification_ids, list) or any(
+            not isinstance(item, str) for item in verification_ids
+        ):
+            raise VerificationExecutionError(
+                "high-risk specification entries require verification ID arrays"
+            )
+        high_risk_verification_ids.update(verification_ids)
+
+    high_risk_requirement_ids: set[str] = set()
+    for case in cases:
+        if str(case.get("verification_id")) not in high_risk_verification_ids:
+            continue
+        requirement_ids = case.get("requirement_ids")
+        if not isinstance(requirement_ids, list) or any(
+            not isinstance(item, str) for item in requirement_ids
+        ):
+            raise VerificationExecutionError(
+                "manifest verification cases require requirement ID arrays"
+            )
+        high_risk_requirement_ids.update(requirement_ids)
+
+    links: dict[str, dict[str, tuple[str, ...]]] = {}
+    for case in cases:
+        verification_id = str(case.get("verification_id"))
+        requirement_ids = case.get("requirement_ids")
+        if not isinstance(requirement_ids, list):
+            raise VerificationExecutionError(
+                f"manifest verification {verification_id} requires a requirement ID array"
+            )
+        mandatory = tuple(item for item in requirement_ids if item in mandatory_ids)
+        high_risk = tuple(
+            item for item in requirement_ids if item in high_risk_requirement_ids
+        )
+        links[verification_id] = {
+            "mandatory_requirement_ids": mandatory,
+            "high_risk_requirement_ids": high_risk,
+        }
+    return links
+
+
 def _contained_path(root: Path, candidate: Path) -> Path:
     resolved_root = root.resolve()
     resolved = candidate.resolve(strict=False)
@@ -658,26 +795,31 @@ class SubprocessVerificationRunner:
             raise VerificationExecutionError("verification timeout must be a positive integer")
         started = time.monotonic()
         try:
-            process = subprocess.run(
+            process = run_bounded_process(
                 ["bash", "-lc", command],
                 cwd=str(directory),
-                text=True,
-                capture_output=True,
                 timeout=timeout,
                 env=sanitized_child_env(),
+                max_output_bytes=MAX_PROCESS_OUTPUT_BYTES,
             )
-            return RunnerResult(
-                output=_combined_process_output(process.stdout, process.stderr),
-                return_code=process.returncode,
-                elapsed_seconds=max(0.0, time.monotonic() - started),
-            )
-        except subprocess.TimeoutExpired as exc:
-            return RunnerResult(
-                output=_combined_process_output(exc.stdout, exc.stderr),
-                return_code=None,
-                elapsed_seconds=max(0.0, time.monotonic() - started),
-                timed_out=True,
-                termination_details=f"timed out after {timeout} seconds",
+            if process.timed_out:
+                return _normalized_runner_result(
+                    RunnerResult(
+                        output=_combined_process_output(process.stdout, process.stderr),
+                        return_code=None,
+                        elapsed_seconds=max(0.0, time.monotonic() - started),
+                        timed_out=True,
+                        termination_details=f"timed out after {timeout} seconds",
+                        output_truncated=process.output_truncated,
+                    )
+                )
+            return _normalized_runner_result(
+                RunnerResult(
+                    output=_combined_process_output(process.stdout, process.stderr),
+                    return_code=process.returncode,
+                    elapsed_seconds=max(0.0, time.monotonic() - started),
+                    output_truncated=process.output_truncated,
+                )
             )
         except OSError as exc:
             return RunnerResult(
@@ -1153,6 +1295,7 @@ def build_runtime_verification_summary(
     manifest: Any | None,
     *,
     worker_run_id: str | None = None,
+    specification: Any | None = None,
 ) -> tuple[dict[str, Any], ...] | None:
     """Build trusted aggregate/runtime state for a formal controller prompt.
 
@@ -1190,6 +1333,7 @@ def build_runtime_verification_summary(
         raise VerificationExecutionError(
             "verification manifest must contain a verification array"
         )
+    coverage_links = _completion_requirement_links(specification, cases)
     state_by_id = {str(row["verification_id"]): dict(row) for row in states}
     repetitions_by_id: dict[str, list[dict[str, Any]]] = {}
     for repetition in repetitions:
@@ -1376,6 +1520,9 @@ def build_runtime_verification_summary(
                 "latest_metrics": latest_metrics,
                 "latest_evidence": latest_evidence,
                 "coverage_results": latest_coverage,
+                "execution_proof": (
+                    {} if latest_row is None else latest_row.get("execution_proof", {})
+                ),
                 "failed_assertions": failed_assertions,
                 "last_error": last_error,
                 "last_task": None if latest_row is None else latest_row.get("task_id"),
@@ -1387,6 +1534,8 @@ def build_runtime_verification_summary(
                 "evidence_fresh": freshness == "fresh",
                 "updated_at": state["updated_at"],
             }
+        if verification_id in coverage_links:
+            summary_item.update(coverage_links[verification_id])
         if case_corrections:
             summary_item.update(
                 {
@@ -1418,12 +1567,109 @@ def evaluate_completion_gate(
 
     if verification_summary is None:
         return None
-    blocking = tuple(
+    explicitly_blocking = tuple(
         item
         for item in verification_summary
         if bool(item.get("blocking")) and item.get("automation") != "manual"
     )
-    blocking_ids = tuple(str(item.get("verification_id")) for item in blocking)
+    explicit_ids = tuple(
+        str(item.get("verification_id")) for item in explicitly_blocking
+    )
+    required_requirement_ids = tuple(
+        dict.fromkeys(
+            str(requirement_id)
+            for item in verification_summary
+            for field in (
+                "mandatory_requirement_ids",
+                "high_risk_requirement_ids",
+            )
+            for requirement_id in item.get(field, ())
+            if isinstance(requirement_id, str)
+        )
+    )
+
+    def has_positive_execution_proof(item: Mapping[str, Any]) -> bool:
+        proof = item.get("execution_proof")
+        if not isinstance(proof, Mapping) or proof.get("passed") is not True:
+            return False
+        selected = proof.get("selected_case_count")
+        executed = proof.get("executed_case_count")
+        skipped = proof.get("skipped_case_count")
+        if selected == 0 or executed == 0:
+            return False
+        if (
+            executed is None
+            and isinstance(selected, int)
+            and isinstance(skipped, int)
+            and skipped >= selected
+        ):
+            return False
+        assertions = proof.get("assertion_record_count")
+        observations = proof.get("observation_record_count")
+        return bool(
+            (isinstance(executed, int) and executed > 0)
+            or (isinstance(selected, int) and selected > 0)
+            or (isinstance(assertions, int) and assertions > 0)
+            or (isinstance(observations, int) and observations > 0)
+        )
+
+    def fresh_runtime_pass(item: Mapping[str, Any]) -> bool:
+        return (
+            item.get("automation") != "manual"
+            and item.get("status") == RealizationState.PASSING.value
+            and has_positive_execution_proof(item)
+            and item.get("evidence_freshness") == "fresh"
+            and item.get("worker_run_under_review") == worker_run_id
+            and worker_run_id is not None
+        )
+
+    def fresh_automated_pass(item: Mapping[str, Any]) -> bool:
+        return item.get("automation") == "automated" and fresh_runtime_pass(item)
+
+    automated_candidates: dict[str, tuple[Mapping[str, Any], ...]] = {}
+    for requirement_id in required_requirement_ids:
+        automated_candidates[requirement_id] = tuple(
+            item
+            for item in verification_summary
+            if item.get("automation") == "automated"
+            and requirement_id in item.get("requirement_ids", ())
+        )
+    missing_requirement_ids = tuple(
+        requirement_id
+        for requirement_id in required_requirement_ids
+        if not any(
+            fresh_automated_pass(item)
+            for item in automated_candidates[requirement_id]
+        )
+    )
+    unautomated_requirement_ids = tuple(
+        requirement_id
+        for requirement_id in missing_requirement_ids
+        if not automated_candidates[requirement_id]
+    )
+
+    needed_coverage_ids: set[str] = set()
+    for requirement_id in missing_requirement_ids:
+        candidates = automated_candidates[requirement_id]
+        non_escalated = tuple(
+            item
+            for item in candidates
+            if item.get("status") != RealizationState.ESCALATED.value
+        )
+        needed_coverage_ids.update(
+            str(item.get("verification_id"))
+            for item in (non_escalated or candidates)
+        )
+    blocking_ids = tuple(
+        str(item.get("verification_id"))
+        for item in verification_summary
+        if str(item.get("verification_id")) in set(explicit_ids) | needed_coverage_ids
+    )
+    blocking = tuple(
+        item
+        for item in verification_summary
+        if str(item.get("verification_id")) in blocking_ids
+    )
     escalated = tuple(
         str(item.get("verification_id"))
         for item in blocking
@@ -1431,26 +1677,30 @@ def evaluate_completion_gate(
     )
     fresh = {
         str(item.get("verification_id"))
-        for item in blocking
-        if item.get("status") == RealizationState.PASSING.value
-        and item.get("evidence_freshness") == "fresh"
-        and item.get("worker_run_under_review") == worker_run_id
-        and worker_run_id is not None
+        for item in explicitly_blocking
+        if fresh_runtime_pass(item)
     }
     stale = tuple(
         str(item.get("verification_id"))
         for item in blocking
         if item.get("status") == RealizationState.PASSING.value
+        and has_positive_execution_proof(item)
         and str(item.get("verification_id")) not in fresh
     )
     failing = tuple(
         str(item.get("verification_id"))
         for item in blocking
-        if item.get("status")
-        in {
-            RealizationState.EXECUTABLE_BUT_FAILING.value,
-            RealizationState.STAGNATED.value,
-        }
+        if (
+            item.get("status")
+            in {
+                RealizationState.EXECUTABLE_BUT_FAILING.value,
+                RealizationState.STAGNATED.value,
+            }
+            or (
+                item.get("status") == RealizationState.PASSING.value
+                and not has_positive_execution_proof(item)
+            )
+        )
         and int(item.get("attempts_completed") or 0) > 0
     )
     pending = tuple(
@@ -1461,11 +1711,17 @@ def evaluate_completion_gate(
         and verification_id not in failing
         and verification_id not in escalated
     )
-    ready = len(fresh) == len(blocking_ids) and not escalated
+    ready = (
+        len(fresh) == len(explicit_ids)
+        and not missing_requirement_ids
+        and not escalated
+    )
     if escalated:
         status = "escalated"
     elif ready:
         status = "ready"
+    elif unautomated_requirement_ids:
+        status = "unautomated"
     elif failing:
         status = "failing"
     elif stale:
@@ -1481,6 +1737,9 @@ def evaluate_completion_gate(
         stale_verification_ids=stale,
         failing_verification_ids=failing,
         escalated_verification_ids=escalated,
+        required_requirement_ids=required_requirement_ids,
+        missing_requirement_ids=missing_requirement_ids,
+        unautomated_requirement_ids=unautomated_requirement_ids,
     )
 
 
@@ -2211,7 +2470,165 @@ def _normalized_runner_result(value: Any) -> RunnerResult:
         or value.elapsed_seconds < 0
     ):
         raise TypeError("verification runner elapsed time must be finite and non-negative")
-    return value
+    for name in (
+        "selected_case_count",
+        "executed_case_count",
+        "skipped_case_count",
+    ):
+        count = getattr(value, name)
+        if count is not None and (
+            isinstance(count, bool) or not isinstance(count, int) or count < 0
+        ):
+            raise TypeError(f"verification runner {name} must be a non-negative integer or null")
+    detected = _detect_test_execution_counts(value.output)
+    output_proves_no_execution = detected[0] == 0 or detected[1] == 0
+    selected = (
+        detected[0]
+        if output_proves_no_execution and detected[0] is not None
+        else value.selected_case_count
+        if value.selected_case_count is not None
+        else detected[0]
+    )
+    executed = (
+        detected[1]
+        if output_proves_no_execution and detected[1] is not None
+        else value.executed_case_count
+        if value.executed_case_count is not None
+        else detected[1]
+    )
+    skipped = (
+        detected[2]
+        if output_proves_no_execution and detected[2] is not None
+        else value.skipped_case_count
+        if value.skipped_case_count is not None
+        else detected[2]
+    )
+    if selected is not None and skipped is not None and skipped > selected:
+        raise TypeError("verification runner skipped count cannot exceed selected count")
+    if (
+        selected is not None
+        and executed is not None
+        and skipped is not None
+        and executed + skipped > selected
+    ):
+        raise TypeError(
+            "verification runner executed and skipped counts cannot exceed selected count"
+        )
+    return replace(
+        value,
+        selected_case_count=selected,
+        executed_case_count=executed,
+        skipped_case_count=skipped,
+    )
+
+
+def _detect_test_execution_counts(
+    output: str,
+) -> tuple[int | None, int | None, int | None]:
+    """Extract conservative pytest/unittest counts from actual command output."""
+
+    scan = output[-MAX_METRIC_SCAN_CHARACTERS:]
+    unittest_runs = list(_UNITTEST_RAN.finditer(scan))
+    if unittest_runs:
+        selected = int(unittest_runs[-1].group(1))
+        skipped_matches = list(_UNITTEST_SKIPPED.finditer(scan))
+        skipped = int(skipped_matches[-1].group(1)) if skipped_matches else 0
+        return selected, max(0, selected - skipped), skipped
+
+    counts: dict[str, int] = {}
+    for match in _PYTEST_COUNT.finditer(scan):
+        kind = match.group("kind").lower()
+        if kind == "error":
+            kind = "errors"
+        counts[kind] = int(match.group("count"))
+    collected_matches = list(_PYTEST_COLLECTED.finditer(scan))
+    selected_matches = list(_PYTEST_SELECTED.finditer(scan))
+    if not counts and not collected_matches and not selected_matches:
+        if _PYTEST_NO_TESTS.search(scan):
+            return 0, 0, 0
+        return None, None, None
+
+    skipped = counts.get("skipped", 0)
+    executed = sum(
+        counts.get(kind, 0)
+        for kind in ("passed", "failed", "errors", "xfailed", "xpassed")
+    )
+    summarized = executed + skipped
+    if selected_matches:
+        selected = int(selected_matches[-1].group(1))
+    elif summarized:
+        selected = summarized
+    elif collected_matches:
+        selected = int(collected_matches[-1].group(1)) - counts.get("deselected", 0)
+        selected = max(0, selected)
+    else:
+        selected = 0
+    return selected, executed, skipped
+
+
+def _runtime_execution_proof(
+    runner_result: RunnerResult,
+    *,
+    assertion_record_count: int,
+    observation_record_count: int,
+) -> RuntimeExecutionProof:
+    selected = runner_result.selected_case_count
+    executed = runner_result.executed_case_count
+    skipped = runner_result.skipped_case_count
+    sources: list[str] = []
+    if any(item is not None for item in (selected, executed, skipped)):
+        sources.append("test-runner-counts")
+    if assertion_record_count:
+        sources.append("assertion-records")
+    if observation_record_count:
+        sources.append("observation-records")
+
+    error: str | None = None
+    if selected == 0:
+        error = (
+            "runtime execution proof missing: the verification command selected zero "
+            "test cases; fix its test target or selection filters so the intended case runs"
+        )
+    elif executed == 0:
+        if skipped and (selected is None or skipped >= selected):
+            error = (
+                "runtime execution proof missing: all selected test cases were skipped "
+                f"(selected={selected if selected is not None else skipped}, skipped={skipped}); "
+                "satisfy the skip prerequisites and rerun the intended case"
+            )
+        else:
+            error = (
+                "runtime execution proof missing: the verification command executed zero "
+                "test cases; run the intended case instead of a collection-only or no-op command"
+            )
+    elif (
+        executed is None
+        and selected is not None
+        and skipped is not None
+        and skipped >= selected
+    ):
+        error = (
+            "runtime execution proof missing: all selected test cases were skipped "
+            f"(selected={selected}, skipped={skipped}); satisfy the skip prerequisites "
+            "and rerun the intended case"
+        )
+    elif executed is None and selected is None and not (
+        assertion_record_count or observation_record_count
+    ):
+        error = (
+            "runtime execution proof missing: the verification command reported no executed "
+            "or selected test cases and emitted no explicit structured assertion or observation "
+            "records; run the intended case and report its runtime result"
+        )
+    return RuntimeExecutionProof(
+        selected_case_count=selected,
+        executed_case_count=executed,
+        skipped_case_count=skipped,
+        assertion_record_count=assertion_record_count,
+        observation_record_count=observation_record_count,
+        sources=tuple(sources),
+        error=error,
+    )
 
 
 def _evaluate_repetition(
@@ -2257,6 +2674,11 @@ def _evaluate_repetition(
     except VerificationExecutionError as exc:
         errors.append(str(exc))
 
+    # Execution proof is based only on records emitted by the verification
+    # command. Adapter-derived metrics/evidence may satisfy domain coverage,
+    # but cannot prove that the intended command actually executed work.
+    command_observation_count = len(evidence) + (1 if metrics is not None else 0)
+    command_metric_names = frozenset(metrics or {})
     adapter_metrics: dict[str, float] = {}
     adapter_evidence: list[EvidenceArtifact] = []
     for adapter_index, adapter in enumerate(adapters, 1):
@@ -2418,9 +2840,20 @@ def _evaluate_repetition(
                 or f"coverage target failed: {coverage_result.name}"
             )
 
-    output, output_truncated = _bounded_tail(
+    execution_proof = _runtime_execution_proof(
+        runner_result,
+        assertion_record_count=sum(
+            1 for item in assertion_results if item.metric in command_metric_names
+        ),
+        observation_record_count=command_observation_count,
+    )
+    if execution_proof.error:
+        errors.append(execution_proof.error)
+
+    output, database_output_truncated = _bounded_tail(
         runner_result.output, MAX_DATABASE_OUTPUT_CHARACTERS
     )
+    output_truncated = runner_result.output_truncated or database_output_truncated
     if runner_result.launch_error:
         status = RepetitionStatus.LAUNCH_ERROR
     elif runner_result.timed_out:
@@ -2444,6 +2877,7 @@ def _evaluate_repetition(
         assertion_results=tuple(assertion_results),
         evidence=tuple(evidence),
         coverage_results=coverage_results,
+        execution_proof=execution_proof,
         elapsed_seconds=float(runner_result.elapsed_seconds),
         timed_out=runner_result.timed_out,
         errors=tuple(errors),
@@ -2888,9 +3322,23 @@ def run_task_verification(
     *,
     worker_run_id: str | None = None,
     clock: Callable[[], str] = db.utc_now,
-    adapters: Sequence[EvidenceAdapter] = (),
+    adapters: Sequence[EvidenceAdapter] | None = None,
 ) -> tuple[CaseAttemptResult, ...]:
     """Execute and persist selected formal cases; Quick Goal is a strict no-op."""
+
+    if adapters is None:
+        from ai_loop.evidence_adapters import load_evidence_adapters
+
+        def audit_adapter(item: Any) -> None:
+            with db.transaction(db_path) as audit_conn:
+                db.add_event(
+                    audit_conn,
+                    job_id=job_id,
+                    kind="evidence_adapter_error",
+                    payload=item.to_dict(),
+                )
+
+        adapters = load_evidence_adapters(audit=audit_adapter).adapters
 
     with db.transaction(db_path) as conn:
         job = db.get_job(conn, job_id)
@@ -2996,6 +3444,7 @@ def run_task_verification(
                     assertion_results=[item.to_dict() for item in result.assertion_results],
                     evidence=[item.to_dict() for item in result.evidence],
                     coverage_results=[item.to_dict() for item in result.coverage_results],
+                    execution_proof=result.execution_proof.to_dict(),
                     elapsed_seconds=result.elapsed_seconds,
                     timed_out=result.timed_out,
                     error="; ".join(result.errors) or None,
@@ -3497,6 +3946,7 @@ __all__ = [
     "RealizationState",
     "RepetitionStatus",
     "RunnerResult",
+    "RuntimeExecutionProof",
     "SubprocessVerificationRunner",
     "VerificationExecutionError",
     "VerificationRepetitionResult",

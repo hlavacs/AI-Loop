@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import copy
 import json
-import subprocess
 import sys
 from pathlib import Path
 from unittest.mock import patch
@@ -11,6 +10,7 @@ import pytest
 
 import controller
 from ai_loop import db
+from ai_loop.process_runner import BoundedProcessResult
 from ai_loop.verification_orchestrator import (
     RealizationSignals,
     RealizationState,
@@ -329,12 +329,12 @@ def test_unrealized_formal_done_uses_bounded_remake_for_infrastructure_task() ->
 
     def fake_run(command, **_kwargs):
         calls.append(list(command))
-        return subprocess.CompletedProcess(command, 0, stdout=outputs[len(calls) - 1], stderr="")
+        return BoundedProcessResult(command, 0, stdout=outputs[len(calls) - 1], stderr="")
 
     from tests.test_task_traceability import MANIFEST
 
     with patch.object(controller.shutil, "which", return_value="/usr/bin/claude"), patch.object(
-        controller.subprocess, "run", side_effect=fake_run
+        controller, "run_bounded_process", side_effect=fake_run
     ):
         decision = controller.run_claude(
             "claude",

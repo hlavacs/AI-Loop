@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import json
-import subprocess
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
@@ -11,13 +10,19 @@ import pytest
 
 import controller
 from ai_loop import db
+from ai_loop.process_runner import BoundedProcessResult
 from ai_loop.verification_orchestrator import (
     RunnerResult,
     build_runtime_verification_summary,
     evaluate_completion_gate,
     run_task_verification,
 )
-from tests.test_specification_compiler import approved_service, create_quick_job
+from ai_loop.specifications import SpecificationDocument, SpecificationService
+from tests.test_specification_compiler import (
+    approved_service,
+    create_quick_job,
+    document,
+)
 from tests.test_task_traceability import MANIFEST
 
 
@@ -42,7 +47,10 @@ class FakeClock:
 
 def passing_result() -> RunnerResult:
     return RunnerResult(
-        output='AI_LOOP_METRICS={"metrics":{"duration_seconds":1}}',
+        output=(
+            "1 passed in 0.01s\n"
+            'AI_LOOP_METRICS={"metrics":{"duration_seconds":1}}'
+        ),
         return_code=0,
         elapsed_seconds=0.1,
     )
@@ -117,6 +125,15 @@ def completion_summary(
             "latest_metrics": None,
             "latest_evidence": [],
             "coverage_results": [],
+            "execution_proof": {
+                "passed": status == "passing",
+                "selected_case_count": 1 if status == "passing" else None,
+                "executed_case_count": 1 if status == "passing" else None,
+                "skipped_case_count": 0 if status == "passing" else None,
+                "assertion_record_count": 0,
+                "observation_record_count": 0,
+                "error": None,
+            },
             "failed_assertions": [],
             "last_error": None,
             "last_task": None,
@@ -195,6 +212,57 @@ def formal_runtime(tmp_path: Path) -> tuple[Any, Any]:
     return service, stored
 
 
+def formal_coverage_runtime(
+    tmp_path: Path, *, high_risk: bool
+) -> tuple[SpecificationService, Any, SpecificationDocument]:
+    payload = document(command_override="verify focused case").to_dict()
+    for requirement in payload["requirements"]:
+        requirement["priority"] = "could"
+    if not high_risk:
+        payload["requirements"][0]["priority"] = "must"
+    payload["risks"][0]["severity"] = "high" if high_risk else "medium"
+    payload["verification"][0]["blocking"] = False
+    specification = SpecificationDocument.from_dict(payload)
+
+    service = SpecificationService(tmp_path / "loop.sqlite3", tmp_path / "artifacts")
+    service.create(
+        tmp_path,
+        specification,
+        creator="author",
+        specification_id="SPEC1",
+    )
+    service.submit_for_review("SPEC1")
+    approved = service.approve("SPEC1", approved_by="owner")
+    stored = service.create_formal_job(
+        specification_id="SPEC1",
+        specification_version=1,
+        job_id="JFORMAL",
+        repo_path=str(tmp_path),
+        worktree_path=str(tmp_path),
+        branch=None,
+        base_ref="HEAD",
+        test_cmd="auto",
+        max_iterations=6,
+        use_worktree=False,
+    )
+    with db.transaction(service.db_path) as conn:
+        db.create_task(
+            conn,
+            task_id="T1",
+            job_id="JFORMAL",
+            iteration=0,
+            goal="Implement the covered requirement",
+            constraints=[],
+            acceptance=[],
+            test_cmd="verify focused case",
+            created_by="test",
+            requirement_ids=["R1"],
+            verification_ids=[],
+        )
+    create_run(service.db_path, run_id="RUN2", task_id="T1", iteration=0)
+    return service, stored, approved.document
+
+
 def test_structured_summary_reports_pending_evidence_and_all_required_fields(
     tmp_path: Path,
 ) -> None:
@@ -223,6 +291,7 @@ def test_structured_summary_reports_pending_evidence_and_all_required_fields(
         "latest_metrics": None,
         "latest_evidence": [],
         "coverage_results": [],
+        "execution_proof": {},
         "failed_assertions": [],
         "last_error": None,
         "last_task": None,
@@ -301,6 +370,202 @@ def test_current_worker_run_passing_evidence_opens_completion_gate(
     controller.validate_decision_completion(
         done_decision(), summary, worker_run_id="RUN2"
     )
+
+
+@pytest.mark.parametrize(
+    ("runner_result", "expected_reason"),
+    [
+        (
+            RunnerResult(
+                output=(
+                    "no tests ran in 0.01s\n"
+                    'AI_LOOP_METRICS={"metrics":{"duration_seconds":1}}'
+                ),
+                return_code=0,
+                elapsed_seconds=0.1,
+                selected_case_count=0,
+                executed_case_count=0,
+                skipped_case_count=0,
+            ),
+            "selected zero test cases",
+        ),
+        (
+            RunnerResult(
+                output=(
+                    "1 skipped in 0.01s\n"
+                    'AI_LOOP_METRICS={"metrics":{"duration_seconds":1}}'
+                ),
+                return_code=0,
+                elapsed_seconds=0.1,
+                selected_case_count=1,
+                executed_case_count=0,
+                skipped_case_count=1,
+            ),
+            "all selected test cases were skipped",
+        ),
+    ],
+    ids=["zero-selected", "all-skipped"],
+)
+def test_missing_runtime_execution_proof_blocks_completion_gate_and_done(
+    tmp_path: Path,
+    runner_result: RunnerResult,
+    expected_reason: str,
+) -> None:
+    service, stored = formal_runtime(tmp_path)
+    run_task_verification(
+        service.db_path,
+        "JFORMAL",
+        "T2",
+        stored.manifest,
+        FakeRunner(runner_result),
+        worker_run_id="RUN2",
+        clock=FakeClock(),
+    )
+
+    summary = build_runtime_verification_summary(
+        service.db_path,
+        "JFORMAL",
+        stored.manifest,
+        worker_run_id="RUN2",
+    )
+    gate = evaluate_completion_gate(summary, worker_run_id="RUN2")
+
+    assert summary is not None
+    assert summary[0]["status"] == "executable_but_failing"
+    assert summary[0]["execution_proof"]["passed"] is False
+    assert expected_reason in summary[0]["execution_proof"]["error"]
+    assert gate is not None
+    assert gate.ready is False
+    assert gate.failing_verification_ids == ("VT1",)
+    with pytest.raises(
+        controller.CompletionDecisionError,
+        match=f"execution proof rejection.*{expected_reason}",
+    ):
+        controller.validate_decision_completion(
+            done_decision(), summary, worker_run_id="RUN2"
+        )
+
+
+def test_passing_state_without_positive_persisted_proof_cannot_open_gate() -> None:
+    item = dict(
+        completion_summary(
+            status="passing", freshness="fresh", attempts=1
+        )[0]
+    )
+    item["execution_proof"] = {
+        "passed": False,
+        "selected_case_count": 0,
+        "executed_case_count": 0,
+        "skipped_case_count": 0,
+        "assertion_record_count": 0,
+        "observation_record_count": 0,
+        "error": "runtime execution proof missing: selected zero test cases",
+    }
+
+    gate = evaluate_completion_gate((item,), worker_run_id="RUN2")
+
+    assert gate is not None
+    assert gate.ready is False
+    assert gate.failing_verification_ids == ("VT1",)
+    with pytest.raises(
+        controller.CompletionDecisionError,
+        match="execution proof rejection.*selected zero test cases",
+    ):
+        controller.validate_decision_completion(
+            done_decision(), (item,), worker_run_id="RUN2"
+        )
+
+
+@pytest.mark.parametrize(
+    ("high_risk", "expected_required_ids"),
+    [
+        (False, ("R1",)),
+        (True, ("R1", "R2")),
+    ],
+    ids=["mandatory", "high-risk"],
+)
+def test_requirement_coverage_blocks_done_until_linked_automated_case_passes(
+    tmp_path: Path,
+    high_risk: bool,
+    expected_required_ids: tuple[str, ...],
+) -> None:
+    service, stored, specification = formal_coverage_runtime(
+        tmp_path, high_risk=high_risk
+    )
+    summary = build_runtime_verification_summary(
+        service.db_path,
+        "JFORMAL",
+        stored.manifest,
+        worker_run_id="RUN2",
+        specification=specification,
+    )
+
+    gate = evaluate_completion_gate(summary, worker_run_id="RUN2")
+    assert gate is not None
+    assert gate.ready is False
+    assert gate.required_requirement_ids == expected_required_ids
+    assert gate.missing_requirement_ids == expected_required_ids
+    assert gate.blocking_verification_ids == ("VT1",)
+    with pytest.raises(
+        controller.CompletionDecisionError,
+        match=r"mandatory/high-risk evidence.*R1.*worker run 'RUN2'",
+    ) as raised:
+        controller.validate_decision_completion(
+            done_decision(), summary, worker_run_id="RUN2"
+        )
+    assert raised.value.final_verification_required is True
+
+    run_task_verification(
+        service.db_path,
+        "JFORMAL",
+        "T1",
+        stored.manifest,
+        FakeRunner(passing_result()),
+        worker_run_id="RUN2",
+        clock=FakeClock(),
+    )
+    passing_summary = build_runtime_verification_summary(
+        service.db_path,
+        "JFORMAL",
+        stored.manifest,
+        worker_run_id="RUN2",
+        specification=specification,
+    )
+    passing_gate = evaluate_completion_gate(
+        passing_summary, worker_run_id="RUN2"
+    )
+
+    assert passing_gate is not None
+    assert passing_gate.ready is True
+    assert passing_gate.missing_requirement_ids == ()
+    controller.validate_decision_completion(
+        done_decision(), passing_summary, worker_run_id="RUN2"
+    )
+
+
+def test_required_requirement_with_only_manual_coverage_blocks_done() -> None:
+    summary = (
+        {
+            "verification_id": "VT-MANUAL",
+            "requirement_ids": ["R-MUST"],
+            "mandatory_requirement_ids": ["R-MUST"],
+            "high_risk_requirement_ids": [],
+            "blocking": False,
+            "automation": "manual",
+            "status": "manual_pending",
+            "attempts_completed": 0,
+            "worker_run_under_review": "RUN2",
+            "evidence_freshness": "not_applicable",
+        },
+    )
+
+    with pytest.raises(
+        controller.CompletionDecisionError,
+        match="requirements lack a linked automated verification: R-MUST",
+    ):
+        controller.validate_decision_completion(
+            done_decision(), summary, worker_run_id="RUN2"
+        )
 
 
 def test_summary_reports_failed_assertions_error_and_failing_gate(
@@ -395,7 +660,7 @@ def test_premature_done_uses_bounded_remake_for_exactly_one_final_task() -> None
 
     def fake_run(command, **_kwargs):
         calls.append(list(command))
-        return subprocess.CompletedProcess(
+        return BoundedProcessResult(
             command,
             0,
             stdout=outputs[len(calls) - 1],
@@ -403,8 +668,8 @@ def test_premature_done_uses_bounded_remake_for_exactly_one_final_task() -> None
         )
 
     with patch.object(controller.shutil, "which", return_value="/usr/bin/claude"), patch.object(
-        controller.subprocess,
-        "run",
+        controller,
+        "run_bounded_process",
         side_effect=fake_run,
     ):
         decision = controller.run_claude(
@@ -475,7 +740,7 @@ def test_escalated_blocking_case_forces_human_needed_through_bounded_remake() ->
 
     def fake_run(command, **_kwargs):
         calls.append(list(command))
-        return subprocess.CompletedProcess(
+        return BoundedProcessResult(
             command,
             0,
             stdout=outputs[len(calls) - 1],
@@ -483,8 +748,8 @@ def test_escalated_blocking_case_forces_human_needed_through_bounded_remake() ->
         )
 
     with patch.object(controller.shutil, "which", return_value="/usr/bin/claude"), patch.object(
-        controller.subprocess,
-        "run",
+        controller,
+        "run_bounded_process",
         side_effect=fake_run,
     ):
         decision = controller.run_claude(

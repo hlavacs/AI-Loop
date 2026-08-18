@@ -117,8 +117,6 @@ from ai_loop.auth import (
     provider_for_role,
 )
 from ai_loop.config import (
-    CLAUDE_REQUEST_STREAM,
-    CODEX_TASK_STREAM,
     load_settings,
     normalize_controller,
     normalize_worker,
@@ -127,7 +125,8 @@ from ai_loop.config import (
 from ai_loop.progress import estimate_progress
 from ai_loop.elicitation import CliStructuredOutputProvider
 from ai_loop.specification_gui import VerificationDashboardView, open_specification_editor
-from ai_loop.specifications import SpecificationService
+from ai_loop.specification_workflow import derive_formal_job_inputs
+from ai_loop.specifications import SpecificationService, StoredSpecificationVersion
 from ai_loop.verification_orchestrator import (
     load_verification_dashboard_projection,
     record_manual_verification_acknowledgement,
@@ -139,7 +138,7 @@ from ai_loop.planning import (
     normalize_granularity,
     replace_granularity_constraints,
 )
-from ai_loop.queues import ensure_group, redis_client, xadd_json
+from ai_loop.queues import publish_controller_plan, publish_worker_task, redis_client
 from ai_loop.notifications import MailAccessStatus, check_mail_access, delivery_outcome, job_started_email
 from start_job import (
     COMMON_CONSTRAINTS,
@@ -983,12 +982,35 @@ class LoopBackend:
             except OSError:
                 pass
 
-    def queue_plan(self, job_id: str) -> None:
+    def queue_plan(self, job_id: str, *, publication_key: str | None = None) -> None:
         self.ensure_redis_running()
         client = redis_client(self.settings.redis_url)
-        ensure_group(client, CLAUDE_REQUEST_STREAM, f"claude-controllers:{job_id}", start_id="$")
-        ensure_group(client, CODEX_TASK_STREAM, f"codex-workers:{job_id}", start_id="$")
-        xadd_json(client, CLAUDE_REQUEST_STREAM, "request", {"type": "PLAN", "job_id": job_id, "scope": "job"})
+        publish_controller_plan(client, job_id, publication_key=publication_key)
+
+    def publish_task(self, task_id: str) -> bool:
+        """Publish a persisted task through the same queue as controller tasks."""
+
+        self.ensure_redis_running()
+        with db.transaction(self.settings.db_path) as conn:
+            task = db.get_task(conn, task_id)
+        client = redis_client(self.settings.redis_url)
+        return publish_worker_task(client, task, scoped=True)
+
+    def retarget_formal_job(
+        self,
+        job_id: str,
+        specification_id: str,
+        specification_version: int,
+    ) -> Any:
+        """Retarget and publish its impact task through the controller task queue."""
+
+        service = SpecificationService(self.settings.db_path)
+        return service.attach_newer_approved_revision(
+            job_id,
+            specification_id,
+            specification_version,
+            task_publisher=self.publish_task,
+        )
 
     def create_job(
         self,
@@ -1006,6 +1028,8 @@ class LoopBackend:
         controller: str,
         granularity: str,
         models: ModelDefaults,
+        specification_id: str | None = None,
+        specification_version: int | None = None,
     ) -> str:
         repo = repo.expanduser().resolve()
         if not repo.exists():
@@ -1020,10 +1044,31 @@ class LoopBackend:
         if current_active and not allow_parallel:
             raise RuntimeError("another job is active; enable Allow parallel to create a new one anyway")
 
+        if (specification_id is None) != (specification_version is None):
+            raise ValueError("formal job creation requires both specification ID and version")
+        specification_service: SpecificationService | None = None
+        formal_inputs = None
+        if specification_id is not None and specification_version is not None:
+            specification_service = SpecificationService(self.settings.db_path)
+            approved = specification_service.verify_integrity(
+                specification_id, specification_version
+            )
+            formal_inputs = derive_formal_job_inputs(approved)
+            if repo != Path(approved.repository_path).expanduser().resolve():
+                raise ValueError(
+                    "approved specification repository differs from the job repository"
+                )
+
         job_id = timestamp_id("J")
         all_constraints = [*granularity_constraints(granularity), *COMMON_CONSTRAINTS, *constraints]
         all_acceptance = [*DEFAULT_ACCEPTANCE, *acceptance]
-        plan = build_static_plan(goal, all_acceptance, detected_test_cmd)
+        plan_goal = formal_inputs.goal if formal_inputs is not None else goal
+        plan_acceptance = (
+            [*formal_inputs.acceptance, *all_acceptance]
+            if formal_inputs is not None
+            else all_acceptance
+        )
+        plan = build_static_plan(plan_goal, plan_acceptance, detected_test_cmd)
         worktree = repo
         branch: str | None = None
         overlay_files: list[str] = []
@@ -1034,17 +1079,15 @@ class LoopBackend:
             worktree, branch = create_worktree(repo, self.settings.runs_dir, job_id, base_ref)
             overlay_files = copy_checkout_overlay(repo, worktree)
 
-        with db.transaction(self.settings.db_path) as conn:
-            db.create_job(
-                conn,
+        if specification_service is not None:
+            specification_service.create_formal_job(
+                specification_id=specification_id,
+                specification_version=specification_version,
                 job_id=job_id,
                 repo_path=str(repo),
                 worktree_path=str(worktree),
                 branch=branch,
                 base_ref=base_ref,
-                goal=goal,
-                constraints=all_constraints,
-                acceptance=all_acceptance,
                 test_cmd=detected_test_cmd,
                 max_iterations=max_iterations,
                 use_worktree=use_worktree,
@@ -1052,11 +1095,36 @@ class LoopBackend:
                 controller=controller,
                 granularity=granularity,
                 plan=plan,
-                # Persist the model/binary selections as durable job state so
-                # a resume after a GUI restart can restore the original
-                # choices instead of silently using whatever the form shows.
                 models=asdict(models),
+                additional_constraints=all_constraints,
+                additional_acceptance=all_acceptance,
             )
+        else:
+            with db.transaction(self.settings.db_path) as conn:
+                db.create_job(
+                    conn,
+                    job_id=job_id,
+                    repo_path=str(repo),
+                    worktree_path=str(worktree),
+                    branch=branch,
+                    base_ref=base_ref,
+                    goal=goal,
+                    constraints=all_constraints,
+                    acceptance=all_acceptance,
+                    test_cmd=detected_test_cmd,
+                    max_iterations=max_iterations,
+                    use_worktree=use_worktree,
+                    worker=worker,
+                    controller=controller,
+                    granularity=granularity,
+                    plan=plan,
+                    # Persist the model/binary selections as durable job state so
+                    # a resume after a GUI restart can restore the original
+                    # choices instead of silently using whatever the form shows.
+                    models=asdict(models),
+                )
+
+        with db.transaction(self.settings.db_path) as conn:
             db.add_event(
                 conn,
                 job_id=job_id,
@@ -1068,13 +1136,20 @@ class LoopBackend:
                     "controller": controller,
                     "granularity": granularity,
                     "plan": plan,
+                    "specification_id": specification_id,
+                    "specification_version": specification_version,
                     "pre_job_commit": pre_job_commit,
                     "checkout_overlay_files": overlay_files,
                 },
             )
 
         pids = self.launch_processes(job_id, models)
-        self.queue_plan(job_id)
+        self.queue_plan(
+            job_id,
+            publication_key=(
+                f"formal-job:{job_id}" if specification_service is not None else None
+            ),
+        )
         with db.transaction(self.settings.db_path) as conn:
             db.add_event(
                 conn,
@@ -2035,6 +2110,52 @@ class AiLoopGui(tk.Tk):
             model=models.controller_role_model,
         )
 
+    def _formal_implementation_work(
+        self, snapshot: StoredSpecificationVersion
+    ) -> Any:
+        """Snapshot Quick Job settings and return its formal creation operation."""
+
+        conflict = self._exclusive_conflict("job")
+        if conflict is not None:
+            raise RuntimeError(
+                f"cannot start implementation while {conflict} is running"
+            )
+        worker = normalize_worker(self.worker_var.get())
+        controller = normalize_controller(self.controller_var.get())
+        models = self.current_models()
+        repo = Path(snapshot.repository_path)
+        test_cmd = self.test_cmd_var.get().strip() or "auto"
+        max_iterations = int(self.max_iterations_var.get())
+        base_ref = self.base_ref_var.get().strip() or "HEAD"
+        use_worktree = not self.no_worktree_var.get()
+        allow_parallel = bool(self.allow_parallel_var.get())
+        granularity = self.granularity_var.get()
+
+        def work() -> str:
+            return self.backend.create_job(
+                repo=repo,
+                goal=snapshot.document.summary,
+                test_cmd=test_cmd,
+                constraints=[],
+                acceptance=[],
+                max_iterations=max_iterations,
+                base_ref=base_ref,
+                use_worktree=use_worktree,
+                allow_parallel=allow_parallel,
+                worker=worker,
+                controller=controller,
+                granularity=granularity,
+                models=models,
+                specification_id=snapshot.specification_id,
+                specification_version=snapshot.version,
+            )
+
+        return work
+
+    def _formal_implementation_started(self, job_id: str) -> None:
+        self.watch_job_id = job_id
+        self.refresh_all(select_job_id=job_id)
+
     def _finish_open_formal_specification(
         self,
         service: SpecificationService | None,
@@ -2060,6 +2181,8 @@ class AiLoopGui(tk.Tk):
                 creator=os.environ.get("USER") or os.environ.get("USERNAME") or "gui-user",
                 run_background=self._run_bg,
                 elicitation_provider_factory=self._formal_elicitation_provider,
+                implementation_work_factory=self._formal_implementation_work,
+                on_implementation_started=self._formal_implementation_started,
                 on_close=editor_closed,
             )
         except Exception as exc:

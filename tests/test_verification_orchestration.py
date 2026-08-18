@@ -1,8 +1,9 @@
 from __future__ import annotations
 
 import copy
+import shlex
 import sqlite3
-import subprocess
+import sys
 from pathlib import Path
 from typing import Any
 from unittest.mock import patch
@@ -10,6 +11,7 @@ from unittest.mock import patch
 import pytest
 
 from ai_loop import db
+from ai_loop.process_runner import BoundedProcessResult
 from ai_loop.verification_orchestrator import (
     MAX_DATABASE_OUTPUT_CHARACTERS,
     RepetitionStatus,
@@ -88,6 +90,92 @@ def test_success_runs_through_domain_neutral_runner(tmp_path: Path) -> None:
             "timeout": 60,
         }
     ]
+
+
+@pytest.mark.parametrize(
+    ("runner_result", "expected_error"),
+    [
+        (
+            result(
+                "no tests ran in 0.01s\n"
+                'AI_LOOP_METRICS={"metrics":{"result_count":1}}'
+            ),
+            "selected zero test cases",
+        ),
+        (
+            result(
+                "1 skipped in 0.01s\n"
+                'AI_LOOP_METRICS={"metrics":{"result_count":1}}'
+            ),
+            "all selected test cases were skipped",
+        ),
+    ],
+    ids=["zero-selected", "all-skipped"],
+)
+def test_zero_or_only_skipped_runtime_cases_fail_execution_proof(
+    tmp_path: Path,
+    runner_result: RunnerResult,
+    expected_error: str,
+) -> None:
+    attempt = run_case_attempt(
+        case(), tmp_path, FakeRunner(runner_result), clock=FakeClock()
+    )
+
+    repetition = attempt.repetitions[0]
+    assert attempt.passed is False
+    assert repetition.status == RepetitionStatus.FAILED
+    assert repetition.execution_proof.passed is False
+    assert expected_error in str(repetition.execution_proof.error)
+    assert any(expected_error in error for error in repetition.errors)
+
+
+def test_executed_passing_runtime_case_satisfies_execution_proof(
+    tmp_path: Path,
+) -> None:
+    attempt = run_case_attempt(
+        case(),
+        tmp_path,
+        FakeRunner(
+            result(
+                "1 passed in 0.01s\n"
+                'AI_LOOP_METRICS={"metrics":{"result_count":1}}'
+            )
+        ),
+        clock=FakeClock(),
+    )
+
+    repetition = attempt.repetitions[0]
+    assert attempt.passed is True
+    assert repetition.execution_proof.passed is True
+    assert repetition.execution_proof.selected_case_count == 1
+    assert repetition.execution_proof.executed_case_count == 1
+    assert repetition.execution_proof.skipped_case_count == 0
+
+
+def test_production_runner_proves_a_genuinely_executed_passing_case(
+    tmp_path: Path,
+) -> None:
+    (tmp_path / "test_runtime_proof_target.py").write_text(
+        "def test_runtime_proof_target():\n    assert 2 + 2 == 4\n",
+        encoding="utf-8",
+    )
+    verification = case()
+    verification["command"] = (
+        f"{shlex.quote(sys.executable)} -m pytest -q test_runtime_proof_target.py "
+        "&& printf '%s\\n' 'AI_LOOP_METRICS={\"metrics\":{\"result_count\":1}}'"
+    )
+
+    attempt = run_case_attempt(
+        verification,
+        tmp_path,
+        SubprocessVerificationRunner(),
+        clock=FakeClock(),
+    )
+
+    repetition = attempt.repetitions[0]
+    assert attempt.passed is True
+    assert repetition.execution_proof.executed_case_count == 1
+    assert repetition.execution_proof.selected_case_count == 1
 
 
 def test_nonzero_exit_fails_even_when_metrics_pass(tmp_path: Path) -> None:
@@ -294,11 +382,15 @@ def test_execution_revalidates_symlink_containment_before_fake_runner(
 
 
 def test_subprocess_runner_captures_combined_output_and_context(tmp_path: Path) -> None:
-    completed = subprocess.CompletedProcess(
-        ["bash", "-lc", "verify"], 3, stdout="standard output", stderr="standard error"
+    completed = BoundedProcessResult(
+        ["bash", "-lc", "verify"],
+        3,
+        stdout="standard output",
+        stderr="standard error",
+        output_truncated=True,
     )
     with patch(
-        "ai_loop.verification_orchestrator.subprocess.run", return_value=completed
+        "ai_loop.verification_orchestrator.run_bounded_process", return_value=completed
     ) as launched:
         observed = SubprocessVerificationRunner().run(
             command="verify", worktree=tmp_path, working_directory=".", timeout=12
@@ -307,6 +399,7 @@ def test_subprocess_runner_captures_combined_output_and_context(tmp_path: Path) 
     assert observed.output == "standard output\nstandard error"
     assert observed.return_code == 3
     assert observed.timed_out is False
+    assert observed.output_truncated is True
     assert observed.elapsed_seconds >= 0
     assert launched.call_args.kwargs["cwd"] == str(tmp_path.resolve())
     assert launched.call_args.kwargs["timeout"] == 12
@@ -433,6 +526,16 @@ def test_repetitions_persist_append_only_and_round_trip(tmp_path: Path) -> None:
             "tolerance": 0,
         }
     ]
+    assert rows[0]["execution_proof"] == {
+        "assertion_record_count": 1,
+        "error": None,
+        "executed_case_count": None,
+        "observation_record_count": 1,
+        "passed": True,
+        "selected_case_count": None,
+        "skipped_case_count": None,
+        "sources": ["assertion-records", "observation-records"],
+    }
     assert rows[0]["started_at"] == "2026-08-16T00:00:01+00:00"
     assert rows[0]["finished_at"] == "2026-08-16T00:00:02+00:00"
     assert state == "passing"

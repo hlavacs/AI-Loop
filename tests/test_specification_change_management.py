@@ -4,6 +4,7 @@ import copy
 import json
 import sqlite3
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -218,7 +219,11 @@ def test_stable_id_diff_reports_every_contract_family_deterministically(tmp_path
     assert first["changes"]["coverage_targets"]["changed"][0]["stable_id"] == "VT1:scenario-rate"
 
 
-def test_retarget_persists_hash_checked_impact_and_selectively_invalidates(tmp_path: Path) -> None:
+def test_retarget_persists_hash_checked_impact_and_selectively_invalidates(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import ai_loop_gui
+
     service, previous = create_approved_service(tmp_path)
     original_manifest = create_formal(service, tmp_path)
     original_manifest_bytes = original_manifest.artifact_path.read_bytes()
@@ -279,9 +284,41 @@ def test_retarget_persists_hash_checked_impact_and_selectively_invalidates(tmp_p
     payload["verification"][0]["metric_assertions"][0]["threshold"] = 4
     newer = approve_revision(service, payload, "Revise R1 and VT1")
 
-    result = service.attach_newer_approved_revision("JFORMAL", "SPEC1", newer.version)
+    backend = ai_loop_gui.LoopBackend.__new__(ai_loop_gui.LoopBackend)
+    backend.settings = SimpleNamespace(
+        db_path=service.db_path,
+        redis_url="redis://unused/0",
+    )
+    backend.ensure_redis_running = lambda: None
+    queue_client = object()
+    published_tasks: list[dict[str, object]] = []
+    monkeypatch.setattr(ai_loop_gui, "redis_client", lambda _url: queue_client)
+    monkeypatch.setattr(
+        ai_loop_gui,
+        "publish_worker_task",
+        lambda client, task, *, scoped: (
+            published_tasks.append(dict(task)) or client is queue_client
+        ),
+    )
+
+    result = backend.retarget_formal_job(
+        "JFORMAL", "SPEC1", newer.version
+    )
 
     assert result.manifest.specification_version == 2
+    assert len(published_tasks) == 1
+    assert published_tasks[0]["id"] == result.task_id
+    assert published_tasks[0]["job_id"] == "JFORMAL"
+    assert published_tasks[0]["iteration"] == 2
+    assert published_tasks[0]["created_by"] == "specification_change_impact"
+    assert published_tasks[0]["constraints"] == [
+        "Use the persisted change-impact analysis as the scope boundary.",
+        "Do not replan or modify contracts proven unaffected by traceability.",
+    ]
+    assert published_tasks[0]["acceptance"] == [
+        "Affected verification VT1 has fresh passing evidence.",
+        "Affected verification VT2 has fresh passing evidence.",
+    ]
     assert result.impact.result["previous_specification"]["version"] == 1
     assert result.impact.result["new_specification"]["version"] == 2
     assert result.impact.artifact_path.name == "change-impact-v0001-to-v0002.json"
@@ -387,7 +424,12 @@ def test_change_migration_is_additive_idempotent_and_quick_goal_isolated(tmp_pat
     service = SpecificationService(database, tmp_path / "artifacts")
     create_quick_job(database, "JQUICK", tmp_path)
     with pytest.raises(SpecificationStateError, match="Quick Goal"):
-        service.attach_newer_approved_revision("JQUICK", "SPEC1", 2)
+        service.attach_newer_approved_revision(
+            "JQUICK",
+            "SPEC1",
+            2,
+            task_publisher=lambda _task_id: True,
+        )
     with db.transaction(database) as conn:
         assert conn.execute("SELECT COUNT(*) FROM specification_change_impacts").fetchone()[0] == 0
         assert conn.execute("SELECT COUNT(*) FROM verification_manifest_revisions").fetchone()[0] == 0

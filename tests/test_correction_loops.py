@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import json
 import sqlite3
-import subprocess
 from pathlib import Path
 from typing import Any
 from unittest.mock import patch
@@ -11,6 +10,7 @@ import pytest
 
 import controller
 from ai_loop import db
+from ai_loop.process_runner import BoundedProcessResult
 from ai_loop.specifications import SpecificationDocument, SpecificationService
 from ai_loop.verification_orchestrator import (
     RunnerResult,
@@ -405,14 +405,14 @@ def test_hard_bound_forces_human_needed_with_complete_escalation_report(
     outputs = [json.dumps(repair_decision()), json.dumps(human_decision())]
     calls: list[list[str]] = []
 
-    def fake_run(command: list[str], **_kwargs: Any) -> subprocess.CompletedProcess[str]:
+    def fake_run(command: list[str], **_kwargs: Any) -> BoundedProcessResult:
         calls.append(list(command))
-        return subprocess.CompletedProcess(
+        return BoundedProcessResult(
             command, 0, stdout=outputs[len(calls) - 1], stderr=""
         )
 
     with patch.object(controller.shutil, "which", return_value="/usr/bin/claude"), patch.object(
-        controller.subprocess, "run", side_effect=fake_run
+        controller, "run_bounded_process", side_effect=fake_run
     ):
         decision = controller.run_claude(
             "claude",

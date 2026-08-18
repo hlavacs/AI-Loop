@@ -22,6 +22,8 @@ from ai_loop.config import (
 )
 from ai_loop.notifications import delivery_outcome, terminal_email
 from ai_loop.planning import normalize_granularity
+from ai_loop.process_runner import run_bounded_process
+from ai_loop.prompt_profiles import configured_prompt_guidance
 from ai_loop.queues import claim_pending, consumer_name, decode, ensure_group, redis_client, read_group, xadd_json
 from ai_loop.recovery import attempt_auto_recovery
 from ai_loop.specifications import SpecificationService
@@ -38,6 +40,7 @@ DIFF_LIMIT = 80000
 INSTRUCTION_FILE_LIMIT = 10
 TERMINAL_STATUSES = {"done", "human_needed", "dead"}
 PROMPT_ARG_LIMIT = 100000
+PROCESS_CAPTURE_LIMIT = 2 * max(OUTPUT_LIMIT, DIFF_LIMIT)
 
 
 def scoped_job_id() -> str | None:
@@ -71,21 +74,28 @@ def run_command(cmd: list[str], cwd: str, timeout: int, input_text: str | None =
     print(f"running: {' '.join(display_cmd)}")
     print(f"cwd: {cwd}")
     started = time.monotonic()
-    try:
-        proc = subprocess.run(
-            cmd,
-            cwd=cwd,
-            input=input_text,
-            text=True,
-            capture_output=True,
-            timeout=timeout,
-            env=sanitized_child_env(),
-        )
-        output = (proc.stdout + "\n" + proc.stderr).strip()
-        return {"rc": proc.returncode, "output": output, "elapsed": round(time.monotonic() - started, 2)}
-    except subprocess.TimeoutExpired as exc:
-        output = ((exc.stdout or "") + "\n" + (exc.stderr or "")).strip()
-        return {"rc": 124, "output": f"command timed out after {timeout}s\n{output}", "elapsed": timeout}
+    proc = run_bounded_process(
+        cmd,
+        cwd=cwd,
+        input_text=input_text,
+        timeout=timeout,
+        env=sanitized_child_env(),
+        max_output_bytes=PROCESS_CAPTURE_LIMIT,
+    )
+    output = (proc.stdout + "\n" + proc.stderr).strip()
+    if proc.timed_out:
+        return {
+            "rc": 124,
+            "output": f"command timed out after {timeout}s\n{output}",
+            "elapsed": timeout,
+            "output_truncated": proc.output_truncated,
+        }
+    return {
+        "rc": proc.returncode,
+        "output": output,
+        "elapsed": round(time.monotonic() - started, 2),
+        "output_truncated": proc.output_truncated,
+    }
 
 
 def run_shell(command: str, cwd: str, timeout: int) -> dict[str, object]:
@@ -288,16 +298,15 @@ Rules:
 - Do not merge branches.
 - If blocked by missing tools, sandboxing, permissions, or unclear requirements, stop and explain the blocker.
 """
-    if formal_context is None:
-        return prompt
-    specification = getattr(formal_context, "specification")
-    manifest = getattr(formal_context, "manifest")
-    runtime_summary = getattr(formal_context, "runtime_verification_summary")
-    traceability = {
-        "requirement_ids": list(task.get("requirement_ids") or []),
-        "verification_ids": list(task.get("verification_ids") or []),
-    }
-    return prompt + f"""
+    if formal_context is not None:
+        specification = getattr(formal_context, "specification")
+        manifest = getattr(formal_context, "manifest")
+        runtime_summary = getattr(formal_context, "runtime_verification_summary")
+        traceability = {
+            "requirement_ids": list(task.get("requirement_ids") or []),
+            "verification_ids": list(task.get("verification_ids") or []),
+        }
+        prompt += f"""
 Formal execution contract:
 
 Approved immutable specification (authoritative, complete structured contract):
@@ -318,6 +327,7 @@ Additional formal-job rules:
 - Ensure the work can emit the metrics and evidence explicitly demanded by every linked case, and keep each implementation/test/evidence change traceable to the current task IDs.
 - Give each executable case a traceable `AI_LOOP_CASE={{"verification_id":"..."}}` marker (or an equivalent adapter declaration). A broad test command that merely exits successfully does not realize a case.
 """
+    return prompt + configured_prompt_guidance("worker", job, task)
 
 
 def git_snapshot(cwd: str) -> dict[str, object]:
@@ -391,6 +401,10 @@ def process_task(settings, client, task_id: str) -> None:
     with db.transaction(settings.db_path) as conn:
         task = db.get_task(conn, task_id)
         job = db.get_job(conn, task["job_id"])
+
+    if task["status"] != "queued":
+        print(f"task {task_id}: ignoring duplicate delivery in status {task['status']}")
+        return
 
     formal_context = SpecificationService(settings.db_path).load_job_prompt_context(
         str(job["id"])

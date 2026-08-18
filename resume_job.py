@@ -136,7 +136,7 @@ def _pid_identity_ok(pid: int) -> bool:
     """
     try:
         result = subprocess.run(
-            ["ps", "-p", str(pid), "-o", "command="],
+            ["ps", "-ww", "-p", str(pid), "-o", "command="],
             capture_output=True,
             text=True,
             timeout=5,

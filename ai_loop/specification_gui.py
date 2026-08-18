@@ -20,10 +20,11 @@ from typing import Any, Callable, Iterable, Mapping, Sequence
 
 try:  # Importing this module must remain safe in headless/minimal environments.
     import tkinter as tk
-    from tkinter import messagebox, ttk
+    from tkinter import filedialog, messagebox, ttk
 except (ImportError, RuntimeError):  # pragma: no cover - platform dependent
     tk = None  # type: ignore[assignment]
     ttk = None  # type: ignore[assignment]
+    filedialog = None  # type: ignore[assignment]
     messagebox = None  # type: ignore[assignment]
 
 from ai_loop.elicitation import (
@@ -64,6 +65,218 @@ METRIC_EXPRESSION_RE = re.compile(
     r"(?P<threshold>\S+)(?:\s+(?P<tolerance>\S+))?$"
 )
 
+SPECIFICATION_SAVEFILE_SCHEMA = "ai-loop/specification-draft"
+SPECIFICATION_SAVEFILE_VERSION = 1
+
+PROCESS_OVERVIEW_TEXT = (
+    "How ai-loop turns this specification into verified work:\n"
+    "1. Author the specification and use elicitation to clarify gaps.  "
+    "2. Save the draft and submit it for review.  "
+    "3. Resolve Review issues and choices, then approve the exact version.  "
+    "4. Click Start Implementation; ai-loop pins the approved version and enqueues a PLAN.  "
+    "5. A worker implements the planned requirements.  "
+    "6. Verification runs the linked cases and records runtime proof that the intended cases executed.  "
+    "7. The controller reaches DONE only after every blocking completion gate passes."
+)
+
+
+SPECIFICATION_FIELD_GUIDANCE = {
+    "title": (
+        "A short name for this deliverable. It identifies the draft during review and the exact "
+        "approved version later pinned to implementation."
+    ),
+    "summary": (
+        "Explain the user problem and desired result in plain language. The controller uses this "
+        "context when turning approved requirements into a PLAN."
+    ),
+    "objectives": (
+        "List measurable outcomes, one per line. Requirements should realize these outcomes and "
+        "verification cases should prove them."
+    ),
+    "stakeholders": (
+        "Name the people or roles affected, one per line. Use cases identify how these actors "
+        "interact with the result and whose expectations require verification."
+    ),
+    "in_scope": (
+        "State what the worker is expected to implement, one boundary per line. Requirements must "
+        "stay inside this boundary."
+    ),
+    "out_of_scope": (
+        "State what this delivery intentionally excludes. This prevents the PLAN and completion "
+        "review from treating excluded work as missing."
+    ),
+    "assumptions": (
+        "Record facts treated as true, one per line. Turn uncertain or failure-prone assumptions "
+        "into risks or verification fixtures."
+    ),
+    "constraints": (
+        "Record non-negotiable technical, policy, or schedule limits. Requirements and the worker's "
+        "implementation must honor them."
+    ),
+    "dependencies": (
+        "List external systems, libraries, data, or teams needed for delivery. Verification fixtures "
+        "should make those dependencies reproducible."
+    ),
+    "use_cases": (
+        "Describe complete user journeys. Link every journey to requirement IDs so review can trace "
+        "user behavior to implementation work and verification coverage."
+    ),
+    "requirements": (
+        "Define the implementation contract. Stable IDs connect use cases, risks, and verification; "
+        "mandatory and high-risk work needs blocking automated coverage before DONE."
+    ),
+    "risks": (
+        "Describe credible failures and mitigations. High-severity or high-uncertainty risks must "
+        "link to verification with metrics, retained evidence, and a bounded correction loop."
+    ),
+    "verification": (
+        "Define how linked requirements are proven. Blocking automated cases gate completion and "
+        "must produce runtime evidence that the intended procedure actually executed."
+    ),
+    "decisions": (
+        "Record choices already made and their trade-offs. Decisions constrain requirements and "
+        "keep the controller from silently choosing a different design."
+    ),
+    "open_questions": (
+        "List unresolved questions, one per line. They appear in Review and must be resolved or "
+        "explicitly deferred before approval."
+    ),
+    "use_cases.id": "A stable uppercase ID such as UC1; requirement and review traceability refer to it.",
+    "use_cases.title": "A concise name for the user journey and the behavior it demonstrates.",
+    "use_cases.actors": "One actor or role per line; these should come from, or refine, Stakeholders.",
+    "use_cases.preconditions": "One required starting state per line so tests can establish the scenario.",
+    "use_cases.trigger": "The event that starts this journey and the corresponding verification scenario.",
+    "use_cases.main_flow": "One ordered success step per line; requirements describe what implements these steps.",
+    "use_cases.alternate_flows": "One valid variation per line so expected alternatives are not treated as failures.",
+    "use_cases.postconditions": "One observable final state per line; these become useful test oracles.",
+    "use_cases.error_and_edge_cases": "One failure or boundary behavior per line to cover in risks or verification.",
+    "use_cases.requirement_ids": "One linked requirement ID per line; links provide journey-to-test traceability.",
+    "requirements.id": "A stable uppercase ID such as R1, used by use cases, risks, evidence, and verification.",
+    "requirements.category": "Classify the contract; approval requires both functional and quality requirements.",
+    "requirements.priority": "Must items are mandatory completion work; should/could express lower priority.",
+    "requirements.title": "A concise, unique description of the capability or quality contract.",
+    "requirements.statement": "Write one unambiguous normative statement describing what the result shall do.",
+    "requirements.rationale": "Explain why the contract matters and which objective or stakeholder it supports.",
+    "requirements.acceptance_criteria": "One measurable outcome per line; verification cases must prove these outcomes.",
+    "requirements.source": "Name the stakeholder, policy, issue, or other authority behind the requirement.",
+    "risks.id": "A stable uppercase ID such as RISK1 for review and verification traceability.",
+    "risks.title": "A concise name for the uncertain failure that needs mitigation.",
+    "risks.description": "Explain the cause, affected requirement or dependency, and likely impact.",
+    "risks.severity": "Rate impact; high and critical risks trigger stronger automated completion gates.",
+    "risks.uncertainty": "Rate confidence in the risk; high uncertainty also triggers stronger verification.",
+    "risks.failure_modes": "One concrete way the system could fail per line.",
+    "risks.detection_signals": "One observable log, metric, state, or symptom per line for runtime detection.",
+    "risks.mitigations": "One prevention or recovery measure per line; requirements should implement them.",
+    "risks.verification_ids": "One verification ID per line showing which runtime proof covers this risk.",
+    "decisions.topic": "The stable subject of the decision, such as retry policy or storage format.",
+    "decisions.selected_decision": "State the chosen option precisely enough to constrain implementation.",
+    "decisions.rationale": "Explain why the chosen option best satisfies objectives, constraints, and risks.",
+    "decisions.rejected_alternatives": "One considered alternative per line so review preserves the trade-off.",
+    "decisions.consequences": "One expected benefit, cost, or follow-up constraint per line.",
+    "verification.id": "A stable uppercase ID such as VT1, linked from risks and runtime evidence.",
+    "verification.title": "Name the behavior or quality this case proves.",
+    "verification.requirement_ids": "One requirement ID per line; every requirement needs at least one linked case.",
+    "verification.test_level": "Choose where the proof runs, from unit through system, performance, or visual testing.",
+    "verification.method": "Choose how results are judged; deterministic cases compare against a fixed oracle.",
+    "verification.oracle": "Describe the independent expected result used to decide pass or fail.",
+    "verification.fixtures": "One reproducible input, state, stub, or dataset per line.",
+    "verification.procedure": "One ordered execution step per line; runtime proof must show this case executed.",
+    "verification.pass_criteria": "One observable pass condition per line, tied to acceptance criteria.",
+    "verification.declared_metrics": "One emitted metric name per line; assertions may reference only these names.",
+    "verification.metric_assertions": "One 'name operator threshold [tolerance]' gate per line, for example sent == 1.",
+    "verification.coverage_targets": "One scenario or coverage target per line showing what this case exercises.",
+    "verification.required_evidence": "One required log, report, or structured proof per line for completion review.",
+    "verification.automation": "Automated cases can gate autonomous completion; manual cases cannot be blocking.",
+    "verification.blocking": "When selected, the controller cannot reach DONE until trusted runtime proof passes.",
+    "verification.command_override": "Optional command for this case; otherwise the job's normal test command is used.",
+    "verification.working_directory": "Repository-relative directory in which the isolated verification command runs.",
+    "verification.timeout": "Maximum runtime in seconds before this verification attempt fails safely.",
+    "verification.maximum_correction_attempts": "Maximum implementation/verification correction cycles before escalation.",
+    "verification.repetitions_per_attempt": "Runs per attempt; repeated runs help expose flaky or high-risk behavior.",
+    "verification.stagnation_limit": "Consecutive attempts without improvement before the loop escalates.",
+    "verification.escalation_condition": "Explain when the bounded loop stops and requires human attention.",
+    "verification.retain_evidence": "Keep attempt evidence so review can audit execution and the final completion gate.",
+}
+
+SPECIFICATION_FIELD_EXAMPLES = {
+    "title": "Reliable appointment reminders",
+    "summary": "Send one reminder 24 hours before an appointment and prove retries cannot send duplicates.",
+    "objectives": "Reduce missed appointments with timely reminders",
+    "stakeholders": "Patients receiving reminders",
+    "in_scope": "Schedule and send email reminders for confirmed appointments",
+    "out_of_scope": "SMS and push notifications",
+    "assumptions": "Appointment timestamps and email addresses are already validated",
+    "constraints": "Never send more than one reminder for the same appointment",
+    "dependencies": "Email gateway test double",
+    "use_cases": "UC1 — A scheduled worker sends one due reminder and stores its receipt",
+    "requirements": "R2 — Reprocessing the same appointment shall not send a duplicate reminder",
+    "risks": "RISK1 — A retry after an ambiguous gateway response sends a duplicate",
+    "verification": "VT1 — Run the same reminder three times and assert notifications_sent == 1",
+    "decisions": "Reminder idempotency key — use appointment ID plus reminder-window date",
+    "open_questions": "Should a later release add SMS as a separate optional requirement?",
+    "use_cases.id": "UC1",
+    "use_cases.title": "Send a due appointment reminder",
+    "use_cases.actors": "Patient\nReminder worker",
+    "use_cases.preconditions": "A confirmed appointment is due in 24 hours\nNo reminder receipt exists",
+    "use_cases.trigger": "The scheduled worker scans due appointments",
+    "use_cases.main_flow": "Load due appointments\nSend the email\nStore one delivery receipt",
+    "use_cases.alternate_flows": "Skip an appointment that already has a successful receipt",
+    "use_cases.postconditions": "One email is sent and one auditable receipt is stored",
+    "use_cases.error_and_edge_cases": "A gateway failure stores a failed attempt without a success receipt",
+    "use_cases.requirement_ids": "R1\nR2",
+    "requirements.id": "R2",
+    "requirements.category": "quality",
+    "requirements.priority": "must",
+    "requirements.title": "Prevent duplicate reminders",
+    "requirements.statement": "The worker shall remain idempotent when the same appointment is processed repeatedly.",
+    "requirements.rationale": "Duplicate reminders confuse patients and erode trust.",
+    "requirements.acceptance_criteria": "Three repeated scans send one email and store one success receipt",
+    "requirements.source": "Patient support policy",
+    "risks.id": "RISK1",
+    "risks.title": "Duplicate reminder delivery",
+    "risks.description": "A retry after an ambiguous response could send a second email.",
+    "risks.severity": "high",
+    "risks.uncertainty": "medium",
+    "risks.failure_modes": "The gateway accepts an email before the worker records its receipt",
+    "risks.detection_signals": "duplicate_notifications is greater than zero",
+    "risks.mitigations": "Enforce a persistent unique idempotency key before delivery",
+    "risks.verification_ids": "VT1",
+    "decisions.topic": "Reminder idempotency key",
+    "decisions.selected_decision": "Use appointment ID plus reminder-window date",
+    "decisions.rationale": "The key is deterministic across retries.",
+    "decisions.rejected_alternatives": "Use a process-local in-memory sent set",
+    "decisions.consequences": "Delivery receipts need a persistent unique-key constraint",
+    "verification.id": "VT1",
+    "verification.title": "Due reminder retry remains idempotent",
+    "verification.requirement_ids": "R1\nR2",
+    "verification.test_level": "integration",
+    "verification.method": "deterministic",
+    "verification.oracle": "The outbox and receipt store each contain exactly one matching record.",
+    "verification.fixtures": "One confirmed appointment due in 24 hours\nA deterministic email gateway",
+    "verification.procedure": "Run the scan three times\nRead the outbox and receipts\nEmit the VT1 marker and metrics",
+    "verification.pass_criteria": "Exactly one email and one success receipt exist after all scans",
+    "verification.declared_metrics": "notifications_sent\nduplicate_notifications",
+    "verification.metric_assertions": "notifications_sent == 1 0\nduplicate_notifications == 0 0",
+    "verification.coverage_targets": "Due-reminder success and repeated-scan idempotency paths",
+    "verification.required_evidence": "VT1 execution marker, emitted metrics, test log, and receipt snapshot",
+    "verification.automation": "automated",
+    "verification.blocking": "selected",
+    "verification.command_override": "python -m pytest -q tests/test_appointment_reminders.py",
+    "verification.working_directory": ".",
+    "verification.timeout": "60",
+    "verification.maximum_correction_attempts": "2",
+    "verification.repetitions_per_attempt": "3",
+    "verification.stagnation_limit": "1",
+    "verification.escalation_condition": "Escalate when duplicate delivery persists after two corrections",
+    "verification.retain_evidence": "selected",
+}
+
+
+def _field_guidance(path: str) -> str:
+    """Return permanent inline help plus a concrete value for one input."""
+
+    return f"{SPECIFICATION_FIELD_GUIDANCE[path]}\nExample: {SPECIFICATION_FIELD_EXAMPLES[path]}"
+
 
 class MetricAssertionParseError(ValueError):
     """A metric expression error carrying its one-based source line."""
@@ -83,6 +296,10 @@ class StructuredRecordParseError(ValueError):
         super().__init__(f"line {line_number}: {message}")
 
 
+class SpecificationSavefileError(ValueError):
+    """Raised when an imported specification save file is not compatible."""
+
+
 def parse_list_text(value: str) -> tuple[str, ...]:
     """Return one exact item per non-empty line, stripping only line endings."""
 
@@ -94,12 +311,7 @@ def format_list_text(values: Iterable[str]) -> str:
 
 
 def parse_structured_records(value: str) -> tuple[str | dict[str, Any], ...]:
-    """Parse one descriptive string or JSON object per non-empty line.
-
-    Verification coverage and evidence collections support both legacy prose
-    entries and structured records.  Object-shaped lines are parsed eagerly so
-    malformed edits cannot silently become descriptive strings.
-    """
+    """Parse one descriptive string or JSON object per non-empty line."""
 
     records: list[str | dict[str, Any]] = []
     for line_number, raw_line in enumerate(value.splitlines(), 1):
@@ -113,7 +325,8 @@ def parse_structured_records(value: str) -> tuple[str | dict[str, Any], ...]:
             parsed = json.loads(raw_line)
         except (json.JSONDecodeError, TypeError, ValueError) as exc:
             raise StructuredRecordParseError(
-                line_number, f"expected a valid JSON object or descriptive text: {exc}"
+                line_number,
+                f"expected a valid JSON object or descriptive text: {exc}",
             ) from exc
         if not isinstance(parsed, (str, dict)):
             raise StructuredRecordParseError(
@@ -251,6 +464,299 @@ def record_to_document(
     return SpecificationDocument.from_dict(copy.deepcopy(dict(record)), worktree=worktree)
 
 
+def specification_to_savefile_bytes(record: Mapping[str, Any]) -> bytes:
+    """Serialize an editable specification record in a versioned JSON envelope."""
+
+    envelope = {
+        "schema": SPECIFICATION_SAVEFILE_SCHEMA,
+        "version": SPECIFICATION_SAVEFILE_VERSION,
+        "specification": copy.deepcopy(dict(record)),
+    }
+    try:
+        return (
+            json.dumps(envelope, ensure_ascii=False, indent=2, sort_keys=True) + "\n"
+        ).encode("utf-8")
+    except (TypeError, ValueError) as exc:
+        raise SpecificationSavefileError(
+            f"Specification record cannot be saved as JSON: {exc}"
+        ) from exc
+
+
+def savefile_to_record(content: bytes | bytearray | str) -> dict[str, Any]:
+    """Load an editable record from a compatible specification save file."""
+
+    try:
+        text = bytes(content).decode("utf-8") if not isinstance(content, str) else content
+    except UnicodeDecodeError as exc:
+        raise SpecificationSavefileError(
+            "Specification file must be UTF-8 encoded JSON"
+        ) from exc
+    try:
+        envelope = json.loads(text)
+    except (json.JSONDecodeError, TypeError) as exc:
+        raise SpecificationSavefileError(f"Malformed specification JSON: {exc}") from exc
+    if not isinstance(envelope, Mapping):
+        raise SpecificationSavefileError("Specification file must contain a JSON object")
+    schema = envelope.get("schema")
+    if schema != SPECIFICATION_SAVEFILE_SCHEMA:
+        raise SpecificationSavefileError(
+            "Incompatible specification file schema: "
+            f"expected {SPECIFICATION_SAVEFILE_SCHEMA!r}, got {schema!r}"
+        )
+    version = envelope.get("version")
+    if version != SPECIFICATION_SAVEFILE_VERSION or isinstance(version, bool):
+        raise SpecificationSavefileError(
+            "Unsupported specification file version: "
+            f"expected {SPECIFICATION_SAVEFILE_VERSION}, got {version!r}"
+        )
+    record = envelope.get("specification")
+    if not isinstance(record, Mapping):
+        raise SpecificationSavefileError(
+            "Specification file field 'specification' must contain a JSON object"
+        )
+    template = SpecificationDocument.empty().to_dict()
+    missing = sorted(set(template) - set(record))
+    unexpected = sorted(set(record) - set(template))
+    if missing or unexpected:
+        details = []
+        if missing:
+            details.append(f"missing fields: {', '.join(missing)}")
+        if unexpected:
+            details.append(f"unexpected fields: {', '.join(unexpected)}")
+        raise SpecificationSavefileError(
+            "Specification file has an incompatible editable shape ("
+            + "; ".join(details)
+            + ")"
+        )
+    for key, default in template.items():
+        value = record[key]
+        if isinstance(default, str) and not isinstance(value, str):
+            raise SpecificationSavefileError(
+                f"Specification file field {key!r} must contain text"
+            )
+        if isinstance(default, list) and not isinstance(value, list):
+            raise SpecificationSavefileError(
+                f"Specification file field {key!r} must contain a list"
+            )
+    for key in ("objectives", "in_scope", "out_of_scope", "stakeholders", "assumptions", "constraints", "dependencies", "open_questions"):
+        if not all(isinstance(item, str) for item in record[key]):
+            raise SpecificationSavefileError(
+                f"Specification file field {key!r} must contain only text items"
+            )
+    for key in ("use_cases", "requirements", "decisions", "risks", "verification"):
+        if not all(isinstance(item, Mapping) for item in record[key]):
+            raise SpecificationSavefileError(
+                f"Specification file field {key!r} must contain only record objects"
+            )
+    return copy.deepcopy(dict(record))
+
+
+def worked_example_document(
+    *, worktree: str | Path | None = None
+) -> SpecificationDocument:
+    """Return one coherent editable example accepted by the authoritative parser."""
+
+    payload = SpecificationDocument.empty().to_dict()
+    payload.update(
+        {
+            "title": "Reliable appointment reminders",
+            "summary": (
+                "Add an appointment-reminder service that sends one email 24 hours before an "
+                "appointment and records enough evidence to prove duplicate reminders are prevented."
+            ),
+            "objectives": [
+                "Reduce missed appointments with timely reminders",
+                "Prevent duplicate notifications while retaining an auditable delivery record",
+            ],
+            "in_scope": [
+                "Schedule and send email reminders for confirmed appointments",
+                "Record delivery outcomes and idempotency decisions",
+            ],
+            "out_of_scope": [
+                "SMS and push notifications",
+                "Changes to appointment booking or cancellation",
+            ],
+            "stakeholders": [
+                "Patients receiving reminders",
+                "Clinic staff monitoring delivery",
+            ],
+            "assumptions": [
+                "Appointment timestamps and recipient email addresses are already validated",
+            ],
+            "constraints": [
+                "Do not send more than one reminder for the same appointment",
+                "Use the repository's existing email gateway abstraction",
+            ],
+            "dependencies": [
+                "Appointment data store",
+                "Email gateway test double",
+            ],
+            "use_cases": [
+                {
+                    "id": "UC1",
+                    "title": "Send a due appointment reminder",
+                    "actors": ["Patient", "Reminder worker"],
+                    "preconditions": [
+                        "A confirmed appointment is due in 24 hours",
+                        "No reminder receipt exists for the appointment",
+                    ],
+                    "trigger": "The scheduled reminder worker scans due appointments",
+                    "main_flow": [
+                        "Load due appointments",
+                        "Send the reminder through the email gateway",
+                        "Store one successful reminder receipt",
+                    ],
+                    "alternate_flows": [
+                        "Skip an appointment that already has a successful reminder receipt",
+                    ],
+                    "postconditions": [
+                        "The patient receives one reminder and an auditable receipt is stored",
+                    ],
+                    "error_and_edge_cases": [
+                        "A gateway failure stores a failed attempt without a successful receipt",
+                    ],
+                    "requirement_ids": ["R1", "R2"],
+                }
+            ],
+            "requirements": [
+                {
+                    "id": "R1",
+                    "category": "functional",
+                    "priority": "must",
+                    "title": "Send due reminders",
+                    "statement": (
+                        "The reminder worker shall send an email for each confirmed appointment "
+                        "that becomes due within the 24-hour reminder window."
+                    ),
+                    "rationale": "Timely reminders reduce missed appointments.",
+                    "acceptance_criteria": [
+                        "A due appointment causes exactly one email to be sent",
+                    ],
+                    "source": "Clinic operations owner",
+                },
+                {
+                    "id": "R2",
+                    "category": "quality",
+                    "priority": "must",
+                    "title": "Prevent duplicate reminders",
+                    "statement": (
+                        "The reminder worker shall remain idempotent when the same due appointment "
+                        "is processed repeatedly."
+                    ),
+                    "rationale": "Duplicate reminders confuse patients and erode trust.",
+                    "acceptance_criteria": [
+                        "Three repeated scans produce one successful delivery receipt and no duplicate email",
+                    ],
+                    "source": "Patient support policy",
+                },
+            ],
+            "decisions": [
+                {
+                    "topic": "Reminder idempotency key",
+                    "selected_decision": "Use the appointment ID plus reminder-window date",
+                    "rationale": "The key is deterministic across retries and changes for later reminders.",
+                    "rejected_alternatives": ["Use a process-local in-memory sent set"],
+                    "consequences": [
+                        "Delivery receipts require a unique persistent idempotency-key constraint",
+                    ],
+                }
+            ],
+            "risks": [
+                {
+                    "id": "RISK1",
+                    "title": "Duplicate reminder delivery",
+                    "description": (
+                        "A retry after an ambiguous gateway response could send a second email for "
+                        "the same appointment."
+                    ),
+                    "severity": "high",
+                    "uncertainty": "medium",
+                    "failure_modes": [
+                        "The gateway accepts an email before the worker records its receipt",
+                    ],
+                    "detection_signals": [
+                        "duplicate_notifications is greater than zero",
+                    ],
+                    "mitigations": [
+                        "Enforce a persistent unique idempotency key before gateway delivery",
+                    ],
+                    "verification_ids": ["VT1"],
+                }
+            ],
+            "verification": [
+                {
+                    "id": "VT1",
+                    "title": "Due reminder retry remains idempotent",
+                    "requirement_ids": ["R1", "R2"],
+                    "test_level": "integration",
+                    "method": "deterministic",
+                    "oracle": (
+                        "The fixture's expected outbox contains one email and the receipt store "
+                        "contains one successful idempotency key."
+                    ),
+                    "fixtures": [
+                        "One confirmed appointment due in 24 hours",
+                        "A deterministic email gateway test double",
+                    ],
+                    "procedure": [
+                        "Run the reminder scan three times for the same appointment",
+                        "Read the gateway outbox and persisted reminder receipts",
+                        "Emit the notification-count metrics and execution marker",
+                    ],
+                    "pass_criteria": [
+                        "Exactly one email and one successful receipt exist after all scans",
+                        "Runtime evidence identifies VT1 as executed",
+                    ],
+                    "declared_metrics": [
+                        "notifications_sent",
+                        "duplicate_notifications",
+                    ],
+                    "metric_assertions": [
+                        {
+                            "metric": "notifications_sent",
+                            "operator": "==",
+                            "threshold": 1,
+                            "tolerance": 0,
+                        },
+                        {
+                            "metric": "duplicate_notifications",
+                            "operator": "==",
+                            "threshold": 0,
+                            "tolerance": 0,
+                        },
+                    ],
+                    "coverage_targets": [
+                        "Due appointment success path and repeated-scan idempotency path",
+                    ],
+                    "automation": "automated",
+                    "blocking": True,
+                    "validation_loop": {
+                        "maximum_correction_attempts": 2,
+                        "repetitions_per_attempt": 3,
+                        "stagnation_limit": 1,
+                        "escalation_condition": (
+                            "Escalate when duplicate delivery persists or two correction attempts fail"
+                        ),
+                        "retain_evidence": True,
+                    },
+                    "command_override": (
+                        "python -m pytest -q tests/test_appointment_reminders.py"
+                    ),
+                    "working_directory": ".",
+                    "timeout": 60,
+                    "required_evidence": [
+                        "VT1 execution marker, emitted metrics, test log, and receipt-store snapshot",
+                    ],
+                }
+            ],
+            "open_questions": [
+                "Should a later slice add SMS reminders as a separate optional requirement?",
+            ],
+        }
+    )
+    return record_to_document(payload, worktree=worktree)
+
+
 # Explicit aliases make the helper vocabulary discoverable to other frontends.
 model_to_record = document_to_record
 record_to_model = record_to_document
@@ -270,6 +776,438 @@ def issues_by_tab(
 
 
 route_issues_to_tabs = issues_by_tab
+
+
+@dataclass(frozen=True)
+class FieldSemanticFeedback:
+    """Advisory semantic health rendered beside one specification input."""
+
+    health: str
+    message: str
+
+
+@dataclass(frozen=True)
+class SpecificationSuggestion:
+    """One display-neutral result from testing the complete specification draft."""
+
+    severity: str
+    field: str
+    tab: str
+    message: str
+
+
+_PLACEHOLDER_RE = re.compile(
+    r"^(?:todo|tbd|tbc|n/?a|none|unknown|placeholder|example|sample|lorem(?: ipsum)?|"
+    r"fill (?:this|me) in|to be (?:decided|defined|confirmed)|\?+)$",
+    re.IGNORECASE,
+)
+_DESCRIPTIVE_LEAVES = {
+    "title",
+    "summary",
+    "objectives",
+    "stakeholders",
+    "in_scope",
+    "out_of_scope",
+    "assumptions",
+    "constraints",
+    "dependencies",
+    "actors",
+    "preconditions",
+    "trigger",
+    "main_flow",
+    "alternate_flows",
+    "postconditions",
+    "error_and_edge_cases",
+    "statement",
+    "rationale",
+    "acceptance_criteria",
+    "source",
+    "description",
+    "failure_modes",
+    "detection_signals",
+    "mitigations",
+    "oracle",
+    "fixtures",
+    "procedure",
+    "pass_criteria",
+    "coverage_targets",
+    "required_evidence",
+    "selected_decision",
+    "rejected_alternatives",
+    "consequences",
+    "open_questions",
+    "escalation_condition",
+}
+
+
+def _semantic_values(value: Any) -> tuple[str, ...]:
+    if isinstance(value, str):
+        return (value,)
+    if isinstance(value, Mapping):
+        return tuple(text for item in value.values() for text in _semantic_values(item))
+    if isinstance(value, Sequence) and not isinstance(value, (str, bytes, bytearray)):
+        return tuple(text for item in value for text in _semantic_values(item))
+    return ()
+
+
+def _is_empty_semantic_value(value: Any) -> bool:
+    if value is None:
+        return True
+    if isinstance(value, str):
+        return not value.strip()
+    if isinstance(value, Mapping):
+        return not value or all(_is_empty_semantic_value(item) for item in value.values())
+    if isinstance(value, Sequence):
+        return not value or all(_is_empty_semantic_value(item) for item in value)
+    return False
+
+
+def _looks_like_placeholder(path: str, value: Any) -> bool:
+    leaf = path.rsplit(".", 1)[-1].split("[", 1)[0]
+    if leaf not in _DESCRIPTIVE_LEAVES:
+        return False
+    values = tuple(text.strip() for text in _semantic_values(value) if text.strip())
+    if not values:
+        return False
+    return any(_PLACEHOLDER_RE.fullmatch(text) for text in values) or (
+        len(values) == 1 and len(values[0]) < 4
+    )
+
+
+def _issues_for_feedback_path(
+    assessment: StageAssessment,
+    path: str,
+) -> tuple[WorkflowIssue, ...]:
+    prefixes = (f"{path}.", f"{path}[")
+    return tuple(
+        issue
+        for issue in assessment.issues
+        if issue.path == path or issue.path.startswith(prefixes)
+    )
+
+
+def _summarize_feedback_issues(issues: Sequence[WorkflowIssue]) -> str:
+    messages: list[str] = []
+    for issue in issues:
+        message = f"{issue.path}: {issue.actionable_message}"
+        if message not in messages:
+            messages.append(message)
+    shown = messages[:2]
+    summary = "; ".join(shown)
+    if len(messages) > len(shown):
+        summary += f"; plus {len(messages) - len(shown)} more issue(s)"
+    return summary
+
+
+def compute_field_feedback(
+    record: Mapping[str, Any],
+    *,
+    worktree: str | Path | None = None,
+    assessment: StageAssessment | None = None,
+) -> dict[str, FieldSemanticFeedback]:
+    """Compute synchronous, user-facing semantic feedback for editor fields.
+
+    Authoritative findings come from :func:`assess_specification`.  Two small
+    advisory checks complement that model: obvious placeholder prose and
+    automated verification cases with no metric assertion that runtime proof
+    can evaluate.  The input record is copied and never changed.
+    """
+
+    source = copy.deepcopy(dict(record))
+    if assessment is None:
+        try:
+            document = record_to_document(source, worktree=worktree)
+            assessment = assess_specification(document, worktree=worktree)
+        except Exception as exc:
+            assessment = StageAssessment(
+                issues=(WorkflowIssue("Review", "editor", "error", str(exc)),),
+                structurally_valid=False,
+                approval_ready=False,
+            )
+
+    feedback: dict[str, FieldSemanticFeedback] = {}
+
+    def add(path: str, value: Any, *, optional: bool = False) -> None:
+        issues = _issues_for_feedback_path(assessment, path)
+        if _is_empty_semantic_value(value):
+            if issues:
+                detail = _summarize_feedback_issues(issues)
+                message = f"Empty — add meaningful content. {detail}"
+            elif optional:
+                message = "Empty — optional for approval, but add it when it clarifies the contract."
+            else:
+                message = "Empty — add meaningful content before review."
+            feedback[path] = FieldSemanticFeedback("empty", message)
+        elif _looks_like_placeholder(path, value):
+            feedback[path] = FieldSemanticFeedback(
+                "weak",
+                "Needs detail — replace placeholder or overly short text with a concrete, "
+                "testable description.",
+            )
+        elif issues:
+            feedback[path] = FieldSemanticFeedback(
+                "needs_attention",
+                f"Needs attention — {_summarize_feedback_issues(issues)}",
+            )
+        else:
+            count = len(value) if isinstance(value, Sequence) and not isinstance(value, str) else None
+            populated = f"{count} item(s)" if count is not None else "meaningful content"
+            feedback[path] = FieldSemanticFeedback(
+                "healthy", f"Looks good — populated with {populated}; no current workflow issue."
+            )
+
+    optional_roots = {"assumptions", "constraints", "dependencies", "risks", "decisions", "open_questions"}
+    top_level_fields = (
+        "title",
+        "summary",
+        "objectives",
+        "stakeholders",
+        "in_scope",
+        "out_of_scope",
+        "assumptions",
+        "constraints",
+        "dependencies",
+        "use_cases",
+        "requirements",
+        "risks",
+        "verification",
+        "decisions",
+        "open_questions",
+    )
+    for path in top_level_fields:
+        add(path, source.get(path), optional=path in optional_roots)
+
+    collection_fields = {
+        "use_cases": USE_CASE_FIELDS,
+        "requirements": REQUIREMENT_FIELDS,
+        "risks": RISK_FIELDS,
+        "verification": VERIFICATION_FIELDS,
+        "decisions": DECISION_FIELDS,
+    }
+    for group, fields in collection_fields.items():
+        values = source.get(group, ())
+        if not isinstance(values, Sequence) or isinstance(values, (str, bytes, bytearray)):
+            continue
+        for index, item in enumerate(values):
+            if not isinstance(item, Mapping):
+                continue
+            for field in fields:
+                model_path = f"{group}[{index}].{field.key}"
+                value = item.get(field.key, field.default)
+                if group == "verification" and field.key in {
+                    "maximum_correction_attempts",
+                    "repetitions_per_attempt",
+                    "stagnation_limit",
+                    "escalation_condition",
+                    "retain_evidence",
+                }:
+                    model_path = f"{group}[{index}].validation_loop.{field.key}"
+                    loop = item.get("validation_loop", {})
+                    value = loop.get(field.key, field.default) if isinstance(loop, Mapping) else field.default
+                add(model_path, value, optional=True)
+
+            if group == "verification":
+                automation = str(item.get("automation", ""))
+                assertions = item.get("metric_assertions", ())
+                assertion_path = f"verification[{index}].metric_assertions"
+                if automation == AutomationLevel.AUTOMATED.value and not assertions:
+                    existing = _issues_for_feedback_path(assessment, assertion_path)
+                    suffix = (
+                        f" {_summarize_feedback_issues(existing)}" if existing else ""
+                    )
+                    feedback[assertion_path] = FieldSemanticFeedback(
+                        "needs_attention",
+                        "Needs attention — this automated case lacks runtime-provable metric "
+                        f"assertions, so passing output cannot prove its intended claim.{suffix}",
+                    )
+
+        child_attention = [
+            (path, item)
+            for path, item in feedback.items()
+            if path.startswith(f"{group}[")
+            and (
+                item.health in {"weak", "needs_attention"}
+                or (
+                    item.health == "empty"
+                    and bool(_issues_for_feedback_path(assessment, path))
+                )
+            )
+        ]
+        if child_attention and feedback[group].health == "healthy":
+            path, item = child_attention[0]
+            feedback[group] = FieldSemanticFeedback(
+                "needs_attention",
+                f"Needs attention in {path} — {item.message}",
+            )
+
+    return feedback
+
+
+_SUGGESTION_TAB_BY_ROOT = {
+    "title": "Overview",
+    "summary": "Overview",
+    "objectives": "Overview",
+    "stakeholders": "Overview",
+    "in_scope": "Scope",
+    "out_of_scope": "Scope",
+    "assumptions": "Scope",
+    "constraints": "Scope",
+    "dependencies": "Scope",
+    "use_cases": "Use Cases",
+    "requirements": "Requirements",
+    "risks": "Risks",
+    "verification": "Verification",
+    "decisions": "Choices",
+    "choices": "Choices",
+    "open_questions": "Choices",
+}
+
+
+def _suggestion_tab_for_path(path: str) -> str:
+    root = path.removeprefix("specification.").split(".", 1)[0].split("[", 1)[0]
+    return _SUGGESTION_TAB_BY_ROOT.get(root, "Review")
+
+
+def analyze_specification(
+    record: Mapping[str, Any],
+    *,
+    worktree: str | Path | None = None,
+    unresolved_blocking_decisions: int = 0,
+) -> tuple[SpecificationSuggestion, ...]:
+    """Return ranked, deduplicated suggestions for the entire current draft.
+
+    This function deliberately has no Tk dependency and never mutates ``record``.
+    Authoritative workflow issues are blocking suggestions.  Additional semantic
+    findings are ranked as traceability/runtime-proof improvements or advisory
+    prose polish.  A clean result is explicit so a caller never has to display
+    an empty review.
+    """
+
+    source = copy.deepcopy(dict(record))
+    try:
+        document = record_to_document(source, worktree=worktree)
+        assessment = assess_specification(
+            document,
+            worktree=worktree,
+            unresolved_blocking_decisions=unresolved_blocking_decisions,
+        )
+    except Exception as exc:
+        assessment = StageAssessment(
+            issues=(WorkflowIssue("Review", "editor", "error", str(exc)),),
+            structurally_valid=False,
+            approval_ready=False,
+        )
+
+    suggestions: list[SpecificationSuggestion] = []
+    workflow_paths: list[str] = []
+    for tab, issues in route_issues_to_tabs(assessment).items():
+        for issue in issues:
+            workflow_paths.append(issue.path)
+            suggestions.append(
+                SpecificationSuggestion(
+                    severity="blocking",
+                    field=issue.path,
+                    tab=tab,
+                    message=f"Resolve before approval: {issue.actionable_message}",
+                )
+            )
+
+    feedback = compute_field_feedback(source, worktree=worktree, assessment=assessment)
+
+    def covered_by_workflow_issue(path: str) -> bool:
+        return any(
+            issue_path == path
+            or issue_path.startswith((f"{path}.", f"{path}["))
+            or path.startswith((f"{issue_path}.", f"{issue_path}["))
+            for issue_path in workflow_paths
+        )
+
+    important_terms = (
+        "trace",
+        "linked requirement",
+        "covered by verification",
+        "runtime",
+        "metric assertion",
+        "execution proof",
+        "intended claim",
+    )
+    collection_roots = {
+        "use_cases",
+        "requirements",
+        "risks",
+        "verification",
+        "decisions",
+    }
+    for path, item in feedback.items():
+        if item.health == "healthy" or covered_by_workflow_issue(path):
+            continue
+        if path in collection_roots and any(
+            child_path.startswith(f"{path}[") and child.health != "healthy"
+            for child_path, child in feedback.items()
+        ):
+            # Collection-root feedback summarizes its first child finding; the
+            # child carries the concrete field location and is more useful.
+            continue
+        # Optional empty fields are already described by their permanent field
+        # guidance.  Repeating every one here would obscure concrete findings.
+        if item.health == "empty" and "optional for approval" in item.message:
+            continue
+        normalized = item.message.casefold()
+        severity = (
+            "important"
+            if any(term in normalized for term in important_terms)
+            else "advisory"
+        )
+        suggestions.append(
+            SpecificationSuggestion(
+                severity=severity,
+                field=path,
+                tab=_suggestion_tab_for_path(path),
+                message=item.message,
+            )
+        )
+
+    unique: list[SpecificationSuggestion] = []
+    seen: set[tuple[str, str]] = set()
+    for suggestion in suggestions:
+        key = (suggestion.field, suggestion.message.casefold())
+        if key in seen:
+            continue
+        seen.add(key)
+        unique.append(suggestion)
+
+    severity_order = {"blocking": 0, "important": 1, "advisory": 2}
+    stage_order = {stage: index for index, stage in enumerate(EDITOR_STAGES)}
+    unique.sort(
+        key=lambda item: (
+            severity_order[item.severity],
+            stage_order.get(item.tab, len(stage_order)),
+            item.field,
+            item.message,
+        )
+    )
+    if not any(item.severity == "blocking" for item in unique):
+        summary = (
+            "No blocking issues found. Review the prioritized improvements below."
+            if unique
+            else "No blocking issues found. The specification is ready for workflow review."
+        )
+        unique.insert(
+            0,
+            SpecificationSuggestion(
+                severity="clear",
+                field="specification",
+                tab="Review",
+                message=summary,
+            ),
+        )
+    return tuple(unique)
+
+
+# Keep the older descriptive name for callers that adopted it while the wizard
+# work was in progress.  ``analyze_specification`` is the public headless action
+# named by the GUI and can be reused by non-Tk frontends.
+analyze_specification_suggestions = analyze_specification
 
 
 def render_specification_json_diff(
@@ -458,9 +1396,16 @@ class _RecordDialog:
         title: str,
         fields: Sequence[_Field],
         initial: Mapping[str, Any] | None = None,
+        *,
+        field_path_prefix: str | None = None,
+        feedback_provider: (
+            Callable[[Mapping[str, Any]], Mapping[str, FieldSemanticFeedback]] | None
+        ) = None,
     ) -> None:
         assert tk is not None and ttk is not None
         self.result: dict[str, Any] | None = None
+        self._feedback_provider = feedback_provider
+        self._feedback_after_id: str | None = None
         self.window = tk.Toplevel(parent)
         self.window.title(title)
         self.window.geometry("720x700")
@@ -487,6 +1432,8 @@ class _RecordDialog:
 
         initial_values = dict(initial or {})
         self._controls: dict[str, tuple[_Field, Any]] = {}
+        self.guidance_labels: dict[str, Any] = {}
+        self._guidance_text: dict[str, str] = {}
         row = 0
         current_group = ""
         for field in fields:
@@ -496,7 +1443,23 @@ class _RecordDialog:
                 ttk.Label(body, text=field.group).grid(row=row, column=0, columnspan=2, sticky="w")
                 row += 1
                 current_group = field.group
-            ttk.Label(body, text=field.label).grid(row=row, column=0, sticky="nw", padx=(0, 8), pady=4)
+            label_frame = ttk.Frame(body)
+            label_frame.grid(row=row, column=0, sticky="new", padx=(0, 12), pady=4)
+            ttk.Label(label_frame, text=field.label).pack(anchor="w")
+            guidance_key = (
+                f"{field_path_prefix}.{field.key}" if field_path_prefix else ""
+            )
+            guidance = _field_guidance(guidance_key) if guidance_key else ""
+            if guidance:
+                guidance_label = ttk.Label(
+                    label_frame,
+                    text=guidance,
+                    wraplength=245,
+                    justify="left",
+                )
+                guidance_label.pack(anchor="w", pady=(2, 0))
+                self.guidance_labels[field.key] = guidance_label
+                self._guidance_text[field.key] = guidance
             value = initial_values.get(field.key, field.default)
             control: Any
             if field.kind in {"text", "list", "metrics", "records"}:
@@ -528,16 +1491,27 @@ class _RecordDialog:
             self._controls[field.key] = (field, control)
             row += 1
 
+        if self._feedback_provider is not None:
+            self.window.bind("<KeyRelease>", self._schedule_feedback, add="+")
+            self.window.bind("<<ComboboxSelected>>", self._schedule_feedback, add="+")
+            self.window.bind("<ButtonRelease-1>", self._schedule_feedback, add="+")
+            for field, control in self._controls.values():
+                if field.kind in {"text", "list", "metrics", "records"}:
+                    control.edit_modified(False)
+                    control.bind("<<Modified>>", self._on_text_modified, add="+")
+
         actions = ttk.Frame(self.window, padding=10)
         actions.grid(row=1, column=0, sticky="ew")
         ttk.Button(actions, text="Cancel", command=self.window.destroy).pack(side="right")
         ttk.Button(actions, text="Apply", command=self._accept).pack(side="right", padx=(0, 8))
         self.window.protocol("WM_DELETE_WINDOW", self.window.destroy)
+        self._refresh_feedback()
 
-    def _accept(self) -> None:
+    def _collect_values(self) -> tuple[dict[str, Any], dict[str, str]]:
         result: dict[str, Any] = {}
-        try:
-            for key, (field, control) in self._controls.items():
+        errors: dict[str, str] = {}
+        for key, (field, control) in self._controls.items():
+            try:
                 if field.kind in {"text", "list", "metrics", "records"}:
                     value: Any = control.get("1.0", "end-1c")
                     if field.kind == "list":
@@ -556,9 +1530,52 @@ class _RecordDialog:
                 else:
                     value = control.get()
                 result[key] = value
-        except (ValueError, tk.TclError) as exc:
+            except (ValueError, tk.TclError) as exc:
+                errors[key] = str(exc)
+        return result, errors
+
+    def _schedule_feedback(self, _event: Any = None) -> None:
+        if self._feedback_provider is None:
+            return
+        if self._feedback_after_id is not None:
+            try:
+                self.window.after_cancel(self._feedback_after_id)
+            except tk.TclError:
+                pass
+        self._feedback_after_id = self.window.after(100, self._finish_scheduled_feedback)
+
+    def _on_text_modified(self, event: Any) -> None:
+        if event.widget.edit_modified():
+            event.widget.edit_modified(False)
+            self._schedule_feedback(event)
+
+    def _finish_scheduled_feedback(self) -> None:
+        self._feedback_after_id = None
+        self._refresh_feedback()
+
+    def _refresh_feedback(self) -> None:
+        if self._feedback_provider is None:
+            return
+        values, errors = self._collect_values()
+        feedback = self._feedback_provider(values) if not errors else {}
+        for key, label in self.guidance_labels.items():
+            if key in errors:
+                message = f"Needs attention — {errors[key]}"
+            elif key in feedback:
+                message = feedback[key].message
+            else:
+                message = "Waiting for the other record fields to become valid."
+            label.configure(text=f"{self._guidance_text[key]}\n\nLive feedback: {message}")
+
+    def _accept(self) -> None:
+        result, errors = self._collect_values()
+        if errors:
             assert messagebox is not None
-            messagebox.showerror("Invalid record", str(exc), parent=self.window)
+            messagebox.showerror(
+                "Invalid record",
+                next(iter(errors.values())),
+                parent=self.window,
+            )
             return
         self.result = result
         self.window.destroy()
@@ -566,6 +1583,64 @@ class _RecordDialog:
     def show(self) -> dict[str, Any] | None:
         self.window.wait_window()
         return self.result
+
+
+class _SpecificationSuggestionsDialog:
+    """Modal, scrollable presentation of a read-only holistic draft test."""
+
+    def __init__(
+        self,
+        parent: Any,
+        suggestions: Sequence[SpecificationSuggestion],
+    ) -> None:
+        assert tk is not None and ttk is not None
+        self.window = tk.Toplevel(parent)
+        self.window.title("Specification test results")
+        self.window.geometry("860x620")
+        self.window.minsize(600, 400)
+        self.window.transient(parent)
+        self.window.grab_set()
+        self.window.columnconfigure(0, weight=1)
+        self.window.rowconfigure(1, weight=1)
+
+        blocking_count = sum(item.severity == "blocking" for item in suggestions)
+        ttk.Label(
+            self.window,
+            text=(
+                f"Holistic review of the current draft: {blocking_count} blocking issue(s). "
+                "Suggestions are ordered by completion risk, then verification traceability "
+                "and runtime proof, then advisory polish. Nothing was changed."
+            ),
+            wraplength=820,
+            justify="left",
+        ).grid(row=0, column=0, sticky="ew", padx=10, pady=(10, 6))
+
+        frame = ttk.Frame(self.window)
+        frame.grid(row=1, column=0, sticky="nsew", padx=10)
+        frame.columnconfigure(0, weight=1)
+        frame.rowconfigure(0, weight=1)
+        results = tk.Text(frame, wrap="word", undo=False)
+        scrollbar = ttk.Scrollbar(frame, orient="vertical", command=results.yview)
+        results.configure(yscrollcommand=scrollbar.set)
+        results.grid(row=0, column=0, sticky="nsew")
+        scrollbar.grid(row=0, column=1, sticky="ns")
+        rendered = []
+        for index, suggestion in enumerate(suggestions, 1):
+            rendered.append(
+                f"{index}. [{suggestion.severity.upper()}] "
+                f"{suggestion.tab} · {suggestion.field}\n{suggestion.message}"
+            )
+        results.insert("1.0", "\n\n".join(rendered))
+        results.configure(state="disabled")
+        self.results_text = results
+
+        actions = ttk.Frame(self.window, padding=10)
+        actions.grid(row=2, column=0, sticky="ew")
+        ttk.Button(actions, text="Close", command=self.window.destroy).pack(side="right")
+        self.window.protocol("WM_DELETE_WINDOW", self.window.destroy)
+
+    def show(self) -> None:
+        self.window.wait_window()
 
 
 class _ElicitationReviewDialog:
@@ -1201,9 +2276,13 @@ class SpecificationEditor:
         creator: str = "gui-user",
         run_background: Callable[..., None] | None = None,
         elicitation_provider_factory: Callable[[], StructuredOutputProvider] | None = None,
+        implementation_work_factory: (
+            Callable[[StoredSpecificationVersion], Callable[[], str]] | None
+        ) = None,
+        on_implementation_started: Callable[[str], None] | None = None,
         on_close: Callable[[SpecificationEditor], None] | None = None,
     ) -> None:
-        if tk is None or ttk is None or messagebox is None:
+        if tk is None or ttk is None or filedialog is None or messagebox is None:
             raise RuntimeError("Tkinter is not available; the formal editor cannot be opened")
         self.parent = parent
         self.service = service
@@ -1211,6 +2290,8 @@ class SpecificationEditor:
         self.creator = creator
         self._run_background = run_background
         self._elicitation_provider_factory = elicitation_provider_factory
+        self._implementation_work_factory = implementation_work_factory
+        self._on_implementation_started = on_implementation_started
         self._on_close_callback = on_close
         self.snapshot: StoredSpecificationVersion | None = None
         self.suggested_choices: list[dict[str, Any]] = []
@@ -1218,7 +2299,11 @@ class SpecificationEditor:
             SpecificationDocument.empty(summary=initial_goal if initial_goal else "")
         )
         self._busy = False
+        self._implementation_job_id: str | None = None
+        self._implementation_start_in_flight = False
         self._selector_rows: dict[str, dict[str, Any]] = {}
+        self.guidance_labels: dict[str, Any] = {}
+        self._guidance_text: dict[str, str] = {}
 
         self.window = tk.Toplevel(parent)
         self.window.title("Formal Specification")
@@ -1234,6 +2319,16 @@ class SpecificationEditor:
         self._load_record_into_widgets()
         self._assessment_after_id: str | None = None
         self.window.bind("<KeyRelease>", self._schedule_assessment, add="+")
+        self.title_var.trace_add("write", self._schedule_assessment)
+        for widget in (
+            self.summary_text,
+            self.objectives_text,
+            self.stakeholders_text,
+            *self.scope_widgets.values(),
+            self.open_questions_text,
+        ):
+            widget.edit_modified(False)
+            widget.bind("<<Modified>>", self._on_text_modified, add="+")
         self._refresh_assessment()
         self.refresh_specifications()
 
@@ -1255,10 +2350,48 @@ class SpecificationEditor:
         )
         self.selector.grid(row=1, column=1, sticky="ew", pady=(7, 0))
         self.selector.bind("<<ComboboxSelected>>", self._on_selector_changed)
+        file_actions = ttk.Frame(header)
+        file_actions.grid(row=1, column=2, sticky="e", padx=(8, 0), pady=(7, 0))
+        self.load_example_button = ttk.Button(
+            file_actions,
+            text="Load example",
+            command=self.load_example,
+        )
+        self.load_example_button.pack(side="left")
+        self.test_specification_button = ttk.Button(
+            file_actions,
+            text="Test specification",
+            command=self.test_specification,
+        )
+        self.test_specification_button.pack(side="left", padx=(6, 0))
+        self.save_specification_button = ttk.Button(
+            file_actions,
+            text="Save specification",
+            command=self.save_specification,
+        )
+        self.save_specification_button.pack(side="left", padx=(6, 0))
+        self.load_specification_button = ttk.Button(
+            file_actions,
+            text="Load specification",
+            command=self.load_specification,
+        )
+        self.load_specification_button.pack(side="left", padx=(6, 0))
         self.status_var = tk.StringVar(value="New unsaved draft")
         ttk.Label(header, textvariable=self.status_var).grid(
-            row=2, column=0, columnspan=2, sticky="w", pady=(7, 0)
+            row=2, column=0, columnspan=3, sticky="w", pady=(7, 0)
         )
+        process_frame = ttk.LabelFrame(header, text="From specification to DONE", padding=7)
+        process_frame.grid(
+            row=3, column=0, columnspan=3, sticky="ew", pady=(8, 0)
+        )
+        process_frame.columnconfigure(0, weight=1)
+        self.process_overview_label = ttk.Label(
+            process_frame,
+            text=PROCESS_OVERVIEW_TEXT,
+            wraplength=1040,
+            justify="left",
+        )
+        self.process_overview_label.grid(row=0, column=0, sticky="ew")
 
     def _build_tabs(self) -> None:
         self.notebook = ttk.Notebook(self.window)
@@ -1283,8 +2416,30 @@ class SpecificationEditor:
         self._build_choices_tab()
         self._build_review_tab()
 
-    def _labeled_text(self, parent: Any, row: int, label: str, *, height: int = 4) -> Any:
-        ttk.Label(parent, text=label).grid(row=row, column=0, sticky="nw", padx=(0, 8), pady=4)
+    def _field_label(self, parent: Any, row: int, key: str, label: str) -> None:
+        label_frame = ttk.Frame(parent)
+        label_frame.grid(row=row, column=0, sticky="new", padx=(0, 12), pady=4)
+        ttk.Label(label_frame, text=label).pack(anchor="w")
+        guidance = ttk.Label(
+            label_frame,
+            text=_field_guidance(key),
+            wraplength=260,
+            justify="left",
+        )
+        guidance.pack(anchor="w", pady=(2, 0))
+        self.guidance_labels[key] = guidance
+        self._guidance_text[key] = _field_guidance(key)
+
+    def _labeled_text(
+        self,
+        parent: Any,
+        row: int,
+        key: str,
+        label: str,
+        *,
+        height: int = 4,
+    ) -> Any:
+        self._field_label(parent, row, key, label)
         widget = tk.Text(parent, height=height, wrap="word")
         widget.grid(row=row, column=1, sticky="nsew", pady=4)
         parent.rowconfigure(row, weight=1)
@@ -1293,12 +2448,16 @@ class SpecificationEditor:
     def _build_overview_tab(self) -> None:
         tab = self.tabs["Overview"]
         tab.columnconfigure(1, weight=1)
-        ttk.Label(tab, text="Title").grid(row=0, column=0, sticky="w", padx=(0, 8), pady=4)
+        self._field_label(tab, 0, "title", "Title")
         self.title_var = tk.StringVar()
         ttk.Entry(tab, textvariable=self.title_var).grid(row=0, column=1, sticky="ew", pady=4)
-        self.summary_text = self._labeled_text(tab, 1, "Summary", height=7)
-        self.objectives_text = self._labeled_text(tab, 2, "Objectives (one per line)")
-        self.stakeholders_text = self._labeled_text(tab, 3, "Stakeholders (one per line)")
+        self.summary_text = self._labeled_text(tab, 1, "summary", "Summary", height=7)
+        self.objectives_text = self._labeled_text(
+            tab, 2, "objectives", "Objectives (one per line)"
+        )
+        self.stakeholders_text = self._labeled_text(
+            tab, 3, "stakeholders", "Stakeholders (one per line)"
+        )
 
     def _build_scope_tab(self) -> None:
         tab = self.tabs["Scope"]
@@ -1313,7 +2472,9 @@ class SpecificationEditor:
                 ("dependencies", "Dependencies"),
             )
         ):
-            self.scope_widgets[key] = self._labeled_text(tab, row, f"{label} (one per line)")
+            self.scope_widgets[key] = self._labeled_text(
+                tab, row, key, f"{label} (one per line)"
+            )
 
     def _build_collection_tab(
         self,
@@ -1323,8 +2484,19 @@ class SpecificationEditor:
         columns: Sequence[str],
     ) -> None:
         tab = self.tabs[stage]
+        tab.rowconfigure(0, weight=0)
+        tab.rowconfigure(1, weight=1)
+        guidance = ttk.Label(
+            tab,
+            text=_field_guidance(key),
+            wraplength=1000,
+            justify="left",
+        )
+        guidance.grid(row=0, column=0, sticky="ew", pady=(0, 8))
+        self.guidance_labels[key] = guidance
+        self._guidance_text[key] = _field_guidance(key)
         table_frame = ttk.Frame(tab)
-        table_frame.grid(row=0, column=0, sticky="nsew")
+        table_frame.grid(row=1, column=0, sticky="nsew")
         table_frame.columnconfigure(0, weight=1)
         table_frame.rowconfigure(0, weight=1)
         tree = ttk.Treeview(table_frame, columns=tuple(columns), show="headings", selectmode="browse")
@@ -1351,10 +2523,26 @@ class SpecificationEditor:
 
     def _build_choices_tab(self) -> None:
         tab = self.tabs["Choices"]
-        tab.rowconfigure(0, weight=2)
-        tab.rowconfigure(1, weight=1)
+        tab.rowconfigure(0, weight=0)
+        tab.rowconfigure(1, weight=2)
+        tab.rowconfigure(2, weight=1)
+        choices_guidance = ttk.Label(
+            tab,
+            text=(
+                _field_guidance("decisions")
+                + "  "
+                + _field_guidance("open_questions")
+            ),
+            wraplength=1000,
+            justify="left",
+        )
+        choices_guidance.grid(row=0, column=0, sticky="ew", pady=(0, 8))
+        self.guidance_labels["decisions"] = choices_guidance
+        self.guidance_labels["open_questions"] = choices_guidance
+        self._guidance_text["decisions"] = _field_guidance("decisions")
+        self._guidance_text["open_questions"] = _field_guidance("open_questions")
         materialized = ttk.LabelFrame(tab, text="User-resolved specification decisions", padding=6)
-        materialized.grid(row=0, column=0, sticky="nsew")
+        materialized.grid(row=1, column=0, sticky="nsew")
         materialized.columnconfigure(0, weight=1)
         materialized.rowconfigure(0, weight=1)
         tree = ttk.Treeview(
@@ -1373,7 +2561,7 @@ class SpecificationEditor:
         self.collection_trees["decisions"] = (tree, ("topic", "selected_decision"))
 
         lower = ttk.PanedWindow(tab, orient="horizontal")
-        lower.grid(row=1, column=0, sticky="nsew", pady=(8, 0))
+        lower.grid(row=2, column=0, sticky="nsew", pady=(8, 0))
         questions = ttk.LabelFrame(lower, text="Open questions (one per line)", padding=6)
         suggested = ttk.LabelFrame(lower, text="Suggested choices", padding=6)
         lower.add(questions, weight=1)
@@ -1406,6 +2594,18 @@ class SpecificationEditor:
 
     def _build_review_tab(self) -> None:
         tab = self.tabs["Review"]
+        tab.rowconfigure(0, weight=0)
+        tab.rowconfigure(1, weight=1)
+        ttk.Label(
+            tab,
+            text=(
+                "Review lists structural and approval issues by owning stage. Resolve each issue, "
+                "save the draft, submit it for review, and approve only when the completion contract "
+                "is accurate. Approval itself does not start implementation."
+            ),
+            wraplength=1000,
+            justify="left",
+        ).grid(row=0, column=0, sticky="ew", pady=(0, 8))
         self.review_tree = ttk.Treeview(
             tab,
             columns=("owning_stage", "path", "severity", "message"),
@@ -1421,18 +2621,28 @@ class SpecificationEditor:
             self.review_tree.column(column, width=width, stretch=column == "message")
         scrollbar = ttk.Scrollbar(tab, orient="vertical", command=self.review_tree.yview)
         self.review_tree.configure(yscrollcommand=scrollbar.set)
-        self.review_tree.grid(row=0, column=0, sticky="nsew")
-        scrollbar.grid(row=0, column=1, sticky="ns")
+        self.review_tree.grid(row=1, column=0, sticky="nsew")
+        scrollbar.grid(row=1, column=1, sticky="ns")
 
     def _build_actions(self) -> None:
         footer = ttk.Frame(self.window, padding=10)
         footer.grid(row=2, column=0, sticky="ew")
         self.deferred_var = tk.StringVar(
-            value="Start Implementation is intentionally deferred until Milestone 4 manifest compilation."
+            value=(
+                "Approve the specification to enable implementation. Starting compiles and "
+                "pins this exact version before the controller plans any work."
+            )
         )
         ttk.Label(footer, textvariable=self.deferred_var).pack(side="left")
         self.close_button = ttk.Button(footer, text="Close", command=self.close)
         self.close_button.pack(side="right")
+        self.start_button = ttk.Button(
+            footer,
+            text="Start Implementation",
+            command=self.start_implementation,
+            state="disabled",
+        )
+        self.start_button.pack(side="right", padx=(0, 6))
         self.approve_button = ttk.Button(footer, text="Approve", command=self.approve)
         self.approve_button.pack(side="right", padx=(0, 6))
         self.return_button = ttk.Button(footer, text="Return to Draft", command=self.return_to_draft)
@@ -1449,6 +2659,7 @@ class SpecificationEditor:
             self.return_button,
             self.approve_button,
             self.analyze_button,
+            self.start_button,
         )
 
     @property
@@ -1493,7 +2704,16 @@ class SpecificationEditor:
         initial = None if index is None else self.record[key][index]
         if key == "verification":
             initial = _verification_for_dialog(initial)
-        dialog = _RecordDialog(self.window, f"Edit {key.replace('_', ' ').title()}", fields, initial)
+        dialog = _RecordDialog(
+            self.window,
+            f"Edit {key.replace('_', ' ').title()}",
+            fields,
+            initial,
+            field_path_prefix=key,
+            feedback_provider=lambda draft: self._collection_record_feedback(
+                key, index, draft
+            ),
+        )
         result = dialog.show()
         if result is None:
             return
@@ -1557,8 +2777,9 @@ class SpecificationEditor:
         )
 
     def _refresh_assessment(self) -> None:
+        record = self._collect_record()
         try:
-            document = self._current_document()
+            document = record_to_document(record, worktree=self.repository_path)
             assessment = assess_specification(
                 document,
                 worktree=self.repository_path,
@@ -1571,9 +2792,29 @@ class SpecificationEditor:
                 approval_ready=False,
             )
         self.assessment = assessment
-        routed = issues_by_tab(assessment)
+        routed = route_issues_to_tabs(assessment)
+        self.field_feedback = compute_field_feedback(
+            record,
+            worktree=self.repository_path,
+            assessment=assessment,
+        )
+        self._render_field_feedback()
+        feedback_keys_by_stage = {
+            "Overview": ("title", "summary", "objectives", "stakeholders"),
+            "Scope": ("in_scope", "out_of_scope", "assumptions", "constraints", "dependencies"),
+            "Use Cases": ("use_cases",),
+            "Requirements": ("requirements",),
+            "Risks": ("risks",),
+            "Verification": ("verification",),
+            "Choices": ("decisions", "open_questions"),
+            "Review": (),
+        }
         for stage, frame in self.tabs.items():
-            marker = "!" if routed[stage] else " "
+            advisory_attention = any(
+                self.field_feedback[key].health in {"weak", "needs_attention"}
+                for key in feedback_keys_by_stage[stage]
+            )
+            marker = "!" if routed[stage] or advisory_attention else " "
             self.notebook.tab(frame, text=f"{marker} {stage}")
         self.review_tree.delete(*self.review_tree.get_children())
         for index, issue in enumerate(assessment.issues):
@@ -1585,13 +2826,66 @@ class SpecificationEditor:
             )
         self._update_actions()
 
-    def _schedule_assessment(self, _event: Any = None) -> None:
+    def _render_field_feedback(self) -> None:
+        rendered_widgets: set[str] = set()
+        for key, label in self.guidance_labels.items():
+            widget_name = str(label)
+            if widget_name in rendered_widgets:
+                continue
+            rendered_widgets.add(widget_name)
+            related_keys = tuple(
+                candidate
+                for candidate, candidate_label in self.guidance_labels.items()
+                if candidate_label is label
+            )
+            guidance = "  ".join(self._guidance_text[candidate] for candidate in related_keys)
+            messages = [
+                self.field_feedback[candidate].message
+                for candidate in related_keys
+                if candidate in self.field_feedback
+            ]
+            feedback_text = "  ".join(messages)
+            label.configure(
+                text=f"{guidance}\n\nLive feedback: {feedback_text}" if feedback_text else guidance
+            )
+
+    def _collection_record_feedback(
+        self,
+        key: str,
+        index: int | None,
+        dialog_record: Mapping[str, Any],
+    ) -> dict[str, FieldSemanticFeedback]:
+        candidate = self._collect_record()
+        item = dict(dialog_record)
+        if key == "verification":
+            item = _verification_from_dialog(item)
+        values = list(candidate[key])
+        target_index = len(values) if index is None else index
+        if index is None:
+            values.append(item)
+        else:
+            values[index] = item
+        candidate[key] = values
+        computed = compute_field_feedback(candidate, worktree=self.repository_path)
+        prefix = f"{key}[{target_index}]."
+        return {
+            path.removeprefix(prefix).removeprefix("validation_loop."): feedback
+            for path, feedback in computed.items()
+            if path.startswith(prefix)
+        }
+
+    def _schedule_assessment(self, *_event: Any) -> None:
         if self._assessment_after_id is not None:
             try:
                 self.window.after_cancel(self._assessment_after_id)
             except tk.TclError:
                 pass
         self._assessment_after_id = self.window.after(100, self._finish_scheduled_assessment)
+
+    def _on_text_modified(self, event: Any) -> None:
+        if event.widget.edit_modified():
+            event.widget.edit_modified(False)
+            self._schedule_assessment(event)
 
     def _finish_scheduled_assessment(self) -> None:
         self._assessment_after_id = None
@@ -1620,10 +2914,24 @@ class SpecificationEditor:
                 and not dirty
                 and self._elicitation_provider_factory is not None
             ),
+            self.start_button: (
+                status == "approved"
+                and not dirty
+                and self._implementation_work_factory is not None
+                and self._implementation_job_id is None
+                and not self._implementation_start_in_flight
+            ),
         }
         for button, enabled in states.items():
             button.configure(state="normal" if enabled and not self._busy else "disabled")
         self.selector.configure(state="disabled" if self._busy else "readonly")
+        for button in (
+            self.load_example_button,
+            self.test_specification_button,
+            self.save_specification_button,
+            self.load_specification_button,
+        ):
+            button.configure(state="disabled" if self._busy else "normal")
         self.resolve_button.configure(
             state="normal"
             if not self._busy and any(c.get("status") == "unresolved" for c in self.suggested_choices)
@@ -1701,10 +3009,102 @@ class SpecificationEditor:
     def _selector_label(row: Mapping[str, Any]) -> str:
         return f"{row['title'] or '(untitled)'} — {row['id']} v{row['current_version']} [{row['status']}]"
 
+    def load_example(self) -> None:
+        """Replace the editor contents with a new, unsaved worked example."""
+
+        self.snapshot = None
+        self._implementation_job_id = None
+        self.suggested_choices = []
+        self.selector_var.set("New specification")
+        self.record = document_to_record(
+            worked_example_document(worktree=self.repository_path)
+        )
+        self._load_record_into_widgets()
+        self._refresh_suggested_choices()
+        self.status_var.set(
+            "Worked example loaded — editable, unsaved, and not submitted or approved"
+        )
+        self.deferred_var.set(
+            "Save this example as a draft, resolve Review issues, submit it, and approve it "
+            "before Start Implementation can be enabled."
+        )
+        self._refresh_assessment()
+
+    def test_specification(self) -> None:
+        """Analyze the complete current draft without changing workflow state."""
+
+        record = self._collect_record()
+        suggestions = analyze_specification(
+            record,
+            worktree=self.repository_path,
+            unresolved_blocking_decisions=self._unresolved_blocking_count(),
+        )
+        _SpecificationSuggestionsDialog(self.window, suggestions).show()
+
+    def save_specification(self) -> None:
+        """Save the current editor draft to a user-selected JSON file."""
+
+        selected = filedialog.asksaveasfilename(
+            parent=self.window,
+            title="Save specification",
+            defaultextension=".json",
+            filetypes=(("JSON files", "*.json"), ("All files", "*")),
+            initialfile="specification.json",
+        )
+        if not selected:
+            return
+        try:
+            # A disk save is a user checkpoint, not a workflow transition.  It
+            # must preserve an unfinished draft even while live validation is
+            # still reporting required fields or semantic issues.
+            record = self._collect_record()
+            Path(selected).write_bytes(specification_to_savefile_bytes(record))
+        except Exception as exc:
+            messagebox.showerror(
+                "Save specification failed", str(exc), parent=self.window
+            )
+            return
+        self.status_var.set(f"Specification saved to {selected}")
+
+    def load_specification(self) -> None:
+        """Load a saved draft into the editor without changing workflow state."""
+
+        selected = filedialog.askopenfilename(
+            parent=self.window,
+            title="Load specification",
+            filetypes=(("JSON files", "*.json"), ("All files", "*")),
+        )
+        if not selected:
+            return
+        try:
+            record = savefile_to_record(Path(selected).read_bytes())
+        except Exception as exc:
+            messagebox.showerror(
+                "Load specification failed", str(exc), parent=self.window
+            )
+            return
+
+        self.snapshot = None
+        self._implementation_job_id = None
+        self.suggested_choices = []
+        self.selector_var.set("New specification")
+        self.record = record
+        self._load_record_into_widgets()
+        self._refresh_suggested_choices()
+        self.status_var.set(
+            "Specification loaded from file — editable, unsaved, and not submitted or approved"
+        )
+        self.deferred_var.set(
+            "Save this imported specification as a draft, resolve Review issues, submit it, "
+            "and approve it before Start Implementation can be enabled."
+        )
+        self._refresh_assessment()
+
     def _on_selector_changed(self, _event: Any = None) -> None:
         label = self.selector_var.get()
         if label == "New specification":
             self.snapshot = None
+            self._implementation_job_id = None
             self.suggested_choices = []
             self.record = document_to_record(SpecificationDocument.empty())
             self._load_record_into_widgets()
@@ -1725,6 +3125,7 @@ class SpecificationEditor:
                 self._show_snapshot_status()
                 return
             self.snapshot, self.suggested_choices = result
+            self._implementation_job_id = None
             self.record = document_to_record(self.snapshot.document)
             self._load_record_into_widgets()
             self._refresh_suggested_choices()
@@ -1935,6 +3336,81 @@ class SpecificationEditor:
             "Approve",
         )
 
+    def start_implementation(self) -> None:
+        """Compile, pin, and enqueue the approved snapshot through the GUI job path."""
+
+        if self._implementation_start_in_flight:
+            messagebox.showinfo(
+                "Start Implementation",
+                "Implementation is already being created; wait for it to finish.",
+                parent=self.window,
+            )
+            return
+        if self._implementation_job_id is not None:
+            messagebox.showinfo(
+                "Start Implementation",
+                f"Implementation already started as {self._implementation_job_id}.",
+                parent=self.window,
+            )
+            return
+        if (
+            self.snapshot is None
+            or self.snapshot.status != "approved"
+            or self._implementation_work_factory is None
+        ):
+            messagebox.showerror(
+                "Start Implementation",
+                "Approve this specification before starting implementation.",
+                parent=self.window,
+            )
+            return
+        if self._has_unsaved_edits():
+            messagebox.showerror(
+                "Start Implementation",
+                "The approved version differs from the editor. Reload it before starting.",
+                parent=self.window,
+            )
+            return
+        snapshot = self.snapshot
+        self._implementation_start_in_flight = True
+        self._update_actions()
+        try:
+            work = self._implementation_work_factory(snapshot)
+        except Exception as exc:
+            self._implementation_start_in_flight = False
+            self._update_actions()
+            messagebox.showerror(
+                "Start Implementation", str(exc), parent=self.window
+            )
+            return
+
+        def done(job_id: Any, error: str | None) -> None:
+            self._implementation_start_in_flight = False
+            if error:
+                messagebox.showerror(
+                    "Start Implementation", error, parent=self.window
+                )
+                self._show_snapshot_status()
+                return
+            self._implementation_job_id = str(job_id)
+            self.status_var.set(
+                f"Implementation started as {self._implementation_job_id}; "
+                f"{snapshot.specification_id} v{snapshot.version} is pinned."
+            )
+            self.deferred_var.set(
+                f"Implementation job {self._implementation_job_id} is queued for controller planning."
+            )
+            self._update_actions()
+            if self._on_implementation_started is not None:
+                self._on_implementation_started(self._implementation_job_id)
+            messagebox.showinfo(
+                "Implementation started",
+                f"Created {self._implementation_job_id} and queued its initial PLAN task.",
+                parent=self.window,
+            )
+
+        self._background(work, done, label="Start Implementation")
+
     def _run_lifecycle(
         self, work: Callable[[], StoredSpecificationVersion], label: str
     ) -> None:
@@ -2025,6 +3501,10 @@ def open_specification_editor(
     creator: str = "gui-user",
     run_background: Callable[..., None] | None = None,
     elicitation_provider_factory: Callable[[], StructuredOutputProvider] | None = None,
+    implementation_work_factory: (
+        Callable[[StoredSpecificationVersion], Callable[[], str]] | None
+    ) = None,
+    on_implementation_started: Callable[[str], None] | None = None,
     on_close: Callable[[SpecificationEditor], None] | None = None,
 ) -> SpecificationEditor:
     """Open and return a formal editor initialized from the Quick Goal fields."""
@@ -2037,15 +3517,28 @@ def open_specification_editor(
         creator=creator,
         run_background=run_background,
         elicitation_provider_factory=elicitation_provider_factory,
+        implementation_work_factory=implementation_work_factory,
+        on_implementation_started=on_implementation_started,
         on_close=on_close,
     )
 
 
 __all__ = [
+    "FieldSemanticFeedback",
     "MetricAssertionParseError",
-    "StructuredRecordParseError",
+    "PROCESS_OVERVIEW_TEXT",
+    "SPECIFICATION_FIELD_EXAMPLES",
+    "SPECIFICATION_FIELD_GUIDANCE",
+    "SPECIFICATION_SAVEFILE_SCHEMA",
+    "SPECIFICATION_SAVEFILE_VERSION",
+    "SpecificationSavefileError",
     "SpecificationEditor",
+    "SpecificationSuggestion",
+    "StructuredRecordParseError",
     "VerificationDashboardView",
+    "analyze_specification",
+    "analyze_specification_suggestions",
+    "compute_field_feedback",
     "document_to_record",
     "format_list_text",
     "format_metric_assertions",
@@ -2060,5 +3553,8 @@ __all__ = [
     "record_to_model",
     "render_choice_summary",
     "render_specification_json_diff",
+    "savefile_to_record",
+    "specification_to_savefile_bytes",
     "route_issues_to_tabs",
+    "worked_example_document",
 ]
