@@ -1,7 +1,18 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-cd "$(dirname "${BASH_SOURCE[0]}")"
+script_dir="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
+parent_launcher="$script_dir/../start-ai-loop-with-email.bash"
+
+# The private parent launcher calls this script again after exporting its
+# settings. Delegate only on the initial entry so that callback continues
+# with the local Python GUI instead of recursing indefinitely.
+if [[ "${AI_LOOP_PARENT_LAUNCHER_ACTIVE:-0}" != "1" && -f "$parent_launcher" ]]; then
+  export AI_LOOP_PARENT_LAUNCHER_ACTIVE=1
+  exec bash "$parent_launcher" "$@"
+fi
+
+cd "$script_dir"
 source ./ai_loop_python.bash
 
 manual_command=""
