@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import os
 from pathlib import Path
 
 import pytest
@@ -211,6 +212,48 @@ def test_project_analysis_exclusion_rejects_folder_outside_project(
 
     with pytest.raises(ValueError, match="outside project directory"):
         add_project_analysis_exclusion((), project, tmp_path / "outside")
+
+
+@pytest.mark.skipif(not os.environ.get("DISPLAY"), reason="requires a Tk display")
+def test_project_analysis_excluded_folder_names_populate_listbox() -> None:
+    try:
+        import tkinter as tk
+        from tkinter import ttk
+    except ImportError:
+        pytest.skip("Tk is not installed")
+    try:
+        root = tk.Tk()
+    except tk.TclError:
+        pytest.skip("Tk cannot connect to a display")
+    root.withdraw()
+
+    try:
+        from ai_loop_gui import AiLoopGui
+
+        gui = AiLoopGui.__new__(AiLoopGui)
+        gui.help_widget = lambda widget, _text: widget
+        parent = ttk.Frame(root)
+        gui._build_project_analysis_frame(parent)
+
+        gui._set_analysis_excluded_folder_values(
+            ("generated/cache", "build/output")
+        )
+        root.update_idletasks()
+
+        assert gui.analysis_excluded_folders_var.get() == (
+            "generated/cache",
+            "build/output",
+        )
+        assert gui._analysis_excluded_folder_values() == (
+            "generated/cache",
+            "build/output",
+        )
+        assert gui.analysis_excluded_folders_listbox.get(0, tk.END) == (
+            "generated/cache",
+            "build/output",
+        )
+    finally:
+        root.destroy()
 
 
 def _find_node(root, *, kind: str, label: str):

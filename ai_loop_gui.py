@@ -1787,8 +1787,14 @@ class AiLoopGui(tk.Tk):
             row=1, column=1, columnspan=3, sticky="ew", pady=(6, 0)
         )
         excluded_controls.columnconfigure(0, weight=1)
+        self.analysis_excluded_folders_var = tk.Variable(value=())
         self.analysis_excluded_folders_listbox = self.help_widget(
-            tk.Listbox(excluded_controls, height=3, exportselection=False),
+            tk.Listbox(
+                excluded_controls,
+                height=3,
+                exportselection=False,
+                listvariable=self.analysis_excluded_folders_var,
+            ),
             "Project-relative folders that will be skipped by the next analysis.",
         )
         self.analysis_excluded_folders_listbox.grid(
@@ -1948,9 +1954,12 @@ class AiLoopGui(tk.Tk):
     def _set_analysis_excluded_folder_values(
         self, excluded_folders: tuple[str, ...]
     ) -> None:
-        self.analysis_excluded_folders_listbox.delete(0, tk.END)
-        for folder in excluded_folders:
-            self.analysis_excluded_folders_listbox.insert(tk.END, folder)
+        # Updating the bound Tcl list atomically keeps the listbox display in
+        # sync with the exclusion model. Direct widget mutations could leave
+        # selected folder paths present in the model but absent from the view.
+        self.analysis_excluded_folders_var.set(excluded_folders)
+        if excluded_folders:
+            self.analysis_excluded_folders_listbox.see(tk.END)
 
     def browse_analysis_excluded_folder(self) -> None:
         selected_project = self.analysis_path_var.get().strip()
