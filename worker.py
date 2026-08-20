@@ -139,6 +139,19 @@ def build_codex_command(
     return cmd
 
 
+SYSTEMD_EXEC_FAILURE_CODES = frozenset(range(200, 220))
+
+
+def systemd_sandbox_startup_failure(command: list[str], returncode: int) -> bool:
+    """Recognize systemd failures that happen before the provider can exec."""
+
+    return (
+        bool(command)
+        and Path(command[0]).name == "systemd-run"
+        and returncode in SYSTEMD_EXEC_FAILURE_CODES
+    )
+
+
 FABLE_ALLOWED_TOOLS = "Bash,Edit,Write,MultiEdit,NotebookEdit"
 
 
@@ -546,15 +559,33 @@ def process_task(settings, client, task_id: str) -> None:
                     payload={"role": "worker", "task_id": task_id, "waiting_until": waiting_until},
                 )
             print(f"job {job['id']}: token wait finished; retrying task {task_id}")
-        log_worker_stage(job["id"], task_id, "codex_done", f"{worker_label} finished rc={codex_rc}; running task test command")
+        if systemd_sandbox_startup_failure(codex_cmd, int(codex_rc)):
+            status = "human_needed"
+            error = (
+                "external systemd sandbox failed before the worker executable started "
+                f"(status {codex_rc}); output: {codex_output or '<empty>'}"
+            )
+            log_worker_stage(job["id"], task_id, "sandbox_startup_failed", error)
+        else:
+            log_worker_stage(
+                job["id"],
+                task_id,
+                "codex_done",
+                f"{worker_label} finished rc={codex_rc}; running task test command",
+            )
 
-        with db.transaction(settings.db_path) as conn:
-            refreshed_task = db.get_task(conn, task_id)
-        task_test_cmd = str(refreshed_task["test_cmd"])
-        tests = run_shell(task_test_cmd, worktree_path, 1800)
-        test_rc = int(tests["rc"])
-        test_output = str(tests["output"])[-OUTPUT_LIMIT:]
-        log_worker_stage(job["id"], task_id, "tests_done", f"test command finished rc={test_rc}; capturing git diff")
+            with db.transaction(settings.db_path) as conn:
+                refreshed_task = db.get_task(conn, task_id)
+            task_test_cmd = str(refreshed_task["test_cmd"])
+            tests = run_shell(task_test_cmd, worktree_path, 1800)
+            test_rc = int(tests["rc"])
+            test_output = str(tests["output"])[-OUTPUT_LIMIT:]
+            log_worker_stage(
+                job["id"],
+                task_id,
+                "tests_done",
+                f"test command finished rc={test_rc}; capturing git diff",
+            )
 
     snapshot = git_snapshot(worktree_path)
     changed_files = list(snapshot["changed_files"])

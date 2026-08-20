@@ -270,7 +270,7 @@ def detect_test_cmd(repo: Path, requested: str) -> str:
         return "npm test"
 
     if any((repo / name).is_file() for name in ("pyproject.toml", "pytest.ini", "setup.cfg", "setup.py")):
-        return "pytest -q"
+        return "python -m pytest -q"
 
     return "true"
 

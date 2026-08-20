@@ -305,6 +305,38 @@ class LoopBackend:
         for provider, binary in providers.items():
             cls.ensure_provider_cli(provider, binary)
 
+    def ensure_worker_runtime(
+        self,
+        *,
+        worker: str,
+        models: ModelDefaults,
+        writable_path: Path,
+    ) -> None:
+        """Fail before job creation if external worker confinement cannot exec."""
+
+        if not getattr(self.settings, "codex_systemd_sandbox", False):
+            return
+        provider = provider_for_role(worker)
+        binary = self.provider_binary(provider, models)
+        command = wrap_with_systemd_sandbox(
+            [binary, "--version"], writable_paths=[writable_path]
+        )
+        result = subprocess.run(
+            command,
+            cwd=str(writable_path),
+            env=sanitized_child_env(),
+            text=True,
+            capture_output=True,
+            check=False,
+            timeout=30,
+        )
+        if result.returncode != 0:
+            output = (result.stdout + "\n" + result.stderr).strip() or "<empty>"
+            raise RuntimeError(
+                "the external systemd worker sandbox could not start "
+                f"{provider} (status {result.returncode}): {output[-4000:]}"
+            )
+
     @staticmethod
     def provider_binary(provider: str, models: ModelDefaults) -> str:
         if provider == "claude":
@@ -966,6 +998,9 @@ class LoopBackend:
         controller = normalize_controller(controller)
         granularity = normalize_granularity(granularity)
         self.ensure_provider_clis(worker=worker, controller=controller, models=models)
+        self.ensure_worker_runtime(
+            worker=worker, models=models, writable_path=repo
+        )
         detected_test_cmd = detect_test_cmd(repo, test_cmd)
 
         current_active = active_jobs(self.settings.db_path)
@@ -1115,6 +1150,22 @@ class LoopBackend:
         # controller/worker hazard, mirroring the CLI resume's
         # terminate_previous_job_processes. stop_processes skips recycled PIDs
         # via the identity check, so this can never kill a foreign process.
+        with db.transaction(self.settings.db_path) as conn:
+            preflight_job = db.get_job(conn, job_id)
+        preflight_worker = normalize_worker(worker or str(preflight_job["worker"]))
+        preflight_controller = normalize_controller(
+            controller or str(preflight_job["controller"])
+        )
+        self.ensure_provider_clis(
+            worker=preflight_worker,
+            controller=preflight_controller,
+            models=models,
+        )
+        self.ensure_worker_runtime(
+            worker=preflight_worker,
+            models=models,
+            writable_path=Path(str(preflight_job["worktree_path"])),
+        )
         self.stop_processes(job_id)
         with db.transaction(self.settings.db_path) as conn:
             job = db.get_job(conn, job_id)

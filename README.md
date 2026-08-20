@@ -128,7 +128,7 @@ All settings are optional unless your environment needs an override.
 | `AI_LOOP_CONTROLLER_ROLE_MODEL` | Model selected specifically for the controller process | provider model above |
 | `AI_LOOP_WORKER_ROLE_MODEL` | Model selected specifically for the worker process | provider model above |
 | `CODEX_BYPASS_SANDBOX` | Disable the Codex-native sandbox (dangerous unless externally confined) | false everywhere; set `1` only with an equivalent host boundary |
-| `AI_LOOP_CODEX_SYSTEMD_SANDBOX` | Confine bypassed Codex in a transient user systemd unit; host read-only, worktree writable | false; requires `CODEX_BYPASS_SANDBOX=1` and `systemd-run` |
+| `AI_LOOP_CODEX_SYSTEMD_SANDBOX` | Confine AI provider CLIs in a transient user systemd unit; host read-only, explicit task paths writable | false; requires `systemd-run` (workers also require `CODEX_BYPASS_SANDBOX=1`) |
 | `AI_LOOP_AUTO_RECOVER` | Let an unsandboxed repair agent edit AI-Loop itself after an internal crash | false; set `1` to opt in |
 | `AI_LOOP_NOTIFY_EMAIL` | Job-email recipient and only authorized reply sender | empty |
 | `AI_LOOP_SMTP_HOST` | SMTP server. Empty disables all email | empty |
@@ -407,7 +407,7 @@ When `--test-cmd auto` is used, AI-Loop selects in this order:
 1. Visible CMake configure/build presets.
 2. Plain CMake configure and build.
 3. `npm test` for `package.json`.
-4. `pytest -q` for common Python project markers.
+4. `python -m pytest -q` for common Python project markers, using the active AI-Loop environment.
 5. `true` when no known validation system is detected.
 
 Set an explicit command for production jobs when the inferred command does not cover the required behavior.
@@ -492,7 +492,7 @@ use the command-line entry points.
 - New jobs create a pre-job snapshot commit when the target checkout is dirty, then copy that checkout overlay into the isolated worktree.
 - Workers are instructed not to commit or merge.
 - Successful promotion refuses paths with local target-checkout conflicts.
-- The worker sandbox is enabled by default. If host policy prevents Codex bubblewrap from starting, combine `CODEX_BYPASS_SANDBOX=1` with `AI_LOOP_CODEX_SYSTEMD_SANDBOX=1`; Codex then runs ephemerally in a transient user systemd unit with read-only host access and only the job worktree writable. Never use the bypass alone outside a fully trusted environment.
+- The worker sandbox is enabled by default. If host policy prevents Codex bubblewrap from starting, combine `CODEX_BYPASS_SANDBOX=1` with `AI_LOOP_CODEX_SYSTEMD_SANDBOX=1`; provider processes then run in transient user systemd units with read-only host access and only explicit task paths writable. The GUI probes this exact boundary before creating or resuming a job. The user-service profile intentionally avoids `PrivateDevices` and `ProtectKernelModules`, which can fail before exec with status `218/CAPABILITIES` on otherwise supported hosts. Never use the bypass alone outside a fully trusted environment.
 - A promoted worktree reaches `done` only after the job validation command passes again in the target checkout.
 - Automatic self-recovery (`AI_LOOP_AUTO_RECOVER=1`) lets an unsandboxed agent edit the AI-Loop source itself and is therefore disabled by default.
 - Mail passwords are stripped from the environment of worker/controller CLI subprocesses and of the job test command; only the AI-Loop processes that actually send or read mail keep them.

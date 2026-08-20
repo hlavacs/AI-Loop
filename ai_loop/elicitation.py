@@ -24,6 +24,7 @@ from ai_loop.process_runner import (
     read_bounded_text_tail,
     run_bounded_process,
 )
+from ai_loop.systemd_sandbox import systemd_sandbox_enabled, wrap_with_systemd_sandbox
 from ai_loop.specifications import (
     SpecificationDocument,
     SpecificationError,
@@ -200,22 +201,29 @@ class CliStructuredOutputProvider:
             ) as result_handle:
                 result_path = Path(result_handle.name)
             temporary_paths.extend((schema_path, result_path))
-            command = [
-                self.binary,
-                "exec",
-                "--cd",
-                str(repository),
-                "--sandbox",
-                "read-only",
-                "--output-schema",
-                str(schema_path),
-                "--output-last-message",
-                str(result_path),
-            ]
+            command = [self.binary, "exec", "--cd", str(repository)]
+            external_systemd_sandbox = systemd_sandbox_enabled()
+            if external_systemd_sandbox:
+                command.append("--dangerously-bypass-approvals-and-sandbox")
+            else:
+                command.extend(["--sandbox", "read-only"])
+            command.extend(
+                [
+                    "--output-schema",
+                    str(schema_path),
+                    "--output-last-message",
+                    str(result_path),
+                ]
+            )
             if self.model:
                 command.extend(["-m", self.model])
             command.append("-")
             stdin = request.prompt
+            if external_systemd_sandbox:
+                command = wrap_with_systemd_sandbox(
+                    command,
+                    writable_paths=[schema_path.parent],
+                )
         elif provider == "claude":
             command = [
                 self.binary,

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+import sys
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -87,6 +88,18 @@ def sanitized_child_env() -> dict[str, str]:
     for key in list(env):
         if key in SENSITIVE_ENV_KEYS or (key.startswith("AI_LOOP_") and "PASSWORD" in key):
             env.pop(key, None)
+    # The controller and worker may themselves run from .venv/.gui-venv while
+    # the parent launcher PATH still points only at system tools. Preserve the
+    # active interpreter scripts (python, pytest, etc.) for every child.
+    python_bin_dir = str(Path(sys.executable).absolute().parent)
+    path_entries = [
+        entry
+        for entry in env.get("PATH", "").split(os.pathsep)
+        if entry and entry != python_bin_dir
+    ]
+    env["PATH"] = os.pathsep.join(
+        [python_bin_dir, *path_entries]
+    )
     return env
 
 

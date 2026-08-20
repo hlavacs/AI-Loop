@@ -11,6 +11,7 @@ from typing import Any
 from ai_loop import db
 from ai_loop.config import sanitized_child_env
 from ai_loop.process_runner import run_bounded_process
+from ai_loop.systemd_sandbox import wrap_with_systemd_sandbox
 
 
 def _tail(path: Path, max_bytes: int = 20000) -> str:
@@ -24,8 +25,7 @@ def _tail(path: Path, max_bytes: int = 20000) -> str:
 
 
 def attempt_auto_recovery(settings: Any, job_id: str | None, where: str, error: str, fields: Any) -> bool:
-    # Auto-recovery lets an unsandboxed agent edit the ai-loop source itself,
-    # so it is opt-in: it runs only when AI_LOOP_AUTO_RECOVER is explicitly enabled.
+    # Auto-recovery lets an agent edit the ai-loop source itself, so it is opt-in: it runs only when AI_LOOP_AUTO_RECOVER is explicitly enabled.
     if not job_id or os.getenv("AI_LOOP_AUTO_RECOVER", "0").strip().lower() not in {"1", "true", "yes", "on"}:
         return False
 
@@ -65,11 +65,24 @@ Task:
 4. Do not alter the target job worktree unless the failure is clearly there.
 5. If the blocker is quota, credentials, or external service availability, do not fabricate a fix; explain it.
 """
+        command = [
+            codex_bin,
+            "exec",
+            "--cd",
+            str(settings.root_dir),
+            "--dangerously-bypass-approvals-and-sandbox",
+            "-",
+        ]
+        if settings.codex_systemd_sandbox:
+            command = wrap_with_systemd_sandbox(
+                command,
+                writable_paths=[settings.root_dir],
+            )
         proc = run_bounded_process(
-            [codex_bin, "exec", "--cd", str(settings.root_dir), "--dangerously-bypass-approvals-and-sandbox", "-"],
+            command,
             input_text=prompt,
             timeout=7200,
-            # The recovery agent runs unsandboxed; never hand it mail passwords.
+            # Recovery can edit this repository; never hand it mail passwords.
             env=sanitized_child_env(),
             max_output_bytes=40_000,
         )

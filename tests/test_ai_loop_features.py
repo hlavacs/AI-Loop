@@ -37,6 +37,7 @@ from ai_loop.notifications import (
 from ai_loop.progress import estimate_progress
 from ai_loop.status_updates import maybe_send_status_email
 from ai_loop.token_wait import is_token_limit, replenishment_time
+from start_job import detect_test_cmd
 
 
 class PlanningTests(unittest.TestCase):
@@ -58,6 +59,13 @@ class PlanningTests(unittest.TestCase):
         self.assertNotIn(granularity_constraints("fine")[0], coarse)
         self.assertIn(granularity_constraints("coarse")[0], coarse)
         self.assertIn("Keep public APIs stable.", coarse)
+
+    def test_python_auto_detection_uses_active_interpreter_module(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            repo = Path(directory)
+            (repo / "pyproject.toml").write_text("[project]\nname = 'sample'\n")
+
+            self.assertEqual(detect_test_cmd(repo, "auto"), "python -m pytest -q")
 
 
 class RoleSelectionTests(unittest.TestCase):

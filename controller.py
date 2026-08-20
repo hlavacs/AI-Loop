@@ -45,6 +45,7 @@ from ai_loop.process_runner import (
 from ai_loop.prompt_profiles import configured_prompt_guidance
 from ai_loop.recovery import attempt_auto_recovery
 from ai_loop.specifications import SpecificationService
+from ai_loop.systemd_sandbox import wrap_with_systemd_sandbox
 from ai_loop.token_wait import is_token_limit, replenishment_time, wait_until
 from ai_loop.verification_orchestrator import evaluate_completion_gate
 
@@ -811,6 +812,7 @@ def run_codex_controller(
     traceability_manifest: Any | None = None,
     realization_summary: Sequence[Mapping[str, Any]] | None = None,
     worker_run_id: str | None = None,
+    external_systemd_sandbox: bool = False,
 ) -> dict[str, Any]:
     if shutil.which(codex_bin) is None:
         return {
@@ -829,19 +831,20 @@ def run_codex_controller(
         with tempfile.NamedTemporaryFile("w", suffix=".txt", delete=False) as handle:
             last_message_path = Path(handle.name)
         try:
-            cmd = [
-                codex_bin,
-                "exec",
-                "--cd",
-                workdir,
-                "--sandbox",
-                "read-only",
-                "--output-last-message",
-                str(last_message_path),
-            ]
+            cmd = [codex_bin, "exec", "--cd", workdir]
+            if external_systemd_sandbox:
+                cmd.append("--dangerously-bypass-approvals-and-sandbox")
+            else:
+                cmd.extend(["--sandbox", "read-only"])
+            cmd.extend(["--output-last-message", str(last_message_path)])
             if model:
                 cmd.extend(["-m", model])
             cmd.append("-")
+            if external_systemd_sandbox:
+                cmd = wrap_with_systemd_sandbox(
+                    cmd,
+                    writable_paths=[last_message_path.parent],
+                )
             proc = run_bounded_process(
                 cmd,
                 input_text=current_prompt,
@@ -1018,13 +1021,17 @@ def controller_decision(
                 sizing,
             )
             decision = (
-                run_codex_controller(*controller_args)
+                run_codex_controller(
+                    *controller_args,
+                    external_systemd_sandbox=settings.codex_systemd_sandbox,
+                )
                 if traceability_manifest is None
                 else run_codex_controller(
                     *controller_args,
                     traceability_manifest=traceability_manifest,
                     realization_summary=realization_summary,
                     worker_run_id=worker_run_id,
+                    external_systemd_sandbox=settings.codex_systemd_sandbox,
                 )
             )
         elif controller == "gemini":

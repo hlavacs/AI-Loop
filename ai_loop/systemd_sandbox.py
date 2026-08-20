@@ -1,4 +1,4 @@
-"""Systemd-based confinement for Codex when bubblewrap is unavailable."""
+"""Systemd-based confinement for AI provider CLIs when bubblewrap is unavailable."""
 
 from __future__ import annotations
 
@@ -10,14 +10,16 @@ from typing import Sequence
 
 SYSTEMD_SANDBOX_ENV = "AI_LOOP_CODEX_SYSTEMD_SANDBOX"
 
+# These properties are supported by unprivileged user services. Do not add
+# PrivateDevices or ProtectKernelModules: on affected Linux hosts they make
+# the user manager fail before exec with status 218/CAPABILITIES.
+
 _SYSTEMD_PROPERTIES = (
     "ProtectSystem=strict",
     "ProtectHome=read-only",
     "PrivateTmp=yes",
-    "PrivateDevices=yes",
     "NoNewPrivileges=yes",
     "ProtectKernelTunables=yes",
-    "ProtectKernelModules=yes",
     "ProtectControlGroups=yes",
     "RestrictSUIDSGID=yes",
     "LockPersonality=yes",
@@ -26,7 +28,7 @@ _SYSTEMD_PROPERTIES = (
 
 
 def systemd_sandbox_enabled(value: str | None = None) -> bool:
-    """Return whether the explicit external Codex sandbox is enabled."""
+    """Return whether the explicit external provider sandbox is enabled."""
 
     raw = os.getenv(SYSTEMD_SANDBOX_ENV, "") if value is None else value
     return raw.strip().lower() in {"1", "true", "yes", "on"}
@@ -39,7 +41,7 @@ def wrap_with_systemd_sandbox(
 ) -> list[str]:
     """Confine a command to read-only host access plus explicit write roots.
 
-    This wrapper is intended for a Codex command that uses its documented
+    This wrapper is intended for a provider command that uses its documented
     sandbox-bypass flag because bubblewrap cannot start on the host. The
     systemd unit restores the important write boundary without requiring a
     global user-namespace or AppArmor relaxation.
@@ -67,7 +69,6 @@ def wrap_with_systemd_sandbox(
         "--wait",
         "--pipe",
         "--collect",
-        "--quiet",
     ]
     for property_value in _SYSTEMD_PROPERTIES:
         wrapped.extend(["--property", property_value])

@@ -8,6 +8,7 @@ from pathlib import Path
 import pytest
 
 import worker
+from ai_loop.config import sanitized_child_env
 from ai_loop.process_runner import run_bounded_process
 
 
@@ -76,3 +77,38 @@ def test_worker_command_keeps_sensitive_environment_out_of_children(
 
     assert result["rc"] == 0
     assert result["output"] == "missing"
+
+
+def test_child_environment_prepends_active_python_scripts(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("PATH", "/usr/local/bin:/usr/bin")
+
+    env = sanitized_child_env()
+
+    assert env["PATH"].split(os.pathsep)[0] == str(
+        Path(sys.executable).absolute().parent
+    )
+    assert env["PATH"].split(os.pathsep)[1:] == ["/usr/local/bin", "/usr/bin"]
+
+
+def test_child_environment_without_path_has_no_implicit_current_directory(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.delenv("PATH", raising=False)
+
+    env = sanitized_child_env()
+
+    assert env["PATH"] == str(Path(sys.executable).absolute().parent)
+
+
+def test_worker_shell_finds_active_python_and_pytest(tmp_path: Path) -> None:
+    result = worker.run_shell(
+        "python -c 'import sys; print(sys.executable)' && python -m pytest --version",
+        str(tmp_path),
+        10,
+    )
+
+    assert result["rc"] == 0
+    assert str(Path(sys.executable).absolute()) in str(result["output"])
+    assert "pytest" in str(result["output"])

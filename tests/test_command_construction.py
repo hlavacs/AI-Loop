@@ -74,11 +74,13 @@ class WorkerCommandConstructionTests(unittest.TestCase):
                 "codex", directory, "PROMPT", "", True, systemd_sandbox=True
             )
         self.assertEqual(
-            cmd[0:6],
-            ["/usr/bin/systemd-run", "--user", "--wait", "--pipe", "--collect", "--quiet"],
+            cmd[0:5],
+            ["/usr/bin/systemd-run", "--user", "--wait", "--pipe", "--collect"],
         )
         self.assertIn(f"ReadWritePaths={Path(directory).resolve()}", cmd)
         self.assertIn("ProtectSystem=strict", cmd)
+        self.assertNotIn("PrivateDevices=yes", cmd)
+        self.assertNotIn("ProtectKernelModules=yes", cmd)
         separator = cmd.index("--")
         self.assertEqual(
             cmd[separator + 1 :],
@@ -98,6 +100,12 @@ class WorkerCommandConstructionTests(unittest.TestCase):
             worker.build_codex_command(
                 "codex", "/wt", "PROMPT", "", False, systemd_sandbox=True
             )
+
+    def test_systemd_startup_failure_codes_are_recognized_only_for_wrapper(self) -> None:
+        wrapped = ["/usr/bin/systemd-run", "--user", "--", "codex"]
+        self.assertTrue(worker.systemd_sandbox_startup_failure(wrapped, 218))
+        self.assertFalse(worker.systemd_sandbox_startup_failure(wrapped, 1))
+        self.assertFalse(worker.systemd_sandbox_startup_failure(["codex"], 218))
 
     def test_fable_command_bypass_skips_permissions(self) -> None:
         cmd = worker.build_fable_command("claude", "PROMPT", "claude-model", True)
@@ -141,6 +149,41 @@ class WorkerCommandConstructionTests(unittest.TestCase):
     def test_gemini_command_omits_model_flag_when_model_empty(self) -> None:
         cmd = worker.build_gemini_command("gemini", "PROMPT", "", False)
         self.assertNotIn("-m", cmd)
+
+
+@unittest.skipUnless(ai_loop_gui is not None, "ai_loop_gui importable")
+class GuiWorkerRuntimePreflightTests(unittest.TestCase):
+    def test_systemd_preflight_fails_before_job_creation_with_diagnostics(self) -> None:
+        backend = ai_loop_gui.LoopBackend.__new__(ai_loop_gui.LoopBackend)
+        backend.settings = SimpleNamespace(codex_systemd_sandbox=True)
+        models = ai_loop_gui.ModelDefaults(
+            codex_model="",
+            fable_model="",
+            opus_model="",
+            gemini_model="",
+            controller_model="",
+            codex_bin="codex",
+            claude_bin="claude",
+            gemini_bin="gemini",
+            codex_bypass_sandbox=False,
+        )
+        with tempfile.TemporaryDirectory() as directory, patch.object(
+            ai_loop_gui, "wrap_with_systemd_sandbox", return_value=["wrapped"]
+        ), patch.object(
+            ai_loop_gui.subprocess,
+            "run",
+            return_value=subprocess.CompletedProcess(
+                ["wrapped"], 218, stdout="", stderr="status=218/CAPABILITIES"
+            ),
+        ):
+            with self.assertRaisesRegex(
+                RuntimeError, "status 218.*CAPABILITIES"
+            ):
+                backend.ensure_worker_runtime(
+                    worker="codex",
+                    models=models,
+                    writable_path=Path(directory),
+                )
 
 
 DECISION_JSON = json.dumps(
@@ -191,6 +234,22 @@ class ControllerCommandConstructionTests(unittest.TestCase):
         self.assertEqual(cmd[8:10], ["-m", "codex-model"])
         self.assertEqual(cmd[-1], "-")
         # The controller runs read-only: the prompt goes in via stdin.
+        self.assertEqual(kwargs.get("input_text"), "PROMPT")
+
+    def test_run_codex_controller_can_use_external_systemd_confinement(self) -> None:
+        cmd, kwargs = self._capture(
+            controller.run_codex_controller,
+            "codex",
+            "PROMPT",
+            "/workdir",
+            external_systemd_sandbox=True,
+        )
+        self.assertEqual(cmd[:5], ["/usr/bin/fake", "--user", "--wait", "--pipe", "--collect"])
+        separator = cmd.index("--")
+        provider_command = cmd[separator + 1 :]
+        self.assertIn("--dangerously-bypass-approvals-and-sandbox", provider_command)
+        self.assertNotIn("--sandbox", provider_command)
+        self.assertIn("ReadWritePaths=/tmp", cmd)
         self.assertEqual(kwargs.get("input_text"), "PROMPT")
 
     def test_run_gemini_controller_command_flags(self) -> None:
