@@ -6,7 +6,11 @@ from pathlib import Path
 import pytest
 
 from ai_loop.project_analysis import analyze_project
-from ai_loop.project_analysis_view import ProjectAnalysisController
+from ai_loop.project_analysis_view import (
+    ProjectAnalysisController,
+    add_project_analysis_exclusion,
+    remove_project_analysis_exclusion,
+)
 
 FIXTURE_PROJECT = Path(__file__).parent / "fixtures" / "project_analysis"
 
@@ -179,6 +183,34 @@ def test_analyze_project_default_matches_explicit_no_exclusions(tmp_path: Path) 
     assert [file_model["path"] for file_model in default_model["files"]] == [
         "source/included.py"
     ]
+
+
+def test_project_analysis_exclusion_selection_is_relative_unique_and_removable(
+    tmp_path: Path,
+) -> None:
+    excluded = tmp_path / "generated" / "cache"
+    excluded.mkdir(parents=True)
+
+    selection = add_project_analysis_exclusion((), tmp_path, excluded)
+
+    assert selection == ("generated/cache",)
+    assert (
+        add_project_analysis_exclusion(
+            selection, tmp_path, excluded.parent / "nested" / ".." / "cache"
+        )
+        == selection
+    )
+    assert remove_project_analysis_exclusion(selection, "generated/cache") == ()
+
+
+def test_project_analysis_exclusion_rejects_folder_outside_project(
+    tmp_path: Path,
+) -> None:
+    project = tmp_path / "project"
+    project.mkdir()
+
+    with pytest.raises(ValueError, match="outside project directory"):
+        add_project_analysis_exclusion((), project, tmp_path / "outside")
 
 
 def _find_node(root, *, kind: str, label: str):

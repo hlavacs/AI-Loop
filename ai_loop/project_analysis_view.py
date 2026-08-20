@@ -102,6 +102,34 @@ class ProjectDiagram:
         }
 
 
+def add_project_analysis_exclusion(
+    excluded_folders: tuple[str, ...],
+    project_directory: str | Path,
+    selected_folder: str | Path,
+) -> tuple[str, ...]:
+    """Add a project-relative folder unless it is already excluded."""
+
+    project_root = Path(project_directory).expanduser().resolve()
+    selected_path = Path(selected_folder).expanduser().resolve()
+    try:
+        relative_path = selected_path.relative_to(project_root).as_posix()
+    except ValueError as exc:
+        raise ValueError(
+            f"selected folder is outside project directory: {selected_folder}"
+        ) from exc
+    if relative_path in excluded_folders:
+        return excluded_folders
+    return (*excluded_folders, relative_path)
+
+
+def remove_project_analysis_exclusion(
+    excluded_folders: tuple[str, ...], selected_folder: str
+) -> tuple[str, ...]:
+    """Remove a project-relative folder from an exclusion selection."""
+
+    return tuple(folder for folder in excluded_folders if folder != selected_folder)
+
+
 def _layout_diagram(
     nodes: list[dict[str, Any]], edges: list[DiagramEdge]
 ) -> ProjectDiagram:

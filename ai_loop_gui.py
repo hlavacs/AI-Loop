@@ -129,6 +129,8 @@ from ai_loop.gui_components import HoverTooltip, ModelDefaults
 from ai_loop.project_analysis_view import (
     ProjectAnalysisController,
     ProjectTreeNode,
+    add_project_analysis_exclusion,
+    remove_project_analysis_exclusion,
 )
 from ai_loop.systemd_sandbox import wrap_with_systemd_sandbox
 from ai_loop.specifications import SpecificationService, StoredSpecificationVersion
@@ -1780,11 +1782,43 @@ class AiLoopGui(tk.Tk):
         ttk.Label(controls, text="Excluded folders").grid(
             row=1, column=0, sticky="w", padx=(0, 6), pady=(6, 0)
         )
-        self.analysis_excluded_folders_var = tk.StringVar()
+        excluded_controls = ttk.Frame(controls)
+        excluded_controls.grid(
+            row=1, column=1, columnspan=3, sticky="ew", pady=(6, 0)
+        )
+        excluded_controls.columnconfigure(0, weight=1)
+        self.analysis_excluded_folders_listbox = self.help_widget(
+            tk.Listbox(excluded_controls, height=3, exportselection=False),
+            "Project-relative folders that will be skipped by the next analysis.",
+        )
+        self.analysis_excluded_folders_listbox.grid(
+            row=0, column=0, rowspan=2, sticky="ew"
+        )
+        excluded_scroll = ttk.Scrollbar(
+            excluded_controls,
+            orient="vertical",
+            command=self.analysis_excluded_folders_listbox.yview,
+        )
+        excluded_scroll.grid(row=0, column=1, rowspan=2, sticky="ns")
+        self.analysis_excluded_folders_listbox.configure(
+            yscrollcommand=excluded_scroll.set
+        )
         self.help_widget(
-            ttk.Entry(controls, textvariable=self.analysis_excluded_folders_var),
-            "Comma-separated folder paths relative to the project directory to skip.",
-        ).grid(row=1, column=1, columnspan=3, sticky="ew", pady=(6, 0))
+            ttk.Button(
+                excluded_controls,
+                text="Add folder…",
+                command=self.browse_analysis_excluded_folder,
+            ),
+            "Choose a folder inside the project to exclude from analysis.",
+        ).grid(row=0, column=2, padx=(6, 0), sticky="ew")
+        self.help_widget(
+            ttk.Button(
+                excluded_controls,
+                text="Remove",
+                command=self.remove_selected_analysis_excluded_folder,
+            ),
+            "Remove the selected exclusion so that folder is analyzed again.",
+        ).grid(row=1, column=2, padx=(6, 0), pady=(4, 0), sticky="ew")
         self.analysis_status_var = tk.StringVar(
             value="Choose a directory and click Analyze."
         )
@@ -1908,6 +1942,60 @@ class AiLoopGui(tk.Tk):
         if selected:
             self.analysis_path_var.set(selected)
 
+    def _analysis_excluded_folder_values(self) -> tuple[str, ...]:
+        return tuple(self.analysis_excluded_folders_listbox.get(0, tk.END))
+
+    def _set_analysis_excluded_folder_values(
+        self, excluded_folders: tuple[str, ...]
+    ) -> None:
+        self.analysis_excluded_folders_listbox.delete(0, tk.END)
+        for folder in excluded_folders:
+            self.analysis_excluded_folders_listbox.insert(tk.END, folder)
+
+    def browse_analysis_excluded_folder(self) -> None:
+        selected_project = self.analysis_path_var.get().strip()
+        if not selected_project:
+            messagebox.showerror(
+                "Project Analysis", "Choose a project directory first."
+            )
+            return
+        project_root = Path(selected_project).expanduser()
+        if not project_root.is_dir():
+            messagebox.showerror(
+                "Project Analysis", "Choose an existing project directory first."
+            )
+            return
+        selected_folder = filedialog.askdirectory(
+            initialdir=str(project_root.resolve()),
+            title="Choose folder to exclude from analysis",
+            mustexist=True,
+        )
+        if not selected_folder:
+            return
+        try:
+            excluded_folders = add_project_analysis_exclusion(
+                self._analysis_excluded_folder_values(),
+                project_root,
+                selected_folder,
+            )
+        except ValueError:
+            messagebox.showwarning(
+                "Project Analysis",
+                "The excluded folder must be inside the selected project directory.",
+            )
+            return
+        self._set_analysis_excluded_folder_values(excluded_folders)
+
+    def remove_selected_analysis_excluded_folder(self) -> None:
+        selection = self.analysis_excluded_folders_listbox.curselection()
+        if not selection:
+            return
+        selected_folder = self.analysis_excluded_folders_listbox.get(selection[0])
+        excluded_folders = remove_project_analysis_exclusion(
+            self._analysis_excluded_folder_values(), selected_folder
+        )
+        self._set_analysis_excluded_folder_values(excluded_folders)
+
     def analyze_selected_project(self) -> None:
         if self._analysis_running:
             return
@@ -1918,11 +2006,7 @@ class AiLoopGui(tk.Tk):
             )
             return
         target = Path(selected_path).expanduser()
-        excluded_folders = [
-            folder.strip()
-            for folder in self.analysis_excluded_folders_var.get().split(",")
-            if folder.strip()
-        ]
+        excluded_folders = list(self._analysis_excluded_folder_values())
         self._analysis_running = True
         self.analysis_run_button.configure(state="disabled")
         self.analysis_status_var.set(f"Analyzing {target}…")
