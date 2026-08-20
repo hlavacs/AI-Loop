@@ -126,6 +126,10 @@ from ai_loop.elicitation import CliStructuredOutputProvider
 from ai_loop.specification_gui import VerificationDashboardView, open_specification_editor
 from ai_loop.specification_workflow import derive_formal_job_inputs
 from ai_loop.gui_components import HoverTooltip, ModelDefaults
+from ai_loop.project_analysis_view import (
+    ProjectAnalysisController,
+    ProjectTreeNode,
+)
 from ai_loop.systemd_sandbox import wrap_with_systemd_sandbox
 from ai_loop.specifications import SpecificationService, StoredSpecificationVersion
 from ai_loop.verification_orchestrator import (
@@ -1486,6 +1490,8 @@ class AiLoopGui(tk.Tk):
         self._verification_request_serial = 0
         self._verification_last_loaded_at = 0.0
         self._verification_last_loaded_job: str | None = None
+        self._analysis_controller: ProjectAnalysisController | None = None
+        self._analysis_running = False
         self._redis_sampler_inflight = False
         self.watch_job_id: str | None = None
         self.last_status_by_job: dict[str, str] = {}
@@ -1705,8 +1711,17 @@ class AiLoopGui(tk.Tk):
         status_label.grid(row=0, column=8, sticky="ew")
         toolbar.columnconfigure(8, weight=1)
 
-        paned = ttk.PanedWindow(self, orient=tk.HORIZONTAL)
-        paned.grid(row=1, column=0, sticky="nsew")
+        workspace = ttk.Notebook(self)
+        workspace.grid(row=1, column=0, sticky="nsew")
+        dashboard = ttk.Frame(workspace)
+        analysis_tab = ttk.Frame(workspace, padding=8)
+        workspace.add(dashboard, text="Jobs")
+        workspace.add(analysis_tab, text="Project Analysis")
+        dashboard.rowconfigure(0, weight=1)
+        dashboard.columnconfigure(0, weight=1)
+
+        paned = ttk.PanedWindow(dashboard, orient=tk.HORIZONTAL)
+        paned.grid(row=0, column=0, sticky="nsew")
 
         left = ttk.Frame(paned, padding=8)
         right = ttk.Frame(paned, padding=8)
@@ -1727,6 +1742,362 @@ class AiLoopGui(tk.Tk):
         self._build_create_frame(left)
         self._build_jobs_frame(left)
         self._build_detail_frame(right)
+        self._build_project_analysis_frame(analysis_tab)
+
+    def _build_project_analysis_frame(self, parent: ttk.Frame) -> None:
+        """Build the opt-in project browser without starting an analysis."""
+
+        parent.rowconfigure(2, weight=1)
+        parent.columnconfigure(0, weight=1)
+        controls = ttk.Frame(parent)
+        controls.grid(row=0, column=0, sticky="ew", pady=(0, 8))
+        controls.columnconfigure(1, weight=1)
+        ttk.Label(controls, text="Project directory").grid(
+            row=0, column=0, sticky="w", padx=(0, 6)
+        )
+        self.analysis_path_var = tk.StringVar(value=str(Path.cwd()))
+        self.help_widget(
+            ttk.Entry(controls, textvariable=self.analysis_path_var),
+            "Directory containing the Python or C++ project to analyze.",
+        ).grid(row=0, column=1, sticky="ew")
+        self.help_widget(
+            ttk.Button(
+                controls,
+                text="Browse…",
+                command=self.browse_analysis_project,
+            ),
+            "Choose a project directory without changing the active ai-loop job.",
+        ).grid(row=0, column=2, padx=(6, 0))
+        self.analysis_run_button = self.help_widget(
+            ttk.Button(
+                controls,
+                text="Analyze",
+                command=self.analyze_selected_project,
+            ),
+            "Analyze the chosen directory in the background and populate the source browser.",
+        )
+        self.analysis_run_button.grid(row=0, column=3, padx=(6, 0))
+        self.analysis_status_var = tk.StringVar(
+            value="Choose a directory and click Analyze."
+        )
+        ttk.Label(
+            controls,
+            textvariable=self.analysis_status_var,
+            anchor="w",
+        ).grid(row=1, column=0, columnspan=4, sticky="ew", pady=(6, 0))
+
+        summary_frame = ttk.LabelFrame(parent, text="Insights and Platform Capability")
+        summary_frame.grid(row=1, column=0, sticky="ew", pady=(0, 8))
+        summary_frame.columnconfigure(0, weight=1)
+        self.analysis_summary_var = tk.StringVar(
+            value="Run an analysis to see project counts, potential problems, and platform signals."
+        )
+        ttk.Label(
+            summary_frame,
+            textvariable=self.analysis_summary_var,
+            anchor="nw",
+            justify="left",
+            padding=6,
+        ).grid(row=0, column=0, sticky="ew")
+
+        paned = ttk.PanedWindow(parent, orient=tk.HORIZONTAL)
+        paned.grid(row=2, column=0, sticky="nsew")
+        tree_frame = ttk.Frame(paned)
+        detail_notebook = ttk.Notebook(paned)
+        source_frame = ttk.Frame(detail_notebook)
+        class_diagram_frame = ttk.Frame(detail_notebook)
+        dependency_diagram_frame = ttk.Frame(detail_notebook)
+        paned.add(tree_frame, weight=2)
+        paned.add(detail_notebook, weight=3)
+        detail_notebook.add(source_frame, text="Source")
+        detail_notebook.add(class_diagram_frame, text="Class Diagram")
+        detail_notebook.add(dependency_diagram_frame, text="File Dependencies")
+        self.analysis_detail_notebook = detail_notebook
+        self.analysis_source_frame = source_frame
+        tree_frame.rowconfigure(0, weight=1)
+        tree_frame.columnconfigure(0, weight=1)
+        source_frame.rowconfigure(1, weight=1)
+        source_frame.columnconfigure(0, weight=1)
+
+        self.analysis_tree = ttk.Treeview(
+            tree_frame,
+            columns=("kind", "lines"),
+            show="tree headings",
+            selectmode="browse",
+        )
+        self.analysis_tree.heading("#0", text="Project / Source")
+        self.analysis_tree.heading("kind", text="Kind")
+        self.analysis_tree.heading("lines", text="Lines")
+        self.analysis_tree.column("#0", width=300, minwidth=160)
+        self.analysis_tree.column("kind", width=100, stretch=False)
+        self.analysis_tree.column("lines", width=75, stretch=False, anchor="e")
+        self.analysis_tree.grid(row=0, column=0, sticky="nsew")
+        tree_scroll = ttk.Scrollbar(
+            tree_frame, orient="vertical", command=self.analysis_tree.yview
+        )
+        tree_scroll.grid(row=0, column=1, sticky="ns")
+        self.analysis_tree.configure(yscrollcommand=tree_scroll.set)
+        self.analysis_tree.bind(
+            "<<TreeviewSelect>>", self.on_analysis_tree_selected
+        )
+
+        self.analysis_source_var = tk.StringVar(value="No source selected")
+        ttk.Label(
+            source_frame,
+            textvariable=self.analysis_source_var,
+            anchor="w",
+        ).grid(row=0, column=0, sticky="ew", pady=(0, 4))
+        self.analysis_source_text = self.help_widget(
+            self.add_scrolled_text(source_frame, 1, 0, wrap="none"),
+            "Read-only source code. Selecting a symbol scrolls to and highlights its line range.",
+        )
+        self.analysis_source_text.configure(font="TkFixedFont")
+        self.analysis_source_text.tag_configure(
+            "analysis_selection",
+            background="#fff0a8",
+            foreground="#202020",
+        )
+        self.analysis_class_canvas = self._build_analysis_diagram_canvas(
+            class_diagram_frame,
+            "Run an analysis to see class inheritance.",
+        )
+        self.analysis_dependency_canvas = self._build_analysis_diagram_canvas(
+            dependency_diagram_frame,
+            "Run an analysis to see project-local file dependencies.",
+        )
+
+    @staticmethod
+    def _build_analysis_diagram_canvas(
+        parent: ttk.Frame, placeholder: str
+    ) -> tk.Canvas:
+        parent.rowconfigure(0, weight=1)
+        parent.columnconfigure(0, weight=1)
+        canvas = tk.Canvas(
+            parent,
+            background="#f7f8fa",
+            highlightthickness=0,
+        )
+        horizontal = ttk.Scrollbar(parent, orient="horizontal", command=canvas.xview)
+        vertical = ttk.Scrollbar(parent, orient="vertical", command=canvas.yview)
+        canvas.configure(xscrollcommand=horizontal.set, yscrollcommand=vertical.set)
+        canvas.grid(row=0, column=0, sticky="nsew")
+        vertical.grid(row=0, column=1, sticky="ns")
+        horizontal.grid(row=1, column=0, sticky="ew")
+        canvas.create_text(
+            24,
+            24,
+            text=placeholder,
+            anchor="nw",
+            fill="#59636e",
+        )
+        return canvas
+
+    def browse_analysis_project(self) -> None:
+        selected = filedialog.askdirectory(
+            initialdir=self.analysis_path_var.get() or str(Path.home()),
+            title="Choose project directory to analyze",
+        )
+        if selected:
+            self.analysis_path_var.set(selected)
+
+    def analyze_selected_project(self) -> None:
+        if self._analysis_running:
+            return
+        selected_path = self.analysis_path_var.get().strip()
+        if not selected_path:
+            messagebox.showerror(
+                "Project Analysis", "Choose a project directory first."
+            )
+            return
+        target = Path(selected_path).expanduser()
+        self._analysis_running = True
+        self.analysis_run_button.configure(state="disabled")
+        self.analysis_status_var.set(f"Analyzing {target}…")
+
+        def work() -> dict[str, Any]:
+            # Keep the backend lazy: opening the GUI or tab does not import or
+            # run project analysis until the user explicitly clicks Analyze.
+            from ai_loop.project_analysis import analyze_project
+
+            return analyze_project(target)
+
+        self._run_bg(
+            work,
+            self._finish_project_analysis,
+            name="ai-loop-project-analysis",
+            busy_attr="_analysis_running",
+        )
+
+    def _finish_project_analysis(
+        self, model: dict[str, Any] | None, error: str | None
+    ) -> None:
+        self._analysis_running = False
+        self.analysis_run_button.configure(state="normal")
+        if error is not None or model is None:
+            self.analysis_status_var.set(f"Analysis failed: {error or 'no result'}")
+            messagebox.showerror(
+                "Project Analysis Failed", error or "Analysis returned no result."
+            )
+            return
+        try:
+            controller = ProjectAnalysisController(model)
+        except Exception as exc:
+            self.analysis_status_var.set(f"Could not display analysis: {exc}")
+            messagebox.showerror("Project Analysis Failed", str(exc))
+            return
+        self._analysis_controller = controller
+        for item in self.analysis_tree.get_children(""):
+            self.analysis_tree.delete(item)
+        self._insert_analysis_node("", controller.root_node)
+        self.analysis_status_var.set(controller.root_node.summary)
+        self.analysis_summary_var.set(controller.insights_summary)
+        self.analysis_source_var.set("Select a file or symbol to view its source")
+        self.set_text(self.analysis_source_text, "")
+        self._render_analysis_diagram(
+            self.analysis_class_canvas, controller.class_diagram()
+        )
+        self._render_analysis_diagram(
+            self.analysis_dependency_canvas, controller.dependency_diagram()
+        )
+
+    def _render_analysis_diagram(
+        self, canvas: tk.Canvas, diagram: dict[str, Any]
+    ) -> None:
+        """Draw prepared geometry; graph derivation stays in the controller."""
+
+        canvas.delete("all")
+        nodes = {
+            str(node["id"]): node
+            for node in diagram.get("nodes", ())
+            if isinstance(node, dict) and "id" in node
+        }
+        for edge in diagram.get("edges", ()):
+            if not isinstance(edge, dict):
+                continue
+            source = nodes.get(str(edge.get("source", "")))
+            target = nodes.get(str(edge.get("target", "")))
+            if source is None or target is None:
+                continue
+            canvas.create_line(
+                int(source["x"]) + int(source["width"]) // 2,
+                int(source["y"]) + int(source["height"]) // 2,
+                int(target["x"]) + int(target["width"]) // 2,
+                int(target["y"]) + int(target["height"]) // 2,
+                arrow=tk.LAST,
+                width=2,
+                fill="#627286",
+            )
+
+        for index, node in enumerate(nodes.values()):
+            x = int(node["x"])
+            y = int(node["y"])
+            width = int(node["width"])
+            height = int(node["height"])
+            node_tag = f"analysis_diagram_node_{index}"
+            canvas.create_rectangle(
+                x,
+                y,
+                x + width,
+                y + height,
+                fill="#e7f0fb",
+                outline="#315c8a",
+                width=2,
+                tags=(node_tag,),
+            )
+            canvas.create_text(
+                x + width // 2,
+                y + height // 2,
+                text=str(node.get("label", node["id"])),
+                width=width - 12,
+                justify="center",
+                fill="#17293c",
+                tags=(node_tag,),
+            )
+            tree_node_id = str(node.get("tree_node_id", node["id"]))
+            canvas.tag_bind(
+                node_tag,
+                "<Button-1>",
+                lambda _event, selected=tree_node_id: (
+                    self._select_analysis_diagram_node(selected)
+                ),
+            )
+            canvas.tag_bind(
+                node_tag,
+                "<Enter>",
+                lambda _event: canvas.configure(cursor="hand2"),
+            )
+            canvas.tag_bind(
+                node_tag,
+                "<Leave>",
+                lambda _event: canvas.configure(cursor=""),
+            )
+
+        width = max(1, int(diagram.get("width", 1)))
+        height = max(1, int(diagram.get("height", 1)))
+        canvas.configure(scrollregion=(0, 0, width, height))
+        canvas.xview_moveto(0)
+        canvas.yview_moveto(0)
+
+    def _select_analysis_diagram_node(self, node_id: str) -> None:
+        if not self.analysis_tree.exists(node_id):
+            return
+        self.analysis_tree.selection_set(node_id)
+        self.analysis_tree.focus(node_id)
+        self.analysis_tree.see(node_id)
+        self.on_analysis_tree_selected()
+        self.analysis_detail_notebook.select(self.analysis_source_frame)
+
+    def _insert_analysis_node(self, parent_id: str, node: ProjectTreeNode) -> None:
+        if node.line is None:
+            lines = ""
+        elif node.end_line is None or node.end_line == node.line:
+            lines = str(node.line)
+        else:
+            lines = f"{node.line}–{node.end_line}"
+        self.analysis_tree.insert(
+            parent_id,
+            "end",
+            iid=node.node_id,
+            text=node.label,
+            values=(node.kind.replace("_", " "), lines),
+            open=node.kind == "project",
+        )
+        for child in node.children:
+            self._insert_analysis_node(node.node_id, child)
+
+    def on_analysis_tree_selected(self, _event: tk.Event | None = None) -> None:
+        controller = self._analysis_controller
+        selected = self.analysis_tree.selection()
+        if controller is None or not selected:
+            return
+        node = controller.node(selected[0])
+        if node is None:
+            return
+        self.analysis_status_var.set(
+            f"{node.label}: {node.summary}" if node.summary else node.label
+        )
+        location = controller.resolve_selection(node.node_id)
+        if location is None:
+            return
+        try:
+            source = location.path.read_text(encoding="utf-8", errors="replace")
+            display_path = location.path.relative_to(controller.project_path)
+        except (OSError, ValueError) as exc:
+            self.analysis_source_var.set(f"Could not read source: {exc}")
+            return
+
+        self.set_text(self.analysis_source_text, source)
+        self.analysis_source_text.configure(state="normal")
+        self.analysis_source_text.tag_remove("analysis_selection", "1.0", "end")
+        start = f"{location.line}.0"
+        end = f"{location.end_line + 1}.0"
+        self.analysis_source_text.tag_add("analysis_selection", start, end)
+        self.analysis_source_text.mark_set("insert", start)
+        self.analysis_source_text.see(start)
+        self.analysis_source_text.configure(state="disabled")
+        self.analysis_source_var.set(
+            f"{display_path.as_posix()} — lines {location.line}–{location.end_line}"
+        )
 
     def _build_create_frame(self, parent: ttk.Frame) -> None:
         frame = ttk.LabelFrame(parent, text="Create Job", padding=8)

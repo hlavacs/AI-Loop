@@ -16,7 +16,7 @@ dev = [
 ]
 
 [tool.setuptools]
-packages = ["ai_loop"]
+packages = ["ai_loop", "ai_loop.project_analysis"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

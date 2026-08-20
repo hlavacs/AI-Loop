@@ -144,6 +144,65 @@ class PromotionTests(unittest.TestCase):
                 "local uncommitted edit\n",
             )
 
+    def test_identical_local_change_is_already_promoted(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            repo, worktree = make_repo_with_worktree(
+                Path(directory), {"shared.txt": "base\n"}
+            )
+            (worktree / "shared.txt").write_text("same result\n", encoding="utf-8")
+            (repo / "shared.txt").write_text("same result\n", encoding="utf-8")
+
+            result = promote_successful_worktree(job_dict(repo, worktree))
+
+            self.assertTrue(result["promoted"])
+            self.assertEqual(result["files"], ["shared.txt"])
+            self.assertEqual(result["already_present"], ["shared.txt"])
+            self.assertEqual(result["copied"], [])
+            self.assertEqual(
+                (repo / "shared.txt").read_text(encoding="utf-8"),
+                "same result\n",
+            )
+
+    def test_identical_untracked_file_and_deletion_are_already_promoted(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            repo, worktree = make_repo_with_worktree(
+                Path(directory), {"doomed.txt": "remove\n"}
+            )
+            (worktree / "new.txt").write_text("same new file\n", encoding="utf-8")
+            (repo / "new.txt").write_text("same new file\n", encoding="utf-8")
+            (worktree / "doomed.txt").unlink()
+            (repo / "doomed.txt").unlink()
+
+            result = promote_successful_worktree(job_dict(repo, worktree))
+
+            self.assertEqual(result["files"], ["doomed.txt", "new.txt"])
+            self.assertEqual(
+                result["already_present"], ["doomed.txt", "new.txt"]
+            )
+            self.assertEqual(result["copied"], [])
+            self.assertEqual(result["removed"], [])
+
+    def test_already_present_change_survives_later_copy_failure(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            repo, worktree = make_repo_with_worktree(
+                Path(directory), {"a_same.txt": "base\n"}
+            )
+            (worktree / "a_same.txt").write_text("reconciled\n", encoding="utf-8")
+            (repo / "a_same.txt").write_text("reconciled\n", encoding="utf-8")
+            (worktree / "bdir").mkdir()
+            (worktree / "bdir" / "blocked.txt").write_text(
+                "blocked\n", encoding="utf-8"
+            )
+            (repo / "bdir").write_text("not a directory\n", encoding="utf-8")
+
+            with self.assertRaises(PromotionError):
+                promote_successful_worktree(job_dict(repo, worktree))
+
+            self.assertEqual(
+                (repo / "a_same.txt").read_text(encoding="utf-8"),
+                "reconciled\n",
+            )
+
     def test_gitignored_file_in_target_survives_promotion_of_new_directory(self) -> None:
         # H4 fix: because status lists newdir/a.txt (a file) instead of a
         # collapsed newdir/ entry, promotion copies the single file and never

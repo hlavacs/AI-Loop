@@ -194,6 +194,7 @@ def test_cli_provider_uses_selected_model_and_read_only_command_contract(
 ) -> None:
     captured: dict[str, Any] = {}
 
+    monkeypatch.delenv("AI_LOOP_CODEX_SYSTEMD_SANDBOX", raising=False)
     monkeypatch.setattr("ai_loop.elicitation.shutil.which", lambda _binary: "/bin/fake")
 
     def fake_run(command, **kwargs):

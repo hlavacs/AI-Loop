@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import filecmp
 import json
 import os
 import re
@@ -1398,6 +1399,28 @@ def repo_has_local_change(repo: Path, relative_path: str) -> bool:
     return bool(proc.stdout.strip())
 
 
+def promotion_path_matches(repo: Path, worktree: Path, relative_path: str) -> bool:
+    """Return whether a dirty target path already has the promoted state."""
+
+    source = worktree / relative_path
+    target = repo / relative_path
+    if source.is_symlink() or target.is_symlink():
+        return (
+            source.is_symlink()
+            and target.is_symlink()
+            and os.readlink(source) == os.readlink(target)
+        )
+    if not source.exists() or not target.exists():
+        return not source.exists() and not target.exists()
+    if not source.is_file() or not target.is_file():
+        return False
+    source_mode = source.stat().st_mode & 0o777
+    target_mode = target.stat().st_mode & 0o777
+    return source_mode == target_mode and filecmp.cmp(
+        source, target, shallow=False
+    )
+
+
 def promote_successful_worktree(
     job: dict[str, Any],
     on_before_copy: Callable[[list[str]], None] | None = None,
@@ -1412,7 +1435,15 @@ def promote_successful_worktree(
     if not changed_paths:
         return {"promoted": False, "reason": "job worktree had no changed files", "files": []}
 
-    conflicting = [path for path in changed_paths if repo_has_local_change(repo, path)]
+    locally_changed = {
+        path for path in changed_paths if repo_has_local_change(repo, path)
+    }
+    already_present = {
+        path
+        for path in locally_changed
+        if promotion_path_matches(repo, worktree, path)
+    }
+    conflicting = sorted(locally_changed - already_present)
     if conflicting:
         preview = ", ".join(conflicting[:20])
         extra = "" if len(conflicting) <= 20 else f", ... and {len(conflicting) - 20} more"
@@ -1427,8 +1458,9 @@ def promote_successful_worktree(
 
     copied: list[str] = []
     removed: list[str] = []
-    # After the conflict check above every promoted path is clean in the
-    # target repo, so a mid-loop failure can be rolled back safely: tracked
+    # Dirty target paths that already match the worktree are skipped, preserving
+    # their local state. Every path actually copied below was clean before this
+    # promotion, so a mid-loop failure can be rolled back safely: tracked
     # paths (modifications AND deletions) are restored with
     # `git checkout -- <path>`, and untracked-new paths (where checkout
     # returns nonzero) are removed again.
@@ -1436,6 +1468,8 @@ def promote_successful_worktree(
     try:
         for code, relative_path in changes:
             if relative_path is None:
+                continue
+            if relative_path in already_present:
                 continue
             source = worktree / relative_path
             target = repo / relative_path
@@ -1494,10 +1528,11 @@ def promote_successful_worktree(
 
     return {
         "promoted": True,
-        "reason": "copied successful worktree changes to target repository",
-        "files": sorted(copied + removed),
+        "reason": "reconciled successful worktree changes with target repository",
+        "files": changed_paths,
         "copied": sorted(copied),
         "removed": sorted(removed),
+        "already_present": sorted(already_present),
     }
 
 
