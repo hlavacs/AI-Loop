@@ -140,6 +140,47 @@ def test_analyze_project_rejects_invalid_roots(tmp_path: Path) -> None:
         analyze_project(source_file)
 
 
+def test_analyze_project_excludes_folder_subtrees(tmp_path: Path) -> None:
+    (tmp_path / "main.py").write_text("VALUE = 1\n", encoding="utf-8")
+    generated = tmp_path / "generated"
+    (generated / "cache" / "nested").mkdir(parents=True)
+    (generated / "keep.py").write_text("KEEP = True\n", encoding="utf-8")
+    (generated / "cache" / "skip.py").write_text("SKIP = True\n", encoding="utf-8")
+    (generated / "cache" / "nested" / "skip.cpp").write_text(
+        "int skipped();\n", encoding="utf-8"
+    )
+    (tmp_path / "other" / "cache").mkdir(parents=True)
+    (tmp_path / "other" / "cache" / "included.py").write_text(
+        "INCLUDED = True\n", encoding="utf-8"
+    )
+
+    model = analyze_project(tmp_path, exclude_folders=["generated/cache/"])
+
+    assert {file_model["path"] for file_model in model["files"]} == {
+        "generated/keep.py",
+        "main.py",
+        "other/cache/included.py",
+    }
+    assert model["file_count"] == 3
+    assert model["languages"] == {"python": 3, "cpp": 0}
+    assert model["insights"]["file_count"] == 3
+    assert model["insights"]["per_language"]["cpp"]["file_count"] == 0
+
+
+def test_analyze_project_default_matches_explicit_no_exclusions(tmp_path: Path) -> None:
+    (tmp_path / "source").mkdir()
+    (tmp_path / "source" / "included.py").write_text(
+        "INCLUDED = True\n", encoding="utf-8"
+    )
+
+    default_model = analyze_project(tmp_path)
+
+    assert default_model == analyze_project(tmp_path, exclude_folders=None)
+    assert [file_model["path"] for file_model in default_model["files"]] == [
+        "source/included.py"
+    ]
+
+
 def _find_node(root, *, kind: str, label: str):
     if root.kind == kind and root.label == label:
         return root

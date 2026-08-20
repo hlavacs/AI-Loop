@@ -67,7 +67,10 @@ _CPP_PLATFORM_INCLUDES = {
 }
 
 
-def analyze_project(path: str | os.PathLike[str]) -> ProjectModel:
+def analyze_project(
+    path: str | os.PathLike[str],
+    exclude_folders: Iterable[str] | None = None,
+) -> ProjectModel:
     """Analyze *path* and return a JSON-serializable project hierarchy.
 
     Python is parsed with :mod:`ast`; C++ is inspected with deliberately
@@ -77,10 +80,13 @@ def analyze_project(path: str | os.PathLike[str]) -> ProjectModel:
 
     Args:
         path: Directory whose source tree should be analyzed.
+        exclude_folders: Optional folder paths, relative to *path*, whose
+            contents should be skipped.
 
     Raises:
         FileNotFoundError: If *path* does not exist.
         NotADirectoryError: If *path* is not a directory.
+        ValueError: If an excluded folder is outside *path*.
     """
 
     root = Path(path).expanduser()
@@ -89,11 +95,12 @@ def analyze_project(path: str | os.PathLike[str]) -> ProjectModel:
     if not root.is_dir():
         raise NotADirectoryError(f"project path is not a directory: {root}")
     root = root.resolve()
+    excluded_folders = _normalize_excluded_folders(root, exclude_folders)
 
     files: list[dict[str, Any]] = []
     language_counts = {"python": 0, "cpp": 0}
     total_lines = 0
-    for source_path in _source_files(root):
+    for source_path in _source_files(root, excluded_folders):
         language = _LANGUAGES[source_path.suffix.lower()]
         source = _read_source(source_path, language)
         if language == "python":
@@ -124,14 +131,40 @@ def analyze_project(path: str | os.PathLike[str]) -> ProjectModel:
     }
 
 
-def _source_files(root: Path) -> Iterable[Path]:
+def _normalize_excluded_folders(
+    root: Path, exclude_folders: Iterable[str] | None
+) -> set[str]:
+    normalized: set[str] = set()
+    for folder in exclude_folders or ():
+        folder = folder.strip()
+        if not folder:
+            continue
+        candidate = Path(folder.replace("\\", "/"))
+        resolved = (root / candidate).resolve()
+        try:
+            normalized.add(resolved.relative_to(root).as_posix())
+        except ValueError as exc:
+            raise ValueError(
+                f"excluded folder is outside project directory: {folder}"
+            ) from exc
+    return normalized
+
+
+def _source_files(root: Path, exclude_folders: Iterable[str] = ()) -> Iterable[Path]:
+    excluded = set(exclude_folders)
     for current, directories, filenames in os.walk(root):
+        current_path = Path(current)
+        current_relative = current_path.relative_to(root).as_posix()
+        if current_relative in excluded:
+            directories[:] = []
+            continue
         directories[:] = sorted(
             directory
             for directory in directories
             if directory not in _IGNORED_DIRECTORIES
+            and (current_path / directory).relative_to(root).as_posix()
+            not in excluded
         )
-        current_path = Path(current)
         for filename in sorted(filenames):
             candidate = current_path / filename
             if candidate.suffix.lower() in _LANGUAGES:

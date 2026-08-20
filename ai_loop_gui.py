@@ -1777,6 +1777,14 @@ class AiLoopGui(tk.Tk):
             "Analyze the chosen directory in the background and populate the source browser.",
         )
         self.analysis_run_button.grid(row=0, column=3, padx=(6, 0))
+        ttk.Label(controls, text="Excluded folders").grid(
+            row=1, column=0, sticky="w", padx=(0, 6), pady=(6, 0)
+        )
+        self.analysis_excluded_folders_var = tk.StringVar()
+        self.help_widget(
+            ttk.Entry(controls, textvariable=self.analysis_excluded_folders_var),
+            "Comma-separated folder paths relative to the project directory to skip.",
+        ).grid(row=1, column=1, columnspan=3, sticky="ew", pady=(6, 0))
         self.analysis_status_var = tk.StringVar(
             value="Choose a directory and click Analyze."
         )
@@ -1784,7 +1792,7 @@ class AiLoopGui(tk.Tk):
             controls,
             textvariable=self.analysis_status_var,
             anchor="w",
-        ).grid(row=1, column=0, columnspan=4, sticky="ew", pady=(6, 0))
+        ).grid(row=2, column=0, columnspan=4, sticky="ew", pady=(6, 0))
 
         summary_frame = ttk.LabelFrame(parent, text="Insights and Platform Capability")
         summary_frame.grid(row=1, column=0, sticky="ew", pady=(0, 8))
@@ -1910,6 +1918,11 @@ class AiLoopGui(tk.Tk):
             )
             return
         target = Path(selected_path).expanduser()
+        excluded_folders = [
+            folder.strip()
+            for folder in self.analysis_excluded_folders_var.get().split(",")
+            if folder.strip()
+        ]
         self._analysis_running = True
         self.analysis_run_button.configure(state="disabled")
         self.analysis_status_var.set(f"Analyzing {target}…")
@@ -1919,7 +1932,10 @@ class AiLoopGui(tk.Tk):
             # run project analysis until the user explicitly clicks Analyze.
             from ai_loop.project_analysis import analyze_project
 
-            return analyze_project(target)
+            return analyze_project(
+                target,
+                exclude_folders=excluded_folders or None,
+            )
 
         self._run_bg(
             work,
