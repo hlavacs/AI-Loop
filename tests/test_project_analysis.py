@@ -80,6 +80,39 @@ def test_analyze_project_discovers_cpp_hierarchy_and_metadata() -> None:
     assert json.loads(json.dumps(model)) == model
 
 
+def test_analyze_project_discovers_all_cpp_file_extensions(tmp_path: Path) -> None:
+    cpp_extensions = (
+        ".h",
+        ".h++",
+        ".hh",
+        ".hpp",
+        ".hxx",
+        ".cc",
+        ".cpp",
+        ".cxx",
+        ".c++",
+        ".ixx",
+        ".ccm",
+        ".cppm",
+        ".cxxm",
+        ".c++m",
+        ".mpp",
+        ".mxx",
+    )
+    for index, extension in enumerate(cpp_extensions):
+        (tmp_path / f"source_{index}{extension}").write_text(
+            f"int function_{index}();\n", encoding="utf-8"
+        )
+
+    model = analyze_project(tmp_path)
+
+    assert {Path(file_model["path"]).suffix for file_model in model["files"]} == set(
+        cpp_extensions
+    )
+    assert {file_model["language"] for file_model in model["files"]} == {"cpp"}
+    assert model["languages"] == {"python": 0, "cpp": len(cpp_extensions)}
+
+
 def test_analyze_project_aggregates_insights_and_platform_capabilities() -> None:
     model = analyze_project(FIXTURE_PROJECT)
     insights = model["insights"]

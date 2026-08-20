@@ -15,10 +15,21 @@ ProjectModel = dict[str, Any]
 _LANGUAGES = {
     ".py": "python",
     ".h": "cpp",
+    ".h++": "cpp",
+    ".hh": "cpp",
     ".hpp": "cpp",
+    ".hxx": "cpp",
     ".cc": "cpp",
     ".cpp": "cpp",
     ".cxx": "cpp",
+    ".c++": "cpp",
+    ".ixx": "cpp",
+    ".ccm": "cpp",
+    ".cppm": "cpp",
+    ".cxxm": "cpp",
+    ".c++m": "cpp",
+    ".mpp": "cpp",
+    ".mxx": "cpp",
 }
 _IGNORED_DIRECTORIES = {
     ".git",
