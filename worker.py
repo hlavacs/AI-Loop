@@ -27,6 +27,7 @@ from ai_loop.prompt_profiles import configured_prompt_guidance
 from ai_loop.queues import claim_pending, consumer_name, decode, ensure_group, redis_client, read_group, xadd_json
 from ai_loop.recovery import attempt_auto_recovery
 from ai_loop.specifications import SpecificationService
+from ai_loop.systemd_sandbox import wrap_with_systemd_sandbox
 from ai_loop.token_wait import replenishment_time, wait_until
 from ai_loop.verification_orchestrator import (
     SubprocessVerificationRunner,
@@ -113,15 +114,28 @@ def log_worker_stage(job_id: str, task_id: str, stage: str, detail: str) -> None
     print(f"job {job_id} task {task_id}: {stage} - {detail}")
 
 
-def build_codex_command(codex_bin: str, cwd: str, prompt: str, model: str, bypass_sandbox: bool) -> list[str]:
+def build_codex_command(
+    codex_bin: str,
+    cwd: str,
+    prompt: str,
+    model: str,
+    bypass_sandbox: bool,
+    systemd_sandbox: bool = False,
+) -> list[str]:
     cmd = [codex_bin, "exec", "--cd", cwd]
     if model:
         cmd.extend(["-m", model])
     if bypass_sandbox:
         cmd.append("--dangerously-bypass-approvals-and-sandbox")
+        if systemd_sandbox:
+            cmd.append("--ephemeral")
     else:
         cmd.extend(["--sandbox", "workspace-write"])
     cmd.append("-")
+    if systemd_sandbox:
+        if not bypass_sandbox:
+            raise ValueError("systemd Codex sandbox requires the Codex sandbox bypass")
+        return wrap_with_systemd_sandbox(cmd, writable_paths=[cwd])
     return cmd
 
 
@@ -446,8 +460,12 @@ def process_task(settings, client, task_id: str) -> None:
             else codex_prompt(job, task, worker, formal_context=formal_context)
         )
         bypass_sandbox = settings.codex_bypass_sandbox
+        systemd_sandbox = getattr(settings, "codex_systemd_sandbox", False)
         if bypass_sandbox:
-            print("sandbox bypass enabled via CODEX_BYPASS_SANDBOX")
+            if systemd_sandbox:
+                print("Worker sandbox bypass is contained by a read-only systemd unit")
+            else:
+                print("sandbox bypass enabled via CODEX_BYPASS_SANDBOX")
         if worker in {"claude", "fable", "opus"}:
             legacy_claude_model = (
                 settings.opus_model
@@ -476,6 +494,11 @@ def process_task(settings, client, task_id: str) -> None:
                 prompt,
                 settings.worker_role_model or settings.codex_model,
                 bypass_sandbox,
+                systemd_sandbox,
+            )
+        if systemd_sandbox and worker != "codex":
+            codex_cmd = wrap_with_systemd_sandbox(
+                codex_cmd, writable_paths=[worktree_path]
             )
         worker_stage = "fixing" if str(task["created_by"]) == "claude:repair" else "implementing"
         log_worker_stage(job["id"], task_id, worker_stage, f"{worker_label} process started; source changes may not exist until it finishes")

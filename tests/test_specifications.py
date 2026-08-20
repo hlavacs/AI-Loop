@@ -10,11 +10,8 @@ import pytest
 
 from ai_loop import db
 from ai_loop.specifications import (
-    AutomationLevel,
     MetricAssertion,
-    Requirement,
     RequirementCategory,
-    RequirementPriority,
     Risk,
     RiskSeverity,
     RiskUncertainty,
@@ -24,11 +21,6 @@ from ai_loop.specifications import (
     SpecificationService,
     SpecificationStateError,
     SpecificationValidationError,
-    TestLevel as VerificationTestLevel,
-    UseCase,
-    ValidationLoop,
-    VerificationCase,
-    VerificationMethod,
     validate_for_approval,
     validate_structural,
     validate_working_directory,

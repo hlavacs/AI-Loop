@@ -44,6 +44,7 @@ class Settings:
     gemini_bin: str
     codex_model: str
     codex_bypass_sandbox: bool
+    codex_systemd_sandbox: bool
     worker_default: str
     fable_model: str
     controller_default: str
@@ -110,6 +111,7 @@ def load_settings() -> Settings:
         gemini_bin=os.getenv("GEMINI_BIN", "gemini"),
         codex_model=os.getenv("AI_LOOP_CODEX_MODEL", ""),
         codex_bypass_sandbox=env_bool("CODEX_BYPASS_SANDBOX", False),
+        codex_systemd_sandbox=env_bool("AI_LOOP_CODEX_SYSTEMD_SANDBOX", False),
         worker_default=normalize_worker(os.getenv("AI_LOOP_WORKER", "codex")),
         fable_model=os.getenv("AI_LOOP_FABLE_MODEL", "").strip(),
         controller_default=normalize_controller(os.getenv("AI_LOOP_CONTROLLER", "opus")),

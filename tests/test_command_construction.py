@@ -66,6 +66,39 @@ class WorkerCommandConstructionTests(unittest.TestCase):
         self.assertNotIn("-m", cmd)
         self.assertEqual(cmd[-1], "-")
 
+    def test_codex_command_can_use_external_systemd_confinement(self) -> None:
+        with tempfile.TemporaryDirectory() as directory, patch(
+            "ai_loop.systemd_sandbox.shutil.which", return_value="/usr/bin/systemd-run"
+        ):
+            cmd = worker.build_codex_command(
+                "codex", directory, "PROMPT", "", True, systemd_sandbox=True
+            )
+        self.assertEqual(
+            cmd[0:6],
+            ["/usr/bin/systemd-run", "--user", "--wait", "--pipe", "--collect", "--quiet"],
+        )
+        self.assertIn(f"ReadWritePaths={Path(directory).resolve()}", cmd)
+        self.assertIn("ProtectSystem=strict", cmd)
+        separator = cmd.index("--")
+        self.assertEqual(
+            cmd[separator + 1 :],
+            [
+                "codex",
+                "exec",
+                "--cd",
+                str(Path(directory).resolve()),
+                "--dangerously-bypass-approvals-and-sandbox",
+                "--ephemeral",
+                "-",
+            ],
+        )
+
+    def test_external_systemd_confinement_requires_codex_bypass(self) -> None:
+        with self.assertRaisesRegex(ValueError, "requires the Codex sandbox bypass"):
+            worker.build_codex_command(
+                "codex", "/wt", "PROMPT", "", False, systemd_sandbox=True
+            )
+
     def test_fable_command_bypass_skips_permissions(self) -> None:
         cmd = worker.build_fable_command("claude", "PROMPT", "claude-model", True)
         self.assertEqual(

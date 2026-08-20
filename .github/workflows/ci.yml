@@ -2,9 +2,9 @@ name: CI
 
 on:
   push:
-    branches: [main]
+    branches: [main, develop]
   pull_request:
-    branches: [main]
+    branches: [main, develop]
 
 jobs:
   tests:
@@ -20,11 +20,15 @@ jobs:
       - name: Install system dependencies
         run: sudo apt-get update && sudo apt-get install -y redis-server
       - name: Install dependencies
-        run: pip install redis pytest
-      - name: Run tests
+        run: pip install -e ".[dev]"
+      - name: Lint for correctness
+        run: ruff check . --select E9,F63,F7,F82,F401
+      - name: Type-check sandbox boundary
+        run: mypy --ignore-missing-imports ai_loop/systemd_sandbox.py
+      - name: Run tests with coverage
         env:
           AILOOP_TK_STUB: "1"
-        run: python -m pytest tests/ -q
+        run: python -m pytest tests/ -q --cov=ai_loop --cov=controller --cov=worker --cov-report=term-missing --cov-fail-under=50
 
   compile:
     runs-on: ubuntu-latest
@@ -34,4 +38,4 @@ jobs:
         with:
           python-version: "3.12"
       - name: Byte-compile all Python sources
-        run: python -m py_compile $(git ls-files '*.py')
+        run: python -m compileall -q ai_loop tests *.py

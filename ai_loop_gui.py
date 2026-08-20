@@ -19,7 +19,7 @@ import threading
 import time
 import tkinter as tk
 import traceback
-from dataclasses import asdict, dataclass
+from dataclasses import asdict
 from pathlib import Path
 from tkinter import filedialog, messagebox, ttk
 from typing import Any
@@ -105,7 +105,6 @@ bootstrap_python_dependencies()
 
 import redis as redis_module
 
-from redis.exceptions import ConnectionError, TimeoutError
 
 from ai_loop import db
 from ai_loop.auth import (
@@ -126,6 +125,8 @@ from ai_loop.progress import estimate_progress
 from ai_loop.elicitation import CliStructuredOutputProvider
 from ai_loop.specification_gui import VerificationDashboardView, open_specification_editor
 from ai_loop.specification_workflow import derive_formal_job_inputs
+from ai_loop.gui_components import HoverTooltip, ModelDefaults
+from ai_loop.systemd_sandbox import wrap_with_systemd_sandbox
 from ai_loop.specifications import SpecificationService, StoredSpecificationVersion
 from ai_loop.verification_orchestrator import (
     load_verification_dashboard_projection,
@@ -180,85 +181,6 @@ JOB_STATUS_COLORS = {
 }
 APP_WINDOW_TITLE = "AI-LOOP - Prof. Helmut Hlavacs, University of Vienna and Robimo GmbH (https://robimo.at/), Vienna, Austria"
 BINARY_CHOICES = ("codex", "claude", "gemini")
-
-
-class HoverTooltip:
-    def __init__(self, root: tk.Tk, *, delay_ms: int = 200, wraplength: int = 460) -> None:
-        self.root = root
-        self.delay_ms = delay_ms
-        self.wraplength = wraplength
-        self.window: tk.Toplevel | None = None
-        self.after_id: str | None = None
-
-    def attach(self, widget: tk.Widget, text: str) -> None:
-        if not text:
-            return
-        setattr(widget, "_ai_loop_help_attached", True)
-        widget.bind("<Enter>", lambda _event, w=widget, t=text: self._schedule_show(w, t), add="+")
-        widget.bind("<Leave>", lambda _event: self.hide(), add="+")
-        widget.bind("<ButtonPress>", lambda _event: self.hide(), add="+")
-
-    def _schedule_show(self, widget: tk.Widget, text: str) -> None:
-        self.hide()
-        self.after_id = self.root.after(self.delay_ms, lambda: self._show(widget, text))
-
-    def _show(self, widget: tk.Widget, text: str) -> None:
-        self.after_id = None
-        if not text or not widget.winfo_exists():
-            return
-        self.window = window = tk.Toplevel(widget)
-        window.withdraw()
-        window.overrideredirect(True)
-        try:
-            window.attributes("-topmost", True)
-        except tk.TclError:
-            pass
-        label = tk.Label(
-            window,
-            text=text,
-            justify="left",
-            wraplength=self.wraplength,
-            padx=10,
-            pady=8,
-            relief="solid",
-            borderwidth=1,
-            bg="#fff9d8",
-            fg="#202020",
-            font=("TkDefaultFont", 11),
-        )
-        label.pack(fill="both", expand=True)
-        x, y = widget.winfo_pointerxy()
-        window.geometry(f"+{x + 18}+{y + 18}")
-        window.deiconify()
-
-    def hide(self) -> None:
-        if self.after_id is not None:
-            try:
-                self.root.after_cancel(self.after_id)
-            except tk.TclError:
-                pass
-            self.after_id = None
-        if self.window is not None:
-            try:
-                self.window.destroy()
-            except tk.TclError:
-                pass
-            self.window = None
-
-
-@dataclass
-class ModelDefaults:
-    codex_model: str
-    fable_model: str
-    opus_model: str
-    gemini_model: str
-    controller_model: str
-    codex_bin: str
-    claude_bin: str
-    gemini_bin: str
-    codex_bypass_sandbox: bool
-    controller_role_model: str = ""
-    worker_role_model: str = ""
 
 
 class LoopBackend:
@@ -799,6 +721,12 @@ class LoopBackend:
         env["AI_LOOP_CONTROLLER_ROLE_MODEL"] = models.controller_role_model
         env["AI_LOOP_WORKER_ROLE_MODEL"] = models.worker_role_model
         env["CODEX_BYPASS_SANDBOX"] = "1" if models.codex_bypass_sandbox else "0"
+        env["AI_LOOP_CODEX_SYSTEMD_SANDBOX"] = (
+            "1"
+            if models.codex_bypass_sandbox
+            and getattr(self.settings, "codex_systemd_sandbox", False)
+            else "0"
+        )
         return env
 
     def launch_processes(self, job_id: str, models: ModelDefaults) -> dict[str, int]:
@@ -1400,15 +1328,19 @@ class LoopBackend:
         job = details["job"]
         binary = binary.strip() or models.codex_bin or "codex"
         prompt = self.fix_prompt(details)
-        # The fix-it binary is an unsandboxed agent working inside the target
-        # worktree; never hand it the GUI's mail credentials.
+        # The fix-it binary works inside the target worktree. When configured,
+        # systemd supplies the external write boundary; mail credentials are always stripped.
         env = self.env_for_processes(job_id, models, base_env=sanitized_child_env())
         env["CODEX_BYPASS_SANDBOX"] = "1"
         if Path(binary).name.startswith("codex") or binary == "codex":
             cmd = [binary, "exec", "--cd", str(job["worktree_path"]), "--dangerously-bypass-approvals-and-sandbox", "-"]
+            if getattr(self.settings, "codex_systemd_sandbox", False):
+                cmd = wrap_with_systemd_sandbox(cmd, writable_paths=[job["worktree_path"]])
             proc = subprocess.run(cmd, input=prompt, text=True, capture_output=True, timeout=7200, env=env)
         else:
             cmd = [binary, "-"]
+            if getattr(self.settings, "codex_systemd_sandbox", False):
+                cmd = wrap_with_systemd_sandbox(cmd, writable_paths=[job["worktree_path"]])
             proc = subprocess.run(cmd, input=prompt, text=True, capture_output=True, timeout=7200, env=env, cwd=str(job["worktree_path"]))
         with db.transaction(self.settings.db_path) as conn:
             db.add_event(

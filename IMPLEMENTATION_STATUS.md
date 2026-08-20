@@ -1,6 +1,12 @@
 # Specification-Driven Development Implementation Status
 
-Updated: 2026-08-16
+Updated: 2026-08-20
+
+## 1.0 release hardening
+
+The path-dependent prompt regression is fixed, and promoted changes now pass the concrete validation command again from the target checkout before the job reaches `done`. On hosts where Codex bubblewrap cannot start, an explicit transient user-systemd boundary keeps the host read-only and makes only the job worktree writable.
+
+Specification parsing and analysis, verification-dashboard projection, and reusable GUI components now live in dedicated modules. Release metadata is 1.0.0. CI covers `main` and `develop` on Python 3.10 and 3.12 with critical Ruff checks, a typed sandbox-boundary check, coverage, and byte compilation.
 
 ## Regression baseline and architecture audit
 

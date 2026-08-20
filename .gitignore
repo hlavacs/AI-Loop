@@ -9,3 +9,6 @@ __pycache__/
 .venv/
 .gui-venv/
 .DS_Store
+
+.coverage
+*.egg-info/

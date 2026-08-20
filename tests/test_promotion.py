@@ -4,9 +4,19 @@ import subprocess
 import tempfile
 import unittest
 from pathlib import Path
+from types import SimpleNamespace
+from unittest.mock import patch
 
+from ai_loop import db
 import controller
-from controller import PromotionError, promote_successful_worktree, repo_has_local_change, status_paths
+from controller import (
+    PromotionError,
+    finish_done_job,
+    promote_successful_worktree,
+    repo_has_local_change,
+    status_paths,
+    validate_promoted_checkout,
+)
 
 
 def run_git(args: list[str], cwd: Path) -> None:
@@ -236,6 +246,111 @@ class PromotionTests(unittest.TestCase):
             # After promotion the target repo is updated.
             self.assertEqual((repo / "a.txt").read_text(encoding="utf-8"), "modified\n")
             self.assertEqual((repo / "new.txt").read_text(encoding="utf-8"), "brand new\n")
+
+
+class PromotionValidationTests(unittest.TestCase):
+    def test_promoted_checkout_validation_runs_from_target_repository(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            repo, worktree = make_repo_with_worktree(
+                Path(directory), {"a.txt": "one\n"}
+            )
+            (worktree / "promoted.txt").write_text("ready\n", encoding="utf-8")
+            job = {
+                **job_dict(repo, worktree),
+                "test_cmd": "test -f promoted.txt",
+            }
+            promotion = promote_successful_worktree(job)
+
+            validation = validate_promoted_checkout(job, promotion)
+
+            self.assertTrue(validation["performed"])
+            self.assertTrue(validation["passed"])
+            self.assertEqual(validation["cwd"], str(repo.resolve()))
+
+    def test_promoted_checkout_validation_reports_failure(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            repo, worktree = make_repo_with_worktree(
+                Path(directory), {"a.txt": "one\n"}
+            )
+            (worktree / "promoted.txt").write_text("ready\n", encoding="utf-8")
+            job = {
+                **job_dict(repo, worktree),
+                "test_cmd": "test -f missing.txt",
+            }
+            promotion = promote_successful_worktree(job)
+
+            validation = validate_promoted_checkout(job, promotion)
+
+            self.assertTrue(validation["performed"])
+            self.assertFalse(validation["passed"])
+            self.assertNotEqual(validation["returncode"], 0)
+
+    def test_failed_target_validation_prevents_done_status(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            database = root / "loop.sqlite3"
+            db.init_db(database)
+            with db.transaction(database) as conn:
+                db.create_job(
+                    conn,
+                    job_id="J-promotion-validation",
+                    repo_path=str(root / "repo"),
+                    worktree_path=str(root / "worktree"),
+                    branch="ai/J-promotion-validation",
+                    base_ref="HEAD",
+                    goal="Promote safely",
+                    constraints=[],
+                    acceptance=[],
+                    test_cmd="false",
+                    max_iterations=2,
+                    use_worktree=True,
+                    worker="codex",
+                    controller="claude",
+                )
+                job = db.get_job(conn, "J-promotion-validation")
+            settings = SimpleNamespace(db_path=database)
+            promotion = {"promoted": True, "files": ["a.txt"]}
+            validation = {
+                "performed": True,
+                "passed": False,
+                "reason": "promoted-checkout validation failed",
+                "returncode": 1,
+            }
+
+            with patch.object(
+                controller,
+                "promote_successful_worktree",
+                return_value=promotion,
+            ), patch.object(
+                controller,
+                "validate_promoted_checkout",
+                return_value=validation,
+            ), patch.object(controller, "notify_terminal"), patch.object(
+                controller, "xadd_json"
+            ):
+                finish_done_job(
+                    settings,
+                    object(),
+                    job,
+                    {
+                        "action": "DONE",
+                        "reason": "worker validation passed",
+                        "history_summary": "complete in worktree",
+                    },
+                )
+
+            with db.transaction(database) as conn:
+                stored = db.get_job(conn, "J-promotion-validation")
+                kinds = [
+                    row["kind"]
+                    for row in conn.execute(
+                        "SELECT kind FROM events WHERE job_id = ? ORDER BY id",
+                        ("J-promotion-validation",),
+                    ).fetchall()
+                ]
+            self.assertEqual(stored["status"], "human_needed")
+            self.assertIn("promotion_validation_failed", kinds)
+            self.assertNotIn("done", kinds)
 
 
 class PromotionRollbackTests(unittest.TestCase):

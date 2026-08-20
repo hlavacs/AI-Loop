@@ -18,7 +18,7 @@ The main invariants are:
 5. A job/task state change is written before the corresponding external work proceeds.
 6. Expected token replenishment waits are visible and self-resuming, not human-needed failures.
 7. With authenticated mail enabled, job start, completion, and genuine unsolved blockers produce an email attempt and a durable notification event.
-8. Successful worktree promotion never overwrites conflicting local target-checkout edits.
+8. Successful worktree promotion never overwrites conflicting local target-checkout edits and must pass validation again from the target checkout before `done`.
 9. Machine-specific Python virtual environments are local runtime state and are never versioned.
 10. An emailed command is accepted only from the configured notification address and only for its identified job.
 
@@ -30,7 +30,7 @@ Creates a job. It validates role and granularity choices, detects the test comma
 
 ### `controller.py`
 
-Consumes `PLAN` and `REVIEW` requests. It selects the configured controller CLI, builds a schema-constrained prompt, validates the decision, stores work/time estimates, creates the next task, or terminates the job. On `DONE`, it promotes safe worktree changes to the original repository. It also handles controller token waits and terminal notification email.
+Consumes `PLAN` and `REVIEW` requests. It selects the configured controller CLI, builds a schema-constrained prompt, validates the decision, stores work/time estimates, creates the next task, or terminates the job. On `DONE`, it promotes safe worktree changes to the original repository and reruns the concrete validation command there before committing the terminal state. It also handles controller token waits and terminal notification email.
 
 ### `worker.py`
 
@@ -61,6 +61,10 @@ installation of a missing standard Codex, Claude, or Gemini executable.
 - `ai_loop/notifications.py`: startup SMTP/IMAP account checks and authenticated SMTP messages.
 - `ai_loop/status_updates.py`: durable 12-hour scheduling and job progress assembly.
 - `ai_loop/recovery.py`: one-at-a-time automatic repair attempt for internal controller/worker exceptions.
+- `ai_loop/specification_gui_support.py`: Tk-independent specification parsing, conversion, semantic feedback, examples, and suggestion analysis.
+- `ai_loop/verification_dashboard.py`: Tk-neutral dashboard projections and manual-verification acknowledgement persistence.
+- `ai_loop/gui_components.py`: reusable Tk widgets and GUI value objects.
+- `ai_loop/systemd_sandbox.py`: optional transient user-systemd confinement for hosts where Codex bubblewrap cannot start.
 
 ## Runtime bootstrap and shell entry points
 
@@ -70,15 +74,16 @@ platform-specific installed files.
 
 `ai_gui.bash` is the automatic GUI bootstrap path:
 
-1. Source `ai_loop_python.bash` and select a runnable Python 3.10 or newer.
-2. On macOS, avoid executing `/usr/bin/python3` when it is only the unavailable
+1. Before local bootstrap, delegate exclusively to `../start-ai-loop-with-email.bash` when that private parent launcher exists; its guarded callback continues locally without recursion.
+2. Source `ai_loop_python.bash` and select a runnable Python 3.10 or newer.
+3. On macOS, avoid executing `/usr/bin/python3` when it is only the unavailable
    Command Line Tools stub.
-3. Check Python, Tkinter, Git, and `redis-server`.
-4. Attempt missing system-package installation with Homebrew, `apt-get`, `dnf`,
+4. Check Python, Tkinter, Git, and `redis-server`.
+5. Attempt missing system-package installation with Homebrew, `apt-get`, `dnf`,
    or `pacman`.
-5. If the selected Python cannot import `redis`, create `.gui-venv`, install
+6. If the selected Python cannot import `redis`, create `.gui-venv`, install
    `redis-py`, and restart `ai_loop_gui.py` with that interpreter.
-6. If any automatic installation fails, print the underlying command error and
+7. If any automatic installation fails, print the underlying command error and
    the usual manual installation command.
 
 At GUI job creation, the selected standard provider executable is checked
@@ -96,9 +101,7 @@ The non-GUI launchers do not currently provide the same complete bootstrap:
   `ai_loop_python.bash` and require that interpreter to import `redis`.
 - `ai_check_job.bash`, `ai_print_log.bash`, `ai_clear_db.bash`,
   `ai_clear_log.bash`, and `ai_reset_loop.bash` invoke `python3` directly.
-- The shared selector considers `.venv` and installed Python commands, but not
-  the GUI-created `.gui-venv`. Therefore running the GUI does not currently
-  bootstrap the non-GUI scripts on a fresh clone.
+- The shared selector considers `.venv`, `.gui-venv`, and installed Python commands, so a GUI-created environment is also available to non-GUI launchers that source it.
 
 These differences are operational constraints, not intended data-model
 semantics. A future consolidation should make every Python-using script select

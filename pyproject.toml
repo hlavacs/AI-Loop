@@ -1,11 +1,22 @@
 [project]
 name = "ai-loop"
-version = "0.1.0"
+version = "1.0.0"
 description = "AI-Loop: autonomous multi-agent coding loop with GUI, watcher, and Redis-backed queues"
 requires-python = ">=3.10"
 dependencies = [
-    "redis",
+    "redis>=5,<9",
 ]
+
+[project.optional-dependencies]
+dev = [
+    "mypy>=1.11,<3",
+    "pytest>=8,<10",
+    "pytest-cov>=5,<8",
+    "ruff>=0.6,<1",
+]
+
+[tool.setuptools]
+packages = ["ai_loop"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

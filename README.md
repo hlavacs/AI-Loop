@@ -127,7 +127,8 @@ All settings are optional unless your environment needs an override.
 | `AI_LOOP_CONTROLLER_MODEL` | Optional default-Claude controller override | CLI default |
 | `AI_LOOP_CONTROLLER_ROLE_MODEL` | Model selected specifically for the controller process | provider model above |
 | `AI_LOOP_WORKER_ROLE_MODEL` | Model selected specifically for the worker process | provider model above |
-| `CODEX_BYPASS_SANDBOX` | Allow unrestricted worker execution | false everywhere; set `1` to opt in |
+| `CODEX_BYPASS_SANDBOX` | Disable the Codex-native sandbox (dangerous unless externally confined) | false everywhere; set `1` only with an equivalent host boundary |
+| `AI_LOOP_CODEX_SYSTEMD_SANDBOX` | Confine bypassed Codex in a transient user systemd unit; host read-only, worktree writable | false; requires `CODEX_BYPASS_SANDBOX=1` and `systemd-run` |
 | `AI_LOOP_AUTO_RECOVER` | Let an unsandboxed repair agent edit AI-Loop itself after an internal crash | false; set `1` to opt in |
 | `AI_LOOP_NOTIFY_EMAIL` | Job-email recipient and only authorized reply sender | empty |
 | `AI_LOOP_SMTP_HOST` | SMTP server. Empty disables all email | empty |
@@ -205,8 +206,10 @@ chmod 700 ../start-ai-loop-with-email.bash
 Run it from the repository:
 
 ```bash
-../start-ai-loop-with-email.bash
+./ai_gui.bash
 ```
+
+`ai_gui.bash` checks its parent directory first. If `start-ai-loop-with-email.bash` exists there, it delegates to that script and does nothing else; the parent launcher calls back once with `AI_LOOP_PARENT_LAUNCHER_ACTIVE=1`, after which the local Python GUI starts. If no parent launcher exists, `ai_gui.bash` starts the GUI directly.
 
 The launcher asks only for the password. The input is hidden and exported only to the AI-Loop processes started by that script. `AI_LOOP_IMAP_PASSWORD` defaults to `AI_LOOP_SMTP_PASSWORD`, so a second secret is needed only when the accounts differ. The password is not written to the launcher or the job database. Keep the launcher outside the repository so its fixed account settings are not committed. Notification delivery failures are recorded as events and do not erase a successful job result.
 
@@ -474,7 +477,7 @@ Verify `REDIS_URL`, run `redis-cli ping`, or use the GUI `Start Redis` button fo
 
 ### Promotion failed
 
-Successful worktree changes are copied back only if the target checkout has no conflicting local edits in those paths. Resolve the reported conflict manually, preserve both sides, and resume. AI-Loop never resets or discards the target repository to force promotion.
+Successful worktree changes are copied back only if the target checkout has no conflicting local edits in those paths. After copying, AI-Loop reruns the concrete job validation command from the target checkout; a failure produces `human_needed` instead of a false `done`. Resolve the reported conflict or validation failure manually, preserve both sides, and resume. AI-Loop never resets or discards the target repository to force promotion.
 
 ### GUI cannot start
 
@@ -489,7 +492,8 @@ use the command-line entry points.
 - New jobs create a pre-job snapshot commit when the target checkout is dirty, then copy that checkout overlay into the isolated worktree.
 - Workers are instructed not to commit or merge.
 - Successful promotion refuses paths with local target-checkout conflicts.
-- The worker sandbox is enabled by default for every launch path. `CODEX_BYPASS_SANDBOX=1` grants broad execution authority; use it only in a trusted environment.
+- The worker sandbox is enabled by default. If host policy prevents Codex bubblewrap from starting, combine `CODEX_BYPASS_SANDBOX=1` with `AI_LOOP_CODEX_SYSTEMD_SANDBOX=1`; Codex then runs ephemerally in a transient user systemd unit with read-only host access and only the job worktree writable. Never use the bypass alone outside a fully trusted environment.
+- A promoted worktree reaches `done` only after the job validation command passes again in the target checkout.
 - Automatic self-recovery (`AI_LOOP_AUTO_RECOVER=1`) lets an unsandboxed agent edit the AI-Loop source itself and is therefore disabled by default.
 - Mail passwords are stripped from the environment of worker/controller CLI subprocesses and of the job test command; only the AI-Loop processes that actually send or read mail keep them.
 - `ai_remove_worktrees.bash` deletes nothing without `--yes`, keeps worktrees that still contain uncommitted work unless `--force` is given, and supports `--dry-run`.

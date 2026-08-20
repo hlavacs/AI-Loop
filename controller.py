@@ -61,6 +61,8 @@ CLAUDE_TRANSIENT_RETRY_MAX_BACKOFF_SECONDS = float(
     os.getenv("AI_LOOP_CLAUDE_TRANSIENT_MAX_BACKOFF_SECONDS", "60")
 )
 PROMPT_ARG_LIMIT = 100000
+PROMOTION_VALIDATION_TIMEOUT_SECONDS = 7200
+PROMOTION_VALIDATION_OUTPUT_BYTES = 20000
 
 CLAUDE_TRANSIENT_FAILURE_PATTERNS = (
     "api error",
@@ -1492,6 +1494,66 @@ def promote_successful_worktree(
     }
 
 
+def validate_promoted_checkout(
+    job: Mapping[str, Any], promotion: Mapping[str, Any]
+) -> dict[str, Any]:
+    """Run the authoritative job validation after files land in the target.
+
+    Worktree validation cannot detect path-sensitive behavior in the target
+    checkout. A promoted job therefore reaches DONE only after the same test
+    command succeeds from the target repository.
+    """
+
+    if not bool(promotion.get("promoted")):
+        return {
+            "performed": False,
+            "passed": True,
+            "reason": "promotion did not copy files; worker validation already ran in the target checkout",
+        }
+    command = str(job.get("test_cmd") or "").strip()
+    if not command or command == "auto":
+        return {
+            "performed": True,
+            "passed": False,
+            "command": command,
+            "reason": "promoted checkout has no concrete validation command",
+        }
+    repo = Path(str(job["repo_path"])).resolve()
+    try:
+        result = run_bounded_process(
+            ["bash", "-lc", command],
+            cwd=repo,
+            timeout=PROMOTION_VALIDATION_TIMEOUT_SECONDS,
+            env=sanitized_child_env(),
+            max_output_bytes=PROMOTION_VALIDATION_OUTPUT_BYTES,
+        )
+    except Exception as exc:
+        return {
+            "performed": True,
+            "passed": False,
+            "command": command,
+            "cwd": str(repo),
+            "reason": f"could not start promoted-checkout validation: {exc}",
+        }
+    output = (result.stdout + "\n" + result.stderr).strip()
+    passed = result.returncode == 0 and not result.timed_out
+    return {
+        "performed": True,
+        "passed": passed,
+        "command": command,
+        "cwd": str(repo),
+        "returncode": result.returncode,
+        "timed_out": result.timed_out,
+        "output_truncated": result.output_truncated,
+        "output_tail": output[-PROMOTION_VALIDATION_OUTPUT_BYTES:],
+        "reason": (
+            "promoted-checkout validation passed"
+            if passed
+            else "promoted-checkout validation failed"
+        ),
+    }
+
+
 def create_next_task(settings, client, job: dict[str, Any], decision: dict[str, Any], created_by: str) -> str:
     next_task = decision["next_task"]
     task_id = timestamp_id("T")
@@ -1613,13 +1675,53 @@ def finish_done_job(settings, client, job: dict[str, Any], decision: dict[str, A
         finish_job(settings, client, job["id"], HUMAN_STREAM, "human_needed", human_decision)
         return
 
+    validation = validate_promoted_checkout(job, promotion)
+    if not validation["passed"]:
+        human_decision = {
+            "action": "HUMAN_NEEDED",
+            "reason": (
+                "job changes were promoted, but validation in the target repository failed: "
+                f"{validation.get('reason', 'unknown validation error')}"
+            ),
+            "history_summary": decision.get("history_summary", ""),
+        }
+        with db.transaction(settings.db_path) as conn:
+            db.add_event(
+                conn,
+                job_id=job["id"],
+                kind="promotion_completed",
+                payload=promotion,
+            )
+            db.add_event(
+                conn,
+                job_id=job["id"],
+                kind="promotion_validation_failed",
+                payload=validation,
+            )
+        finish_job(
+            settings,
+            client,
+            job["id"],
+            HUMAN_STREAM,
+            "human_needed",
+            human_decision,
+        )
+        return
+
     done_payload = {
         **terminal_payload(job["id"], decision),
         "promotion": promotion,
+        "promotion_validation": validation,
     }
     with db.transaction(settings.db_path) as conn:
         db.update_job_status(conn, job["id"], "done", decision.get("history_summary", ""))
         db.add_event(conn, job_id=job["id"], kind="promotion_completed", payload=promotion)
+        db.add_event(
+            conn,
+            job_id=job["id"],
+            kind="promotion_validation_completed",
+            payload=validation,
+        )
         db.add_event(conn, job_id=job["id"], kind="done", payload=done_payload)
     notify_terminal(settings, str(job["id"]), "done", str(decision["reason"]))
     xadd_json(client, DONE_STREAM, "event", done_payload)
