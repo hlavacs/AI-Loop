@@ -1500,6 +1500,7 @@ class AiLoopGui(tk.Tk):
         self._verification_last_loaded_job: str | None = None
         self._analysis_controller: ProjectAnalysisController | None = None
         self._analysis_member_class_id: str | None = None
+        self._analysis_members_collapsed = False
         self._analysis_tooltip_node_id: str | None = None
         self._analysis_running = False
         self._qa_running = False
@@ -2379,6 +2380,18 @@ class AiLoopGui(tk.Tk):
             ),
             "Clear the selected-class focus and display members of every class.",
         ).grid(row=0, column=2, padx=(8, 0), sticky="e")
+        self.analysis_member_toggle_button = self.help_widget(
+            ttk.Button(
+                call_graph_controls,
+                text="Classes only",
+                command=self._toggle_analysis_member_visibility,
+            ),
+            "Hide member boxes and show one arrow per calling class pair. "
+            "Use the button again to restore all members.",
+        )
+        self.analysis_member_toggle_button.grid(
+            row=0, column=3, padx=(8, 0), sticky="e"
+        )
         member_legend = ttk.Frame(call_graph_frame)
         member_legend.grid(row=1, column=0, sticky="ew", pady=(0, 4))
         for label, kind in (("Method", "method"), ("Data member", "data_member")):
@@ -2790,6 +2803,8 @@ class AiLoopGui(tk.Tk):
             return
         self._analysis_controller = controller
         self._analysis_member_class_id = None
+        self._analysis_members_collapsed = False
+        self._update_analysis_member_toggle_button()
         self.on_analysis_tree_leave()
         for item in self.analysis_tree.get_children(""):
             self.analysis_tree.delete(item)
@@ -2813,7 +2828,8 @@ class AiLoopGui(tk.Tk):
         if controller is None:
             return
         diagram = controller.member_graph_diagram(
-            selected_class_id=self._analysis_member_class_id
+            selected_class_id=self._analysis_member_class_id,
+            collapse_classes=getattr(self, "_analysis_members_collapsed", False),
         )
         self.analysis_call_summary_var.set(str(diagram.get("summary", "")))
         self._render_analysis_diagram(self.analysis_call_canvas, diagram)
@@ -2831,6 +2847,28 @@ class AiLoopGui(tk.Tk):
 
         self._analysis_member_class_id = None
         self._refresh_analysis_member_diagram()
+
+    def _toggle_analysis_member_visibility(self) -> None:
+        """Switch the member diagram between member panels and class boxes."""
+
+        self._analysis_members_collapsed = not getattr(
+            self, "_analysis_members_collapsed", False
+        )
+        self._update_analysis_member_toggle_button()
+        self._refresh_analysis_member_diagram()
+
+    def _update_analysis_member_toggle_button(self) -> None:
+        """Make the member visibility button describe its next action."""
+
+        button = getattr(self, "analysis_member_toggle_button", None)
+        if button is not None:
+            button.configure(
+                text=(
+                    "Show members"
+                    if getattr(self, "_analysis_members_collapsed", False)
+                    else "Classes only"
+                )
+            )
 
     def _render_analysis_diagram(
         self, canvas: tk.Canvas, diagram: dict[str, Any]

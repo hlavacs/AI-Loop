@@ -261,7 +261,8 @@ def test_analyze_project_resolves_cpp_object_pointer_and_chained_calls(
         ("this", "Engine", "finish"),
     }
 
-    diagram = ProjectAnalysisController(model).member_graph_diagram()
+    controller = ProjectAnalysisController(model)
+    diagram = controller.member_graph_diagram()
     nodes_by_label = {node["label"]: node for node in diagram["nodes"]}
     submit_edge = next(
         edge
@@ -278,6 +279,72 @@ def test_analyze_project_resolves_cpp_object_pointer_and_chained_calls(
             and edge["target"] == nodes_by_label["submit"]["id"]
         ]
     ) == 1
+
+    collapsed = controller.member_graph_diagram(collapse_classes=True)
+    collapsed_nodes = {node["label"]: node for node in collapsed["nodes"]}
+    expanded_groups = {group["label"]: group for group in diagram["groups"]}
+    assert collapsed["members_collapsed"] is True
+    assert collapsed["groups"] == []
+    assert set(collapsed_nodes) == {"Device", "Memory", "Engine"}
+    assert collapsed["edges"] == [
+        {
+            "source": collapsed_nodes["Engine"]["id"],
+            "target": collapsed_nodes["Device"]["id"],
+            "kind": "calls",
+            "call_count": 5,
+        }
+    ]
+    assert collapsed["collapsed_layout"] == "small_box_radial"
+    assert collapsed["width"] < diagram["width"]
+    assert collapsed["height"] < diagram["height"]
+    expanded_engine = expanded_groups["Engine"]
+    expanded_device = expanded_groups["Device"]
+    expanded_distance = (
+        (
+            expanded_engine["x"]
+            + expanded_engine["width"] / 2
+            - expanded_device["x"]
+            - expanded_device["width"] / 2
+        )
+        ** 2
+        + (
+            expanded_engine["y"]
+            + expanded_engine["height"] / 2
+            - expanded_device["y"]
+            - expanded_device["height"] / 2
+        )
+        ** 2
+    ) ** 0.5
+    collapsed_engine = collapsed_nodes["Engine"]
+    collapsed_device = collapsed_nodes["Device"]
+    collapsed_distance = (
+        (
+            collapsed_engine["x"]
+            + collapsed_engine["width"] / 2
+            - collapsed_device["x"]
+            - collapsed_device["width"] / 2
+        )
+        ** 2
+        + (
+            collapsed_engine["y"]
+            + collapsed_engine["height"] / 2
+            - collapsed_device["y"]
+            - collapsed_device["height"] / 2
+        )
+        ** 2
+    ) ** 0.5
+    assert collapsed_distance < expanded_distance
+    class_names = tuple(collapsed_nodes)
+    for index, first_name in enumerate(class_names):
+        first_node = collapsed_nodes[first_name]
+        for second_name in class_names[index + 1 :]:
+            second_node = collapsed_nodes[second_name]
+            assert (
+                first_node["x"] + first_node["width"] <= second_node["x"]
+                or second_node["x"] + second_node["width"] <= first_node["x"]
+                or first_node["y"] + first_node["height"] <= second_node["y"]
+                or second_node["y"] + second_node["height"] <= first_node["y"]
+            )
 
 
 def test_member_layout_clusters_dependency_connected_classes_in_a_ring(
@@ -307,7 +374,8 @@ def test_member_layout_clusters_dependency_connected_classes_in_a_ring(
         encoding="utf-8",
     )
 
-    diagram = ProjectAnalysisController(analyze_project(tmp_path)).member_graph_diagram()
+    controller = ProjectAnalysisController(analyze_project(tmp_path))
+    diagram = controller.member_graph_diagram()
     groups = {group["label"]: group for group in diagram["groups"]}
 
     assert diagram["layout"] == "dependency_radial"
@@ -351,6 +419,32 @@ def test_member_layout_clusters_dependency_connected_classes_in_a_ring(
         for center in centers.values()
     ]
     assert max(radii) - min(radii) <= 1
+
+    collapsed = controller.member_graph_diagram(collapse_classes=True)
+    collapsed_nodes = {node["label"]: node for node in collapsed["nodes"]}
+    ring_names = ("Left", "Right", "Hub")
+    expanded_ring_width = max(
+        groups[name]["x"] + groups[name]["width"] for name in ring_names
+    ) - min(groups[name]["x"] for name in ring_names)
+    expanded_ring_height = max(
+        groups[name]["y"] + groups[name]["height"] for name in ring_names
+    ) - min(groups[name]["y"] for name in ring_names)
+    collapsed_ring_width = max(
+        collapsed_nodes[name]["x"] + collapsed_nodes[name]["width"]
+        for name in ring_names
+    ) - min(collapsed_nodes[name]["x"] for name in ring_names)
+    collapsed_ring_height = max(
+        collapsed_nodes[name]["y"] + collapsed_nodes[name]["height"]
+        for name in ring_names
+    ) - min(collapsed_nodes[name]["y"] for name in ring_names)
+    assert collapsed_ring_width < expanded_ring_width
+    assert collapsed_ring_height < expanded_ring_height
+    assert min(
+        collapsed_nodes[name]["y"] for name in ("Idle", "Sleeping")
+    ) > max(
+        collapsed_nodes[name]["y"] + collapsed_nodes[name]["height"]
+        for name in ring_names
+    )
 
 
 def test_analyze_project_ignores_vcpkg_installed_by_default(tmp_path: Path) -> None:
@@ -1250,6 +1344,34 @@ def test_project_analysis_gui_class_selection_focuses_member_graph() -> None:
     assert refreshed == [widget.node_id, None]
     assert shown == [widget.node_id]
     assert gui._analysis_member_class_id is None
+
+
+def test_project_analysis_gui_toggles_member_visibility() -> None:
+    from ai_loop_gui import AiLoopGui
+
+    class FakeButton:
+        def __init__(self) -> None:
+            self.labels: list[str] = []
+
+        def configure(self, *, text: str) -> None:
+            self.labels.append(text)
+
+    gui = AiLoopGui.__new__(AiLoopGui)
+    gui._analysis_members_collapsed = False
+    gui.analysis_member_toggle_button = FakeButton()
+    refreshed: list[bool] = []
+    gui._refresh_analysis_member_diagram = lambda: refreshed.append(
+        gui._analysis_members_collapsed
+    )
+
+    gui._toggle_analysis_member_visibility()
+    gui._toggle_analysis_member_visibility()
+
+    assert refreshed == [True, False]
+    assert gui.analysis_member_toggle_button.labels == [
+        "Show members",
+        "Classes only",
+    ]
 
 
 def test_project_analysis_controller_orders_class_members_by_source(

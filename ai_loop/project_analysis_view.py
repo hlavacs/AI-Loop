@@ -515,13 +515,15 @@ def _dependency_components(
 
 
 def _circular_class_geometry(
-    group_ids: list[str], panels: dict[str, dict[str, Any]]
+    group_ids: list[str],
+    panels: dict[str, dict[str, Any]],
+    *,
+    class_gap: int = 120,
 ) -> dict[str, Any]:
     """Arrange every class with external calls on one non-overlapping ring."""
 
     if not group_ids:
         return {"positions": {}, "width": 0, "height": 0}
-    class_gap = 120
     positions: dict[str, tuple[int, int]] = {}
     if len(group_ids) == 1:
         group_id = group_ids[0]
@@ -849,15 +851,22 @@ class ProjectAnalysisController:
         *,
         include_unconnected: bool = True,
         selected_class_id: str | None = None,
+        collapse_classes: bool = False,
     ) -> dict[str, Any]:
         """Compatibility alias for :meth:`member_graph_diagram`."""
 
-        return self.member_graph_diagram(selected_class_id=selected_class_id)
+        return self.member_graph_diagram(
+            selected_class_id=selected_class_id,
+            collapse_classes=collapse_classes,
+        )
 
     def member_graph_diagram(
-        self, *, selected_class_id: str | None = None
+        self,
+        *,
+        selected_class_id: str | None = None,
+        collapse_classes: bool = False,
     ) -> dict[str, Any]:
-        """Return class panels containing data members, methods, and call edges."""
+        """Return expanded members or collapsed classes with their call edges."""
 
         nodes, node_ids, global_node_ids, groups = self._member_diagram_nodes()
         aggregated_edges: dict[
@@ -982,7 +991,195 @@ class ProjectAnalysisController:
                 f"{total_class_count} {self._plural(total_class_count, 'class')} "
                 f"and {edge_count} resolved {self._plural(edge_count, 'call')}."
             )
+        diagram["members_collapsed"] = False
+        if collapse_classes:
+            return self._collapse_member_classes(diagram)
         return diagram
+
+    @staticmethod
+    def _collapse_member_classes(diagram: dict[str, Any]) -> dict[str, Any]:
+        """Replace member panels with class boxes in a smaller equivalent layout."""
+
+        expanded_nodes = {
+            str(node["id"]): node for node in diagram.get("nodes", ())
+        }
+        member_groups = {
+            node_id: str(node.get("group", ""))
+            for node_id, node in expanded_nodes.items()
+        }
+        collapsed_nodes: list[dict[str, Any]] = []
+        node_width = 176
+        node_height = 72
+        for group in diagram.get("groups", ()):
+            group_width = int(group.get("width", node_width))
+            group_height = int(group.get("height", node_height))
+            collapsed_nodes.append(
+                {
+                    "id": str(group["id"]),
+                    "label": str(group["label"]),
+                    "kind": str(group.get("kind", "class")),
+                    "tree_node_id": str(
+                        group.get("tree_node_id", group["id"])
+                    ),
+                    "source_location": {
+                        "path": str(group.get("source_path", "")),
+                        "line": int(group.get("line", 1)),
+                        "end_line": int(group.get("end_line", 1)),
+                    },
+                    "description": str(group.get("description", "")),
+                    "subtitle": str(group.get("kind", "class")).replace(
+                        "_", " "
+                    ),
+                    "group": "",
+                    "x": int(group.get("x", 0))
+                    + (group_width - node_width) // 2,
+                    "y": int(group.get("y", 0))
+                    + (group_height - node_height) // 2,
+                    "width": node_width,
+                    "height": node_height,
+                }
+            )
+        layout_kind, collapsed_width, collapsed_height = (
+            ProjectAnalysisController._compact_collapsed_class_layout(
+                collapsed_nodes, list(diagram.get("groups", ()))
+            )
+        )
+
+        class_calls: dict[tuple[str, str], int] = {}
+        for edge in diagram.get("edges", ()):
+            source_group = member_groups.get(str(edge.get("source", "")))
+            target_group = member_groups.get(str(edge.get("target", "")))
+            if not source_group or not target_group or source_group == target_group:
+                continue
+            pair = (source_group, target_group)
+            try:
+                call_count = max(1, int(edge.get("call_count", 1)))
+            except (TypeError, ValueError):
+                call_count = 1
+            class_calls[pair] = class_calls.get(pair, 0) + call_count
+
+        collapsed_edges = []
+        for (source, target), call_count in class_calls.items():
+            collapsed_edge: dict[str, Any] = {
+                "source": source,
+                "target": target,
+                "kind": "calls",
+            }
+            if call_count > 1:
+                collapsed_edge["call_count"] = call_count
+            collapsed_edges.append(collapsed_edge)
+
+        collapsed = {
+            **diagram,
+            "nodes": collapsed_nodes,
+            "edges": collapsed_edges,
+            "groups": [],
+            "width": collapsed_width,
+            "height": collapsed_height,
+            "collapsed_layout": layout_kind,
+            "shown_member_count": 0,
+            "shown_class_count": len(collapsed_nodes),
+            "members_collapsed": True,
+        }
+        class_count = len(collapsed_nodes)
+        relationship_count = len(collapsed_edges)
+        collapsed["summary"] = (
+            f"Showing {class_count} "
+            f"{ProjectAnalysisController._plural(class_count, 'class')} and "
+            f"{relationship_count} cross-class call "
+            f"{ProjectAnalysisController._plural(relationship_count, 'relationship')}; "
+            "members hidden."
+        )
+        return collapsed
+
+    @staticmethod
+    def _compact_collapsed_class_layout(
+        nodes: list[dict[str, Any]], groups: list[dict[str, Any]]
+    ) -> tuple[str, int, int]:
+        """Relayout ring and compact classes using the small class boxes."""
+
+        margin = 32
+        if not nodes:
+            return "small_box_radial", margin * 2, margin * 2
+
+        nodes_by_id = {str(node["id"]): node for node in nodes}
+        groups_by_id = {str(group["id"]): group for group in groups}
+        external_ids = [
+            group_id
+            for group_id, group in groups_by_id.items()
+            if group.get("class_layout") == "external_call_ring"
+            and group_id in nodes_by_id
+        ]
+        if external_ids:
+            center_x = sum(
+                int(groups_by_id[group_id]["x"])
+                + int(groups_by_id[group_id]["width"]) / 2
+                for group_id in external_ids
+            ) / len(external_ids)
+            center_y = sum(
+                int(groups_by_id[group_id]["y"])
+                + int(groups_by_id[group_id]["height"]) / 2
+                for group_id in external_ids
+            ) / len(external_ids)
+            external_ids.sort(
+                key=lambda group_id: (
+                    math.atan2(
+                        int(groups_by_id[group_id]["y"])
+                        + int(groups_by_id[group_id]["height"]) / 2
+                        - center_y,
+                        int(groups_by_id[group_id]["x"])
+                        + int(groups_by_id[group_id]["width"]) / 2
+                        - center_x,
+                    )
+                    + math.pi / 2
+                )
+                % (2 * math.pi)
+            )
+        external_set = set(external_ids)
+        compact_ids = [
+            str(node["id"])
+            for node in nodes
+            if str(node["id"]) not in external_set
+        ]
+        panels = {
+            str(node["id"]): {
+                "width": int(node["width"]),
+                "height": int(node["height"]),
+            }
+            for node in nodes
+        }
+        external_geometry = _circular_class_geometry(
+            external_ids, panels, class_gap=28
+        )
+        compact_geometry = _compact_class_geometry(
+            compact_ids,
+            panels,
+            preferred_width=max(1, int(external_geometry["width"])),
+        )
+        compact_y = margin
+        if external_ids and compact_ids:
+            compact_y += int(external_geometry["height"]) + 60
+        for group_id, (x, y) in external_geometry["positions"].items():
+            nodes_by_id[group_id]["x"] = margin + x
+            nodes_by_id[group_id]["y"] = margin + y
+        for group_id, (x, y) in compact_geometry["positions"].items():
+            nodes_by_id[group_id]["x"] = margin + x
+            nodes_by_id[group_id]["y"] = compact_y + y
+
+        content_width = max(
+            int(external_geometry["width"]),
+            int(compact_geometry["width"]),
+            1,
+        )
+        content_height = int(external_geometry["height"])
+        if external_ids and compact_ids:
+            content_height += 60
+        content_height += int(compact_geometry["height"])
+        return (
+            "small_box_radial",
+            content_width + margin * 2,
+            content_height + margin * 2,
+        )
 
     def _member_diagram_nodes(
         self,
@@ -1009,12 +1206,27 @@ class ProjectAnalysisController:
                     or class_symbol.get("name")
                     or class_node.label
                 )
+                class_location = self.resolve_selection(class_node.node_id)
+                class_category = str(
+                    class_symbol.get("class_category")
+                    or (
+                        "struct"
+                        if class_symbol.get("kind") == "struct"
+                        else "class"
+                    )
+                )
                 groups.append(
                     {
                         "id": class_node.node_id,
                         "label": class_name,
                         "tree_node_id": class_node.node_id,
                         "description": class_node.description,
+                        "kind": class_category,
+                        "source_path": class_path,
+                        "line": class_location.line if class_location else 1,
+                        "end_line": (
+                            class_location.end_line if class_location else 1
+                        ),
                     }
                 )
                 method_names = tuple(map(str, class_symbol.get("methods", ())))
