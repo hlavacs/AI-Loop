@@ -2,8 +2,10 @@
 
 from __future__ import annotations
 
+import math
 import posixpath
 import re
+from collections.abc import Iterable
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -207,56 +209,105 @@ def _layout_grouped_diagram(
     edges: list[DiagramEdge],
     groups: list[dict[str, Any]],
 ) -> dict[str, Any]:
-    """Lay out member nodes inside visibly separated class panels."""
+    """Lay out members and classes according to their call dependencies.
 
-    node_width = 196
-    node_height = 72
-    # Calls are drawn between node boundaries. Keep enough clear space for a
-    # visible shaft and arrowhead even when the GUI is zoomed out to 40%.
-    node_gap = 40
-    panel_padding = 16
-    panel_header = 38
-    panel_gap = 50
-    margin = 28
-    panel_columns = min(3, max(1, _grid_columns(len(groups))))
-    panel_width = 2 * panel_padding + 2 * node_width + node_gap
+    Connected members occupy a ring in their class panel. Class panels linked
+    by cross-class calls form a larger circular cluster. Unconnected members
+    and class clusters use compact grids so large projects remain navigable.
+    """
+
+    margin = 32
+    cluster_gap = 120
     nodes_by_group: dict[str, list[dict[str, Any]]] = {}
     for node in nodes:
         nodes_by_group.setdefault(str(node.get("group", "")), []).append(node)
 
+    node_groups = {
+        str(node["id"]): str(node.get("group", "")) for node in nodes
+    }
+    node_degree = {str(node["id"]): 0 for node in nodes}
+    group_adjacency: dict[str, set[str]] = {
+        str(group["id"]): set() for group in groups
+    }
+    for edge in edges:
+        if edge.source in node_degree:
+            node_degree[edge.source] += 1
+        if edge.target in node_degree:
+            node_degree[edge.target] += 1
+        source_group = node_groups.get(edge.source)
+        target_group = node_groups.get(edge.target)
+        if source_group and target_group and source_group != target_group:
+            group_adjacency.setdefault(source_group, set()).add(target_group)
+            group_adjacency.setdefault(target_group, set()).add(source_group)
+
+    panels = {
+        str(group["id"]): _member_panel_geometry(
+            nodes_by_group.get(str(group["id"]), ()), node_degree
+        )
+        for group in groups
+    }
+    group_order = {str(group["id"]): index for index, group in enumerate(groups)}
+    components = _dependency_components(group_adjacency, group_order)
+    cluster_geometries = [
+        _class_cluster_geometry(component, panels, group_adjacency)
+        for component in components
+    ]
+
+    total_area = sum(
+        (cluster["width"] + cluster_gap) * (cluster["height"] + cluster_gap)
+        for cluster in cluster_geometries
+    )
+    row_limit = int(math.sqrt(max(1, total_area)) * 1.45)
+    row_limit = max(
+        row_limit,
+        max((int(cluster["width"]) for cluster in cluster_geometries), default=1),
+    )
+    cluster_origins: list[tuple[int, int]] = []
+    cursor_x = margin
+    cursor_y = margin
+    row_height = 0
+    used_width = margin
+    for cluster in cluster_geometries:
+        cluster_width = int(cluster["width"])
+        cluster_height = int(cluster["height"])
+        if cursor_x > margin and cursor_x + cluster_width > margin + row_limit:
+            cursor_x = margin
+            cursor_y += row_height + cluster_gap
+            row_height = 0
+        cluster_origins.append((cursor_x, cursor_y))
+        cursor_x += cluster_width + cluster_gap
+        row_height = max(row_height, cluster_height)
+        used_width = max(used_width, cursor_x - cluster_gap)
+
     laid_out: list[DiagramNode] = []
     laid_out_groups: list[dict[str, Any]] = []
-    current_y = margin
-    for row_start in range(0, len(groups), panel_columns):
-        row_groups = groups[row_start : row_start + panel_columns]
-        panel_heights = []
-        for group in row_groups:
-            member_count = len(nodes_by_group.get(str(group["id"]), ()))
-            member_rows = max(1, (member_count + 1) // 2)
-            panel_heights.append(
-                panel_header
-                + 2 * panel_padding
-                + member_rows * node_height
-                + (member_rows - 1) * node_gap
-            )
-        row_height = max(panel_heights, default=panel_header + 2 * panel_padding)
-        for column, (group, panel_height) in enumerate(
-            zip(row_groups, panel_heights)
-        ):
-            group_id = str(group["id"])
-            panel_x = margin + column * (panel_width + panel_gap)
-            laid_out_groups.append(
-                {
-                    **group,
-                    "x": panel_x,
-                    "y": current_y,
-                    "width": panel_width,
-                    "height": panel_height,
+    groups_by_id = {str(group["id"]): group for group in groups}
+    for cluster_index, (cluster, origin) in enumerate(
+        zip(cluster_geometries, cluster_origins)
+    ):
+        cluster_x, cluster_y = origin
+        for group_id, local_panel_position in cluster["positions"].items():
+            panel = panels[group_id]
+            panel_x = cluster_x + int(local_panel_position[0])
+            panel_y = cluster_y + int(local_panel_position[1])
+            dependency_area = panel.get("dependency_area")
+            laid_out_group = {
+                **groups_by_id[group_id],
+                "x": panel_x,
+                "y": panel_y,
+                "width": int(panel["width"]),
+                "height": int(panel["height"]),
+                "dependency_cluster": cluster_index,
+            }
+            if isinstance(dependency_area, dict):
+                laid_out_group["dependency_area"] = {
+                    **dependency_area,
+                    "x": panel_x + int(dependency_area["x"]),
+                    "y": panel_y + int(dependency_area["y"]),
                 }
-            )
-            for index, node in enumerate(nodes_by_group.get(group_id, ())):
-                node_column = index % 2
-                node_row = index // 2
+            laid_out_groups.append(laid_out_group)
+            for node in nodes_by_group.get(group_id, ()):
+                node_x, node_y = panel["positions"][str(node["id"])]
                 laid_out.append(
                     DiagramNode(
                         node_id=str(node["id"]),
@@ -269,28 +320,269 @@ def _layout_grouped_diagram(
                         description=str(node.get("description", "")),
                         subtitle=str(node.get("subtitle", "")),
                         group=group_id,
-                        x=panel_x + panel_padding + node_column * (
-                            node_width + node_gap
-                        ),
-                        y=current_y + panel_header + panel_padding + node_row * (
-                            node_height + node_gap
-                        ),
-                        width=node_width,
-                        height=node_height,
+                        x=panel_x + int(node_x),
+                        y=panel_y + int(node_y),
+                        width=196,
+                        height=72,
                     )
                 )
-        current_y += row_height + panel_gap
 
-    used_columns = min(panel_columns, max(1, len(groups)))
-    width = (
-        2 * margin
-        + used_columns * panel_width
-        + (used_columns - 1) * panel_gap
-    )
-    height = current_y - panel_gap + margin if groups else 2 * margin
+    height = cursor_y + row_height + margin if groups else 2 * margin
+    width = used_width + margin if groups else 2 * margin
     diagram = ProjectDiagram(tuple(laid_out), tuple(edges), width, height).as_dict()
     diagram["groups"] = laid_out_groups
+    diagram["layout"] = "dependency_radial"
     return diagram
+
+
+def _member_panel_geometry(
+    members: Iterable[dict[str, Any]], node_degree: dict[str, int]
+) -> dict[str, Any]:
+    """Return local geometry for a dynamically sized class-member panel."""
+
+    node_width = 196
+    node_height = 72
+    node_gap = 52
+    panel_padding = 24
+    panel_header = 44
+    members = list(members)
+    connected = sorted(
+        (member for member in members if node_degree.get(str(member["id"]), 0)),
+        key=lambda member: (
+            -node_degree.get(str(member["id"]), 0),
+            str(member.get("label", "")).casefold(),
+            str(member["id"]),
+        ),
+    )
+    unconnected = sorted(
+        (member for member in members if not node_degree.get(str(member["id"]), 0)),
+        key=lambda member: (
+            str(member.get("kind", "")),
+            str(member.get("label", "")).casefold(),
+            str(member["id"]),
+        ),
+    )
+
+    connected_count = len(connected)
+    radius = 0.0
+    if connected_count == 0:
+        connected_width = connected_height = 0
+    elif connected_count == 1:
+        connected_width, connected_height = node_width, node_height
+    elif connected_count == 2:
+        connected_width = 2 * node_width + node_gap
+        connected_height = node_height
+    else:
+        clearance = math.hypot(node_width + node_gap, node_height + node_gap)
+        satellite_count = connected_count - 1
+        radius = max(
+            clearance,
+            clearance / (2 * math.sin(math.pi / satellite_count)),
+        )
+        connected_width = math.ceil(2 * radius + node_width)
+        connected_height = math.ceil(2 * radius + node_height)
+
+    unconnected_columns = min(3, max(1, _grid_columns(len(unconnected))))
+    unconnected_rows = max(
+        1 if unconnected else 0,
+        (len(unconnected) + unconnected_columns - 1) // unconnected_columns,
+    )
+    unconnected_width = (
+        unconnected_columns * node_width
+        + max(0, unconnected_columns - 1) * node_gap
+        if unconnected
+        else 0
+    )
+    unconnected_height = (
+        unconnected_rows * node_height
+        + max(0, unconnected_rows - 1) * node_gap
+        if unconnected
+        else 0
+    )
+    content_width = max(node_width, connected_width, unconnected_width)
+    panel_width = content_width + 2 * panel_padding
+    connected_x = panel_padding + (content_width - connected_width) // 2
+    connected_y = panel_header + panel_padding
+    positions: dict[str, tuple[int, int]] = {}
+
+    if connected_count == 1:
+        positions[str(connected[0]["id"])] = (connected_x, connected_y)
+    elif connected_count == 2:
+        for index, member in enumerate(connected):
+            positions[str(member["id"])] = (
+                connected_x + index * (node_width + node_gap),
+                connected_y,
+            )
+    elif connected_count > 2:
+        center_x = connected_x + connected_width / 2
+        center_y = connected_y + connected_height / 2
+        positions[str(connected[0]["id"])] = (
+            round(center_x - node_width / 2),
+            round(center_y - node_height / 2),
+        )
+        satellites = connected[1:]
+        for index, member in enumerate(satellites):
+            angle = -math.pi / 2 + 2 * math.pi * index / len(satellites)
+            positions[str(member["id"])] = (
+                round(center_x + radius * math.cos(angle) - node_width / 2),
+                round(center_y + radius * math.sin(angle) - node_height / 2),
+            )
+
+    separation = node_gap if connected and unconnected else 0
+    unconnected_y = connected_y + connected_height + separation
+    unconnected_x = panel_padding + (content_width - unconnected_width) // 2
+    for index, member in enumerate(unconnected):
+        column = index % unconnected_columns
+        row = index // unconnected_columns
+        positions[str(member["id"])] = (
+            unconnected_x + column * (node_width + node_gap),
+            unconnected_y + row * (node_height + node_gap),
+        )
+
+    content_height = connected_height + separation + unconnected_height
+    panel_height = panel_header + 2 * panel_padding + max(node_height, content_height)
+    result: dict[str, Any] = {
+        "width": panel_width,
+        "height": panel_height,
+        "positions": positions,
+    }
+    if connected:
+        result["dependency_area"] = {
+            "x": connected_x - 12,
+            "y": connected_y - 12,
+            "width": connected_width + 24,
+            "height": connected_height + 24,
+            "member_count": connected_count,
+        }
+    return result
+
+
+def _dependency_components(
+    adjacency: dict[str, set[str]], order: dict[str, int]
+) -> list[list[str]]:
+    """Return stable, dependency-first connected components of class IDs."""
+
+    unvisited = set(adjacency)
+    components: list[list[str]] = []
+    while unvisited:
+        seed = min(unvisited, key=lambda group_id: order.get(group_id, 0))
+        pending = [seed]
+        component: set[str] = set()
+        while pending:
+            group_id = pending.pop()
+            if group_id in component:
+                continue
+            component.add(group_id)
+            pending.extend(adjacency.get(group_id, set()) - component)
+        unvisited -= component
+        start = max(
+            component,
+            key=lambda group_id: (
+                len(adjacency.get(group_id, ())),
+                -order.get(group_id, 0),
+            ),
+        )
+        arranged: list[str] = []
+        queue = [start]
+        queued = {start}
+        while queue:
+            group_id = queue.pop(0)
+            arranged.append(group_id)
+            neighbours = sorted(
+                adjacency.get(group_id, set()) & component - queued,
+                key=lambda item: (
+                    -len(adjacency.get(item, ())),
+                    order.get(item, 0),
+                ),
+            )
+            queue.extend(neighbours)
+            queued.update(neighbours)
+        arranged.extend(
+            sorted(component - set(arranged), key=lambda item: order.get(item, 0))
+        )
+        components.append(arranged)
+    return sorted(
+        components,
+        key=lambda component: (-len(component), min(order[item] for item in component)),
+    )
+
+
+def _class_cluster_geometry(
+    component: list[str],
+    panels: dict[str, dict[str, Any]],
+    adjacency: dict[str, set[str]],
+) -> dict[str, Any]:
+    """Arrange dependency-connected class panels around a shared ring."""
+
+    class_gap = 150
+    positions: dict[str, tuple[int, int]] = {}
+    if len(component) == 1:
+        group_id = component[0]
+        positions[group_id] = (0, 0)
+    elif len(component) == 2:
+        first, second = component
+        positions[first] = (0, 0)
+        positions[second] = (int(panels[first]["width"]) + class_gap, 0)
+    else:
+        hub = component[0]
+        satellites = component[1:]
+        max_width = max(int(panels[group_id]["width"]) for group_id in satellites)
+        max_height = max(int(panels[group_id]["height"]) for group_id in satellites)
+        satellite_clearance = math.hypot(
+            max_width + class_gap, max_height + class_gap
+        )
+        hub_clearance = math.hypot(
+            (int(panels[hub]["width"]) + max_width) / 2 + class_gap,
+            (int(panels[hub]["height"]) + max_height) / 2 + class_gap,
+        )
+        radius = max(
+            hub_clearance,
+            satellite_clearance
+            / (2 * math.sin(math.pi / len(satellites))),
+        )
+        center = radius + max(max_width, max_height) / 2
+        positions[hub] = (
+            round(center - int(panels[hub]["width"]) / 2),
+            round(center - int(panels[hub]["height"]) / 2),
+        )
+        for index, group_id in enumerate(satellites):
+            angle = -math.pi / 2 + 2 * math.pi * index / len(satellites)
+            positions[group_id] = (
+                round(
+                    center
+                    + radius * math.cos(angle)
+                    - int(panels[group_id]["width"]) / 2
+                ),
+                round(
+                    center
+                    + radius * math.sin(angle)
+                    - int(panels[group_id]["height"]) / 2
+                ),
+            )
+
+    minimum_x = min(position[0] for position in positions.values())
+    minimum_y = min(position[1] for position in positions.values())
+    normalized = {
+        group_id: (position[0] - minimum_x, position[1] - minimum_y)
+        for group_id, position in positions.items()
+    }
+    width = max(
+        x + int(panels[group_id]["width"])
+        for group_id, (x, _) in normalized.items()
+    )
+    height = max(
+        y + int(panels[group_id]["height"])
+        for group_id, (_, y) in normalized.items()
+    )
+    return {
+        "positions": normalized,
+        "width": width,
+        "height": height,
+        "edge_count": sum(
+            len(adjacency.get(group_id, ())) for group_id in component
+        )
+        // 2,
+    }
 
 
 class ProjectAnalysisController:
@@ -816,7 +1108,7 @@ class ProjectAnalysisController:
         )
 
     def _project_class_names(self) -> set[str]:
-        names = set()
+        names: set[str] = set()
         for file_model in self.model.get("files", ()):
             for class_symbol in file_model.get("classes", ()):
                 qualified_name = str(class_symbol.get("qualified_name") or "")

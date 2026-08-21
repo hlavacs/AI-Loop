@@ -172,17 +172,30 @@ def test_analyze_project_attributes_cpp_calls_between_methods_of_same_class(
         (nodes_by_label["run"]["id"], nodes_by_label["finish"]["id"]),
         (nodes_by_label["run"]["id"], nodes_by_label["cleanup"]["id"]),
     }
-    first_row = sorted(
-        (
-            node
-            for node in diagram["nodes"]
-            if node["y"] == nodes_by_label["run"]["y"]
-        ),
-        key=lambda node: node["x"],
-    )
-    assert first_row[1]["x"] - (
-        first_row[0]["x"] + first_row[0]["width"]
-    ) >= 40
+    assert diagram["layout"] == "dependency_radial"
+    assert len({node["y"] for node in diagram["nodes"]}) > 1
+    dependency_area = diagram["groups"][0]["dependency_area"]
+    assert dependency_area["member_count"] == 3
+    run = nodes_by_label["run"]
+    assert abs(
+        run["x"] + run["width"] / 2
+        - (dependency_area["x"] + dependency_area["width"] / 2)
+    ) <= 1
+    assert abs(
+        run["y"] + run["height"] / 2
+        - (dependency_area["y"] + dependency_area["height"] / 2)
+    ) <= 1
+    for index, first in enumerate(diagram["nodes"]):
+        for second in diagram["nodes"][index + 1 :]:
+            horizontally_separated = (
+                first["x"] + first["width"] <= second["x"]
+                or second["x"] + second["width"] <= first["x"]
+            )
+            vertically_separated = (
+                first["y"] + first["height"] <= second["y"]
+                or second["y"] + second["height"] <= first["y"]
+            )
+            assert horizontally_separated or vertically_separated
 
 
 def test_analyze_project_resolves_cpp_object_pointer_and_chained_calls(
@@ -265,6 +278,47 @@ def test_analyze_project_resolves_cpp_object_pointer_and_chained_calls(
             and edge["target"] == nodes_by_label["submit"]["id"]
         ]
     ) == 1
+
+
+def test_member_layout_clusters_dependency_connected_classes_in_a_ring(
+    tmp_path: Path,
+) -> None:
+    (tmp_path / "cluster.py").write_text(
+        "class Left:\n"
+        "    def receive(self) -> None:\n"
+        "        pass\n"
+        "\n"
+        "class Right:\n"
+        "    def receive(self) -> None:\n"
+        "        pass\n"
+        "\n"
+        "class Hub:\n"
+        "    def dispatch(self, left: Left, right: Right) -> None:\n"
+        "        left.receive()\n"
+        "        right.receive()\n",
+        encoding="utf-8",
+    )
+
+    diagram = ProjectAnalysisController(analyze_project(tmp_path)).member_graph_diagram()
+    groups = {group["label"]: group for group in diagram["groups"]}
+
+    assert diagram["layout"] == "dependency_radial"
+    assert {
+        groups["Left"]["dependency_cluster"],
+        groups["Right"]["dependency_cluster"],
+        groups["Hub"]["dependency_cluster"],
+    } == {0}
+    assert len({groups[name]["y"] for name in ("Left", "Right", "Hub")}) > 1
+    assert all("dependency_area" in group for group in groups.values())
+    centers = {
+        name: (
+            group["x"] + group["width"] / 2,
+            group["y"] + group["height"] / 2,
+        )
+        for name, group in groups.items()
+    }
+    assert abs(centers["Hub"][0] - (centers["Left"][0] + centers["Right"][0]) / 2) <= 1
+    assert abs(centers["Hub"][1] - (centers["Left"][1] + centers["Right"][1]) / 2) <= 1
 
 
 def test_analyze_project_ignores_vcpkg_installed_by_default(tmp_path: Path) -> None:

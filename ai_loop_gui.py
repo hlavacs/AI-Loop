@@ -2369,6 +2369,10 @@ class AiLoopGui(tk.Tk):
             member_legend,
             text="Arrow: caller → callee",
         ).pack(side="left", padx=(4, 0))
+        ttk.Label(
+            member_legend,
+            text=" · Dashed oval: connected calls; hub centered",
+        ).pack(side="left")
         call_graph_canvas_frame = ttk.Frame(call_graph_frame)
         call_graph_canvas_frame.grid(row=2, column=0, sticky="nsew")
         self.analysis_call_canvas = self._build_analysis_diagram_canvas(
@@ -2712,6 +2716,22 @@ class AiLoopGui(tk.Tk):
                 width=2,
                 tags=(group_tag,),
             )
+            dependency_area = group.get("dependency_area")
+            if isinstance(dependency_area, dict):
+                area_x = int(dependency_area.get("x", x))
+                area_y = int(dependency_area.get("y", y))
+                area_width = max(1, int(dependency_area.get("width", 1)))
+                area_height = max(1, int(dependency_area.get("height", 1)))
+                canvas.create_oval(
+                    area_x,
+                    area_y,
+                    area_x + area_width,
+                    area_y + area_height,
+                    outline="#74a6cf",
+                    width=2,
+                    dash=(7, 5),
+                    tags=(group_tag,),
+                )
             group_text = canvas.create_text(
                 x + 14,
                 y + 19,
@@ -2769,20 +2789,38 @@ class AiLoopGui(tk.Tk):
                 line_start_y = source_y + delta_y / source_scale
                 line_end_x = target_x - delta_x / target_scale
                 line_end_y = target_y - delta_y / target_scale
+                line_coordinates = (
+                    line_start_x,
+                    line_start_y,
+                    line_end_x,
+                    line_end_y,
+                )
+                edge_label_x = (line_start_x + line_end_x) / 2
+                edge_label_y = (line_start_y + line_end_y) / 2 - 9
+                smooth_edge = False
             else:
-                line_start_x = source_x
-                line_start_y = source_y
-                line_end_x = target_x
-                line_end_y = target_y
+                node_right = source_x + int(source["width"]) / 2
+                loop_reach = max(42, int(source["width"]) // 4)
+                line_coordinates = (
+                    node_right,
+                    source_y - 12,
+                    node_right + loop_reach,
+                    source_y - int(source["height"]),
+                    node_right + loop_reach,
+                    source_y + int(source["height"]),
+                    node_right,
+                    source_y + 12,
+                )
+                edge_label_x = node_right + loop_reach
+                edge_label_y = source_y - int(source["height"]) - 9
+                smooth_edge = True
             edge_line = canvas.create_line(
-                line_start_x,
-                line_start_y,
-                line_end_x,
-                line_end_y,
+                *line_coordinates,
                 arrow=tk.LAST,
                 width=2,
                 arrowshape=(10, 12, 5),
                 fill="#1f5f99",
+                smooth=smooth_edge,
             )
             canvas._analysis_edge_items.append(edge_line)
             if callee_method := str(edge.get("callee_method", "")):
@@ -2810,8 +2848,8 @@ class AiLoopGui(tk.Tk):
                         else method_name
                     )
                 edge_text = canvas.create_text(
-                    (line_start_x + line_end_x) / 2,
-                    (line_start_y + line_end_y) / 2 - 9,
+                    edge_label_x,
+                    edge_label_y,
                     text=edge_label,
                     fill="#40566e",
                     font=("TkDefaultFont", 8),
@@ -2889,7 +2927,18 @@ class AiLoopGui(tk.Tk):
 
         width = max(1, int(diagram.get("width", 1)))
         height = max(1, int(diagram.get("height", 1)))
-        canvas.configure(scrollregion=(0, 0, width, height))
+        bounds = canvas.bbox("all")
+        scrollregion = (
+            (
+                min(0, bounds[0]),
+                min(0, bounds[1]),
+                max(width, bounds[2]),
+                max(height, bounds[3]),
+            )
+            if bounds is not None
+            else (0, 0, width, height)
+        )
+        canvas.configure(scrollregion=scrollregion)
         canvas.xview_moveto(0)
         canvas.yview_moveto(0)
 
