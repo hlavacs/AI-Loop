@@ -2788,10 +2788,21 @@ class AiLoopGui(tk.Tk):
             if callee_method := str(edge.get("callee_method", "")):
                 method_name = callee_method.rsplit(".", 1)[-1].rsplit("::", 1)[-1]
                 call_line = edge.get("call_line")
+                try:
+                    call_count = max(1, int(edge.get("call_count", 1)))
+                except (TypeError, ValueError):
+                    call_count = 1
                 if source.get("kind") == target.get("kind") == "method":
-                    edge_label = (
-                        f"line {call_line}" if call_line is not None else "calls"
-                    )
+                    if call_count > 1:
+                        edge_label = f"{call_count} calls"
+                        if call_line is not None:
+                            edge_label += f" · first line {call_line}"
+                    else:
+                        edge_label = (
+                            f"line {call_line}"
+                            if call_line is not None
+                            else "calls"
+                        )
                 else:
                     edge_label = (
                         f"{method_name} · line {call_line}"

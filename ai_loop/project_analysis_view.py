@@ -86,6 +86,7 @@ class DiagramEdge:
     callee_method: str | None = None
     call_line: int | None = None
     callee_line: int | None = None
+    call_count: int = 1
 
     def as_dict(self) -> dict[str, Any]:
         result: dict[str, Any] = {
@@ -99,6 +100,8 @@ class DiagramEdge:
             result["call_line"] = self.call_line
         if self.callee_line is not None:
             result["callee_line"] = self.callee_line
+        if self.call_count > 1:
+            result["call_count"] = self.call_count
         return result
 
 
@@ -526,8 +529,9 @@ class ProjectAnalysisController:
         """Return class panels containing data members, methods, and call edges."""
 
         nodes, node_ids, global_node_ids, groups = self._member_diagram_nodes()
-        edges: list[DiagramEdge] = []
-        seen_edges: set[tuple[str, str, str, int]] = set()
+        aggregated_edges: dict[
+            tuple[str, str, str], dict[str, int]
+        ] = {}
         relationships = self.model.get("call_relationships", ())
         for relationship in (
             relationships if isinstance(relationships, (list, tuple)) else ()
@@ -558,20 +562,30 @@ class ProjectAnalysisController:
             callee_line = self._line_number(
                 relationship.get("callee_line"), call_line
             )
-            edge_key = (source, target, callee_method, call_line)
-            if edge_key in seen_edges:
-                continue
-            seen_edges.add(edge_key)
-            edges.append(
-                DiagramEdge(
-                    source,
-                    target,
-                    "calls",
-                    callee_method=callee_method,
-                    call_line=call_line,
-                    callee_line=callee_line,
-                )
+            edge_key = (source, target, callee_method)
+            aggregate = aggregated_edges.setdefault(
+                edge_key,
+                {
+                    "call_line": call_line,
+                    "callee_line": callee_line,
+                    "call_count": 0,
+                },
             )
+            aggregate["call_line"] = min(aggregate["call_line"], call_line)
+            aggregate["call_count"] += 1
+
+        edges = [
+            DiagramEdge(
+                source,
+                target,
+                "calls",
+                callee_method=callee_method,
+                call_line=aggregate["call_line"],
+                callee_line=aggregate["callee_line"],
+                call_count=aggregate["call_count"],
+            )
+            for (source, target, callee_method), aggregate in aggregated_edges.items()
+        ]
 
         total_member_count = len(nodes)
         total_class_count = len(groups)

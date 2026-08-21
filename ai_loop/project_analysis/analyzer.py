@@ -44,6 +44,7 @@ _IGNORED_DIRECTORIES = {
     "build",
     "dist",
     "node_modules",
+    "vcpkg_installed",
     "venv",
 }
 
@@ -813,7 +814,32 @@ _CPP_UNQUALIFIED_CALL_RE = re.compile(
     r"(?<![\w:.>])(?P<method>[A-Za-z_]\w*)\s*\("
 )
 _CPP_THIS_CALL_RE = re.compile(r"\bthis\s*->\s*(?P<method>[A-Za-z_]\w*)\s*\(")
+_CPP_MEMBER_CALL_RE = re.compile(
+    r"(?<![\w:])(?P<receiver>(?:this|[A-Za-z_]\w*)"
+    r"(?:(?:\s*\.\s*|\s*->\s*)[A-Za-z_]\w*)*)"
+    r"\s*(?:\.|->)\s*(?P<method>[A-Za-z_]\w*)\s*\("
+)
+_CPP_LOCAL_VARIABLE_RE = re.compile(
+    r"(?m)^[ \t]*(?P<type>"
+    r"(?:(?:const|volatile|static|constexpr|consteval|constinit|typename)\s+)*"
+    r"(?:[A-Za-z_]\w*::)*[A-Za-z_]\w*"
+    r"(?:\s*<[^;{}()\n]+>)?"
+    r"(?:\s+(?:const|volatile))?"
+    r"(?:\s*[*&]+)?)"
+    r"\s+(?P<name>[A-Za-z_]\w*)\s*(?=[=({;\[,]|$)"
+)
 _CPP_CONTROL_WORDS = {"catch", "for", "if", "return", "sizeof", "switch", "while"}
+_CPP_NON_TYPE_WORDS = _CPP_CONTROL_WORDS | {
+    "break",
+    "case",
+    "continue",
+    "co_return",
+    "delete",
+    "else",
+    "goto",
+    "new",
+    "throw",
+}
 
 
 def _cpp_is_templated_type(source: str, offset: int) -> bool:
@@ -945,9 +971,156 @@ def _cpp_base_name(base: str) -> str:
 
 
 def _cpp_parameters(parameters: str) -> list[str]:
+    """Split C++ parameters without splitting nested template arguments."""
+
     if not parameters.strip() or parameters.strip() == "void":
         return []
-    return [part.strip() for part in parameters.split(",") if part.strip()]
+    parts: list[str] = []
+    start = 0
+    depths = {"<": 0, "(": 0, "[": 0, "{": 0}
+    closing = {">": "<", ")": "(", "]": "[", "}": "{"}
+    for index, character in enumerate(parameters):
+        if character in depths:
+            depths[character] += 1
+        elif character in closing:
+            opening = closing[character]
+            depths[opening] = max(0, depths[opening] - 1)
+        elif character == "," and not any(depths.values()):
+            if part := parameters[start:index].strip():
+                parts.append(part)
+            start = index + 1
+    if part := parameters[start:].strip():
+        parts.append(part)
+    return parts
+
+
+def _cpp_without_default(declaration: str) -> str:
+    """Remove a top-level default value from a parameter declaration."""
+
+    depths = {"<": 0, "(": 0, "[": 0, "{": 0}
+    closing = {">": "<", ")": "(", "]": "[", "}": "{"}
+    for index, character in enumerate(declaration):
+        if character in depths:
+            depths[character] += 1
+        elif character in closing:
+            opening = closing[character]
+            depths[opening] = max(0, depths[opening] - 1)
+        elif character == "=" and not any(depths.values()):
+            return declaration[:index].rstrip()
+    return declaration.strip()
+
+
+def _cpp_parameter_types(parameters: str) -> dict[str, str]:
+    """Return named parameter types that can act as method receivers."""
+
+    result: dict[str, str] = {}
+    for parameter in _cpp_parameters(parameters):
+        declaration = _cpp_without_default(parameter)
+        declaration = re.sub(r"\[\[[^]]*]]", " ", declaration).strip()
+        if "(" in declaration or not declaration:
+            continue
+        match = re.fullmatch(
+            r"(?P<type>.+?)(?:\s+|(?<=[*&]))"
+            r"(?P<name>[A-Za-z_]\w*)\s*(?:\[[^]]*])?",
+            declaration,
+        )
+        if match is not None:
+            result[match.group("name")] = match.group("type").strip()
+    return result
+
+
+def _cpp_resolvable_type(type_name: str) -> str:
+    """Reduce common C++ declarator and smart-pointer syntax to a class name."""
+
+    value = " ".join(type_name.strip().split())
+    value = re.sub(r"^(?:(?:class|struct|typename)\s+)+", "", value)
+    value = re.sub(
+        r"^(?:(?:const|volatile|static|constexpr|mutable)\s+)+", "", value
+    )
+    value = re.sub(r"\s+(?:const|volatile)\s*$", "", value)
+    value = re.sub(r"\s*[*&]+\s*$", "", value).strip()
+    pointer_wrapper = re.fullmatch(
+        r"(?:std::)?(?:unique_ptr|shared_ptr|weak_ptr|optional|reference_wrapper)"
+        r"\s*<\s*(.+)\s*>",
+        value,
+    )
+    if pointer_wrapper is not None:
+        value = pointer_wrapper.group(1).strip()
+        value = re.sub(r"\s*[*&]+\s*$", "", value).strip()
+    return value
+
+
+def _cpp_local_variable_types(
+    source: str, body_start: int, body_end: int
+) -> dict[str, str]:
+    """Infer straightforward local declarations in a C++ function body."""
+
+    result: dict[str, str] = {}
+    for match in _CPP_LOCAL_VARIABLE_RE.finditer(source, body_start, body_end):
+        type_name = match.group("type").strip()
+        if type_name.split(None, 1)[0] in _CPP_NON_TYPE_WORDS:
+            continue
+        result[match.group("name")] = type_name
+    return result
+
+
+def _cpp_class_aliases(
+    classes: Iterable[dict[str, Any]],
+) -> dict[str, dict[str, Any] | None]:
+    """Build an ambiguity-aware lookup for classes in the current source file."""
+
+    aliases: dict[str, dict[str, Any] | None] = {}
+    for class_record in classes:
+        names = {
+            str(class_record.get("name") or ""),
+            str(class_record.get("qualified_name") or ""),
+        }
+        for name in names:
+            if not name:
+                continue
+            if name in aliases and aliases[name] is not class_record:
+                aliases[name] = None
+            else:
+                aliases[name] = class_record
+    return aliases
+
+
+def _cpp_receiver_type(
+    receiver: str,
+    owner: str,
+    variable_types: dict[str, str],
+    class_aliases: dict[str, dict[str, Any] | None],
+) -> str | None:
+    """Resolve ``object.member`` chains to the class receiving the final call."""
+
+    parts = re.split(r"\s*(?:\.|->)\s*", receiver)
+    if not parts:
+        return None
+    if parts[0] == "this":
+        current_type = owner
+    elif parts[0] in variable_types:
+        current_type = variable_types[parts[0]]
+    elif class_aliases.get(parts[0]) is not None:
+        current_type = parts[0]
+    else:
+        return None
+    current_type = _cpp_resolvable_type(current_type)
+    for member_name in parts[1:]:
+        class_record = class_aliases.get(current_type)
+        if class_record is None:
+            return None
+        member = next(
+            (
+                item
+                for item in class_record.get("data_members", ())
+                if isinstance(item, dict) and item.get("name") == member_name
+            ),
+            None,
+        )
+        if member is None or not member.get("type"):
+            return None
+        current_type = _cpp_resolvable_type(str(member["type"]))
+    return current_type or None
 
 
 def _cpp_qualified_call_sites(
@@ -970,12 +1143,53 @@ def _cpp_qualified_call_sites(
 
 
 def _cpp_method_call_sites(
-    source: str, body_start: int, body_end: int, owner: str
+    source: str,
+    body_start: int,
+    body_end: int,
+    owner: str,
+    parameters: str,
+    owner_record: dict[str, Any] | None,
+    classes: Iterable[dict[str, Any]],
 ) -> list[dict[str, Any]]:
-    """Collect qualified and same-class calls from one C++ method body."""
+    """Collect resolvable qualified, member, and same-class C++ calls."""
 
     sites = _cpp_qualified_call_sites(source, body_start, body_end)
     seen = {(int(site["line"]), str(site["name"])) for site in sites}
+    variable_types = {
+        str(member["name"]): str(member["type"])
+        for member in (owner_record or {}).get("data_members", ())
+        if isinstance(member, dict) and member.get("name") and member.get("type")
+    }
+    variable_types.update(_cpp_parameter_types(parameters))
+    variable_types.update(_cpp_local_variable_types(source, body_start, body_end))
+    class_aliases = _cpp_class_aliases(classes)
+
+    for match in _CPP_MEMBER_CALL_RE.finditer(source, body_start, body_end):
+        receiver = "".join(match.group("receiver").split())
+        method_name = match.group("method")
+        receiver_type = _cpp_receiver_type(
+            receiver, owner, variable_types, class_aliases
+        )
+        if receiver == "this":
+            receiver_type = owner
+        display_receiver = receiver_type or receiver
+        separator = "::" if receiver_type else "."
+        qualified_name = f"{display_receiver}{separator}{method_name}"
+        line = _line_number(source, match.start())
+        key = (line, qualified_name)
+        if key in seen:
+            continue
+        seen.add(key)
+        site = {
+            "name": qualified_name,
+            "method": method_name,
+            "receiver": receiver,
+            "line": line,
+        }
+        if receiver_type:
+            site["receiver_type"] = receiver_type
+        sites.append(site)
+
     for pattern in (_CPP_THIS_CALL_RE, _CPP_UNQUALIFIED_CALL_RE):
         for match in pattern.finditer(source, body_start, body_end):
             method_name = match.group("method")
@@ -1114,6 +1328,9 @@ def _analyze_cpp(source: str) -> dict[str, Any]:
                 continue
         explicit_owner = name.rsplit("::", 1)[0] if "::" in name else None
         owner = containing_class["name"] if containing_class else explicit_owner
+        owner_record = containing_class
+        if owner_record is None and owner:
+            owner_record = _cpp_class_aliases(classes).get(owner)
         is_constructor = bool(
             owner and simple_name.lstrip("~") == owner.rsplit("::", 1)[-1]
         )
@@ -1149,7 +1366,15 @@ def _analyze_cpp(source: str) -> dict[str, Any]:
             if closing is not None:
                 record["end_line"] = _line_number(cleaned, closing)
                 record["call_sites"] = (
-                    _cpp_method_call_sites(cleaned, body_start, closing, owner)
+                    _cpp_method_call_sites(
+                        cleaned,
+                        body_start,
+                        closing,
+                        owner,
+                        match.group("parameters"),
+                        owner_record,
+                        classes,
+                    )
                     if owner
                     else _cpp_qualified_call_sites(cleaned, body_start, closing)
                 )
@@ -1242,6 +1467,40 @@ def _project_call_relationships(
                     return matches[0]
         return None
 
+    def cpp_member_receiver_type(
+        receiver: str, caller: dict[str, Any], file_index: int
+    ) -> str | None:
+        """Resolve fields of a C++ caller, including fields declared in headers."""
+
+        parts = re.split(r"\s*(?:\.|->)\s*", receiver)
+        if not parts:
+            return None
+        current_class = caller
+        current_type = str(caller.get("name") or "")
+        if parts[0] in {"this", "self", "cls"}:
+            parts = parts[1:]
+        for index, member_name in enumerate(parts):
+            member = next(
+                (
+                    item
+                    for item in current_class["model"].get("data_members", ())
+                    if isinstance(item, dict)
+                    and item.get("name") == member_name
+                    and item.get("type")
+                ),
+                None,
+            )
+            if member is None:
+                return None
+            current_type = _cpp_resolvable_type(str(member["type"]))
+            next_class = resolve_class(current_type, file_index)
+            if next_class is None:
+                if index < len(parts) - 1:
+                    return None
+            else:
+                current_class = next_class
+        return current_type or None
+
     for file_index, file_model in enumerate(files):
         for function in file_model.get("functions", ()):
             if not isinstance(function, dict) or not function.get("owner"):
@@ -1279,6 +1538,15 @@ def _project_call_relationships(
                     or call_site.get("receiver")
                     or ""
                 )
+                if (
+                    file_model.get("language") == "cpp"
+                    and not call_site.get("receiver_type")
+                ):
+                    inferred_type = cpp_member_receiver_type(
+                        str(call_site.get("receiver") or ""), caller, file_index
+                    )
+                    if inferred_type:
+                        reference = inferred_type
                 if reference.startswith(("self.", "cls.")):
                     member_name = reference.split(".", 1)[1]
                     member = next(
@@ -1409,4 +1677,10 @@ def _class_reference_candidates(reference: str) -> list[str]:
         candidates = [
             part.strip() for part in reference.split("|") if part.strip() != "None"
         ] + candidates
+    cpp_type = _cpp_resolvable_type(reference)
+    candidates.append(cpp_type)
+    without_template = re.sub(r"\s*<.*>\s*$", "", cpp_type).strip()
+    candidates.append(without_template)
+    if "::" in without_template:
+        candidates.append(without_template.rsplit("::", 1)[-1])
     return list(dict.fromkeys(candidates))

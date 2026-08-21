@@ -185,6 +185,138 @@ def test_analyze_project_attributes_cpp_calls_between_methods_of_same_class(
     ) >= 40
 
 
+def test_analyze_project_resolves_cpp_object_pointer_and_chained_calls(
+    tmp_path: Path,
+) -> None:
+    (tmp_path / "engine.cpp").write_text(
+        "class Device {\n"
+        "public:\n"
+        "    void submit() {}\n"
+        "};\n"
+        "class Memory {\n"
+        "public:\n"
+        "    Device handle;\n"
+        "};\n"
+        "class Engine {\n"
+        "    Device ownedDevice;\n"
+        "    std::shared_ptr<Device> sharedDevice;\n"
+        "    Memory memory;\n"
+        "public:\n"
+        "    void run(Device& argument) {\n"
+        "        Device local;\n"
+        "        argument.submit();\n"
+        "        local.submit();\n"
+        "        ownedDevice.submit();\n"
+        "        sharedDevice->submit();\n"
+        "        memory.handle.submit();\n"
+        "        this->finish();\n"
+        "    }\n"
+        "    void finish() {}\n"
+        "};\n",
+        encoding="utf-8",
+    )
+
+    model = analyze_project(tmp_path)
+    relationships = [
+        relationship
+        for relationship in model["call_relationships"]
+        if relationship["caller_method"] == "Engine::run"
+    ]
+
+    assert sum(
+        relationship["callee_method"] == "Device::submit"
+        for relationship in relationships
+    ) == 5
+    assert sum(
+        relationship["callee_method"] == "Engine::finish"
+        for relationship in relationships
+    ) == 1
+    run = next(
+        function
+        for function in model["files"][0]["functions"]
+        if function["qualified_name"] == "Engine::run"
+    )
+    assert {
+        (site["receiver"], site.get("receiver_type"), site["method"])
+        for site in run["call_sites"]
+    } >= {
+        ("argument", "Device", "submit"),
+        ("local", "Device", "submit"),
+        ("ownedDevice", "Device", "submit"),
+        ("sharedDevice", "Device", "submit"),
+        ("memory.handle", "Device", "submit"),
+        ("this", "Engine", "finish"),
+    }
+
+    diagram = ProjectAnalysisController(model).member_graph_diagram()
+    nodes_by_label = {node["label"]: node for node in diagram["nodes"]}
+    submit_edge = next(
+        edge
+        for edge in diagram["edges"]
+        if edge["source"] == nodes_by_label["run"]["id"]
+        and edge["target"] == nodes_by_label["submit"]["id"]
+    )
+    assert submit_edge["call_count"] == 5
+    assert len(
+        [
+            edge
+            for edge in diagram["edges"]
+            if edge["source"] == nodes_by_label["run"]["id"]
+            and edge["target"] == nodes_by_label["submit"]["id"]
+        ]
+    ) == 1
+
+
+def test_analyze_project_ignores_vcpkg_installed_by_default(tmp_path: Path) -> None:
+    vendored = tmp_path / "vcpkg_installed" / "include"
+    vendored.mkdir(parents=True)
+    (vendored / "dependency.hpp").write_text(
+        "class VendoredDependency {};\n", encoding="utf-8"
+    )
+    (tmp_path / "project.cpp").write_text(
+        "class ProjectClass {};\n", encoding="utf-8"
+    )
+
+    model = analyze_project(tmp_path)
+
+    assert [file_model["path"] for file_model in model["files"]] == [
+        "project.cpp"
+    ]
+    assert model["file_count"] == 1
+
+
+def test_analyze_project_resolves_cpp_fields_declared_in_a_header(
+    tmp_path: Path,
+) -> None:
+    (tmp_path / "engine.hpp").write_text(
+        "class Device {\n"
+        "public:\n"
+        "    void submit();\n"
+        "};\n"
+        "class Engine {\n"
+        "    Device device;\n"
+        "public:\n"
+        "    void run();\n"
+        "};\n",
+        encoding="utf-8",
+    )
+    (tmp_path / "engine.cpp").write_text(
+        "void Device::submit() {}\n"
+        "void Engine::run() {\n"
+        "    device.submit();\n"
+        "}\n",
+        encoding="utf-8",
+    )
+
+    model = analyze_project(tmp_path)
+
+    assert any(
+        relationship["caller_method"] == "Engine::run"
+        and relationship["callee_method"] == "Device::submit"
+        for relationship in model["call_relationships"]
+    )
+
+
 def test_analyze_project_discovers_slots_destructured_and_augmented_members(
     tmp_path: Path,
 ) -> None:
