@@ -1014,6 +1014,7 @@ class SpecificationEditor:
         ) = None,
         on_implementation_started: Callable[[str], None] | None = None,
         on_close: Callable[[SpecificationEditor], None] | None = None,
+        embedded: bool = False,
     ) -> None:
         if tk is None or ttk is None or filedialog is None or messagebox is None:
             raise RuntimeError("Tkinter is not available; the formal editor cannot be opened")
@@ -1026,6 +1027,7 @@ class SpecificationEditor:
         self._implementation_work_factory = implementation_work_factory
         self._on_implementation_started = on_implementation_started
         self._on_close_callback = on_close
+        self._embedded = embedded
         self.snapshot: StoredSpecificationVersion | None = None
         self.suggested_choices: list[dict[str, Any]] = []
         self.record = document_to_record(
@@ -1038,11 +1040,12 @@ class SpecificationEditor:
         self.guidance_labels: dict[str, Any] = {}
         self._guidance_text: dict[str, str] = {}
 
-        self.window = tk.Toplevel(parent)
-        self.window.title("Formal Specification")
-        self.window.geometry("1120x820")
-        self.window.minsize(780, 560)
-        self.window.protocol("WM_DELETE_WINDOW", self.close)
+        self.window = parent if embedded else tk.Toplevel(parent)
+        if not embedded:
+            self.window.title("Formal Specification")
+            self.window.geometry("1120x820")
+            self.window.minsize(780, 560)
+            self.window.protocol("WM_DELETE_WINDOW", self.close)
         self.window.columnconfigure(0, weight=1)
         self.window.rowconfigure(1, weight=1)
 
@@ -1099,20 +1102,26 @@ class SpecificationEditor:
         self.test_specification_button.pack(side="left", padx=(6, 0))
         self.save_specification_button = ttk.Button(
             file_actions,
-            text="Save specification",
+            text="Save JSON",
             command=self.save_specification,
         )
         self.save_specification_button.pack(side="left", padx=(6, 0))
         self.load_specification_button = ttk.Button(
             file_actions,
-            text="Load specification",
+            text="Load JSON",
             command=self.load_specification,
         )
         self.load_specification_button.pack(side="left", padx=(6, 0))
         self.status_var = tk.StringVar(value="New unsaved draft")
-        ttk.Label(header, textvariable=self.status_var).grid(
+        self.status_label = ttk.Label(
+            header,
+            textvariable=self.status_var,
+            justify="left",
+        )
+        self.status_label.grid(
             row=2, column=0, columnspan=3, sticky="w", pady=(7, 0)
         )
+        self._bind_responsive_wrap(self.status_label, header, margin=20)
         process_frame = ttk.LabelFrame(header, text="From specification to DONE", padding=7)
         process_frame.grid(
             row=3, column=0, columnspan=3, sticky="ew", pady=(8, 0)
@@ -1125,11 +1134,15 @@ class SpecificationEditor:
             justify="left",
         )
         self.process_overview_label.grid(row=0, column=0, sticky="ew")
+        self._bind_responsive_wrap(
+            self.process_overview_label, process_frame, margin=20
+        )
 
     def _build_tabs(self) -> None:
         self.notebook = ttk.Notebook(self.window)
         self.notebook.grid(row=1, column=0, sticky="nsew", padx=10)
         self.tabs: dict[str, Any] = {}
+        self._stage_scroll_canvases: dict[str, Any] = {}
         for stage in EDITOR_STAGES:
             frame = ttk.Frame(self.notebook, padding=10)
             frame.columnconfigure(0, weight=1)
@@ -1149,6 +1162,60 @@ class SpecificationEditor:
         self._build_choices_tab()
         self._build_review_tab()
 
+    @staticmethod
+    def _responsive_wraplength(
+        width: int, *, margin: int = 0, maximum: int = 1040
+    ) -> int:
+        """Return a readable label width that never exceeds its container."""
+
+        return max(120, min(maximum, max(1, width - margin)))
+
+    def _bind_responsive_wrap(
+        self,
+        label: Any,
+        container: Any,
+        *,
+        margin: int = 0,
+        maximum: int = 1040,
+    ) -> None:
+        """Keep a wrapping label fully visible when its tab is resized."""
+
+        container.bind(
+            "<Configure>",
+            lambda event: label.configure(
+                wraplength=self._responsive_wraplength(
+                    int(event.width), margin=margin, maximum=maximum
+                )
+            ),
+            add="+",
+        )
+
+    def _scrollable_stage_body(self, stage: str) -> Any:
+        """Return a full-width vertically scrollable body for a form stage."""
+
+        tab = self.tabs[stage]
+        tab.columnconfigure(0, weight=1)
+        tab.rowconfigure(0, weight=1)
+        canvas = tk.Canvas(tab, highlightthickness=0)
+        vertical = ttk.Scrollbar(tab, orient="vertical", command=canvas.yview)
+        canvas.configure(yscrollcommand=vertical.set)
+        canvas.grid(row=0, column=0, sticky="nsew")
+        vertical.grid(row=0, column=1, sticky="ns")
+        body = ttk.Frame(canvas, padding=(0, 0, 8, 0))
+        body_id = canvas.create_window((0, 0), window=body, anchor="nw")
+        body.bind(
+            "<Configure>",
+            lambda _event: canvas.configure(scrollregion=canvas.bbox("all")),
+            add="+",
+        )
+        canvas.bind(
+            "<Configure>",
+            lambda event: canvas.itemconfigure(body_id, width=max(1, event.width)),
+            add="+",
+        )
+        self._stage_scroll_canvases[stage] = canvas
+        return body
+
     def _field_label(self, parent: Any, row: int, key: str, label: str) -> None:
         label_frame = ttk.Frame(parent)
         label_frame.grid(row=row, column=0, sticky="new", padx=(0, 12), pady=4)
@@ -1160,6 +1227,9 @@ class SpecificationEditor:
             justify="left",
         )
         guidance.pack(anchor="w", pady=(2, 0))
+        self._bind_responsive_wrap(
+            guidance, label_frame, margin=4, maximum=260
+        )
         self.guidance_labels[key] = guidance
         self._guidance_text[key] = _field_guidance(key)
 
@@ -1173,13 +1243,20 @@ class SpecificationEditor:
         height: int = 4,
     ) -> Any:
         self._field_label(parent, row, key, label)
-        widget = tk.Text(parent, height=height, wrap="word")
-        widget.grid(row=row, column=1, sticky="nsew", pady=4)
+        holder = ttk.Frame(parent)
+        holder.grid(row=row, column=1, sticky="nsew", pady=4)
+        holder.columnconfigure(0, weight=1)
+        holder.rowconfigure(0, weight=1)
+        widget = tk.Text(holder, height=height, wrap="word")
+        vertical = ttk.Scrollbar(holder, orient="vertical", command=widget.yview)
+        widget.configure(yscrollcommand=vertical.set)
+        widget.grid(row=0, column=0, sticky="nsew")
+        vertical.grid(row=0, column=1, sticky="ns")
         parent.rowconfigure(row, weight=1)
         return widget
 
     def _build_overview_tab(self) -> None:
-        tab = self.tabs["Overview"]
+        tab = self._scrollable_stage_body("Overview")
         tab.columnconfigure(1, weight=1)
         self._field_label(tab, 0, "title", "Title")
         self.title_var = tk.StringVar()
@@ -1193,7 +1270,7 @@ class SpecificationEditor:
         )
 
     def _build_scope_tab(self) -> None:
-        tab = self.tabs["Scope"]
+        tab = self._scrollable_stage_body("Scope")
         tab.columnconfigure(1, weight=1)
         self.scope_widgets: dict[str, Any] = {}
         for row, (key, label) in enumerate(
@@ -1226,6 +1303,7 @@ class SpecificationEditor:
             justify="left",
         )
         guidance.grid(row=0, column=0, sticky="ew", pady=(0, 8))
+        self._bind_responsive_wrap(guidance, tab, margin=20)
         self.guidance_labels[key] = guidance
         self._guidance_text[key] = _field_guidance(key)
         table_frame = ttk.Frame(tab)
@@ -1270,6 +1348,7 @@ class SpecificationEditor:
             justify="left",
         )
         choices_guidance.grid(row=0, column=0, sticky="ew", pady=(0, 8))
+        self._bind_responsive_wrap(choices_guidance, tab, margin=20)
         self.guidance_labels["decisions"] = choices_guidance
         self.guidance_labels["open_questions"] = choices_guidance
         self._guidance_text["decisions"] = _field_guidance("decisions")
@@ -1299,8 +1378,17 @@ class SpecificationEditor:
         suggested = ttk.LabelFrame(lower, text="Suggested choices", padding=6)
         lower.add(questions, weight=1)
         lower.add(suggested, weight=2)
+        questions.columnconfigure(0, weight=1)
+        questions.rowconfigure(0, weight=1)
         self.open_questions_text = tk.Text(questions, height=7, wrap="word")
-        self.open_questions_text.pack(fill="both", expand=True)
+        questions_scrollbar = ttk.Scrollbar(
+            questions, orient="vertical", command=self.open_questions_text.yview
+        )
+        self.open_questions_text.configure(
+            yscrollcommand=questions_scrollbar.set
+        )
+        self.open_questions_text.grid(row=0, column=0, sticky="nsew")
+        questions_scrollbar.grid(row=0, column=1, sticky="ns")
         suggested.columnconfigure(0, weight=1)
         suggested.rowconfigure(0, weight=1)
         self.suggested_tree = ttk.Treeview(
@@ -1320,16 +1408,19 @@ class SpecificationEditor:
             suggested, text="Resolve selected choice", command=self._resolve_selected_choice
         )
         self.resolve_button.grid(row=1, column=0, sticky="w", pady=(6, 0))
-        ttk.Label(
+        suggested_help = ttk.Label(
             suggested,
             text="Analyze a clean stored draft to discover additional unresolved choices.",
-        ).grid(row=2, column=0, sticky="w", pady=(5, 0))
+            justify="left",
+        )
+        suggested_help.grid(row=2, column=0, sticky="ew", pady=(5, 0))
+        self._bind_responsive_wrap(suggested_help, suggested, margin=12)
 
     def _build_review_tab(self) -> None:
         tab = self.tabs["Review"]
         tab.rowconfigure(0, weight=0)
         tab.rowconfigure(1, weight=1)
-        ttk.Label(
+        review_guidance = ttk.Label(
             tab,
             text=(
                 "Review lists structural and approval issues by owning stage. Resolve each issue, "
@@ -1338,7 +1429,9 @@ class SpecificationEditor:
             ),
             wraplength=1000,
             justify="left",
-        ).grid(row=0, column=0, sticky="ew", pady=(0, 8))
+        )
+        review_guidance.grid(row=0, column=0, sticky="ew", pady=(0, 8))
+        self._bind_responsive_wrap(review_guidance, tab, margin=20)
         self.review_tree = ttk.Treeview(
             tab,
             columns=("owning_stage", "path", "severity", "message"),
@@ -1360,31 +1453,45 @@ class SpecificationEditor:
     def _build_actions(self) -> None:
         footer = ttk.Frame(self.window, padding=10)
         footer.grid(row=2, column=0, sticky="ew")
+        footer.columnconfigure(0, weight=1)
         self.deferred_var = tk.StringVar(
             value=(
                 "Approve the specification to enable implementation. Starting compiles and "
                 "pins this exact version before the controller plans any work."
             )
         )
-        ttk.Label(footer, textvariable=self.deferred_var).pack(side="left")
-        self.close_button = ttk.Button(footer, text="Close", command=self.close)
-        self.close_button.pack(side="right")
-        self.start_button = ttk.Button(
+        deferred_label = ttk.Label(
             footer,
+            textvariable=self.deferred_var,
+            justify="left",
+        )
+        deferred_label.grid(row=0, column=0, sticky="ew", pady=(0, 6))
+        self._bind_responsive_wrap(deferred_label, footer, margin=20)
+        actions = ttk.Frame(footer)
+        actions.grid(row=1, column=0, sticky="e")
+        self.close_button = ttk.Button(actions, text="Close", command=self.close)
+        if not self._embedded:
+            self.close_button.pack(side="right")
+        self.start_button = ttk.Button(
+            actions,
             text="Start Implementation",
             command=self.start_implementation,
             state="disabled",
         )
         self.start_button.pack(side="right", padx=(0, 6))
-        self.approve_button = ttk.Button(footer, text="Approve", command=self.approve)
+        self.approve_button = ttk.Button(actions, text="Approve", command=self.approve)
         self.approve_button.pack(side="right", padx=(0, 6))
-        self.return_button = ttk.Button(footer, text="Return to Draft", command=self.return_to_draft)
+        self.return_button = ttk.Button(
+            actions, text="Return to Draft", command=self.return_to_draft
+        )
         self.return_button.pack(side="right", padx=(0, 6))
-        self.submit_button = ttk.Button(footer, text="Submit for Review", command=self.submit_for_review)
+        self.submit_button = ttk.Button(
+            actions, text="Submit for Review", command=self.submit_for_review
+        )
         self.submit_button.pack(side="right", padx=(0, 6))
-        self.analyze_button = ttk.Button(footer, text="Analyze", command=self.analyze)
+        self.analyze_button = ttk.Button(actions, text="Analyze", command=self.analyze)
         self.analyze_button.pack(side="right", padx=(0, 6))
-        self.save_button = ttk.Button(footer, text="Save Draft", command=self.save_draft)
+        self.save_button = ttk.Button(actions, text="Save Draft", command=self.save_draft)
         self.save_button.pack(side="right", padx=(0, 6))
         self.action_buttons = (
             self.save_button,
@@ -1779,7 +1886,7 @@ class SpecificationEditor:
 
         selected = filedialog.asksaveasfilename(
             parent=self.window,
-            title="Save specification",
+            title="Save specification JSON",
             defaultextension=".json",
             filetypes=(("JSON files", "*.json"), ("All files", "*")),
             initialfile="specification.json",
@@ -1804,7 +1911,7 @@ class SpecificationEditor:
 
         selected = filedialog.askopenfilename(
             parent=self.window,
-            title="Load specification",
+            title="Load specification JSON",
             filetypes=(("JSON files", "*.json"), ("All files", "*")),
         )
         if not selected:
@@ -2220,7 +2327,8 @@ class SpecificationEditor:
                 parent=self.window,
             )
             return
-        self.window.destroy()
+        if not self._embedded:
+            self.window.destroy()
         if self._on_close_callback is not None:
             self._on_close_callback(self)
 
@@ -2239,8 +2347,9 @@ def open_specification_editor(
     ) = None,
     on_implementation_started: Callable[[str], None] | None = None,
     on_close: Callable[[SpecificationEditor], None] | None = None,
+    embedded: bool = False,
 ) -> SpecificationEditor:
-    """Open and return a formal editor initialized from the Quick Goal fields."""
+    """Open or embed a formal editor initialized from the Quick Goal fields."""
 
     return SpecificationEditor(
         parent,
@@ -2253,6 +2362,7 @@ def open_specification_editor(
         implementation_work_factory=implementation_work_factory,
         on_implementation_started=on_implementation_started,
         on_close=on_close,
+        embedded=embedded,
     )
 
 

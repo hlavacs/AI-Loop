@@ -132,6 +132,11 @@ from ai_loop.project_analysis_view import (
     add_project_analysis_exclusion,
     remove_project_analysis_exclusion,
 )
+from ai_loop.project_qa import (
+    AvailableLlm,
+    ask_project_question,
+    discover_available_llms,
+)
 from ai_loop.systemd_sandbox import wrap_with_systemd_sandbox
 from ai_loop.specifications import SpecificationService, StoredSpecificationVersion
 from ai_loop.verification_orchestrator import (
@@ -1487,7 +1492,8 @@ class AiLoopGui(tk.Tk):
         # removes it. Read by on_close (warn before killing daemon threads
         # mid-destructive-work) and _exclusive_conflict.
         self._active_operations: set[str] = set()
-        self._specification_editors: set[Any] = set()
+        self._embedded_specification_editor: Any | None = None
+        self._specification_tab_loading = False
         self._verification_load_running = False
         self._verification_request_serial = 0
         self._verification_last_loaded_at = 0.0
@@ -1496,6 +1502,9 @@ class AiLoopGui(tk.Tk):
         self._analysis_member_class_id: str | None = None
         self._analysis_tooltip_node_id: str | None = None
         self._analysis_running = False
+        self._qa_running = False
+        self._qa_history: list[tuple[str, str]] = []
+        self._qa_llms_by_label: dict[str, AvailableLlm] = {}
         self._redis_sampler_inflight = False
         self.watch_job_id: str | None = None
         self.last_status_by_job: dict[str, str] = {}
@@ -1558,7 +1567,9 @@ class AiLoopGui(tk.Tk):
     _MAINTENANCE_OPERATIONS = frozenset({"Reset Loop", "Clear Worktrees", "Full Reset"})
     # Harmless operations that never participate in cross-exclusion (they are
     # still tracked in _active_operations so on_close can name them).
-    _NON_EXCLUSIVE_OPERATIONS = frozenset({"Start Redis", "Hibernation change"})
+    _NON_EXCLUSIVE_OPERATIONS = frozenset(
+        {"Start Redis", "Hibernation change", "AI-Loop Q&A"}
+    )
 
     def _exclusive_conflict(self, kind: str) -> str | None:
         """Return the label of a running operation that forbids starting an
@@ -1717,10 +1728,20 @@ class AiLoopGui(tk.Tk):
 
         workspace = ttk.Notebook(self)
         workspace.grid(row=1, column=0, sticky="nsew")
+        self.workspace = workspace
         dashboard = ttk.Frame(workspace)
+        specification_tab = ttk.Frame(workspace)
         analysis_tab = ttk.Frame(workspace, padding=8)
+        qa_tab = ttk.Frame(workspace, padding=8)
         workspace.add(dashboard, text="Jobs")
+        workspace.add(specification_tab, text="Specification")
         workspace.add(analysis_tab, text="Project Analysis")
+        workspace.add(qa_tab, text="Ask AI-Loop")
+        self.specification_tab = specification_tab
+        self.qa_tab = qa_tab
+        workspace.bind(
+            "<<NotebookTabChanged>>", self._on_workspace_tab_changed, add="+"
+        )
         dashboard.rowconfigure(0, weight=1)
         dashboard.columnconfigure(0, weight=1)
 
@@ -1746,7 +1767,361 @@ class AiLoopGui(tk.Tk):
         self._build_create_frame(left)
         self._build_jobs_frame(left)
         self._build_detail_frame(right)
+        self._build_specification_tab(specification_tab)
         self._build_project_analysis_frame(analysis_tab)
+        self._build_ai_loop_qa_tab(qa_tab)
+
+    def _build_specification_tab(self, parent: ttk.Frame) -> None:
+        """Build a lazy host for the staged specification workflow."""
+
+        parent.columnconfigure(0, weight=1)
+        parent.rowconfigure(1, weight=1)
+        self.specification_tab_status_var = tk.StringVar(
+            value=(
+                "Open this tab to edit, validate, save, load, review, and approve "
+                "formal specifications."
+            )
+        )
+        ttk.Label(
+            parent,
+            textvariable=self.specification_tab_status_var,
+            anchor="w",
+            padding=12,
+        ).grid(row=0, column=0, sticky="ew")
+        self.specification_editor_host = ttk.Frame(parent)
+        self.specification_editor_host.grid(row=1, column=0, sticky="nsew")
+        self.specification_editor_host.columnconfigure(0, weight=1)
+        self.specification_tab_open_button = self.help_widget(
+            ttk.Button(
+                self.specification_editor_host,
+                text="Open Specification Workflow",
+                command=self._ensure_specification_tab_editor,
+            ),
+            "Initialize the staged editor using the current Quick Job repository and goal.",
+        )
+        self.specification_tab_open_button.grid(
+            row=0, column=0, pady=24, sticky="n"
+        )
+
+    def _on_workspace_tab_changed(self, _event: tk.Event | None = None) -> None:
+        selected = self.workspace.select()
+        if selected == str(self.specification_tab):
+            self._ensure_specification_tab_editor()
+        elif selected == str(self.qa_tab):
+            self.refresh_qa_llms()
+
+    def _ensure_specification_tab_editor(self) -> None:
+        """Initialize the embedded specification editor once, on demand."""
+
+        if self._embedded_specification_editor is not None or self._specification_tab_loading:
+            return
+        try:
+            repository = Path(self.repo_var.get()).expanduser().resolve()
+            goal = self.goal_text.get("1.0", "end-1c")
+        except Exception as exc:
+            messagebox.showerror("Formal Specification", str(exc))
+            return
+        if not repository.is_dir():
+            messagebox.showerror(
+                "Formal Specification", "Choose an existing repository directory first."
+            )
+            return
+        self._specification_tab_loading = True
+        self.specification_tab_open_button.configure(state="disabled")
+        self.specification_tab_status_var.set("Opening specification workflow…")
+        self._run_bg(
+            lambda: SpecificationService(self.backend.settings.db_path),
+            lambda service, error: self._finish_embedded_specification_editor(
+                service, error, repository=repository, goal=goal
+            ),
+            name="ai-loop-open-specification-tab",
+            label="Opening Formal Spec",
+        )
+
+    def _finish_embedded_specification_editor(
+        self,
+        service: SpecificationService | None,
+        error: str | None,
+        *,
+        repository: Path,
+        goal: str,
+    ) -> None:
+        self._specification_tab_loading = False
+        if error is not None or service is None:
+            self.specification_tab_open_button.configure(state="normal")
+            self.specification_tab_status_var.set(
+                f"Could not open specification workflow: {error or 'service failed'}"
+            )
+            messagebox.showerror(
+                "Formal Specification", error or "Service initialization failed"
+            )
+            return
+        try:
+            editor = open_specification_editor(
+                self.specification_editor_host,
+                service=service,
+                repository_path=repository,
+                initial_goal=goal,
+                creator=os.environ.get("USER")
+                or os.environ.get("USERNAME")
+                or "gui-user",
+                run_background=self._run_bg,
+                elicitation_provider_factory=self._formal_elicitation_provider,
+                implementation_work_factory=self._formal_implementation_work,
+                on_implementation_started=self._formal_implementation_started,
+                embedded=True,
+            )
+        except Exception as exc:
+            self.specification_tab_open_button.configure(state="normal")
+            self.specification_tab_status_var.set(
+                f"Could not display specification workflow: {exc}"
+            )
+            messagebox.showerror("Formal Specification", str(exc))
+            return
+        self.specification_tab_open_button.destroy()
+        self.specification_tab_status_var.set(
+            "Specification files can be stored and loaded with Save JSON and Load JSON."
+        )
+        self._embedded_specification_editor = editor
+
+    def _build_ai_loop_qa_tab(self, parent: ttk.Frame) -> None:
+        """Build a conversational, read-only interface to installed LLM CLIs."""
+
+        parent.columnconfigure(0, weight=1)
+        parent.rowconfigure(1, weight=1)
+
+        controls = ttk.Frame(parent)
+        controls.grid(row=0, column=0, sticky="ew", pady=(0, 8))
+        controls.columnconfigure(1, weight=1)
+        ttk.Label(controls, text="LLM").grid(row=0, column=0, sticky="w")
+        self.qa_llm_var = tk.StringVar()
+        self.qa_llm_combo = self.help_widget(
+            ttk.Combobox(
+                controls,
+                textvariable=self.qa_llm_var,
+                state="readonly",
+            ),
+            "Select an installed Codex, Claude, or Gemini CLI with one of the configured model names.",
+        )
+        self.qa_llm_combo.grid(row=0, column=1, sticky="ew", padx=(6, 6))
+        self.help_widget(
+            ttk.Button(
+                controls,
+                text="Refresh LLMs",
+                command=self.refresh_qa_llms,
+            ),
+            "Rescan the configured provider executables and update the available LLM list.",
+        ).grid(row=0, column=2, sticky="e")
+
+        transcript_frame = ttk.LabelFrame(
+            parent, text="Conversation", padding=6
+        )
+        transcript_frame.grid(row=1, column=0, sticky="nsew")
+        transcript_frame.columnconfigure(0, weight=1)
+        transcript_frame.rowconfigure(0, weight=1)
+        self.qa_transcript_text = self.help_widget(
+            self.add_scrolled_text(transcript_frame, 0, 0, wrap="word"),
+            "Read-only conversation with answers grounded in the current AI-Loop source tree.",
+        )
+        self.set_text(
+            self.qa_transcript_text,
+            "Select an available LLM, enter a question below, and click Ask.",
+        )
+
+        question_frame = ttk.LabelFrame(parent, text="Question", padding=6)
+        question_frame.grid(row=2, column=0, sticky="ew", pady=(8, 0))
+        question_frame.columnconfigure(0, weight=1)
+        self.qa_question_text = self.help_widget(
+            tk.Text(question_frame, height=5, wrap="word"),
+            "Ask about AI-Loop's architecture, behavior, configuration, workflows, or current source code. Ctrl+Enter sends the question.",
+        )
+        question_scrollbar = ttk.Scrollbar(
+            question_frame,
+            orient="vertical",
+            command=self.qa_question_text.yview,
+        )
+        self.qa_question_text.configure(yscrollcommand=question_scrollbar.set)
+        self.qa_question_text.grid(row=0, column=0, sticky="ew")
+        question_scrollbar.grid(row=0, column=1, sticky="ns")
+        self.qa_question_text.bind(
+            "<Control-Return>", self._on_qa_question_shortcut, add="+"
+        )
+        question_actions = ttk.Frame(question_frame)
+        question_actions.grid(
+            row=1, column=0, columnspan=2, sticky="ew", pady=(6, 0)
+        )
+        self.qa_ask_button = self.help_widget(
+            ttk.Button(
+                question_actions,
+                text="Ask",
+                command=self.ask_ai_loop_question,
+            ),
+            "Send the question to the selected LLM in a background process with read-only repository access.",
+        )
+        self.qa_ask_button.pack(side="right")
+        self.qa_clear_button = self.help_widget(
+            ttk.Button(
+                question_actions,
+                text="Clear conversation",
+                command=self.clear_qa_conversation,
+            ),
+            "Clear the visible transcript and conversation context.",
+        )
+        self.qa_clear_button.pack(side="right", padx=(0, 6))
+
+        self.qa_status_var = tk.StringVar(value="Scanning configured LLMs…")
+        ttk.Label(
+            parent,
+            textvariable=self.qa_status_var,
+            anchor="w",
+        ).grid(row=3, column=0, sticky="ew", pady=(6, 0))
+        self.refresh_qa_llms()
+
+    def _qa_llm_configurations(self) -> tuple[tuple[str, str, str], ...]:
+        """Return configured provider/model combinations shown when installed."""
+
+        models = self.current_models()
+        configurations = [
+            ("codex", models.codex_bin, models.codex_model),
+            ("claude", models.claude_bin, models.controller_model),
+            ("claude", models.claude_bin, models.fable_model),
+            ("claude", models.claude_bin, models.opus_model),
+            ("gemini", models.gemini_bin, models.gemini_model),
+        ]
+        for provider, model in (
+            (provider_for_role(self.controller_var.get()), self.controller_role_model_var.get()),
+            (provider_for_role(self.worker_var.get()), self.worker_role_model_var.get()),
+        ):
+            if provider in BINARY_CHOICES:
+                configurations.append(
+                    (provider, self.backend.provider_binary(provider, models), model)
+                )
+        return tuple(configurations)
+
+    def refresh_qa_llms(self) -> None:
+        """Refresh the selector with configured LLMs whose CLI is installed."""
+
+        if self._qa_running:
+            return
+        previous = self.qa_llm_var.get()
+        llms = discover_available_llms(self._qa_llm_configurations())
+        by_label: dict[str, AvailableLlm] = {}
+        for llm in llms:
+            label = llm.label
+            if label in by_label and by_label[label] != llm:
+                label = f"{label} ({Path(llm.binary).name})"
+            by_label[label] = llm
+        self._qa_llms_by_label = by_label
+        labels = tuple(by_label)
+        self.qa_llm_combo.configure(values=labels)
+        if previous in by_label:
+            self.qa_llm_var.set(previous)
+        elif labels:
+            self.qa_llm_var.set(labels[0])
+        else:
+            self.qa_llm_var.set("")
+        self.qa_ask_button.configure(state="normal" if labels else "disabled")
+        if labels:
+            self.qa_status_var.set(
+                f"{len(labels)} configured LLM option(s) available. Questions run read-only in {self.backend.root_dir}."
+            )
+        else:
+            self.qa_status_var.set(
+                "No configured LLM CLI was found. Install or configure Codex, Claude, or Gemini, then refresh."
+            )
+
+    def _on_qa_question_shortcut(self, _event: tk.Event) -> str:
+        self.ask_ai_loop_question()
+        return "break"
+
+    def _append_qa_transcript(self, heading: str, content: str) -> None:
+        transcript = self.qa_transcript_text
+        existing = transcript.get("1.0", "end-1c")
+        placeholder = "Select an available LLM, enter a question below, and click Ask."
+        transcript.configure(state="normal")
+        if existing == placeholder:
+            transcript.delete("1.0", "end")
+        elif existing:
+            transcript.insert("end", "\n\n")
+        transcript.insert("end", f"{heading}\n{content.strip()}")
+        transcript.configure(state="disabled")
+        transcript.see("end")
+
+    def ask_ai_loop_question(self) -> None:
+        """Send the current question to the selected LLM without blocking Tk."""
+
+        if self._qa_running:
+            return
+        question = self.qa_question_text.get("1.0", "end-1c").strip()
+        if not question:
+            messagebox.showinfo("Ask AI-Loop", "Enter a question first.")
+            return
+        selected_label = self.qa_llm_var.get()
+        llm = self._qa_llms_by_label.get(selected_label)
+        if llm is None:
+            messagebox.showerror(
+                "Ask AI-Loop", "Select an available LLM before asking."
+            )
+            return
+
+        history = tuple(self._qa_history)
+        self._qa_running = True
+        self.qa_ask_button.configure(state="disabled")
+        self.qa_clear_button.configure(state="disabled")
+        self.qa_llm_combo.configure(state="disabled")
+        self.qa_question_text.delete("1.0", "end")
+        self._append_qa_transcript(f"You · {selected_label}", question)
+        self.qa_status_var.set(f"Asking {selected_label}…")
+        self._run_bg(
+            lambda: ask_project_question(
+                self.backend.root_dir,
+                llm,
+                question,
+                history=history,
+            ),
+            lambda answer, error: self._finish_ai_loop_question(
+                answer,
+                error,
+                question=question,
+                selected_label=selected_label,
+            ),
+            name="ai-loop-project-question",
+            label="AI-Loop Q&A",
+        )
+
+    def _finish_ai_loop_question(
+        self,
+        answer: str | None,
+        error: str | None,
+        *,
+        question: str,
+        selected_label: str,
+    ) -> None:
+        self._qa_running = False
+        self.qa_clear_button.configure(state="normal")
+        self.qa_llm_combo.configure(state="readonly")
+        self.qa_ask_button.configure(
+            state="normal" if self._qa_llms_by_label else "disabled"
+        )
+        if error is not None or answer is None:
+            detail = error or "The selected LLM returned no answer."
+            self._append_qa_transcript("Error", detail)
+            self.qa_status_var.set(f"Question failed: {detail}")
+            return
+        self._qa_history.append((question, answer))
+        self._qa_history = self._qa_history[-12:]
+        self._append_qa_transcript(f"AI-Loop answer · {selected_label}", answer)
+        self.qa_status_var.set(f"Answered by {selected_label}.")
+
+    def clear_qa_conversation(self) -> None:
+        if self._qa_running:
+            return
+        self._qa_history.clear()
+        self.set_text(
+            self.qa_transcript_text,
+            "Select an available LLM, enter a question below, and click Ask.",
+        )
+        self.qa_status_var.set("Conversation cleared.")
 
     def _build_project_analysis_frame(self, parent: ttk.Frame) -> None:
         """Build the opt-in project browser without starting an analysis."""
@@ -1928,7 +2303,7 @@ class AiLoopGui(tk.Tk):
         class_diagram_frame.rowconfigure(1, weight=1)
         class_diagram_frame.columnconfigure(0, weight=1)
         class_legend = ttk.Frame(class_diagram_frame)
-        class_legend.grid(row=0, column=0, sticky="w", pady=(0, 4))
+        class_legend.grid(row=0, column=0, sticky="ew", pady=(0, 4))
         for label, kind in (
             ("Class", "class"),
             ("Struct", "struct"),
@@ -1952,7 +2327,10 @@ class AiLoopGui(tk.Tk):
             class_canvas_frame,
             "Run an analysis to see class inheritance.",
         )
-        call_graph_frame.rowconfigure(1, weight=1)
+        self._build_analysis_zoom_controls(
+            class_legend, self.analysis_class_canvas
+        ).pack(side="right")
+        call_graph_frame.rowconfigure(2, weight=1)
         call_graph_frame.columnconfigure(0, weight=1)
         call_graph_controls = ttk.Frame(call_graph_frame)
         call_graph_controls.grid(row=0, column=0, sticky="ew", pady=(0, 4))
@@ -1972,13 +2350,34 @@ class AiLoopGui(tk.Tk):
                 command=self._show_all_analysis_class_members,
             ),
             "Clear the selected-class focus and display members of every class.",
-        ).grid(row=0, column=1, padx=(8, 0), sticky="e")
+        ).grid(row=0, column=2, padx=(8, 0), sticky="e")
+        member_legend = ttk.Frame(call_graph_frame)
+        member_legend.grid(row=1, column=0, sticky="ew", pady=(0, 4))
+        for label, kind in (("Method", "method"), ("Data member", "data_member")):
+            fill, outline = self._analysis_diagram_node_colors(kind)
+            tk.Label(
+                member_legend,
+                text=label,
+                background=fill,
+                foreground="#17293c",
+                highlightbackground=outline,
+                highlightthickness=1,
+                padx=5,
+                pady=2,
+            ).pack(side="left", padx=(0, 6))
+        ttk.Label(
+            member_legend,
+            text="Arrow: caller → callee",
+        ).pack(side="left", padx=(4, 0))
         call_graph_canvas_frame = ttk.Frame(call_graph_frame)
-        call_graph_canvas_frame.grid(row=1, column=0, sticky="nsew")
+        call_graph_canvas_frame.grid(row=2, column=0, sticky="nsew")
         self.analysis_call_canvas = self._build_analysis_diagram_canvas(
             call_graph_canvas_frame,
             "Run an analysis to see class fields, methods, and calls.",
         )
+        self._build_analysis_zoom_controls(
+            call_graph_controls, self.analysis_call_canvas
+        ).grid(row=0, column=1, padx=(8, 0), sticky="e")
         self.analysis_dependency_canvas = self._build_analysis_diagram_canvas(
             dependency_diagram_frame,
             "Run an analysis to see project-local file dependencies.",
@@ -1998,9 +2397,8 @@ class AiLoopGui(tk.Tk):
             "file": ("#fff4df", "#8a652f"),
         }.get(kind, ("#e7f0fb", "#315c8a"))
 
-    @staticmethod
     def _build_analysis_diagram_canvas(
-        parent: ttk.Frame, placeholder: str
+        self, parent: ttk.Frame, placeholder: str
     ) -> tk.Canvas:
         parent.rowconfigure(0, weight=1)
         parent.columnconfigure(0, weight=1)
@@ -2022,7 +2420,82 @@ class AiLoopGui(tk.Tk):
             anchor="nw",
             fill="#59636e",
         )
+        canvas._analysis_zoom = 1.0
+        canvas.bind(
+            "<Control-MouseWheel>",
+            lambda event: self._on_analysis_diagram_zoom_wheel(canvas, event),
+            add="+",
+        )
+        canvas.bind(
+            "<Control-Button-4>",
+            lambda event: self._on_analysis_diagram_zoom_wheel(canvas, event),
+            add="+",
+        )
+        canvas.bind(
+            "<Control-Button-5>",
+            lambda event: self._on_analysis_diagram_zoom_wheel(canvas, event),
+            add="+",
+        )
         return canvas
+
+    def _build_analysis_zoom_controls(
+        self, parent: ttk.Frame, canvas: tk.Canvas
+    ) -> ttk.Frame:
+        controls = ttk.Frame(parent)
+        self.help_widget(
+            ttk.Button(
+                controls,
+                text="−",
+                width=3,
+                command=lambda: self._zoom_analysis_diagram(canvas, 0.8),
+            ),
+            "Zoom out. You can also hold Ctrl and scroll down over the diagram.",
+        ).pack(side="left")
+        self.help_widget(
+            ttk.Button(
+                controls,
+                text="100%",
+                width=5,
+                command=lambda: self._reset_analysis_diagram_zoom(canvas),
+            ),
+            "Reset this diagram to its original zoom level.",
+        ).pack(side="left", padx=3)
+        self.help_widget(
+            ttk.Button(
+                controls,
+                text="+",
+                width=3,
+                command=lambda: self._zoom_analysis_diagram(canvas, 1.25),
+            ),
+            "Zoom in. You can also hold Ctrl and scroll up over the diagram.",
+        ).pack(side="left")
+        return controls
+
+    def _on_analysis_diagram_zoom_wheel(
+        self, canvas: tk.Canvas, event: tk.Event
+    ) -> str:
+        zoom_in = getattr(event, "num", None) == 4 or getattr(event, "delta", 0) > 0
+        self._zoom_analysis_diagram(canvas, 1.25 if zoom_in else 0.8)
+        return "break"
+
+    @staticmethod
+    def _zoom_analysis_diagram(canvas: tk.Canvas, factor: float) -> None:
+        current = float(getattr(canvas, "_analysis_zoom", 1.0))
+        target = min(2.5, max(0.4, current * factor))
+        actual_factor = target / current
+        if abs(actual_factor - 1.0) < 0.001:
+            return
+        canvas.scale("all", 0, 0, actual_factor, actual_factor)
+        canvas._analysis_zoom = target
+        bounds = canvas.bbox("all")
+        if bounds is not None:
+            canvas.configure(scrollregion=bounds)
+
+    @classmethod
+    def _reset_analysis_diagram_zoom(cls, canvas: tk.Canvas) -> None:
+        current = float(getattr(canvas, "_analysis_zoom", 1.0))
+        if current:
+            cls._zoom_analysis_diagram(canvas, 1.0 / current)
 
     def browse_analysis_project(self) -> None:
         selected = filedialog.askdirectory(
@@ -2189,6 +2662,7 @@ class AiLoopGui(tk.Tk):
 
         self.help_tooltip.hide()
         canvas.delete("all")
+        canvas._analysis_zoom = 1.0
         nodes = {
             str(node["id"]): node
             for node in diagram.get("nodes", ())
@@ -2645,8 +3119,6 @@ class AiLoopGui(tk.Tk):
         self.help_widget(ttk.Checkbutton(create_actions, text="No worktree", variable=self.no_worktree_var), "Run directly in the target repository instead of creating an isolated Git worktree.").pack(side="left", padx=(0, 12))
         self.help_widget(ttk.Checkbutton(create_actions, text="Allow parallel", variable=self.allow_parallel_var), "Allow this job to start even if another job is already active.").pack(side="left")
         self.help_widget(ttk.Button(create_actions, text="Quick Job", command=self.create_job), "Immediately create a normal text-goal job with the current goal, static plan, granularity, test command, controller, worker, and environment settings.").pack(side="right")
-        self.formal_spec_button = self.help_widget(ttk.Button(create_actions, text="Formal Spec", command=self.open_formal_specification), "Open the guided formal-specification editor using the current repository and optional Goal text. This does not create a job.")
-        self.formal_spec_button.pack(side="right", padx=(0, 6))
 
     def _build_jobs_frame(self, parent: ttk.Frame) -> None:
         frame = ttk.LabelFrame(parent, text="Jobs", padding=6)
@@ -2857,24 +3329,10 @@ class AiLoopGui(tk.Tk):
             self.repo_var.set(selected_dir)
 
     def open_formal_specification(self) -> None:
-        """Open the additive formal workflow without entering the job lifecycle."""
+        """Select and initialize the dedicated specification workspace tab."""
 
-        try:
-            repository = Path(self.repo_var.get()).expanduser().resolve()
-            goal = self.goal_text.get("1.0", "end-1c")
-        except Exception as exc:
-            messagebox.showerror("Formal Specification", str(exc))
-            return
-
-        self.formal_spec_button.configure(state="disabled")
-        self._run_bg(
-            lambda: SpecificationService(self.backend.settings.db_path),
-            lambda service, error: self._finish_open_formal_specification(
-                service, error, repository=repository, goal=goal
-            ),
-            name="ai-loop-open-formal-specification",
-            label="Opening Formal Spec",
-        )
+        self.workspace.select(self.specification_tab)
+        self._ensure_specification_tab_editor()
 
     def _formal_elicitation_provider(self) -> CliStructuredOutputProvider:
         """Snapshot the currently selected controller CLI/model on the Tk thread."""
@@ -2932,40 +3390,6 @@ class AiLoopGui(tk.Tk):
     def _formal_implementation_started(self, job_id: str) -> None:
         self.watch_job_id = job_id
         self.refresh_all(select_job_id=job_id)
-
-    def _finish_open_formal_specification(
-        self,
-        service: SpecificationService | None,
-        error: str | None,
-        *,
-        repository: Path,
-        goal: str,
-    ) -> None:
-        self.formal_spec_button.configure(state="normal")
-        if error is not None or service is None:
-            messagebox.showerror("Formal Specification", error or "Service initialization failed")
-            return
-
-        def editor_closed(editor: Any) -> None:
-            self._specification_editors.discard(editor)
-
-        try:
-            editor = open_specification_editor(
-                self,
-                service=service,
-                repository_path=repository,
-                initial_goal=goal,
-                creator=os.environ.get("USER") or os.environ.get("USERNAME") or "gui-user",
-                run_background=self._run_bg,
-                elicitation_provider_factory=self._formal_elicitation_provider,
-                implementation_work_factory=self._formal_implementation_work,
-                on_implementation_started=self._formal_implementation_started,
-                on_close=editor_closed,
-            )
-        except Exception as exc:
-            messagebox.showerror("Formal Specification", str(exc))
-            return
-        self._specification_editors.add(editor)
 
     def create_job(self) -> None:
         goal = self.goal_text.get("1.0", "end").strip()

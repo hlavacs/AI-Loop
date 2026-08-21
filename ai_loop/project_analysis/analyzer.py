@@ -809,6 +809,10 @@ _CPP_QUALIFIED_CALL_RE = re.compile(
     r"(?<![\w:])(?P<class>(?:[A-Za-z_]\w*::)*[A-Za-z_]\w*)::"
     r"(?P<method>[A-Za-z_]\w*)\s*\("
 )
+_CPP_UNQUALIFIED_CALL_RE = re.compile(
+    r"(?<![\w:.>])(?P<method>[A-Za-z_]\w*)\s*\("
+)
+_CPP_THIS_CALL_RE = re.compile(r"\bthis\s*->\s*(?P<method>[A-Za-z_]\w*)\s*\(")
 _CPP_CONTROL_WORDS = {"catch", "for", "if", "return", "sizeof", "switch", "while"}
 
 
@@ -965,6 +969,36 @@ def _cpp_qualified_call_sites(
     return sites
 
 
+def _cpp_method_call_sites(
+    source: str, body_start: int, body_end: int, owner: str
+) -> list[dict[str, Any]]:
+    """Collect qualified and same-class calls from one C++ method body."""
+
+    sites = _cpp_qualified_call_sites(source, body_start, body_end)
+    seen = {(int(site["line"]), str(site["name"])) for site in sites}
+    for pattern in (_CPP_THIS_CALL_RE, _CPP_UNQUALIFIED_CALL_RE):
+        for match in pattern.finditer(source, body_start, body_end):
+            method_name = match.group("method")
+            if method_name in _CPP_CONTROL_WORDS:
+                continue
+            qualified_name = f"{owner}::{method_name}"
+            line = _line_number(source, match.start())
+            key = (line, qualified_name)
+            if key in seen:
+                continue
+            seen.add(key)
+            sites.append(
+                {
+                    "name": qualified_name,
+                    "method": method_name,
+                    "receiver": owner,
+                    "receiver_type": owner,
+                    "line": line,
+                }
+            )
+    return sorted(sites, key=lambda site: (int(site["line"]), str(site["name"])))
+
+
 def _analyze_cpp(source: str) -> dict[str, Any]:
     cleaned = _strip_cpp_comments_and_literals(source)
     classes: list[dict[str, Any]] = []
@@ -1064,14 +1098,20 @@ def _analyze_cpp(source: str) -> dict[str, Any]:
         if simple_name in _CPP_CONTROL_WORDS:
             continue
         head = " ".join(match.group("head").split())
-        containing_class = next(
+        containing_range = next(
             (
-                record
+                (opening, closing, record)
                 for opening, closing, record in reversed(class_ranges)
                 if opening < match.start() < closing
             ),
             None,
         )
+        containing_class = containing_range[2] if containing_range else None
+        if containing_range is not None:
+            opening, _, _ = containing_range
+            prefix = cleaned[opening + 1 : match.start()]
+            if prefix.count("{") != prefix.count("}"):
+                continue
         explicit_owner = name.rsplit("::", 1)[0] if "::" in name else None
         owner = containing_class["name"] if containing_class else explicit_owner
         is_constructor = bool(
@@ -1108,8 +1148,10 @@ def _analyze_cpp(source: str) -> dict[str, Any]:
             closing = _matching_brace(cleaned, body_start - 1)
             if closing is not None:
                 record["end_line"] = _line_number(cleaned, closing)
-                record["call_sites"] = _cpp_qualified_call_sites(
-                    cleaned, body_start, closing
+                record["call_sites"] = (
+                    _cpp_method_call_sites(cleaned, body_start, closing, owner)
+                    if owner
+                    else _cpp_qualified_call_sites(cleaned, body_start, closing)
                 )
                 record["calls"] = sorted(
                     {str(site["name"]) for site in record["call_sites"]}

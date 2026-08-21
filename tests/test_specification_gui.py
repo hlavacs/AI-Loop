@@ -196,6 +196,22 @@ def test_specification_savefile_rejects_malformed_or_incompatible_content(
         savefile_to_record(content)
 
 
+def test_gui_formal_specification_entrypoint_selects_dedicated_tab() -> None:
+    from ai_loop_gui import AiLoopGui
+
+    selected: list[object] = []
+    initialized: list[bool] = []
+    gui = AiLoopGui.__new__(AiLoopGui)
+    gui.specification_tab = object()
+    gui.workspace = SimpleNamespace(select=selected.append)
+    gui._ensure_specification_tab_editor = lambda: initialized.append(True)
+
+    gui.open_formal_specification()
+
+    assert selected == [gui.specification_tab]
+    assert initialized == [True]
+
+
 def test_metric_assertion_expression_round_trip_and_numeric_normalization() -> None:
     parsed = parse_metric_assertions(
         "duration_seconds <= 5.0 0.25\nrequests != 0\nerror_rate < 0.01"
@@ -549,6 +565,68 @@ def test_holistic_specification_suggestions_are_ranked_and_report_clean_draft(
             ),
         ),
     )
+
+
+@pytest.mark.skipif(not os.environ.get("DISPLAY"), reason="requires a Tk display")
+def test_editor_can_embed_in_specification_tab_with_json_controls(
+    tmp_path: Path,
+) -> None:
+    try:
+        import tkinter as tk
+        from tkinter import ttk
+    except ImportError:
+        pytest.skip("Tk is not installed")
+    try:
+        root = tk.Tk()
+    except tk.TclError:
+        pytest.skip("Tk cannot connect to a display")
+    root.withdraw()
+
+    def immediate_runner(work, done, **_kwargs):
+        try:
+            done(work(), None)
+        except Exception as exc:  # pragma: no cover - diagnostic error path
+            done(None, str(exc))
+
+    try:
+        host = ttk.Frame(root)
+        host.grid(row=0, column=0, sticky="nsew")
+        editor = open_specification_editor(
+            host,
+            service=SpecificationService(
+                tmp_path / "loop.sqlite3", tmp_path / "artifacts"
+            ),
+            repository_path=tmp_path,
+            run_background=immediate_runner,
+            embedded=True,
+        )
+
+        assert editor.window is host
+        assert editor.close_button.winfo_manager() == ""
+        assert editor.save_specification_button.cget("text") == "Save JSON"
+        assert editor.load_specification_button.cget("text") == "Load JSON"
+        assert editor.notebook.winfo_manager() == "grid"
+        assert set(editor._stage_scroll_canvases) == {"Overview", "Scope"}
+        assert all(
+            str(canvas.cget("yscrollcommand"))
+            for canvas in editor._stage_scroll_canvases.values()
+        )
+        assert all(
+            str(widget.cget("yscrollcommand"))
+            for widget in (
+                editor.summary_text,
+                editor.objectives_text,
+                editor.stakeholders_text,
+                *editor.scope_widgets.values(),
+                editor.open_questions_text,
+            )
+        )
+        assert editor._responsive_wraplength(640, margin=20) == 620
+        assert editor._responsive_wraplength(1400, margin=20) == 1040
+        editor.close()
+        assert host.winfo_exists()
+    finally:
+        root.destroy()
 
 
 @pytest.mark.skipif(not os.environ.get("DISPLAY"), reason="requires a Tk display")

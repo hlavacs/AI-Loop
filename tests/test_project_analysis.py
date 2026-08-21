@@ -125,6 +125,55 @@ def test_analyze_project_attributes_calls_between_methods_of_same_class(
     assert [group["label"] for group in diagram["groups"]] == ["Workflow"]
 
 
+def test_analyze_project_attributes_cpp_calls_between_methods_of_same_class(
+    tmp_path: Path,
+) -> None:
+    (tmp_path / "workflow.cpp").write_text(
+        "class Workflow {\n"
+        "public:\n"
+        "    void run() {\n"
+        "        finish();\n"
+        "        this->cleanup();\n"
+        "    }\n"
+        "    void finish() {\n"
+        "    }\n"
+        "    void cleanup() {\n"
+        "    }\n"
+        "};\n",
+        encoding="utf-8",
+    )
+
+    model = analyze_project(tmp_path)
+
+    assert {
+        (
+            relationship["caller_method"],
+            relationship["callee_method"],
+            relationship["line"],
+        )
+        for relationship in model["call_relationships"]
+    } == {
+        ("Workflow::run", "Workflow::finish", 4),
+        ("Workflow::run", "Workflow::cleanup", 5),
+    }
+    functions = model["files"][0]["functions"]
+    assert [function["qualified_name"] for function in functions] == [
+        "Workflow::run",
+        "Workflow::finish",
+        "Workflow::cleanup",
+    ]
+
+    diagram = ProjectAnalysisController(model).member_graph_diagram()
+    nodes_by_label = {node["label"]: node for node in diagram["nodes"]}
+    assert {
+        (edge["source"], edge["target"])
+        for edge in diagram["edges"]
+    } == {
+        (nodes_by_label["run"]["id"], nodes_by_label["finish"]["id"]),
+        (nodes_by_label["run"]["id"], nodes_by_label["cleanup"]["id"]),
+    }
+
+
 def test_analyze_project_discovers_slots_destructured_and_augmented_members(
     tmp_path: Path,
 ) -> None:
@@ -221,6 +270,45 @@ def test_project_analysis_class_category_colors_are_distinct() -> None:
     assert len(
         {AiLoopGui._analysis_diagram_node_colors(kind) for kind in categories}
     ) == len(categories)
+
+
+def test_project_analysis_diagram_zoom_clamps_and_resets() -> None:
+    from ai_loop_gui import AiLoopGui
+
+    class FakeCanvas:
+        _analysis_zoom = 1.0
+
+        def __init__(self) -> None:
+            self.scales: list[tuple[object, int, int, float, float]] = []
+            self.configurations: list[dict[str, object]] = []
+
+        def scale(
+            self,
+            tag: object,
+            x_origin: int,
+            y_origin: int,
+            x_scale: float,
+            y_scale: float,
+        ) -> None:
+            self.scales.append((tag, x_origin, y_origin, x_scale, y_scale))
+
+        def bbox(self, _tag: object) -> tuple[int, int, int, int]:
+            return (0, 0, 320, 240)
+
+        def configure(self, **options: object) -> None:
+            self.configurations.append(options)
+
+    canvas = FakeCanvas()
+
+    AiLoopGui._zoom_analysis_diagram(canvas, 10)
+    assert canvas._analysis_zoom == 2.5
+    assert canvas.scales[-1] == ("all", 0, 0, 2.5, 2.5)
+    assert canvas.configurations[-1] == {"scrollregion": (0, 0, 320, 240)}
+
+    AiLoopGui._zoom_analysis_diagram(canvas, 0.01)
+    assert canvas._analysis_zoom == 0.4
+    AiLoopGui._reset_analysis_diagram_zoom(canvas)
+    assert canvas._analysis_zoom == 1.0
 
 
 def test_analyze_project_marks_python_generic_as_templated_class(
