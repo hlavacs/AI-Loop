@@ -45,6 +45,7 @@ class DiagramNode:
     source_path: str
     line: int
     end_line: int
+    description: str
     x: int
     y: int
     width: int
@@ -61,6 +62,7 @@ class DiagramNode:
                 "line": self.line,
                 "end_line": self.end_line,
             },
+            "description": self.description,
             "x": self.x,
             "y": self.y,
             "width": self.width,
@@ -75,13 +77,23 @@ class DiagramEdge:
     source: str
     target: str
     kind: str
+    callee_method: str | None = None
+    call_line: int | None = None
+    callee_line: int | None = None
 
-    def as_dict(self) -> dict[str, str]:
-        return {
+    def as_dict(self) -> dict[str, Any]:
+        result: dict[str, Any] = {
             "source": self.source,
             "target": self.target,
             "kind": self.kind,
         }
+        if self.callee_method is not None:
+            result["callee_method"] = self.callee_method
+        if self.call_line is not None:
+            result["call_line"] = self.call_line
+        if self.callee_line is not None:
+            result["callee_line"] = self.callee_line
+        return result
 
 
 @dataclass(frozen=True)
@@ -154,6 +166,7 @@ def _layout_diagram(
                 source_path=str(node["source_path"]),
                 line=int(node["line"]),
                 end_line=int(node["end_line"]),
+                description=str(node.get("description", "")),
                 x=margin + column * (node_width + horizontal_gap),
                 y=margin + row * (node_height + vertical_gap),
                 width=node_width,
@@ -300,6 +313,7 @@ class ProjectAnalysisController:
                         "source_path": relative_path,
                         "line": location.line,
                         "end_line": location.end_line,
+                        "description": tree_node.summary,
                     }
                 )
                 aliases = {qualified_name, simple_name}
@@ -388,6 +402,79 @@ class ProjectAnalysisController:
                 if source_id != target_id and edge_key not in seen_edges:
                     seen_edges.add(edge_key)
                     edges.append(DiagramEdge(*edge_key))
+        return _layout_diagram(nodes, edges).as_dict()
+
+    def call_graph_diagram(self) -> dict[str, Any]:
+        """Return class nodes and resolved project-class method-call edges."""
+
+        class_diagram = self.class_diagram()
+        nodes = []
+        node_ids: dict[tuple[str, str], str] = {}
+        for node in class_diagram.get("nodes", ()):
+            if not isinstance(node, dict):
+                continue
+            location = node.get("source_location", {})
+            if not isinstance(location, dict):
+                continue
+            source_path = Path(str(location.get("path", ""))).as_posix()
+            label = str(node.get("label", ""))
+            node_id = str(node.get("id", ""))
+            if not node_id:
+                continue
+            nodes.append(
+                {
+                    "id": node_id,
+                    "label": label,
+                    "kind": "class",
+                    "tree_node_id": str(node.get("tree_node_id", node_id)),
+                    "source_path": source_path,
+                    "line": self._line_number(location.get("line"), 1),
+                    "end_line": self._line_number(
+                        location.get("end_line"),
+                        self._line_number(location.get("line"), 1),
+                    ),
+                    "description": str(node.get("description", "")),
+                }
+            )
+            node_ids[(source_path, label)] = node_id
+
+        edges: list[DiagramEdge] = []
+        seen_edges: set[tuple[str, str, str, int]] = set()
+        relationships = self.model.get("call_relationships", ())
+        for relationship in (
+            relationships if isinstance(relationships, (list, tuple)) else ()
+        ):
+            if not isinstance(relationship, dict):
+                continue
+            caller_path = Path(str(relationship.get("caller_path", ""))).as_posix()
+            callee_path = Path(str(relationship.get("callee_path", ""))).as_posix()
+            source = node_ids.get(
+                (caller_path, str(relationship.get("caller_class", "")))
+            )
+            target = node_ids.get(
+                (callee_path, str(relationship.get("callee_class", "")))
+            )
+            if source is None or target is None:
+                continue
+            call_line = self._line_number(relationship.get("line"), 1)
+            callee_line = self._line_number(
+                relationship.get("callee_line"), call_line
+            )
+            callee_method = str(relationship.get("callee_method", ""))
+            edge_key = (source, target, callee_method, call_line)
+            if edge_key in seen_edges:
+                continue
+            seen_edges.add(edge_key)
+            edges.append(
+                DiagramEdge(
+                    source,
+                    target,
+                    "calls",
+                    callee_method=callee_method,
+                    call_line=call_line,
+                    callee_line=callee_line,
+                )
+            )
         return _layout_diagram(nodes, edges).as_dict()
 
     def build_tree(self) -> ProjectTreeNode:
@@ -619,7 +706,14 @@ class ProjectAnalysisController:
     ) -> ProjectTreeNode:
         group_id = f"file:{file_index}:{model_key}"
         symbols = tuple(
-            self._build_symbol_node(group_id, source_path, symbol_index, symbol, kind)
+            self._build_symbol_node(
+                group_id,
+                source_path,
+                file_model,
+                symbol_index,
+                symbol,
+                kind,
+            )
             for symbol_index, symbol in enumerate(file_model.get(model_key, ()))
         )
         node = ProjectTreeNode(
@@ -636,6 +730,7 @@ class ProjectAnalysisController:
         self,
         group_id: str,
         source_path: Path,
+        file_model: dict[str, Any],
         symbol_index: int,
         symbol: dict[str, Any],
         kind: str,
@@ -652,6 +747,22 @@ class ProjectAnalysisController:
             details.append(f"returns: {return_type}")
         if data_type := symbol.get("type"):
             details.append(f"type: {data_type}")
+        children: tuple[ProjectTreeNode, ...] = ()
+        if kind == "class":
+            children = self._build_class_member_nodes(
+                node_id, source_path, file_model, symbol
+            )
+            data_count = sum(child.kind == "data_member" for child in children)
+            method_count = sum(child.kind == "method" for child in children)
+            relative_path = source_path.relative_to(self.project_path).as_posix()
+            label = str(symbol.get("qualified_name") or symbol.get("name") or kind)
+            details = [
+                (
+                    f"{label} — {relative_path}, lines {line}–{end_line}; "
+                    f"{data_count} {self._plural(data_count, 'data member')}, "
+                    f"{method_count} {self._plural(method_count, 'method')}"
+                )
+            ]
         node = ProjectTreeNode(
             node_id=node_id,
             label=str(symbol.get("qualified_name") or symbol.get("name") or kind),
@@ -659,9 +770,83 @@ class ProjectAnalysisController:
             line=line,
             end_line=end_line,
             summary="; ".join(details),
+            children=children,
         )
         self._nodes[node_id] = node
         return node
+
+    def _build_class_member_nodes(
+        self,
+        class_node_id: str,
+        source_path: Path,
+        file_model: dict[str, Any],
+        class_symbol: dict[str, Any],
+    ) -> tuple[ProjectTreeNode, ...]:
+        """Return the analyzer's direct class data and methods in source order."""
+
+        class_name = str(
+            class_symbol.get("qualified_name") or class_symbol.get("name") or ""
+        )
+        method_names = {str(name) for name in class_symbol.get("methods", ())}
+        members: list[tuple[int, int, dict[str, Any], str]] = []
+        data_members = class_symbol.get("data_members")
+        if not isinstance(data_members, (list, tuple)):
+            data_members = (
+                data_symbol
+                for data_symbol in file_model.get("data_types", ())
+                if str(data_symbol.get("qualified_name") or "").rpartition(".")[0]
+                == class_name
+            )
+        for index, data_symbol in enumerate(data_members):
+            if isinstance(data_symbol, dict):
+                members.append(
+                    (
+                        self._line_number(data_symbol.get("line"), 1),
+                        index,
+                        data_symbol,
+                        "data_member",
+                    )
+                )
+        for index, function_symbol in enumerate(file_model.get("functions", ())):
+            qualified_name = str(function_symbol.get("qualified_name") or "")
+            if qualified_name in method_names:
+                members.append(
+                    (
+                        self._line_number(function_symbol.get("line"), 1),
+                        index,
+                        function_symbol,
+                        "method",
+                    )
+                )
+
+        nodes = []
+        for member_index, (_, _, member, member_kind) in enumerate(
+            sorted(members, key=lambda item: (item[0], item[1], item[3]))
+        ):
+            node_id = f"{class_node_id}:member:{member_index}"
+            line = self._line_number(member.get("line"), 1)
+            end_line = max(line, self._line_number(member.get("end_line"), line))
+            details = [member_kind.replace("_", " ")]
+            if data_type := member.get("type"):
+                details.append(f"type: {data_type}")
+            if return_type := member.get("return_type"):
+                details.append(f"returns: {return_type}")
+            node = ProjectTreeNode(
+                node_id=node_id,
+                label=str(member.get("name") or member.get("qualified_name") or "member"),
+                kind=member_kind,
+                line=line,
+                end_line=end_line,
+                summary="; ".join(details),
+            )
+            self._locations[node_id] = SourceLocation(source_path, line, end_line)
+            self._nodes[node_id] = node
+            nodes.append(node)
+        return tuple(nodes)
+
+    @staticmethod
+    def _plural(count: int, singular: str) -> str:
+        return singular if count == 1 else f"{singular}s"
 
     def _build_issue_group(
         self,

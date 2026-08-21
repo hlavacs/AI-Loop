@@ -1854,11 +1854,13 @@ class AiLoopGui(tk.Tk):
         detail_notebook = ttk.Notebook(paned)
         source_frame = ttk.Frame(detail_notebook)
         class_diagram_frame = ttk.Frame(detail_notebook)
+        call_graph_frame = ttk.Frame(detail_notebook)
         dependency_diagram_frame = ttk.Frame(detail_notebook)
         paned.add(tree_frame, weight=2)
         paned.add(detail_notebook, weight=3)
         detail_notebook.add(source_frame, text="Source")
         detail_notebook.add(class_diagram_frame, text="Class Diagram")
+        detail_notebook.add(call_graph_frame, text="Method Calls")
         detail_notebook.add(dependency_diagram_frame, text="File Dependencies")
         self.analysis_detail_notebook = detail_notebook
         self.analysis_source_frame = source_frame
@@ -1908,6 +1910,10 @@ class AiLoopGui(tk.Tk):
         self.analysis_class_canvas = self._build_analysis_diagram_canvas(
             class_diagram_frame,
             "Run an analysis to see class inheritance.",
+        )
+        self.analysis_call_canvas = self._build_analysis_diagram_canvas(
+            call_graph_frame,
+            "Run an analysis to see calls between project classes.",
         )
         self.analysis_dependency_canvas = self._build_analysis_diagram_canvas(
             dependency_diagram_frame,
@@ -2066,6 +2072,9 @@ class AiLoopGui(tk.Tk):
             self.analysis_class_canvas, controller.class_diagram()
         )
         self._render_analysis_diagram(
+            self.analysis_call_canvas, controller.call_graph_diagram()
+        )
+        self._render_analysis_diagram(
             self.analysis_dependency_canvas, controller.dependency_diagram()
         )
 
@@ -2074,6 +2083,7 @@ class AiLoopGui(tk.Tk):
     ) -> None:
         """Draw prepared geometry; graph derivation stays in the controller."""
 
+        self.help_tooltip.hide()
         canvas.delete("all")
         nodes = {
             str(node["id"]): node
@@ -2087,15 +2097,54 @@ class AiLoopGui(tk.Tk):
             target = nodes.get(str(edge.get("target", "")))
             if source is None or target is None:
                 continue
+            source_x = int(source["x"]) + int(source["width"]) // 2
+            source_y = int(source["y"]) + int(source["height"]) // 2
+            target_x = int(target["x"]) + int(target["width"]) // 2
+            target_y = int(target["y"]) + int(target["height"]) // 2
+            delta_x = target_x - source_x
+            delta_y = target_y - source_y
+            if delta_x or delta_y:
+                source_scale = max(
+                    abs(delta_x) / max(1, int(source["width"]) / 2),
+                    abs(delta_y) / max(1, int(source["height"]) / 2),
+                )
+                target_scale = max(
+                    abs(delta_x) / max(1, int(target["width"]) / 2),
+                    abs(delta_y) / max(1, int(target["height"]) / 2),
+                )
+                line_start_x = source_x + delta_x / source_scale
+                line_start_y = source_y + delta_y / source_scale
+                line_end_x = target_x - delta_x / target_scale
+                line_end_y = target_y - delta_y / target_scale
+            else:
+                line_start_x = source_x
+                line_start_y = source_y
+                line_end_x = target_x
+                line_end_y = target_y
             canvas.create_line(
-                int(source["x"]) + int(source["width"]) // 2,
-                int(source["y"]) + int(source["height"]) // 2,
-                int(target["x"]) + int(target["width"]) // 2,
-                int(target["y"]) + int(target["height"]) // 2,
+                line_start_x,
+                line_start_y,
+                line_end_x,
+                line_end_y,
                 arrow=tk.LAST,
                 width=2,
                 fill="#627286",
             )
+            if callee_method := str(edge.get("callee_method", "")):
+                method_name = callee_method.rsplit(".", 1)[-1].rsplit("::", 1)[-1]
+                call_line = edge.get("call_line")
+                edge_label = (
+                    f"{method_name} · line {call_line}"
+                    if call_line is not None
+                    else method_name
+                )
+                canvas.create_text(
+                    (line_start_x + line_end_x) / 2,
+                    (line_start_y + line_end_y) / 2 - 9,
+                    text=edge_label,
+                    fill="#40566e",
+                    font=("TkDefaultFont", 8),
+                )
 
         for index, node in enumerate(nodes.values()):
             x = int(node["x"])
@@ -2123,6 +2172,7 @@ class AiLoopGui(tk.Tk):
                 tags=(node_tag,),
             )
             tree_node_id = str(node.get("tree_node_id", node["id"]))
+            description = str(node.get("description", ""))
             canvas.tag_bind(
                 node_tag,
                 "<Button-1>",
@@ -2133,12 +2183,14 @@ class AiLoopGui(tk.Tk):
             canvas.tag_bind(
                 node_tag,
                 "<Enter>",
-                lambda _event: canvas.configure(cursor="hand2"),
+                lambda _event, text=description: (
+                    self._enter_analysis_diagram_node(canvas, text)
+                ),
             )
             canvas.tag_bind(
                 node_tag,
                 "<Leave>",
-                lambda _event: canvas.configure(cursor=""),
+                lambda _event: self._leave_analysis_diagram_node(canvas),
             )
 
         width = max(1, int(diagram.get("width", 1)))
@@ -2147,7 +2199,19 @@ class AiLoopGui(tk.Tk):
         canvas.xview_moveto(0)
         canvas.yview_moveto(0)
 
+    def _enter_analysis_diagram_node(
+        self, canvas: tk.Canvas, description: str
+    ) -> None:
+        canvas.configure(cursor="hand2")
+        if description:
+            self.help_tooltip._schedule_show(canvas, description)
+
+    def _leave_analysis_diagram_node(self, canvas: tk.Canvas) -> None:
+        canvas.configure(cursor="")
+        self.help_tooltip.hide()
+
     def _select_analysis_diagram_node(self, node_id: str) -> None:
+        self.help_tooltip.hide()
         if not self.analysis_tree.exists(node_id):
             return
         self.analysis_tree.selection_set(node_id)

@@ -35,6 +35,8 @@ def test_analyze_project_discovers_python_hierarchy() -> None:
     greeter = next(item for item in python_file["classes"] if item["name"] == "Greeter")
     assert greeter["bases"] == ["Named"]
     assert greeter["methods"] == ["Greeter.greet"]
+    named = next(item for item in python_file["classes"] if item["name"] == "Named")
+    assert [member["name"] for member in named["data_members"]] == ["name"]
     assert any(
         relationship
         == {
@@ -48,6 +50,40 @@ def test_analyze_project_discovers_python_hierarchy() -> None:
         "Identifier",
         "name",
     }
+
+
+def test_analyze_project_attributes_python_calls_between_project_classes(
+    tmp_path: Path,
+) -> None:
+    (tmp_path / "calls.py").write_text(
+        "class Service:\n"
+        "    def ping(self) -> str:\n"
+        "        return 'pong'\n"
+        "\n"
+        "\n"
+        "class Client:\n"
+        "    def run(self, service: Service) -> str:\n"
+        "        external.notify()\n"
+        "        return service.ping()\n",
+        encoding="utf-8",
+    )
+
+    model = analyze_project(tmp_path)
+
+    assert model["call_relationships"] == [
+        {
+            "caller_class": "Client",
+            "callee_class": "Service",
+            "caller_method": "Client.run",
+            "callee_method": "Service.ping",
+            "caller_path": "calls.py",
+            "callee_path": "calls.py",
+            "call_path": "calls.py",
+            "callee_method_path": "calls.py",
+            "line": 9,
+            "callee_line": 2,
+        }
+    ]
 
 
 def test_analyze_project_discovers_cpp_hierarchy_and_metadata() -> None:
@@ -68,6 +104,8 @@ def test_analyze_project_discovers_cpp_hierarchy_and_metadata() -> None:
     }
     widget = next(item for item in header["classes"] if item["name"] == "Widget")
     assert widget["bases"] == ["Component"]
+    point = next(item for item in header["classes"] if item["name"] == "Point")
+    assert [member["name"] for member in point["data_members"]] == ["x", "y"]
     assert {item["name"] for item in header["data_types"]} >= {
         "Point",
         "Mode",
@@ -318,6 +356,45 @@ def test_project_analysis_controller_builds_file_and_symbol_tree() -> None:
         "Named",
         "Greeter",
     ]
+    named, greeter = python_file.children[0].children
+    assert [(node.kind, node.label) for node in named.children] == [
+        ("data_member", "name")
+    ]
+    assert [(node.kind, node.label) for node in greeter.children] == [
+        ("method", "greet")
+    ]
+    assert named.summary == ("Named — sample.py, lines 6–7; 1 data member, 0 methods")
+    assert greeter.summary == (
+        "Greeter — sample.py, lines 10–12; 0 data members, 1 method"
+    )
+
+
+def test_project_analysis_controller_orders_class_members_by_source(
+    tmp_path: Path,
+) -> None:
+    (tmp_path / "mixed.py").write_text(
+        "class Mixed:\n"
+        "    first: int\n"
+        "    def convert(self) -> str:\n"
+        "        return str(self.first)\n"
+        "    second: str\n",
+        encoding="utf-8",
+    )
+    controller = ProjectAnalysisController(analyze_project(tmp_path))
+    class_node = _find_node(controller.root_node, kind="class", label="Mixed")
+
+    assert class_node is not None
+    assert [(node.kind, node.label) for node in class_node.children] == [
+        ("data_member", "first"),
+        ("method", "convert"),
+        ("data_member", "second"),
+    ]
+    assert class_node.summary == (
+        "Mixed — mixed.py, lines 1–5; 2 data members, 1 method"
+    )
+    assert [
+        controller.resolve_selection(node.node_id).line for node in class_node.children
+    ] == [2, 3, 5]
 
 
 @pytest.mark.parametrize(
@@ -412,6 +489,42 @@ def test_project_analysis_controller_builds_serializable_class_diagram() -> None
         "line": 10,
         "end_line": 12,
     }
+    assert nodes_by_label["Greeter"]["description"] == (
+        "Greeter — sample.py, lines 10–12; 0 data members, 1 method"
+    )
+
+
+def test_project_analysis_controller_builds_serializable_call_graph(
+    tmp_path: Path,
+) -> None:
+    (tmp_path / "calls.py").write_text(
+        "class Service:\n"
+        "    def ping(self) -> str:\n"
+        "        return 'pong'\n"
+        "\n"
+        "class Client:\n"
+        "    def run(self, service: Service) -> str:\n"
+        "        return service.ping()\n",
+        encoding="utf-8",
+    )
+    controller = ProjectAnalysisController(analyze_project(tmp_path))
+
+    diagram = controller.call_graph_diagram()
+    nodes_by_label = {node["label"]: node for node in diagram["nodes"]}
+
+    assert json.loads(json.dumps(diagram)) == diagram
+    assert set(nodes_by_label) == {"Service", "Client"}
+    assert nodes_by_label["Service"]["description"].startswith(
+        "Service — calls.py"
+    )
+    assert {
+        "source": nodes_by_label["Client"]["id"],
+        "target": nodes_by_label["Service"]["id"],
+        "kind": "calls",
+        "callee_method": "Service.ping",
+        "call_line": 7,
+        "callee_line": 2,
+    } in diagram["edges"]
 
 
 def test_project_analysis_controller_builds_local_dependency_diagram() -> None:

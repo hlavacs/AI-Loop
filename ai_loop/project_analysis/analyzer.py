@@ -130,6 +130,7 @@ def analyze_project(
         total_lines += file_model["line_count"]
 
     insights = _project_insights(files, language_counts, total_lines)
+    call_relationships = _project_call_relationships(files)
 
     return {
         "name": root.name,
@@ -139,6 +140,7 @@ def analyze_project(
         "languages": language_counts,
         "files": files,
         "insights": insights,
+        "call_relationships": call_relationships,
     }
 
 
@@ -302,6 +304,7 @@ class _PythonSymbols(ast.NodeVisitor):
             "end_line": getattr(node, "end_lineno", node.lineno),
             "bases": bases,
             "methods": [],
+            "data_members": [],
         }
         self.classes.append(record)
         for base in bases:
@@ -326,6 +329,11 @@ class _PythonSymbols(ast.NodeVisitor):
     ) -> None:
         qualified_name = self._qualified(node.name)
         is_method = bool(self._scopes and self._scopes[-1][0] == "class")
+        owner = (
+            str(self._class_records[-1]["qualified_name"])
+            if is_method and self._class_records
+            else None
+        )
         parameters = [
             argument.arg
             for argument in [
@@ -348,7 +356,10 @@ class _PythonSymbols(ast.NodeVisitor):
             "parameters": parameters,
             "return_type": _expression_name(node.returns),
             "calls": _python_direct_calls(node),
+            "call_sites": _python_direct_call_sites(node),
         }
+        if owner is not None:
+            record["owner"] = owner
         self.functions.append(record)
         if is_method and self._class_records:
             class_record = self._class_records[-1]
@@ -367,9 +378,11 @@ class _PythonSymbols(ast.NodeVisitor):
 
     def visit_AnnAssign(self, node: ast.AnnAssign) -> None:
         scope_kind = self._scopes[-1][0] if self._scopes else "module"
+        annotation = _expression_name(node.annotation)
+        if self._class_records:
+            self._record_data_member(node.target, annotation, node.lineno)
         if scope_kind in {"module", "class"}:
             name = _expression_name(node.target)
-            annotation = _expression_name(node.annotation)
             if name:
                 self.data_types.append(
                     {
@@ -383,6 +396,50 @@ class _PythonSymbols(ast.NodeVisitor):
                     }
                 )
         self.generic_visit(node)
+
+    def visit_Assign(self, node: ast.Assign) -> None:
+        if self._class_records:
+            inferred_type = (
+                _expression_name(node.value.func)
+                if isinstance(node.value, ast.Call)
+                else None
+            )
+            for target in node.targets:
+                self._record_data_member(target, inferred_type, node.lineno)
+        self.generic_visit(node)
+
+    def _record_data_member(
+        self, target: ast.AST, annotation: str | None, line: int
+    ) -> None:
+        scope_kind = self._scopes[-1][0] if self._scopes else "module"
+        if scope_kind == "class" and isinstance(target, ast.Name):
+            name = target.id
+        elif (
+            scope_kind == "function"
+            and isinstance(target, ast.Attribute)
+            and isinstance(target.value, ast.Name)
+            and target.value.id in {"self", "cls"}
+        ):
+            name = target.attr
+        else:
+            return
+        class_record = self._class_records[-1]
+        qualified_name = f"{class_record['qualified_name']}.{name}"
+        if any(
+            member.get("qualified_name") == qualified_name
+            for member in class_record["data_members"]
+        ):
+            return
+        class_record["data_members"].append(
+            {
+                "name": name,
+                "qualified_name": qualified_name,
+                "line": line,
+                "end_line": line,
+                "kind": "data_member",
+                "type": annotation,
+            }
+        )
 
     def visit_Import(self, node: ast.Import) -> None:
         for imported in node.names:
@@ -434,10 +491,93 @@ class _DirectCallVisitor(ast.NodeVisitor):
         return
 
 
+class _DetailedCallVisitor(ast.NodeVisitor):
+    """Collect direct calls and simple receiver types within one function."""
+
+    def __init__(self, root: ast.FunctionDef | ast.AsyncFunctionDef) -> None:
+        self.root = root
+        self.call_sites: list[dict[str, Any]] = []
+        self._types: dict[str, str] = {}
+        for argument in [
+            *root.args.posonlyargs,
+            *root.args.args,
+            *root.args.kwonlyargs,
+        ]:
+            annotation = _expression_name(argument.annotation)
+            if annotation:
+                self._types[argument.arg] = annotation
+
+    def visit_Call(self, node: ast.Call) -> None:
+        if isinstance(node.func, ast.Attribute):
+            receiver = _expression_name(node.func.value)
+            if receiver:
+                receiver_type = self._receiver_type(node.func.value, receiver)
+                self.call_sites.append(
+                    {
+                        "name": _expression_name(node.func) or node.func.attr,
+                        "method": node.func.attr,
+                        "receiver": receiver,
+                        "receiver_type": receiver_type,
+                        "line": node.lineno,
+                    }
+                )
+        self.generic_visit(node)
+
+    def visit_Assign(self, node: ast.Assign) -> None:
+        assigned_type = self._constructed_type(node.value)
+        if assigned_type:
+            for target in node.targets:
+                if name := _expression_name(target):
+                    self._types[name] = assigned_type
+        self.generic_visit(node)
+
+    def visit_AnnAssign(self, node: ast.AnnAssign) -> None:
+        name = _expression_name(node.target)
+        annotation = _expression_name(node.annotation)
+        if name and annotation:
+            self._types[name] = annotation
+        self.generic_visit(node)
+
+    def visit_FunctionDef(self, node: ast.FunctionDef) -> None:
+        if node is self.root:
+            self.generic_visit(node)
+
+    def visit_AsyncFunctionDef(self, node: ast.AsyncFunctionDef) -> None:
+        if node is self.root:
+            self.generic_visit(node)
+
+    def visit_ClassDef(self, node: ast.ClassDef) -> None:
+        return
+
+    def _receiver_type(self, node: ast.AST, receiver: str) -> str | None:
+        if receiver in {"self", "cls"}:
+            return receiver
+        if constructed_type := self._constructed_type(node):
+            return constructed_type
+        return self._types.get(receiver)
+
+    @staticmethod
+    def _constructed_type(node: ast.AST | None) -> str | None:
+        if isinstance(node, ast.Call):
+            return _expression_name(node.func)
+        return None
+
+
 def _python_direct_calls(node: ast.FunctionDef | ast.AsyncFunctionDef) -> list[str]:
     visitor = _DirectCallVisitor(node)
     visitor.visit(node)
     return sorted(visitor.calls)
+
+
+def _python_direct_call_sites(
+    node: ast.FunctionDef | ast.AsyncFunctionDef,
+) -> list[dict[str, Any]]:
+    visitor = _DetailedCallVisitor(node)
+    visitor.visit(node)
+    return sorted(
+        visitor.call_sites,
+        key=lambda item: (int(item["line"]), str(item["name"])),
+    )
 
 
 def _platform_marker(
@@ -599,6 +739,11 @@ _CPP_FUNCTION_RE = re.compile(
     r"noexcept(?:\s*\([^)]*\))?\s*|->\s*[^;{]+\s*)*)"
     r"(?P<terminator>[;{])"
 )
+_CPP_DATA_MEMBER_RE = re.compile(r"(?m)^[ \t]*(?P<declaration>[^#;{}()\n]+);")
+_CPP_QUALIFIED_CALL_RE = re.compile(
+    r"(?<![\w:])(?P<class>(?:[A-Za-z_]\w*::)*[A-Za-z_]\w*)::"
+    r"(?P<method>[A-Za-z_]\w*)\s*\("
+)
 _CPP_CONTROL_WORDS = {"catch", "for", "if", "return", "sizeof", "switch", "while"}
 
 
@@ -693,6 +838,25 @@ def _cpp_parameters(parameters: str) -> list[str]:
     return [part.strip() for part in parameters.split(",") if part.strip()]
 
 
+def _cpp_qualified_call_sites(
+    source: str, body_start: int, body_end: int
+) -> list[dict[str, Any]]:
+    sites = []
+    for match in _CPP_QUALIFIED_CALL_RE.finditer(source, body_start, body_end):
+        class_name = match.group("class")
+        method_name = match.group("method")
+        sites.append(
+            {
+                "name": f"{class_name}::{method_name}",
+                "method": method_name,
+                "receiver": class_name,
+                "receiver_type": class_name,
+                "line": _line_number(source, match.start()),
+            }
+        )
+    return sites
+
+
 def _analyze_cpp(source: str) -> dict[str, Any]:
     cleaned = _strip_cpp_comments_and_literals(source)
     classes: list[dict[str, Any]] = []
@@ -719,6 +883,7 @@ def _analyze_cpp(source: str) -> dict[str, Any]:
             "kind": kind,
             "bases": bases,
             "methods": [],
+            "data_members": [],
         }
         if kind in {"class", "struct"}:
             classes.append(record)
@@ -735,6 +900,36 @@ def _analyze_cpp(source: str) -> dict[str, Any]:
                 record["end_line"] = _line_number(cleaned, closing)
                 if kind in {"class", "struct"}:
                     class_ranges.append((opening, closing, record))
+
+    for opening, closing, class_record in class_ranges:
+        class_body = cleaned[opening + 1 : closing]
+        for match in _CPP_DATA_MEMBER_RE.finditer(class_body):
+            member_offset = opening + 1 + match.start()
+            prefix = cleaned[opening + 1 : member_offset]
+            if prefix.count("{") != prefix.count("}"):
+                continue
+            declaration = " ".join(match.group("declaration").split())
+            parsed = re.fullmatch(
+                r"(?P<type>.+?\S)\s+[*&]?(?P<name>[A-Za-z_]\w*)"
+                r"(?:\s*\[[^\]]*\])?(?:\s*=.*)?",
+                declaration,
+            )
+            if parsed is None or declaration.startswith(
+                ("friend ", "static_assert ", "typedef ", "using ")
+            ):
+                continue
+            line = _line_number(cleaned, member_offset)
+            name = parsed.group("name")
+            class_record["data_members"].append(
+                {
+                    "name": name,
+                    "qualified_name": f"{class_record['qualified_name']}::{name}",
+                    "line": line,
+                    "end_line": line,
+                    "kind": "data_member",
+                    "type": parsed.group("type"),
+                }
+            )
 
     for pattern, kind in ((_CPP_USING_RE, "using"), (_CPP_TYPEDEF_RE, "typedef")):
         for match in pattern.finditer(cleaned):
@@ -785,11 +980,22 @@ def _analyze_cpp(source: str) -> dict[str, Any]:
             "parameters": _cpp_parameters(match.group("parameters")),
             "return_type": None if is_constructor else (head or None),
             "declaration": match.group("terminator") == ";",
+            "calls": [],
+            "call_sites": [],
         }
+        if owner:
+            record["owner"] = owner
         if match.group("terminator") == "{":
-            closing = _matching_brace(cleaned, match.end() - 1)
+            body_start = match.end()
+            closing = _matching_brace(cleaned, body_start - 1)
             if closing is not None:
                 record["end_line"] = _line_number(cleaned, closing)
+                record["call_sites"] = _cpp_qualified_call_sites(
+                    cleaned, body_start, closing
+                )
+                record["calls"] = sorted(
+                    {str(site["name"]) for site in record["call_sites"]}
+                )
         functions.append(record)
         if owner:
             if containing_class:
@@ -808,3 +1014,239 @@ def _analyze_cpp(source: str) -> dict[str, Any]:
         "issues": [],
         "platform_markers": _cpp_platform_markers(source),
     }
+
+
+def _project_call_relationships(
+    files: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    """Resolve method call sites whose caller and callee are project classes."""
+
+    names_by_file: dict[int, dict[str, list[dict[str, Any]]]] = {}
+    names_global: dict[str, list[dict[str, Any]]] = {}
+    imports_by_file: dict[int, dict[str, str]] = {}
+
+    def add_alias(
+        aliases: dict[str, list[dict[str, Any]]],
+        alias: str,
+        class_record: dict[str, Any],
+    ) -> None:
+        if alias:
+            aliases.setdefault(alias, []).append(class_record)
+
+    for file_index, file_model in enumerate(files):
+        relative_path = str(file_model.get("path", ""))
+        module_name = _python_module_name(relative_path)
+        local_names: dict[str, list[dict[str, Any]]] = {}
+        for class_model in file_model.get("classes", ()):
+            if not isinstance(class_model, dict):
+                continue
+            qualified_name = str(
+                class_model.get("qualified_name") or class_model.get("name") or ""
+            )
+            simple_name = str(class_model.get("name") or qualified_name)
+            class_record = {
+                "file_index": file_index,
+                "path": relative_path,
+                "name": qualified_name,
+                "simple_name": simple_name,
+                "model": class_model,
+                "methods": {},
+            }
+            aliases = {qualified_name, simple_name}
+            if file_model.get("language") == "python" and module_name:
+                aliases.update(
+                    {
+                        f"{module_name}.{qualified_name}",
+                        f"{module_name}.{simple_name}",
+                    }
+                )
+            for alias in aliases:
+                add_alias(local_names, alias, class_record)
+                add_alias(names_global, alias, class_record)
+        names_by_file[file_index] = local_names
+        imports_by_file[file_index] = _python_import_aliases(
+            file_model.get("imports"), relative_path
+        )
+
+    def resolve_class(reference: str, file_index: int) -> dict[str, Any] | None:
+        for candidate in _class_reference_candidates(reference):
+            imported = _expand_import_alias(
+                candidate, imports_by_file.get(file_index, {})
+            )
+            for resolved_name in (candidate, imported):
+                matches = names_by_file.get(file_index, {}).get(resolved_name, ())
+                if len(matches) == 1:
+                    return matches[0]
+                matches = names_global.get(resolved_name, ())
+                if len(matches) == 1:
+                    return matches[0]
+        return None
+
+    for file_index, file_model in enumerate(files):
+        for function in file_model.get("functions", ()):
+            if not isinstance(function, dict) or not function.get("owner"):
+                continue
+            owner = resolve_class(str(function["owner"]), file_index)
+            if owner is None:
+                continue
+            method_name = str(function.get("name") or "")
+            existing = owner["methods"].get(method_name)
+            if existing is None or (
+                existing.get("declaration") and not function.get("declaration")
+            ):
+                owner["methods"][method_name] = {
+                    **function,
+                    "path": str(file_model.get("path", "")),
+                }
+
+    relationships = []
+    seen: set[tuple[str, str, str, str, int]] = set()
+    for file_index, file_model in enumerate(files):
+        for function in file_model.get("functions", ()):
+            if not isinstance(function, dict) or not function.get("owner"):
+                continue
+            caller = resolve_class(str(function["owner"]), file_index)
+            if caller is None:
+                continue
+            call_sites = function.get("call_sites", ())
+            if not isinstance(call_sites, (list, tuple)):
+                continue
+            for call_site in call_sites:
+                if not isinstance(call_site, dict):
+                    continue
+                reference = str(
+                    call_site.get("receiver_type")
+                    or call_site.get("receiver")
+                    or ""
+                )
+                if reference.startswith(("self.", "cls.")):
+                    member_name = reference.split(".", 1)[1]
+                    member = next(
+                        (
+                            item
+                            for item in caller["model"].get("data_members", ())
+                            if isinstance(item, dict)
+                            and item.get("name") == member_name
+                            and item.get("type")
+                        ),
+                        None,
+                    )
+                    if member is not None:
+                        reference = str(member["type"])
+                callee = (
+                    caller
+                    if reference in {"self", "cls"}
+                    else resolve_class(reference, file_index)
+                )
+                method_name = str(call_site.get("method") or "")
+                if callee is None or callee is caller or not method_name:
+                    continue
+                callee_method = callee["methods"].get(method_name)
+                if callee_method is None:
+                    continue
+                try:
+                    call_line = max(1, int(call_site.get("line", 1)))
+                    callee_line = max(1, int(callee_method.get("line", 1)))
+                except (TypeError, ValueError):
+                    continue
+                relationship = {
+                    "caller_class": caller["name"],
+                    "callee_class": callee["name"],
+                    "caller_method": str(function.get("qualified_name") or ""),
+                    "callee_method": str(
+                        callee_method.get("qualified_name") or method_name
+                    ),
+                    "caller_path": caller["path"],
+                    "callee_path": callee["path"],
+                    "call_path": str(file_model.get("path", "")),
+                    "callee_method_path": str(callee_method.get("path", "")),
+                    "line": call_line,
+                    "callee_line": callee_line,
+                }
+                key = (
+                    relationship["caller_path"],
+                    relationship["caller_class"],
+                    relationship["callee_path"],
+                    relationship["callee_method"],
+                    call_line,
+                )
+                if key not in seen:
+                    seen.add(key)
+                    relationships.append(relationship)
+    return sorted(
+        relationships,
+        key=lambda item: (
+            str(item["caller_path"]),
+            int(item["line"]),
+            str(item["caller_class"]),
+            str(item["callee_class"]),
+            str(item["callee_method"]),
+        ),
+    )
+
+
+def _python_module_name(relative_path: str) -> str:
+    path = Path(relative_path)
+    if path.suffix != ".py":
+        return ""
+    parts = list(path.with_suffix("").parts)
+    if parts and parts[-1] == "__init__":
+        parts.pop()
+    return ".".join(parts)
+
+
+def _python_import_aliases(imports: Any, source_path: str) -> dict[str, str]:
+    aliases: dict[str, str] = {}
+    source_module = _python_module_name(source_path)
+    source_file = Path(source_path)
+    source_package = (
+        source_module.split(".")
+        if source_file.stem == "__init__"
+        else source_module.split(".")[:-1]
+    )
+    for imported in imports if isinstance(imports, (list, tuple)) else ():
+        if not isinstance(imported, dict):
+            continue
+        module = str(imported.get("module", ""))
+        name = str(imported.get("name", ""))
+        alias = str(imported.get("alias") or name)
+        if imported.get("kind") == "from_import":
+            try:
+                level = max(0, int(imported.get("level", 0)))
+            except (TypeError, ValueError):
+                level = 0
+            if level:
+                keep = max(0, len(source_package) - level + 1)
+                module = ".".join(
+                    part for part in (*source_package[:keep], module) if part
+                )
+            target = ".".join(part for part in (module, name) if part)
+        else:
+            target = name
+            alias = str(imported.get("alias") or name.split(".", 1)[0])
+        if alias and target:
+            aliases[alias] = target
+    return aliases
+
+
+def _expand_import_alias(reference: str, aliases: dict[str, str]) -> str:
+    first, separator, remainder = reference.partition(".")
+    target = aliases.get(first)
+    if target is None:
+        return reference
+    return target + (f".{remainder}" if separator else "")
+
+
+def _class_reference_candidates(reference: str) -> list[str]:
+    reference = reference.strip().strip("'\"")
+    if not reference:
+        return []
+    candidates = [reference]
+    optional = re.fullmatch(r"(?:typing\.)?Optional\[(.+)]", reference)
+    if optional:
+        candidates.insert(0, optional.group(1).strip())
+    if "|" in reference:
+        candidates = [
+            part.strip() for part in reference.split("|") if part.strip() != "None"
+        ] + candidates
+    return list(dict.fromkeys(candidates))
