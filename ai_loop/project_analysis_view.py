@@ -48,6 +48,8 @@ class DiagramNode:
     line: int
     end_line: int
     description: str
+    subtitle: str
+    group: str
     x: int
     y: int
     width: int
@@ -65,6 +67,8 @@ class DiagramNode:
                 "end_line": self.end_line,
             },
             "description": self.description,
+            "subtitle": self.subtitle,
+            "group": self.group,
             "x": self.x,
             "y": self.y,
             "width": self.width,
@@ -150,7 +154,7 @@ def _layout_diagram(
     """Place nodes in a stable grid without depending on a GUI toolkit."""
 
     node_width = 176
-    node_height = 58
+    node_height = 72 if any(node.get("subtitle") for node in nodes) else 58
     horizontal_gap = 54
     vertical_gap = 52
     margin = 28
@@ -169,6 +173,8 @@ def _layout_diagram(
                 line=int(node["line"]),
                 end_line=int(node["end_line"]),
                 description=str(node.get("description", "")),
+                subtitle=str(node.get("subtitle", "")),
+                group=str(node.get("group", "")),
                 x=margin + column * (node_width + horizontal_gap),
                 y=margin + row * (node_height + vertical_gap),
                 width=node_width,
@@ -191,6 +197,95 @@ def _grid_columns(node_count: int) -> int:
     while columns * columns < node_count:
         columns += 1
     return columns
+
+
+def _layout_grouped_diagram(
+    nodes: list[dict[str, Any]],
+    edges: list[DiagramEdge],
+    groups: list[dict[str, Any]],
+) -> dict[str, Any]:
+    """Lay out member nodes inside visibly separated class panels."""
+
+    node_width = 196
+    node_height = 72
+    node_gap = 14
+    panel_padding = 16
+    panel_header = 38
+    panel_gap = 30
+    margin = 28
+    panel_columns = min(3, max(1, _grid_columns(len(groups))))
+    panel_width = 2 * panel_padding + 2 * node_width + node_gap
+    nodes_by_group: dict[str, list[dict[str, Any]]] = {}
+    for node in nodes:
+        nodes_by_group.setdefault(str(node.get("group", "")), []).append(node)
+
+    laid_out: list[DiagramNode] = []
+    laid_out_groups: list[dict[str, Any]] = []
+    current_y = margin
+    for row_start in range(0, len(groups), panel_columns):
+        row_groups = groups[row_start : row_start + panel_columns]
+        panel_heights = []
+        for group in row_groups:
+            member_count = len(nodes_by_group.get(str(group["id"]), ()))
+            member_rows = max(1, (member_count + 1) // 2)
+            panel_heights.append(
+                panel_header
+                + 2 * panel_padding
+                + member_rows * node_height
+                + (member_rows - 1) * node_gap
+            )
+        row_height = max(panel_heights, default=panel_header + 2 * panel_padding)
+        for column, (group, panel_height) in enumerate(
+            zip(row_groups, panel_heights)
+        ):
+            group_id = str(group["id"])
+            panel_x = margin + column * (panel_width + panel_gap)
+            laid_out_groups.append(
+                {
+                    **group,
+                    "x": panel_x,
+                    "y": current_y,
+                    "width": panel_width,
+                    "height": panel_height,
+                }
+            )
+            for index, node in enumerate(nodes_by_group.get(group_id, ())):
+                node_column = index % 2
+                node_row = index // 2
+                laid_out.append(
+                    DiagramNode(
+                        node_id=str(node["id"]),
+                        label=str(node["label"]),
+                        kind=str(node["kind"]),
+                        tree_node_id=str(node["tree_node_id"]),
+                        source_path=str(node["source_path"]),
+                        line=int(node["line"]),
+                        end_line=int(node["end_line"]),
+                        description=str(node.get("description", "")),
+                        subtitle=str(node.get("subtitle", "")),
+                        group=group_id,
+                        x=panel_x + panel_padding + node_column * (
+                            node_width + node_gap
+                        ),
+                        y=current_y + panel_header + panel_padding + node_row * (
+                            node_height + node_gap
+                        ),
+                        width=node_width,
+                        height=node_height,
+                    )
+                )
+        current_y += row_height + panel_gap
+
+    used_columns = min(panel_columns, max(1, len(groups)))
+    width = (
+        2 * margin
+        + used_columns * panel_width
+        + (used_columns - 1) * panel_gap
+    )
+    height = current_y - panel_gap + margin if groups else 2 * margin
+    diagram = ProjectDiagram(tuple(laid_out), tuple(edges), width, height).as_dict()
+    diagram["groups"] = laid_out_groups
+    return diagram
 
 
 class ProjectAnalysisController:
@@ -408,40 +503,22 @@ class ProjectAnalysisController:
                     edges.append(DiagramEdge(*edge_key))
         return _layout_diagram(nodes, edges).as_dict()
 
-    def call_graph_diagram(self) -> dict[str, Any]:
-        """Return class nodes and resolved project-class method-call edges."""
+    def call_graph_diagram(
+        self,
+        *,
+        include_unconnected: bool = True,
+        selected_class_id: str | None = None,
+    ) -> dict[str, Any]:
+        """Compatibility alias for :meth:`member_graph_diagram`."""
 
-        class_diagram = self.class_diagram()
-        nodes = []
-        node_ids: dict[tuple[str, str], str] = {}
-        for node in class_diagram.get("nodes", ()):
-            if not isinstance(node, dict):
-                continue
-            location = node.get("source_location", {})
-            if not isinstance(location, dict):
-                continue
-            source_path = Path(str(location.get("path", ""))).as_posix()
-            label = str(node.get("label", ""))
-            node_id = str(node.get("id", ""))
-            if not node_id:
-                continue
-            nodes.append(
-                {
-                    "id": node_id,
-                    "label": label,
-                    "kind": "class",
-                    "tree_node_id": str(node.get("tree_node_id", node_id)),
-                    "source_path": source_path,
-                    "line": self._line_number(location.get("line"), 1),
-                    "end_line": self._line_number(
-                        location.get("end_line"),
-                        self._line_number(location.get("line"), 1),
-                    ),
-                    "description": str(node.get("description", "")),
-                }
-            )
-            node_ids[(source_path, label)] = node_id
+        return self.member_graph_diagram(selected_class_id=selected_class_id)
 
+    def member_graph_diagram(
+        self, *, selected_class_id: str | None = None
+    ) -> dict[str, Any]:
+        """Return class panels containing data members, methods, and call edges."""
+
+        nodes, node_ids, global_node_ids, groups = self._member_diagram_nodes()
         edges: list[DiagramEdge] = []
         seen_edges: set[tuple[str, str, str, int]] = set()
         relationships = self.model.get("call_relationships", ())
@@ -450,13 +527,23 @@ class ProjectAnalysisController:
         ):
             if not isinstance(relationship, dict):
                 continue
-            caller_path = Path(str(relationship.get("caller_path", ""))).as_posix()
-            callee_path = Path(str(relationship.get("callee_path", ""))).as_posix()
-            source = node_ids.get(
-                (caller_path, str(relationship.get("caller_class", "")))
+            caller_method = str(relationship.get("caller_method", ""))
+            callee_method = str(relationship.get("callee_method", ""))
+            source = self._resolve_method_node(
+                node_ids,
+                global_node_ids,
+                caller_method,
+                relationship.get("line"),
+                relationship.get("call_path"),
+                relationship.get("caller_path"),
             )
-            target = node_ids.get(
-                (callee_path, str(relationship.get("callee_class", "")))
+            target = self._resolve_method_node(
+                node_ids,
+                global_node_ids,
+                callee_method,
+                relationship.get("callee_line"),
+                relationship.get("callee_method_path"),
+                relationship.get("callee_path"),
             )
             if source is None or target is None:
                 continue
@@ -464,7 +551,6 @@ class ProjectAnalysisController:
             callee_line = self._line_number(
                 relationship.get("callee_line"), call_line
             )
-            callee_method = str(relationship.get("callee_method", ""))
             edge_key = (source, target, callee_method, call_line)
             if edge_key in seen_edges:
                 continue
@@ -479,7 +565,200 @@ class ProjectAnalysisController:
                     callee_line=callee_line,
                 )
             )
-        return _layout_diagram(nodes, edges).as_dict()
+
+        total_member_count = len(nodes)
+        total_class_count = len(groups)
+        focused_group = next(
+            (group for group in groups if group["id"] == selected_class_id),
+            None,
+        )
+        own_member_count = 0
+        external_member_count = 0
+        if focused_group is not None:
+            own_ids = {
+                str(node["id"])
+                for node in nodes
+                if node.get("group") == selected_class_id
+            }
+            own_member_count = len(own_ids)
+            edges = [edge for edge in edges if edge.source in own_ids]
+            external_ids = {edge.target for edge in edges if edge.target not in own_ids}
+            external_member_count = len(external_ids)
+            included_ids = own_ids | external_ids
+            nodes = [node for node in nodes if str(node["id"]) in included_ids]
+            included_groups = {
+                str(node.get("group", "")) for node in nodes
+            } | {selected_class_id}
+            groups = [group for group in groups if group["id"] in included_groups]
+
+        incoming = {str(node["id"]): 0 for node in nodes}
+        outgoing = {str(node["id"]): 0 for node in nodes}
+        for edge in edges:
+            outgoing[edge.source] += 1
+            incoming[edge.target] += 1
+        for node in nodes:
+            node_id = str(node["id"])
+            if node.get("kind") == "method":
+                node["subtitle"] = (
+                    f"{incoming[node_id]} incoming · {outgoing[node_id]} outgoing"
+                )
+
+        diagram = _layout_grouped_diagram(nodes, edges, groups)
+        diagram["total_member_count"] = total_member_count
+        diagram["total_class_count"] = total_class_count
+        diagram["shown_member_count"] = len(nodes)
+        diagram["focused_class_id"] = (
+            str(focused_group["id"]) if focused_group is not None else None
+        )
+        if focused_group is not None:
+            external_group_count = sum(
+                group["id"] != selected_class_id for group in groups
+            )
+            diagram["summary"] = (
+                f"{focused_group['label']}: {own_member_count} direct "
+                f"{self._plural(own_member_count, 'member')}; "
+                f"{external_member_count} called "
+                f"{self._plural(external_member_count, 'member')} in "
+                f"{external_group_count} other "
+                f"{self._plural(external_group_count, 'class')}."
+            )
+        else:
+            edge_count = len(edges)
+            diagram["summary"] = (
+                f"Showing {total_member_count} "
+                f"{self._plural(total_member_count, 'member')} across "
+                f"{total_class_count} {self._plural(total_class_count, 'class')} "
+                f"and {edge_count} resolved {self._plural(edge_count, 'call')}."
+            )
+        return diagram
+
+    def _member_diagram_nodes(
+        self,
+    ) -> tuple[
+        list[dict[str, Any]],
+        dict[tuple[str, str], list[str]],
+        dict[str, list[str]],
+        list[dict[str, Any]],
+    ]:
+        """Build member nodes, class panels, and method lookup aliases."""
+
+        nodes: list[dict[str, Any]] = []
+        node_ids: dict[tuple[str, str], list[str]] = {}
+        global_node_ids: dict[str, list[str]] = {}
+        groups: list[dict[str, Any]] = []
+        for file_index, file_model in enumerate(self._sorted_files()):
+            class_path = Path(str(file_model.get("path", ""))).as_posix()
+            for class_index, class_symbol in enumerate(file_model.get("classes", ())):
+                class_node = self.node(f"file:{file_index}:classes:{class_index}")
+                if class_node is None:
+                    continue
+                class_name = str(
+                    class_symbol.get("qualified_name")
+                    or class_symbol.get("name")
+                    or class_node.label
+                )
+                groups.append(
+                    {
+                        "id": class_node.node_id,
+                        "label": class_name,
+                        "tree_node_id": class_node.node_id,
+                        "description": class_node.description,
+                    }
+                )
+                method_names = tuple(map(str, class_symbol.get("methods", ())))
+                for member_node in class_node.children:
+                    if member_node.kind not in {"data_member", "method"}:
+                        continue
+                    location = self.resolve_selection(member_node.node_id)
+                    if location is None:
+                        continue
+                    if member_node.kind == "method":
+                        qualified_name = next(
+                            (
+                                name
+                                for name in method_names
+                                if self._method_simple_name(name) == member_node.label
+                            ),
+                            self._qualified_method_name(
+                                class_name, member_node.label
+                            ),
+                        )
+                    else:
+                        qualified_name = self._qualified_method_name(
+                            class_name, member_node.label
+                        )
+                    source_path = location.path.relative_to(
+                        self.project_path
+                    ).as_posix()
+                    nodes.append(
+                        {
+                            "id": member_node.node_id,
+                            "label": member_node.label,
+                            "kind": member_node.kind,
+                            "tree_node_id": member_node.node_id,
+                            "source_path": source_path,
+                            "line": location.line,
+                            "end_line": location.end_line,
+                            "description": member_node.description,
+                            "subtitle": (
+                                member_node.summary.removeprefix(
+                                    "data member; "
+                                )
+                                if member_node.kind == "data_member"
+                                else ""
+                            ),
+                            "group": class_node.node_id,
+                        }
+                    )
+                    if member_node.kind == "method":
+                        for path in {class_path, source_path}:
+                            node_ids.setdefault((path, qualified_name), []).append(
+                                member_node.node_id
+                            )
+                        global_node_ids.setdefault(qualified_name, []).append(
+                            member_node.node_id
+                        )
+        return nodes, node_ids, global_node_ids, groups
+
+    def _resolve_method_node(
+        self,
+        node_ids: dict[tuple[str, str], list[str]],
+        global_node_ids: dict[str, list[str]],
+        qualified_name: str,
+        line: Any,
+        *paths: Any,
+    ) -> str | None:
+        def matching_node(matches: list[str] | tuple[str, ...]) -> str | None:
+            unique_matches = tuple(dict.fromkeys(matches))
+            if len(unique_matches) == 1:
+                return unique_matches[0]
+            selected_line = self._line_number(line, 1)
+            line_matches = []
+            for node_id in unique_matches:
+                location = self.resolve_selection(node_id)
+                if (
+                    location is not None
+                    and location.line <= selected_line <= location.end_line
+                ):
+                    line_matches.append(node_id)
+            return line_matches[0] if len(line_matches) == 1 else None
+
+        for value in paths:
+            path = Path(str(value or "")).as_posix()
+            matches = node_ids.get((path, qualified_name), ())
+            if selected := matching_node(matches):
+                return selected
+        matches = global_node_ids.get(qualified_name, ())
+        return matching_node(matches)
+
+    @staticmethod
+    def _method_simple_name(qualified_name: str) -> str:
+        return re.split(r"::|\.", qualified_name)[-1]
+
+    @staticmethod
+    def _qualified_method_name(class_name: str, method_name: str) -> str:
+        separator = "::" if "::" in class_name else "."
+        return f"{class_name}{separator}{method_name}"
 
     def build_tree(self) -> ProjectTreeNode:
         """Build and return the complete project/file/symbol hierarchy."""
@@ -933,7 +1212,9 @@ class ProjectAnalysisController:
                 description=(
                     self._method_description(displayed_member, member)
                     if member_kind == "method"
-                    else ""
+                    else self._data_member_description(
+                        displayed_member, class_name
+                    )
                 ),
             )
             self._locations[node_id] = SourceLocation(
@@ -942,6 +1223,24 @@ class ProjectAnalysisController:
             self._nodes[node_id] = node
             nodes.append(node)
         return tuple(nodes)
+
+    def _data_member_description(
+        self, symbol: dict[str, Any], class_name: str
+    ) -> str:
+        """Return a concise explanation for a class data member."""
+
+        name = str(symbol.get("name") or "member")
+        purpose = self._identifier_purpose(name)
+        sentences = [
+            f"{class_name}.{name} stores {purpose} state for {class_name}."
+        ]
+        if data_type := symbol.get("type"):
+            sentences.append(
+                f"Its declared or inferred type is {self._metadata_text(data_type)}."
+            )
+        else:
+            sentences.append("The analyzer could not determine its type statically.")
+        return " ".join(sentences)
 
     def _class_description(
         self,
@@ -1111,7 +1410,13 @@ class ProjectAnalysisController:
 
     @staticmethod
     def _plural(count: int, singular: str) -> str:
-        return singular if count == 1 else f"{singular}s"
+        if count == 1:
+            return singular
+        if singular.endswith(("s", "x", "z", "ch", "sh")):
+            return f"{singular}es"
+        if singular.endswith("y") and singular[-2:-1].lower() not in "aeiou":
+            return f"{singular[:-1]}ies"
+        return f"{singular}s"
 
     def _build_issue_group(
         self,

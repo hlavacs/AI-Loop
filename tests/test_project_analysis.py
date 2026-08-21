@@ -88,6 +88,92 @@ def test_analyze_project_attributes_python_calls_between_project_classes(
     ]
 
 
+def test_analyze_project_attributes_calls_between_methods_of_same_class(
+    tmp_path: Path,
+) -> None:
+    (tmp_path / "workflow.py").write_text(
+        "class Workflow:\n"
+        "    def run(self) -> str:\n"
+        "        return self.finish()\n"
+        "\n"
+        "    def finish(self) -> str:\n"
+        "        return 'done'\n",
+        encoding="utf-8",
+    )
+
+    model = analyze_project(tmp_path)
+
+    assert model["call_relationships"] == [
+        {
+            "caller_class": "Workflow",
+            "callee_class": "Workflow",
+            "caller_method": "Workflow.run",
+            "callee_method": "Workflow.finish",
+            "caller_path": "workflow.py",
+            "callee_path": "workflow.py",
+            "call_path": "workflow.py",
+            "callee_method_path": "workflow.py",
+            "line": 3,
+            "callee_line": 5,
+        }
+    ]
+    diagram = ProjectAnalysisController(model).call_graph_diagram()
+    nodes_by_label = {node["label"]: node for node in diagram["nodes"]}
+    assert set(nodes_by_label) == {"run", "finish"}
+    assert diagram["edges"][0]["source"] == nodes_by_label["run"]["id"]
+    assert diagram["edges"][0]["target"] == nodes_by_label["finish"]["id"]
+    assert [group["label"] for group in diagram["groups"]] == ["Workflow"]
+
+
+def test_analyze_project_discovers_slots_destructured_and_augmented_members(
+    tmp_path: Path,
+) -> None:
+    (tmp_path / "members.py").write_text(
+        "class Slotted:\n"
+        "    __slots__ = ('name', 'count')\n"
+        "\n"
+        "class Measurements:\n"
+        "    def update(self) -> None:\n"
+        "        self.left, self.right = (1, 2)\n"
+        "        self.total += 1\n",
+        encoding="utf-8",
+    )
+
+    model = analyze_project(tmp_path)
+    classes = {
+        class_model["name"]: class_model
+        for class_model in model["files"][0]["classes"]
+    }
+
+    assert [
+        member["name"] for member in classes["Slotted"]["data_members"]
+    ] == ["name", "count"]
+    assert [
+        member["name"] for member in classes["Measurements"]["data_members"]
+    ] == ["left", "right", "total"]
+
+
+def test_analyze_project_discovers_cpp_brace_initialized_members(
+    tmp_path: Path,
+) -> None:
+    (tmp_path / "sample.hpp").write_text(
+        "class Sample {\n"
+        "public:\n"
+        "    int count{0};\n"
+        "    std::string name{\"ready\"};\n"
+        "};\n",
+        encoding="utf-8",
+    )
+
+    model = analyze_project(tmp_path)
+    sample = model["files"][0]["classes"][0]
+
+    assert [member["name"] for member in sample["data_members"]] == [
+        "count",
+        "name",
+    ]
+
+
 def test_analyze_project_discovers_cpp_hierarchy_and_metadata() -> None:
     model = analyze_project(FIXTURE_PROJECT)
     header = _file_by_path(model, "include/widget.hpp")
@@ -524,6 +610,9 @@ def test_project_analysis_gui_click_navigation() -> None:
     gui.analysis_tree = FakeTree()
     gui.analysis_detail_notebook = FakeNotebook()
     gui.analysis_source_frame = object()
+    gui.analysis_member_frame = object()
+    gui._analysis_member_class_id = None
+    gui._refresh_analysis_member_diagram = lambda: None
     shown: list[str] = []
     gui._show_analysis_tree_node = shown.append
 
@@ -534,7 +623,7 @@ def test_project_analysis_gui_click_navigation() -> None:
     assert gui.analysis_tree.selected == [widget.node_id, method.node_id]
     assert gui.analysis_tree.focused == [widget.node_id, method.node_id]
     assert gui.analysis_detail_notebook.selected == [
-        gui.analysis_source_frame,
+        gui.analysis_member_frame,
         gui.analysis_source_frame,
     ]
     assert double_click_result == "break"
@@ -582,6 +671,36 @@ def test_project_analysis_gui_hover_uses_controller_descriptions() -> None:
         (gui.analysis_tree, method.description),
     ]
     assert gui._analysis_tooltip_node_id is None
+
+
+def test_project_analysis_gui_class_selection_focuses_member_graph() -> None:
+    from ai_loop_gui import AiLoopGui
+
+    controller = ProjectAnalysisController(analyze_project(FIXTURE_PROJECT))
+    widget = _find_node(controller.root_node, kind="class", label="Widget")
+    assert widget is not None
+
+    class FakeTree:
+        def selection(self) -> tuple[str, ...]:
+            return (widget.node_id,)
+
+    gui = AiLoopGui.__new__(AiLoopGui)
+    gui._analysis_controller = controller
+    gui._analysis_member_class_id = None
+    gui.analysis_tree = FakeTree()
+    refreshed: list[str | None] = []
+    shown: list[str] = []
+    gui._refresh_analysis_member_diagram = lambda: refreshed.append(
+        gui._analysis_member_class_id
+    )
+    gui._show_analysis_tree_node = shown.append
+
+    gui.on_analysis_tree_selected()
+    gui._show_all_analysis_class_members()
+
+    assert refreshed == [widget.node_id, None]
+    assert shown == [widget.node_id]
+    assert gui._analysis_member_class_id is None
 
 
 def test_project_analysis_controller_orders_class_members_by_source(
@@ -717,6 +836,9 @@ def test_project_analysis_controller_builds_serializable_call_graph(
         "    def ping(self) -> str:\n"
         "        return 'pong'\n"
         "\n"
+        "    def idle(self) -> None:\n"
+        "        pass\n"
+        "\n"
         "class Client:\n"
         "    def run(self, service: Service) -> str:\n"
         "        return service.ping()\n",
@@ -728,18 +850,127 @@ def test_project_analysis_controller_builds_serializable_call_graph(
     nodes_by_label = {node["label"]: node for node in diagram["nodes"]}
 
     assert json.loads(json.dumps(diagram)) == diagram
-    assert set(nodes_by_label) == {"Service", "Client"}
-    service_description = nodes_by_label["Service"]["description"]
-    assert "Service is a class" in service_description
+    assert set(nodes_by_label) == {"ping", "idle", "run"}
+    assert {node["kind"] for node in diagram["nodes"]} == {"method"}
+    assert diagram["total_member_count"] == 3
+    assert diagram["total_class_count"] == 2
+    assert diagram["shown_member_count"] == 3
+    assert diagram["summary"] == (
+        "Showing 3 members across 2 classes and 1 resolved call."
+    )
+    assert {group["label"] for group in diagram["groups"]} == {
+        "Service",
+        "Client",
+    }
+    service_description = nodes_by_label["ping"]["description"]
+    assert "Service.ping is a method" in service_description
     assert 2 <= len(re.findall(r"[.!?](?=\s|$)", service_description)) <= 5
+    assert nodes_by_label["ping"]["subtitle"] == (
+        "1 incoming · 0 outgoing"
+    )
+    assert nodes_by_label["run"]["subtitle"] == (
+        "0 incoming · 1 outgoing"
+    )
+    assert ":member:" in nodes_by_label["ping"]["tree_node_id"]
+    assert nodes_by_label["ping"]["source_location"] == {
+        "path": "calls.py",
+        "line": 2,
+        "end_line": 3,
+    }
     assert {
-        "source": nodes_by_label["Client"]["id"],
-        "target": nodes_by_label["Service"]["id"],
+        "source": nodes_by_label["run"]["id"],
+        "target": nodes_by_label["ping"]["id"],
         "kind": "calls",
         "callee_method": "Service.ping",
-        "call_line": 7,
+        "call_line": 10,
         "callee_line": 2,
     } in diagram["edges"]
+
+    client_group = next(
+        group for group in diagram["groups"] if group["label"] == "Client"
+    )
+    focused = controller.member_graph_diagram(
+        selected_class_id=client_group["tree_node_id"]
+    )
+    assert {node["label"] for node in focused["nodes"]} == {"run", "ping"}
+    assert {group["label"] for group in focused["groups"]} == {
+        "Client",
+        "Service",
+    }
+    assert focused["summary"] == (
+        "Client: 1 direct member; 1 called member in 1 other class."
+    )
+
+
+def test_call_graph_can_reveal_methods_when_no_calls_are_resolved(
+    tmp_path: Path,
+) -> None:
+    (tmp_path / "utility.py").write_text(
+        "class Utility:\n"
+        "    def idle(self) -> None:\n"
+        "        pass\n",
+        encoding="utf-8",
+    )
+    controller = ProjectAnalysisController(analyze_project(tmp_path))
+
+    diagram = controller.member_graph_diagram()
+
+    assert [node["label"] for node in diagram["nodes"]] == ["idle"]
+    assert diagram["summary"] == (
+        "Showing 1 member across 1 class and 0 resolved calls."
+    )
+
+
+def test_member_graph_includes_fields_and_focuses_outgoing_class_calls(
+    tmp_path: Path,
+) -> None:
+    (tmp_path / "store.py").write_text(
+        "class Store:\n"
+        "    items: list\n"
+        "    def add(self) -> None:\n"
+        "        pass\n"
+        "\n"
+        "class View:\n"
+        "    title: str\n"
+        "    def __init__(self, store: Store) -> None:\n"
+        "        self.store = store\n"
+        "    def render(self) -> None:\n"
+        "        self.store.add()\n",
+        encoding="utf-8",
+    )
+    controller = ProjectAnalysisController(analyze_project(tmp_path))
+
+    all_members = controller.member_graph_diagram()
+    nodes = {
+        (node["group"], node["label"]): node for node in all_members["nodes"]
+    }
+    groups = {group["label"]: group for group in all_members["groups"]}
+
+    assert len(nodes) == 6
+    assert nodes[(groups["Store"]["id"], "items")]["kind"] == "data_member"
+    assert nodes[(groups["View"]["id"], "title")]["kind"] == "data_member"
+    assert nodes[(groups["View"]["id"], "store")]["subtitle"] == "type: Store"
+    field_description = nodes[(groups["View"]["id"], "title")]["description"]
+    assert "View.title stores title state" in field_description
+    assert len(re.findall(r"[.!?](?=\s|$)", field_description)) == 2
+
+    focused = controller.member_graph_diagram(
+        selected_class_id=groups["View"]["tree_node_id"]
+    )
+    focused_nodes = {
+        (node["group"], node["label"]) for node in focused["nodes"]
+    }
+    focused_groups = {group["label"]: group for group in focused["groups"]}
+    assert focused_nodes == {
+        (focused_groups["View"]["id"], "title"),
+        (focused_groups["View"]["id"], "store"),
+        (focused_groups["View"]["id"], "__init__"),
+        (focused_groups["View"]["id"], "render"),
+        (focused_groups["Store"]["id"], "add"),
+    }
+    assert focused["summary"] == (
+        "View: 4 direct members; 1 called member in 1 other class."
+    )
 
 
 def test_project_analysis_controller_builds_local_dependency_diagram() -> None:

@@ -290,6 +290,7 @@ class _PythonSymbols(ast.NodeVisitor):
         self.imports: list[dict[str, Any]] = []
         self._scopes: list[tuple[str, str]] = []
         self._class_records: list[dict[str, Any]] = []
+        self._function_types: list[dict[str, str]] = []
 
     def _qualified(self, name: str) -> str:
         return ".".join([*(scope[1] for scope in self._scopes), name])
@@ -336,14 +337,17 @@ class _PythonSymbols(ast.NodeVisitor):
             if is_method and self._class_records
             else None
         )
-        parameters = [
-            argument.arg
-            for argument in [
-                *node.args.posonlyargs,
-                *node.args.args,
-                *node.args.kwonlyargs,
-            ]
+        arguments = [
+            *node.args.posonlyargs,
+            *node.args.args,
+            *node.args.kwonlyargs,
         ]
+        parameters = [argument.arg for argument in arguments]
+        parameter_types = {
+            argument.arg: annotation
+            for argument in arguments
+            if (annotation := _expression_name(argument.annotation))
+        }
         if node.args.vararg:
             parameters.append(f"*{node.args.vararg.arg}")
         if node.args.kwarg:
@@ -377,12 +381,21 @@ class _PythonSymbols(ast.NodeVisitor):
             )
 
         self._scopes.append(("function", node.name))
+        self._function_types.append(parameter_types)
         self.generic_visit(node)
+        self._function_types.pop()
         self._scopes.pop()
 
     def visit_AnnAssign(self, node: ast.AnnAssign) -> None:
         scope_kind = self._scopes[-1][0] if self._scopes else "module"
         annotation = _expression_name(node.annotation)
+        if (
+            scope_kind == "function"
+            and self._function_types
+            and isinstance(node.target, ast.Name)
+            and annotation
+        ):
+            self._function_types[-1][node.target.id] = annotation
         if self._class_records:
             self._record_data_member(node.target, annotation, node.lineno)
         if scope_kind in {"module", "class"}:
@@ -403,18 +416,55 @@ class _PythonSymbols(ast.NodeVisitor):
 
     def visit_Assign(self, node: ast.Assign) -> None:
         if self._class_records:
+            if self._record_slots(node):
+                self.generic_visit(node)
+                return
             inferred_type = (
                 _expression_name(node.value.func)
                 if isinstance(node.value, ast.Call)
+                else type(node.value.value).__name__
+                if isinstance(node.value, ast.Constant)
+                else type(node.value).__name__.lower()
+                if isinstance(node.value, (ast.Dict, ast.List, ast.Set, ast.Tuple))
+                else self._function_types[-1].get(node.value.id)
+                if isinstance(node.value, ast.Name) and self._function_types
                 else None
             )
             for target in node.targets:
                 self._record_data_member(target, inferred_type, node.lineno)
         self.generic_visit(node)
 
+    def visit_AugAssign(self, node: ast.AugAssign) -> None:
+        if self._class_records:
+            self._record_data_member(node.target, None, node.lineno)
+        self.generic_visit(node)
+
+    def _record_slots(self, node: ast.Assign) -> bool:
+        """Record names declared through a class-level ``__slots__`` value."""
+
+        scope_kind = self._scopes[-1][0] if self._scopes else "module"
+        if scope_kind != "class" or not any(
+            isinstance(target, ast.Name) and target.id == "__slots__"
+            for target in node.targets
+        ):
+            return False
+        values = (
+            node.value.elts
+            if isinstance(node.value, (ast.List, ast.Tuple, ast.Set))
+            else (node.value,)
+        )
+        for value in values:
+            if isinstance(value, ast.Constant) and isinstance(value.value, str):
+                self._record_named_data_member(value.value, None, node.lineno)
+        return True
+
     def _record_data_member(
         self, target: ast.AST, annotation: str | None, line: int
     ) -> None:
+        if isinstance(target, (ast.List, ast.Tuple)):
+            for element in target.elts:
+                self._record_data_member(element, annotation, line)
+            return
         scope_kind = self._scopes[-1][0] if self._scopes else "module"
         if scope_kind == "class" and isinstance(target, ast.Name):
             name = target.id
@@ -427,6 +477,11 @@ class _PythonSymbols(ast.NodeVisitor):
             name = target.attr
         else:
             return
+        self._record_named_data_member(name, annotation, line)
+
+    def _record_named_data_member(
+        self, name: str, annotation: str | None, line: int
+    ) -> None:
         class_record = self._class_records[-1]
         qualified_name = f"{class_record['qualified_name']}.{name}"
         if any(
@@ -743,7 +798,7 @@ _CPP_FUNCTION_RE = re.compile(
     r"noexcept(?:\s*\([^)]*\))?\s*|->\s*[^;{]+\s*)*)"
     r"(?P<terminator>[;{])"
 )
-_CPP_DATA_MEMBER_RE = re.compile(r"(?m)^[ \t]*(?P<declaration>[^#;{}()\n]+);")
+_CPP_DATA_MEMBER_RE = re.compile(r"(?m)^[ \t]*(?P<declaration>[^#;()\n]+);")
 _CPP_QUALIFIED_CALL_RE = re.compile(
     r"(?<![\w:])(?P<class>(?:[A-Za-z_]\w*::)*[A-Za-z_]\w*)::"
     r"(?P<method>[A-Za-z_]\w*)\s*\("
@@ -938,7 +993,7 @@ def _analyze_cpp(source: str) -> dict[str, Any]:
             declaration = " ".join(match.group("declaration").split())
             parsed = re.fullmatch(
                 r"(?P<type>.+?\S)\s+[*&]?(?P<name>[A-Za-z_]\w*)"
-                r"(?:\s*\[[^\]]*\])?(?:\s*=.*)?",
+                r"(?:\s*\[[^\]]*\])?(?:\s*(?:=.*|\{.*\}))?",
                 declaration,
             )
             if parsed is None or declaration.startswith(
@@ -1168,7 +1223,7 @@ def _project_call_relationships(
                     else resolve_class(reference, file_index)
                 )
                 method_name = str(call_site.get("method") or "")
-                if callee is None or callee is caller or not method_name:
+                if callee is None or not method_name:
                     continue
                 callee_method = callee["methods"].get(method_name)
                 if callee_method is None:

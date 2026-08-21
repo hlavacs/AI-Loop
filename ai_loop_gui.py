@@ -1493,6 +1493,7 @@ class AiLoopGui(tk.Tk):
         self._verification_last_loaded_at = 0.0
         self._verification_last_loaded_job: str | None = None
         self._analysis_controller: ProjectAnalysisController | None = None
+        self._analysis_member_class_id: str | None = None
         self._analysis_tooltip_node_id: str | None = None
         self._analysis_running = False
         self._redis_sampler_inflight = False
@@ -1813,7 +1814,7 @@ class AiLoopGui(tk.Tk):
         self.help_widget(
             ttk.Button(
                 excluded_controls,
-                text="Add folder…",
+                text="Exclude folder…",
                 command=self.browse_analysis_excluded_folder,
             ),
             "Choose a folder inside the project to exclude from analysis.",
@@ -1861,10 +1862,11 @@ class AiLoopGui(tk.Tk):
         paned.add(detail_notebook, weight=3)
         detail_notebook.add(source_frame, text="Source")
         detail_notebook.add(class_diagram_frame, text="Class Diagram")
-        detail_notebook.add(call_graph_frame, text="Method Calls")
+        detail_notebook.add(call_graph_frame, text="Class Members")
         detail_notebook.add(dependency_diagram_frame, text="File Dependencies")
         self.analysis_detail_notebook = detail_notebook
         self.analysis_source_frame = source_frame
+        self.analysis_member_frame = call_graph_frame
         tree_frame.rowconfigure(0, weight=1)
         tree_frame.columnconfigure(0, weight=1)
         source_frame.rowconfigure(1, weight=1)
@@ -1927,9 +1929,32 @@ class AiLoopGui(tk.Tk):
             class_diagram_frame,
             "Run an analysis to see class inheritance.",
         )
+        call_graph_frame.rowconfigure(1, weight=1)
+        call_graph_frame.columnconfigure(0, weight=1)
+        call_graph_controls = ttk.Frame(call_graph_frame)
+        call_graph_controls.grid(row=0, column=0, sticky="ew", pady=(0, 4))
+        call_graph_controls.columnconfigure(0, weight=1)
+        self.analysis_call_summary_var = tk.StringVar(
+            value="Run an analysis to see class fields, methods, and calls."
+        )
+        ttk.Label(
+            call_graph_controls,
+            textvariable=self.analysis_call_summary_var,
+            anchor="w",
+        ).grid(row=0, column=0, sticky="ew")
+        self.help_widget(
+            ttk.Button(
+                call_graph_controls,
+                text="Show all classes",
+                command=self._show_all_analysis_class_members,
+            ),
+            "Clear the selected-class focus and display members of every class.",
+        ).grid(row=0, column=1, padx=(8, 0), sticky="e")
+        call_graph_canvas_frame = ttk.Frame(call_graph_frame)
+        call_graph_canvas_frame.grid(row=1, column=0, sticky="nsew")
         self.analysis_call_canvas = self._build_analysis_diagram_canvas(
-            call_graph_frame,
-            "Run an analysis to see calls between project classes.",
+            call_graph_canvas_frame,
+            "Run an analysis to see class fields, methods, and calls.",
         )
         self.analysis_dependency_canvas = self._build_analysis_diagram_canvas(
             dependency_diagram_frame,
@@ -2077,6 +2102,7 @@ class AiLoopGui(tk.Tk):
             messagebox.showerror("Project Analysis Failed", str(exc))
             return
         self._analysis_controller = controller
+        self._analysis_member_class_id = None
         self.on_analysis_tree_leave()
         for item in self.analysis_tree.get_children(""):
             self.analysis_tree.delete(item)
@@ -2088,12 +2114,36 @@ class AiLoopGui(tk.Tk):
         self._render_analysis_diagram(
             self.analysis_class_canvas, controller.class_diagram()
         )
-        self._render_analysis_diagram(
-            self.analysis_call_canvas, controller.call_graph_diagram()
-        )
+        self._refresh_analysis_member_diagram()
         self._render_analysis_diagram(
             self.analysis_dependency_canvas, controller.dependency_diagram()
         )
+
+    def _refresh_analysis_member_diagram(self) -> None:
+        """Refresh all class members or the currently focused class."""
+
+        controller = self._analysis_controller
+        if controller is None:
+            return
+        diagram = controller.member_graph_diagram(
+            selected_class_id=self._analysis_member_class_id
+        )
+        self.analysis_call_summary_var.set(str(diagram.get("summary", "")))
+        self._render_analysis_diagram(self.analysis_call_canvas, diagram)
+
+    def _focus_analysis_member_class(self, node_id: str) -> None:
+        """Focus the member graph on one selected class."""
+
+        if node_id == getattr(self, "_analysis_member_class_id", None):
+            return
+        self._analysis_member_class_id = node_id
+        self._refresh_analysis_member_diagram()
+
+    def _show_all_analysis_class_members(self) -> None:
+        """Clear class focus and restore the complete member diagram."""
+
+        self._analysis_member_class_id = None
+        self._refresh_analysis_member_diagram()
 
     def _render_analysis_diagram(
         self, canvas: tk.Canvas, diagram: dict[str, Any]
@@ -2107,6 +2157,54 @@ class AiLoopGui(tk.Tk):
             for node in diagram.get("nodes", ())
             if isinstance(node, dict) and "id" in node
         }
+        for index, group in enumerate(diagram.get("groups", ())):
+            if not isinstance(group, dict):
+                continue
+            x = int(group.get("x", 0))
+            y = int(group.get("y", 0))
+            width = int(group.get("width", 1))
+            height = int(group.get("height", 1))
+            group_tag = f"analysis_diagram_group_{index}"
+            canvas.create_rectangle(
+                x,
+                y,
+                x + width,
+                y + height,
+                fill="#f1f4f8",
+                outline="#8796a8",
+                width=2,
+                tags=(group_tag,),
+            )
+            canvas.create_text(
+                x + 14,
+                y + 19,
+                text=str(group.get("label", "Class")),
+                anchor="w",
+                fill="#26384b",
+                font=("TkDefaultFont", 10, "bold"),
+                tags=(group_tag,),
+            )
+            tree_node_id = str(group.get("tree_node_id", group.get("id", "")))
+            description = str(group.get("description", ""))
+            canvas.tag_bind(
+                group_tag,
+                "<Button-1>",
+                lambda _event, selected=tree_node_id: (
+                    self._select_analysis_diagram_node(selected)
+                ),
+            )
+            canvas.tag_bind(
+                group_tag,
+                "<Enter>",
+                lambda _event, text=description: (
+                    self._enter_analysis_diagram_node(canvas, text)
+                ),
+            )
+            canvas.tag_bind(
+                group_tag,
+                "<Leave>",
+                lambda _event: self._leave_analysis_diagram_node(canvas),
+            )
         for edge in diagram.get("edges", ()):
             if not isinstance(edge, dict):
                 continue
@@ -2150,11 +2248,16 @@ class AiLoopGui(tk.Tk):
             if callee_method := str(edge.get("callee_method", "")):
                 method_name = callee_method.rsplit(".", 1)[-1].rsplit("::", 1)[-1]
                 call_line = edge.get("call_line")
-                edge_label = (
-                    f"{method_name} · line {call_line}"
-                    if call_line is not None
-                    else method_name
-                )
+                if source.get("kind") == target.get("kind") == "method":
+                    edge_label = (
+                        f"line {call_line}" if call_line is not None else "calls"
+                    )
+                else:
+                    edge_label = (
+                        f"{method_name} · line {call_line}"
+                        if call_line is not None
+                        else method_name
+                    )
                 canvas.create_text(
                     (line_start_x + line_end_x) / 2,
                     (line_start_y + line_end_y) / 2 - 9,
@@ -2169,25 +2272,47 @@ class AiLoopGui(tk.Tk):
             width = int(node["width"])
             height = int(node["height"])
             node_tag = f"analysis_diagram_node_{index}"
+            kind = str(node.get("kind", ""))
+            if kind == "method":
+                fill, outline = "#edf7e9", "#47723d"
+            elif kind == "data_member":
+                fill, outline = "#f4edfb", "#73528d"
+            elif kind == "file":
+                fill, outline = "#fff4df", "#8a652f"
+            else:
+                fill, outline = "#e7f0fb", "#315c8a"
             canvas.create_rectangle(
                 x,
                 y,
                 x + width,
                 y + height,
-                fill="#e7f0fb",
-                outline="#315c8a",
+                fill=fill,
+                outline=outline,
                 width=2,
                 tags=(node_tag,),
             )
+            subtitle = str(node.get("subtitle", ""))
+            title_y = y + height // 2 - (9 if subtitle else 0)
             canvas.create_text(
                 x + width // 2,
-                y + height // 2,
+                title_y,
                 text=str(node.get("label", node["id"])),
                 width=width - 12,
                 justify="center",
                 fill="#17293c",
                 tags=(node_tag,),
             )
+            if subtitle:
+                canvas.create_text(
+                    x + width // 2,
+                    y + height // 2 + 14,
+                    text=subtitle,
+                    width=width - 12,
+                    justify="center",
+                    fill="#506273",
+                    font=("TkDefaultFont", 8),
+                    tags=(node_tag,),
+                )
             tree_node_id = str(node.get("tree_node_id", node["id"]))
             description = str(node.get("description", ""))
             canvas.tag_bind(
@@ -2235,7 +2360,14 @@ class AiLoopGui(tk.Tk):
         self.analysis_tree.focus(node_id)
         self.analysis_tree.see(node_id)
         self.on_analysis_tree_selected()
-        self.analysis_detail_notebook.select(self.analysis_source_frame)
+        controller = self._analysis_controller
+        node = controller.node(node_id) if controller is not None else None
+        target_frame = (
+            self.analysis_member_frame
+            if node is not None and node.kind == "class"
+            else self.analysis_source_frame
+        )
+        self.analysis_detail_notebook.select(target_frame)
 
     def _insert_analysis_node(self, parent_id: str, node: ProjectTreeNode) -> None:
         if node.line is None:
@@ -2259,7 +2391,16 @@ class AiLoopGui(tk.Tk):
         selected = self.analysis_tree.selection()
         if not selected:
             return
-        self._show_analysis_tree_node(selected[0])
+        node_id = selected[0]
+        controller = self._analysis_controller
+        node = controller.node(node_id) if controller is not None else None
+        if (
+            node is not None
+            and node.kind == "class"
+            and node_id != getattr(self, "_analysis_member_class_id", None)
+        ):
+            self._focus_analysis_member_class(node_id)
+        self._show_analysis_tree_node(node_id)
 
     def on_analysis_tree_clicked(self, event: tk.Event) -> None:
         node_id = self.analysis_tree.identify_row(event.y)
@@ -2273,8 +2414,9 @@ class AiLoopGui(tk.Tk):
             return
         self.analysis_tree.selection_set(node_id)
         self.analysis_tree.focus(node_id)
+        self._focus_analysis_member_class(node_id)
         self._show_analysis_tree_node(node_id)
-        self.analysis_detail_notebook.select(self.analysis_source_frame)
+        self.analysis_detail_notebook.select(self.analysis_member_frame)
 
     def on_analysis_tree_double_clicked(self, event: tk.Event) -> str | None:
         node_id = self.analysis_tree.identify_row(event.y)
