@@ -211,13 +211,13 @@ def _layout_grouped_diagram(
 ) -> dict[str, Any]:
     """Lay out members and classes according to their call dependencies.
 
-    Connected members occupy a ring in their class panel. Class panels linked
-    by cross-class calls form a larger circular cluster. Unconnected members
-    and class clusters use compact grids so large projects remain navigable.
+    Connected members occupy a ring in their class panel. Every class involved
+    in a cross-class call occupies one shared outer ring, while all remaining
+    classes use a separate compact grid.
     """
 
     margin = 32
-    cluster_gap = 120
+    section_gap = 100
     nodes_by_group: dict[str, list[dict[str, Any]]] = {}
     for node in nodes:
         nodes_by_group.setdefault(str(node.get("group", "")), []).append(node)
@@ -248,90 +248,97 @@ def _layout_grouped_diagram(
     }
     group_order = {str(group["id"]): index for index, group in enumerate(groups)}
     components = _dependency_components(group_adjacency, group_order)
-    cluster_geometries = [
-        _class_cluster_geometry(component, panels, group_adjacency)
-        for component in components
+    external_components = [component for component in components if len(component) > 1]
+    external_ids = [
+        group_id for component in external_components for group_id in component
     ]
-
-    total_area = sum(
-        (cluster["width"] + cluster_gap) * (cluster["height"] + cluster_gap)
-        for cluster in cluster_geometries
+    external_set = set(external_ids)
+    compact_ids = [
+        str(group["id"])
+        for group in groups
+        if str(group["id"]) not in external_set
+    ]
+    external_geometry = _circular_class_geometry(external_ids, panels)
+    compact_geometry = _compact_class_geometry(
+        compact_ids,
+        panels,
+        preferred_width=max(1, int(external_geometry["width"])),
     )
-    row_limit = int(math.sqrt(max(1, total_area)) * 1.45)
-    row_limit = max(
-        row_limit,
-        max((int(cluster["width"]) for cluster in cluster_geometries), default=1),
-    )
-    cluster_origins: list[tuple[int, int]] = []
-    cursor_x = margin
-    cursor_y = margin
-    row_height = 0
-    used_width = margin
-    for cluster in cluster_geometries:
-        cluster_width = int(cluster["width"])
-        cluster_height = int(cluster["height"])
-        if cursor_x > margin and cursor_x + cluster_width > margin + row_limit:
-            cursor_x = margin
-            cursor_y += row_height + cluster_gap
-            row_height = 0
-        cluster_origins.append((cursor_x, cursor_y))
-        cursor_x += cluster_width + cluster_gap
-        row_height = max(row_height, cluster_height)
-        used_width = max(used_width, cursor_x - cluster_gap)
+    placements: dict[str, tuple[int, int]] = {}
+    for group_id, position in external_geometry["positions"].items():
+        placements[group_id] = (margin + position[0], margin + position[1])
+    compact_y = margin
+    if external_ids:
+        compact_y += int(external_geometry["height"]) + section_gap
+    for group_id, position in compact_geometry["positions"].items():
+        placements[group_id] = (margin + position[0], compact_y + position[1])
+    component_indexes = {
+        group_id: component_index
+        for component_index, component in enumerate(components)
+        for group_id in component
+    }
 
     laid_out: list[DiagramNode] = []
     laid_out_groups: list[dict[str, Any]] = []
     groups_by_id = {str(group["id"]): group for group in groups}
-    for cluster_index, (cluster, origin) in enumerate(
-        zip(cluster_geometries, cluster_origins)
-    ):
-        cluster_x, cluster_y = origin
-        for group_id, local_panel_position in cluster["positions"].items():
-            panel = panels[group_id]
-            panel_x = cluster_x + int(local_panel_position[0])
-            panel_y = cluster_y + int(local_panel_position[1])
-            dependency_area = panel.get("dependency_area")
-            laid_out_group = {
-                **groups_by_id[group_id],
-                "x": panel_x,
-                "y": panel_y,
-                "width": int(panel["width"]),
-                "height": int(panel["height"]),
-                "dependency_cluster": cluster_index,
+    for group in groups:
+        group_id = str(group["id"])
+        panel = panels[group_id]
+        panel_x, panel_y = placements[group_id]
+        dependency_area = panel.get("dependency_area")
+        laid_out_group = {
+            **groups_by_id[group_id],
+            "x": panel_x,
+            "y": panel_y,
+            "width": int(panel["width"]),
+            "height": int(panel["height"]),
+            "dependency_cluster": component_indexes[group_id],
+            "class_layout": (
+                "external_call_ring" if group_id in external_set else "compact"
+            ),
+        }
+        if isinstance(dependency_area, dict):
+            laid_out_group["dependency_area"] = {
+                **dependency_area,
+                "x": panel_x + int(dependency_area["x"]),
+                "y": panel_y + int(dependency_area["y"]),
             }
-            if isinstance(dependency_area, dict):
-                laid_out_group["dependency_area"] = {
-                    **dependency_area,
-                    "x": panel_x + int(dependency_area["x"]),
-                    "y": panel_y + int(dependency_area["y"]),
-                }
-            laid_out_groups.append(laid_out_group)
-            for node in nodes_by_group.get(group_id, ()):
-                node_x, node_y = panel["positions"][str(node["id"])]
-                laid_out.append(
-                    DiagramNode(
-                        node_id=str(node["id"]),
-                        label=str(node["label"]),
-                        kind=str(node["kind"]),
-                        tree_node_id=str(node["tree_node_id"]),
-                        source_path=str(node["source_path"]),
-                        line=int(node["line"]),
-                        end_line=int(node["end_line"]),
-                        description=str(node.get("description", "")),
-                        subtitle=str(node.get("subtitle", "")),
-                        group=group_id,
-                        x=panel_x + int(node_x),
-                        y=panel_y + int(node_y),
-                        width=196,
-                        height=72,
-                    )
+        laid_out_groups.append(laid_out_group)
+        for node in nodes_by_group.get(group_id, ()):
+            node_x, node_y = panel["positions"][str(node["id"])]
+            laid_out.append(
+                DiagramNode(
+                    node_id=str(node["id"]),
+                    label=str(node["label"]),
+                    kind=str(node["kind"]),
+                    tree_node_id=str(node["tree_node_id"]),
+                    source_path=str(node["source_path"]),
+                    line=int(node["line"]),
+                    end_line=int(node["end_line"]),
+                    description=str(node.get("description", "")),
+                    subtitle=str(node.get("subtitle", "")),
+                    group=group_id,
+                    x=panel_x + int(node_x),
+                    y=panel_y + int(node_y),
+                    width=196,
+                    height=72,
                 )
+            )
 
-    height = cursor_y + row_height + margin if groups else 2 * margin
-    width = used_width + margin if groups else 2 * margin
+    content_width = max(
+        int(external_geometry["width"]), int(compact_geometry["width"]), 1
+    )
+    content_height = int(external_geometry["height"])
+    if external_ids and compact_ids:
+        content_height += section_gap
+    content_height += int(compact_geometry["height"])
+    height = content_height + 2 * margin if groups else 2 * margin
+    width = content_width + 2 * margin if groups else 2 * margin
     diagram = ProjectDiagram(tuple(laid_out), tuple(edges), width, height).as_dict()
     diagram["groups"] = laid_out_groups
     diagram["layout"] = "dependency_radial"
+    diagram["external_class_count"] = len(external_ids)
+    diagram["compact_class_count"] = len(compact_ids)
     return diagram
 
 
@@ -382,7 +389,7 @@ def _member_panel_geometry(
         connected_width = math.ceil(2 * radius + node_width)
         connected_height = math.ceil(2 * radius + node_height)
 
-    unconnected_columns = min(3, max(1, _grid_columns(len(unconnected))))
+    unconnected_columns = min(6, max(1, _grid_columns(len(unconnected))))
     unconnected_rows = max(
         1 if unconnected else 0,
         (len(unconnected) + unconnected_columns - 1) // unconnected_columns,
@@ -507,46 +514,44 @@ def _dependency_components(
     )
 
 
-def _class_cluster_geometry(
-    component: list[str],
-    panels: dict[str, dict[str, Any]],
-    adjacency: dict[str, set[str]],
+def _circular_class_geometry(
+    group_ids: list[str], panels: dict[str, dict[str, Any]]
 ) -> dict[str, Any]:
-    """Arrange dependency-connected class panels around a shared ring."""
+    """Arrange every class with external calls on one non-overlapping ring."""
 
-    class_gap = 150
+    if not group_ids:
+        return {"positions": {}, "width": 0, "height": 0}
+    class_gap = 120
     positions: dict[str, tuple[int, int]] = {}
-    if len(component) == 1:
-        group_id = component[0]
+    if len(group_ids) == 1:
+        group_id = group_ids[0]
         positions[group_id] = (0, 0)
-    elif len(component) == 2:
-        first, second = component
+    elif len(group_ids) == 2:
+        first, second = group_ids
         positions[first] = (0, 0)
         positions[second] = (int(panels[first]["width"]) + class_gap, 0)
     else:
-        hub = component[0]
-        satellites = component[1:]
-        max_width = max(int(panels[group_id]["width"]) for group_id in satellites)
-        max_height = max(int(panels[group_id]["height"]) for group_id in satellites)
-        satellite_clearance = math.hypot(
-            max_width + class_gap, max_height + class_gap
-        )
-        hub_clearance = math.hypot(
-            (int(panels[hub]["width"]) + max_width) / 2 + class_gap,
-            (int(panels[hub]["height"]) + max_height) / 2 + class_gap,
-        )
-        radius = max(
-            hub_clearance,
-            satellite_clearance
-            / (2 * math.sin(math.pi / len(satellites))),
-        )
+        count = len(group_ids)
+        radius = 0.0
+        for first_index, first in enumerate(group_ids):
+            for second_index in range(first_index + 1, count):
+                second = group_ids[second_index]
+                steps = min(second_index - first_index, count - second_index + first_index)
+                chord_factor = 2 * math.sin(math.pi * steps / count)
+                required_distance = math.hypot(
+                    (int(panels[first]["width"]) + int(panels[second]["width"]))
+                    / 2
+                    + class_gap,
+                    (int(panels[first]["height"]) + int(panels[second]["height"]))
+                    / 2
+                    + class_gap,
+                )
+                radius = max(radius, required_distance / chord_factor)
+        max_width = max(int(panels[group_id]["width"]) for group_id in group_ids)
+        max_height = max(int(panels[group_id]["height"]) for group_id in group_ids)
         center = radius + max(max_width, max_height) / 2
-        positions[hub] = (
-            round(center - int(panels[hub]["width"]) / 2),
-            round(center - int(panels[hub]["height"]) / 2),
-        )
-        for index, group_id in enumerate(satellites):
-            angle = -math.pi / 2 + 2 * math.pi * index / len(satellites)
+        for index, group_id in enumerate(group_ids):
+            angle = -math.pi / 2 + 2 * math.pi * index / count
             positions[group_id] = (
                 round(
                     center
@@ -574,14 +579,48 @@ def _class_cluster_geometry(
         y + int(panels[group_id]["height"])
         for group_id, (_, y) in normalized.items()
     )
+    return {"positions": normalized, "width": width, "height": height}
+
+
+def _compact_class_geometry(
+    group_ids: list[str],
+    panels: dict[str, dict[str, Any]],
+    *,
+    preferred_width: int,
+) -> dict[str, Any]:
+    """Pack classes without external calls into a dense variable-size grid."""
+
+    if not group_ids:
+        return {"positions": {}, "width": 0, "height": 0}
+    gap = 36
+    total_area = sum(
+        (int(panels[group_id]["width"]) + gap)
+        * (int(panels[group_id]["height"]) + gap)
+        for group_id in group_ids
+    )
+    maximum_width = max(int(panels[group_id]["width"]) for group_id in group_ids)
+    natural_width = int(math.sqrt(max(1, total_area)) * 1.45)
+    row_limit = max(maximum_width, preferred_width, natural_width)
+    positions: dict[str, tuple[int, int]] = {}
+    cursor_x = 0
+    cursor_y = 0
+    row_height = 0
+    used_width = 0
+    for group_id in group_ids:
+        panel_width = int(panels[group_id]["width"])
+        panel_height = int(panels[group_id]["height"])
+        if cursor_x and cursor_x + panel_width > row_limit:
+            cursor_x = 0
+            cursor_y += row_height + gap
+            row_height = 0
+        positions[group_id] = (cursor_x, cursor_y)
+        cursor_x += panel_width + gap
+        row_height = max(row_height, panel_height)
+        used_width = max(used_width, cursor_x - gap)
     return {
-        "positions": normalized,
-        "width": width,
-        "height": height,
-        "edge_count": sum(
-            len(adjacency.get(group_id, ())) for group_id in component
-        )
-        // 2,
+        "positions": positions,
+        "width": used_width,
+        "height": cursor_y + row_height,
     }
 
 

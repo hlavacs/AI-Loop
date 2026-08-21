@@ -2371,7 +2371,7 @@ class AiLoopGui(tk.Tk):
         ).pack(side="left", padx=(4, 0))
         ttk.Label(
             member_legend,
-            text=" · Dashed oval: connected calls; hub centered",
+            text=" · Class ring: external calls · dashed oval: member calls",
         ).pack(side="left")
         call_graph_canvas_frame = ttk.Frame(call_graph_frame)
         call_graph_canvas_frame.grid(row=2, column=0, sticky="nsew")
@@ -2460,6 +2460,15 @@ class AiLoopGui(tk.Tk):
         self.help_widget(
             ttk.Button(
                 controls,
+                text="Fit",
+                width=4,
+                command=lambda: self._fit_analysis_diagram(canvas),
+            ),
+            "Fit the complete diagram into the currently visible canvas area.",
+        ).pack(side="left", padx=(3, 0))
+        self.help_widget(
+            ttk.Button(
+                controls,
                 text="100%",
                 width=5,
                 command=lambda: self._reset_analysis_diagram_zoom(canvas),
@@ -2487,7 +2496,8 @@ class AiLoopGui(tk.Tk):
     @staticmethod
     def _zoom_analysis_diagram(canvas: tk.Canvas, factor: float) -> None:
         current = float(getattr(canvas, "_analysis_zoom", 1.0))
-        target = min(2.5, max(0.4, current * factor))
+        minimum_zoom = AiLoopGui._analysis_fit_zoom(canvas)
+        target = min(2.5, max(minimum_zoom, current * factor))
         actual_factor = target / current
         if abs(actual_factor - 1.0) < 0.001:
             return
@@ -2504,6 +2514,7 @@ class AiLoopGui(tk.Tk):
                 else ("TkDefaultFont", scaled_size)
             )
             options: dict[str, Any] = {"font": font}
+            options["state"] = "hidden" if target < 0.08 else "normal"
             if base_width is not None:
                 options["width"] = max(12, round(float(base_width) * target))
             canvas.itemconfigure(item_id, **options)
@@ -2518,6 +2529,38 @@ class AiLoopGui(tk.Tk):
         bounds = canvas.bbox("all")
         if bounds is not None:
             canvas.configure(scrollregion=bounds)
+
+    @staticmethod
+    def _analysis_fit_zoom(canvas: tk.Canvas) -> float:
+        """Return the smallest zoom that keeps the whole diagram visible."""
+
+        bounds = getattr(canvas, "_analysis_base_bounds", None)
+        if not isinstance(bounds, (tuple, list)) or len(bounds) != 4:
+            return 0.05
+        diagram_width = max(1.0, float(bounds[2]) - float(bounds[0]))
+        diagram_height = max(1.0, float(bounds[3]) - float(bounds[1]))
+        try:
+            available_width = max(1.0, float(canvas.winfo_width()) - 12)
+            available_height = max(1.0, float(canvas.winfo_height()) - 12)
+        except (AttributeError, TypeError, ValueError, tk.TclError):
+            return 0.05
+        return min(
+            1.0,
+            max(
+                0.01,
+                min(available_width / diagram_width, available_height / diagram_height),
+            ),
+        )
+
+    @classmethod
+    def _fit_analysis_diagram(cls, canvas: tk.Canvas) -> None:
+        """Zoom the diagram so its complete base bounds fit in the canvas."""
+
+        current = float(getattr(canvas, "_analysis_zoom", 1.0))
+        if current:
+            cls._zoom_analysis_diagram(
+                canvas, cls._analysis_fit_zoom(canvas) / current
+            )
 
     @classmethod
     def _reset_analysis_diagram_zoom(cls, canvas: tk.Canvas) -> None:
@@ -2938,6 +2981,7 @@ class AiLoopGui(tk.Tk):
             if bounds is not None
             else (0, 0, width, height)
         )
+        canvas._analysis_base_bounds = scrollregion
         canvas.configure(scrollregion=scrollregion)
         canvas.xview_moveto(0)
         canvas.yview_moveto(0)

@@ -295,7 +295,15 @@ def test_member_layout_clusters_dependency_connected_classes_in_a_ring(
         "class Hub:\n"
         "    def dispatch(self, left: Left, right: Right) -> None:\n"
         "        left.receive()\n"
-        "        right.receive()\n",
+        "        right.receive()\n"
+        "\n"
+        "class Idle:\n"
+        "    def wait(self) -> None:\n"
+        "        pass\n"
+        "\n"
+        "class Sleeping:\n"
+        "    def wait(self) -> None:\n"
+        "        pass\n",
         encoding="utf-8",
     )
 
@@ -303,22 +311,46 @@ def test_member_layout_clusters_dependency_connected_classes_in_a_ring(
     groups = {group["label"]: group for group in diagram["groups"]}
 
     assert diagram["layout"] == "dependency_radial"
+    assert diagram["external_class_count"] == 3
+    assert diagram["compact_class_count"] == 2
     assert {
         groups["Left"]["dependency_cluster"],
         groups["Right"]["dependency_cluster"],
         groups["Hub"]["dependency_cluster"],
     } == {0}
     assert len({groups[name]["y"] for name in ("Left", "Right", "Hub")}) > 1
-    assert all("dependency_area" in group for group in groups.values())
+    assert all(
+        groups[name]["class_layout"] == "external_call_ring"
+        for name in ("Left", "Right", "Hub")
+    )
+    compact_groups = [groups["Idle"], groups["Sleeping"]]
+    assert all(group["class_layout"] == "compact" for group in compact_groups)
+    assert min(group["y"] for group in compact_groups) > max(
+        groups[name]["y"] + groups[name]["height"]
+        for name in ("Left", "Right", "Hub")
+    )
+    compact_groups.sort(key=lambda group: group["x"])
+    assert compact_groups[0]["y"] == compact_groups[1]["y"]
+    assert (
+        compact_groups[1]["x"]
+        - compact_groups[0]["x"]
+        - compact_groups[0]["width"]
+    ) == 36
     centers = {
         name: (
             group["x"] + group["width"] / 2,
             group["y"] + group["height"] / 2,
         )
         for name, group in groups.items()
+        if name not in {"Idle", "Sleeping"}
     }
-    assert abs(centers["Hub"][0] - (centers["Left"][0] + centers["Right"][0]) / 2) <= 1
-    assert abs(centers["Hub"][1] - (centers["Left"][1] + centers["Right"][1]) / 2) <= 1
+    center_x = sum(center[0] for center in centers.values()) / len(centers)
+    center_y = sum(center[1] for center in centers.values()) / len(centers)
+    radii = [
+        ((center[0] - center_x) ** 2 + (center[1] - center_y) ** 2) ** 0.5
+        for center in centers.values()
+    ]
+    assert max(radii) - min(radii) <= 1
 
 
 def test_analyze_project_ignores_vcpkg_installed_by_default(tmp_path: Path) -> None:
@@ -474,6 +506,7 @@ def test_project_analysis_diagram_zoom_clamps_and_resets() -> None:
 
     class FakeCanvas:
         _analysis_zoom = 1.0
+        _analysis_base_bounds = (0, 0, 20_000, 10_000)
 
         def __init__(self) -> None:
             self.scales: list[tuple[object, int, int, float, float]] = []
@@ -498,6 +531,12 @@ def test_project_analysis_diagram_zoom_clamps_and_resets() -> None:
         def bbox(self, _tag: object) -> tuple[int, int, int, int]:
             return (0, 0, 320, 240)
 
+        def winfo_width(self) -> int:
+            return 1_000
+
+        def winfo_height(self) -> int:
+            return 500
+
         def configure(self, **options: object) -> None:
             self.configurations.append(options)
 
@@ -510,7 +549,10 @@ def test_project_analysis_diagram_zoom_clamps_and_resets() -> None:
     assert canvas._analysis_zoom == 2.5
     assert canvas.scales[-1] == ("all", 0, 0, 2.5, 2.5)
     assert canvas.configurations[-1] == {"scrollregion": (0, 0, 320, 240)}
-    assert (11, {"font": ("TkDefaultFont", 25), "width": 410}) in (
+    assert (
+        11,
+        {"font": ("TkDefaultFont", 25), "state": "normal", "width": 410},
+    ) in (
         canvas.item_configurations
     )
     assert (
@@ -519,16 +561,21 @@ def test_project_analysis_diagram_zoom_clamps_and_resets() -> None:
     ) in canvas.item_configurations
 
     AiLoopGui._zoom_analysis_diagram(canvas, 0.01)
-    assert canvas._analysis_zoom == 0.4
-    assert (11, {"font": ("TkDefaultFont", 4), "width": 66}) in (
+    assert canvas._analysis_zoom == pytest.approx(0.0488)
+    assert (
+        11,
+        {"font": ("TkDefaultFont", 3), "state": "hidden", "width": 12},
+    ) in (
         canvas.item_configurations
     )
     assert (
         21,
-        {"width": 1, "arrowshape": (4, 5, 2)},
+        {"width": 1, "arrowshape": (2, 2, 2)},
     ) in canvas.item_configurations
     AiLoopGui._reset_analysis_diagram_zoom(canvas)
-    assert canvas._analysis_zoom == 1.0
+    assert canvas._analysis_zoom == pytest.approx(1.0)
+    AiLoopGui._fit_analysis_diagram(canvas)
+    assert canvas._analysis_zoom == pytest.approx(0.0488)
 
 
 def test_analyze_project_marks_python_generic_as_templated_class(
