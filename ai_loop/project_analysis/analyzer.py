@@ -306,6 +306,8 @@ class _PythonSymbols(ast.NodeVisitor):
             "methods": [],
             "data_members": [],
         }
+        if docstring := ast.get_docstring(node, clean=True):
+            record["docstring"] = docstring
         self.classes.append(record)
         for base in bases:
             self.relationships.append(
@@ -358,6 +360,8 @@ class _PythonSymbols(ast.NodeVisitor):
             "calls": _python_direct_calls(node),
             "call_sites": _python_direct_call_sites(node),
         }
+        if docstring := ast.get_docstring(node, clean=True):
+            record["docstring"] = docstring
         if owner is not None:
             record["owner"] = owner
         self.functions.append(record)
@@ -794,6 +798,27 @@ def _cpp_includes(source: str) -> list[dict[str, Any]]:
     return includes
 
 
+def _cpp_leading_comment(source: str, offset: int) -> str | None:
+    """Return a documentation comment immediately preceding a declaration."""
+
+    prefix = source[:offset].rstrip()
+    if prefix.endswith("*/"):
+        start = prefix.rfind("/*")
+        if start >= 0:
+            return prefix[start:]
+
+    lines = prefix.splitlines()
+    comments: list[str] = []
+    for line in reversed(lines):
+        if line.lstrip().startswith("//"):
+            comments.append(line)
+            continue
+        break
+    if comments:
+        return "\n".join(reversed(comments))
+    return None
+
+
 def _strip_cpp_comments_and_literals(source: str) -> str:
     """Replace comments and literals with spaces while preserving line offsets."""
 
@@ -885,6 +910,8 @@ def _analyze_cpp(source: str) -> dict[str, Any]:
             "methods": [],
             "data_members": [],
         }
+        if leading_comment := _cpp_leading_comment(source, match.start()):
+            record["leading_comment"] = leading_comment
         if kind in {"class", "struct"}:
             classes.append(record)
         if kind in {"struct", "enum"}:
@@ -983,6 +1010,8 @@ def _analyze_cpp(source: str) -> dict[str, Any]:
             "calls": [],
             "call_sites": [],
         }
+        if leading_comment := _cpp_leading_comment(source, match.start()):
+            record["leading_comment"] = leading_comment
         if owner:
             record["owner"] = owner
         if match.group("terminator") == "{":

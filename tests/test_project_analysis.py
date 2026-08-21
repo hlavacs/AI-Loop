@@ -416,6 +416,61 @@ def test_project_analysis_controller_descriptions_have_two_to_five_sentences() -
         assert 2 <= sentence_count <= 5
 
 
+def test_analyzer_uses_source_documentation_for_hover_descriptions(
+    tmp_path: Path,
+) -> None:
+    assert ProjectAnalysisController._clean_documentation(
+        "Uses ``items`` through :meth:`run`."
+    ) == "Uses items through run."
+
+    (tmp_path / "documented.py").write_text(
+        "class ReportBuilder:\n"
+        "    \"\"\"Builds reports from stored job data. It formats a concise result.\"\"\"\n"
+        "    def render(self, job_id: str) -> str:\n"
+        "        \"\"\"Renders one job as readable text.\"\"\"\n"
+        "        return job_id\n",
+        encoding="utf-8",
+    )
+    (tmp_path / "documented.hpp").write_text(
+        "/** Represents one queued operation. */\n"
+        "class Operation {\n"
+        "public:\n"
+        "    // Executes the queued operation.\n"
+        "    void execute();\n"
+        "};\n",
+        encoding="utf-8",
+    )
+
+    model = analyze_project(tmp_path)
+    python_model = _file_by_path(model, "documented.py")
+    cpp_model = _file_by_path(model, "documented.hpp")
+    assert python_model["classes"][0]["docstring"].startswith("Builds reports")
+    assert python_model["functions"][0]["docstring"].startswith("Renders one job")
+    assert cpp_model["classes"][0]["leading_comment"].startswith("/**")
+    assert cpp_model["functions"][0]["leading_comment"].lstrip().startswith("//")
+
+    controller = ProjectAnalysisController(model)
+    report = _find_node(controller.root_node, kind="class", label="ReportBuilder")
+    operation = _find_node(controller.root_node, kind="class", label="Operation")
+    assert report is not None and operation is not None
+    render = next(node for node in report.children if node.kind == "method")
+    execute = next(node for node in operation.children if node.kind == "method")
+    assert report.description.startswith("Builds reports from stored job data.")
+    assert render.description.startswith("Renders one job as readable text.")
+    assert operation.description.startswith("Represents one queued operation.")
+    assert execute.description.startswith("Executes the queued operation.")
+    for node in (report, render, operation, execute):
+        sentence_count = len(re.findall(r"[.!?](?=\s|$)", node.description))
+        assert 2 <= sentence_count <= 5
+
+    diagram_node = next(
+        node
+        for node in controller.class_diagram()["nodes"]
+        if node["label"] == "ReportBuilder"
+    )
+    assert diagram_node["description"] == report.description
+
+
 def test_project_analysis_controller_navigates_cpp_method_to_definition() -> None:
     controller = ProjectAnalysisController(analyze_project(FIXTURE_PROJECT))
     widget = _find_node(controller.root_node, kind="class", label="Widget")
@@ -649,9 +704,9 @@ def test_project_analysis_controller_builds_serializable_class_diagram() -> None
         "line": 10,
         "end_line": 12,
     }
-    assert nodes_by_label["Greeter"]["description"] == (
-        "Greeter — sample.py, lines 10–12; 0 data members, 1 method"
-    )
+    greeter_description = nodes_by_label["Greeter"]["description"]
+    assert "Greeter is a class" in greeter_description
+    assert 2 <= len(re.findall(r"[.!?](?=\s|$)", greeter_description)) <= 5
 
 
 def test_project_analysis_controller_builds_serializable_call_graph(
@@ -674,9 +729,9 @@ def test_project_analysis_controller_builds_serializable_call_graph(
 
     assert json.loads(json.dumps(diagram)) == diagram
     assert set(nodes_by_label) == {"Service", "Client"}
-    assert nodes_by_label["Service"]["description"].startswith(
-        "Service — calls.py"
-    )
+    service_description = nodes_by_label["Service"]["description"]
+    assert "Service is a class" in service_description
+    assert 2 <= len(re.findall(r"[.!?](?=\s|$)", service_description)) <= 5
     assert {
         "source": nodes_by_label["Client"]["id"],
         "target": nodes_by_label["Service"]["id"],

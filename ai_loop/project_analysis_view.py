@@ -317,7 +317,7 @@ class ProjectAnalysisController:
                         "source_path": relative_path,
                         "line": location.line,
                         "end_line": location.end_line,
-                        "description": tree_node.summary,
+                        "description": tree_node.description or tree_node.summary,
                     }
                 )
                 aliases = {qualified_name, simple_name}
@@ -957,6 +957,11 @@ class ProjectAnalysisController:
         data_count = sum(child.kind == "data_member" for child in children)
         method_count = sum(child.kind == "method" for child in children)
         sentences = documentation
+        if not documentation:
+            purpose = self._identifier_purpose(name)
+            sentences.append(
+                f"Its name indicates that it represents {purpose} responsibilities."
+            )
         if bases := symbol.get("bases"):
             base_names = ", ".join(self._metadata_text(base) for base in bases)
             sentences.append(
@@ -994,6 +999,11 @@ class ProjectAnalysisController:
         sentences.append(
             f"{name} is a method that implements an operation for {owner}."
         )
+        if not documentation:
+            purpose = self._identifier_purpose(name)
+            sentences.append(
+                f"Its name indicates that it handles {purpose} behavior."
+            )
         parameters = symbol.get(
             "parameters", declaration_symbol.get("parameters", ())
         )
@@ -1066,7 +1076,21 @@ class ProjectAnalysisController:
             line = re.sub(r"\s*\*/$", "", line)
             if line:
                 lines.append(line)
-        return " ".join(" ".join(lines).split())
+        cleaned = " ".join(" ".join(lines).split())
+        cleaned = re.sub(
+            r":(?:attr|class|func|meth|mod):`~?([^`]+)`", r"\1", cleaned
+        )
+        cleaned = re.sub(r"``([^`]+)``", r"\1", cleaned)
+        return re.sub(r"`([^`]+)`", r"\1", cleaned)
+
+    @staticmethod
+    def _identifier_purpose(value: Any) -> str:
+        """Turn a qualified snake/camel-case symbol into readable words."""
+
+        simple_name = re.split(r"::|\.", str(value))[-1].strip("_")
+        spaced = re.sub(r"(?<=[a-z0-9])(?=[A-Z])", " ", simple_name)
+        words = " ".join(spaced.replace("_", " ").split()).lower()
+        return words or "this operation"
 
     @staticmethod
     def _metadata_text(value: Any) -> str:
