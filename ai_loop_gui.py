@@ -2421,6 +2421,8 @@ class AiLoopGui(tk.Tk):
             fill="#59636e",
         )
         canvas._analysis_zoom = 1.0
+        canvas._analysis_text_items = {}
+        canvas._analysis_edge_items = []
         canvas.bind(
             "<Control-MouseWheel>",
             lambda event: self._on_analysis_diagram_zoom_wheel(canvas, event),
@@ -2487,6 +2489,28 @@ class AiLoopGui(tk.Tk):
             return
         canvas.scale("all", 0, 0, actual_factor, actual_factor)
         canvas._analysis_zoom = target
+        for item_id, text_style in getattr(
+            canvas, "_analysis_text_items", {}
+        ).items():
+            base_size, style, base_width = text_style
+            scaled_size = max(3, round(float(base_size) * target))
+            font = (
+                ("TkDefaultFont", scaled_size, style)
+                if style
+                else ("TkDefaultFont", scaled_size)
+            )
+            options: dict[str, Any] = {"font": font}
+            if base_width is not None:
+                options["width"] = max(12, round(float(base_width) * target))
+            canvas.itemconfigure(item_id, **options)
+        edge_width = max(1, round(2 * target))
+        arrow_shape = tuple(max(2, round(value * target)) for value in (10, 12, 5))
+        for item_id in getattr(canvas, "_analysis_edge_items", ()):
+            canvas.itemconfigure(
+                item_id,
+                width=edge_width,
+                arrowshape=arrow_shape,
+            )
         bounds = canvas.bbox("all")
         if bounds is not None:
             canvas.configure(scrollregion=bounds)
@@ -2663,6 +2687,8 @@ class AiLoopGui(tk.Tk):
         self.help_tooltip.hide()
         canvas.delete("all")
         canvas._analysis_zoom = 1.0
+        canvas._analysis_text_items = {}
+        canvas._analysis_edge_items = []
         nodes = {
             str(node["id"]): node
             for node in diagram.get("nodes", ())
@@ -2686,7 +2712,7 @@ class AiLoopGui(tk.Tk):
                 width=2,
                 tags=(group_tag,),
             )
-            canvas.create_text(
+            group_text = canvas.create_text(
                 x + 14,
                 y + 19,
                 text=str(group.get("label", "Class")),
@@ -2695,6 +2721,7 @@ class AiLoopGui(tk.Tk):
                 font=("TkDefaultFont", 10, "bold"),
                 tags=(group_tag,),
             )
+            canvas._analysis_text_items[group_text] = (10, "bold", None)
             tree_node_id = str(group.get("tree_node_id", group.get("id", "")))
             description = str(group.get("description", ""))
             canvas.tag_bind(
@@ -2747,15 +2774,17 @@ class AiLoopGui(tk.Tk):
                 line_start_y = source_y
                 line_end_x = target_x
                 line_end_y = target_y
-            canvas.create_line(
+            edge_line = canvas.create_line(
                 line_start_x,
                 line_start_y,
                 line_end_x,
                 line_end_y,
                 arrow=tk.LAST,
                 width=2,
-                fill="#627286",
+                arrowshape=(10, 12, 5),
+                fill="#1f5f99",
             )
+            canvas._analysis_edge_items.append(edge_line)
             if callee_method := str(edge.get("callee_method", "")):
                 method_name = callee_method.rsplit(".", 1)[-1].rsplit("::", 1)[-1]
                 call_line = edge.get("call_line")
@@ -2769,13 +2798,14 @@ class AiLoopGui(tk.Tk):
                         if call_line is not None
                         else method_name
                     )
-                canvas.create_text(
+                edge_text = canvas.create_text(
                     (line_start_x + line_end_x) / 2,
                     (line_start_y + line_end_y) / 2 - 9,
                     text=edge_label,
                     fill="#40566e",
                     font=("TkDefaultFont", 8),
                 )
+                canvas._analysis_text_items[edge_text] = (8, "", None)
 
         for index, node in enumerate(nodes.values()):
             x = int(node["x"])
@@ -2797,17 +2827,19 @@ class AiLoopGui(tk.Tk):
             )
             subtitle = str(node.get("subtitle", ""))
             title_y = y + height // 2 - (9 if subtitle else 0)
-            canvas.create_text(
+            title_text = canvas.create_text(
                 x + width // 2,
                 title_y,
                 text=str(node.get("label", node["id"])),
                 width=width - 12,
                 justify="center",
                 fill="#17293c",
+                font=("TkDefaultFont", 10),
                 tags=(node_tag,),
             )
+            canvas._analysis_text_items[title_text] = (10, "", width - 12)
             if subtitle:
-                canvas.create_text(
+                subtitle_text = canvas.create_text(
                     x + width // 2,
                     y + height // 2 + 14,
                     text=subtitle,
@@ -2816,6 +2848,11 @@ class AiLoopGui(tk.Tk):
                     fill="#506273",
                     font=("TkDefaultFont", 8),
                     tags=(node_tag,),
+                )
+                canvas._analysis_text_items[subtitle_text] = (
+                    8,
+                    "",
+                    width - 12,
                 )
             tree_node_id = str(node.get("tree_node_id", node["id"]))
             description = str(node.get("description", ""))

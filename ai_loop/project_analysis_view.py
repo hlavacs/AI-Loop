@@ -208,10 +208,12 @@ def _layout_grouped_diagram(
 
     node_width = 196
     node_height = 72
-    node_gap = 14
+    # Calls are drawn between node boundaries. Keep enough clear space for a
+    # visible shaft and arrowhead even when the GUI is zoomed out to 40%.
+    node_gap = 40
     panel_padding = 16
     panel_header = 38
-    panel_gap = 30
+    panel_gap = 50
     margin = 28
     panel_columns = min(3, max(1, _grid_columns(len(groups))))
     panel_width = 2 * panel_padding + 2 * node_width + node_gap

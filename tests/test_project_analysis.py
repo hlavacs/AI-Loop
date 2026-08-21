@@ -172,6 +172,17 @@ def test_analyze_project_attributes_cpp_calls_between_methods_of_same_class(
         (nodes_by_label["run"]["id"], nodes_by_label["finish"]["id"]),
         (nodes_by_label["run"]["id"], nodes_by_label["cleanup"]["id"]),
     }
+    first_row = sorted(
+        (
+            node
+            for node in diagram["nodes"]
+            if node["y"] == nodes_by_label["run"]["y"]
+        ),
+        key=lambda node: node["x"],
+    )
+    assert first_row[1]["x"] - (
+        first_row[0]["x"] + first_row[0]["width"]
+    ) >= 40
 
 
 def test_analyze_project_discovers_slots_destructured_and_augmented_members(
@@ -281,6 +292,12 @@ def test_project_analysis_diagram_zoom_clamps_and_resets() -> None:
         def __init__(self) -> None:
             self.scales: list[tuple[object, int, int, float, float]] = []
             self.configurations: list[dict[str, object]] = []
+            self.item_configurations: list[tuple[int, dict[str, object]]] = []
+            self._analysis_text_items = {
+                11: (10, "", 164),
+                12: (8, "bold", None),
+            }
+            self._analysis_edge_items = [21]
 
         def scale(
             self,
@@ -298,15 +315,32 @@ def test_project_analysis_diagram_zoom_clamps_and_resets() -> None:
         def configure(self, **options: object) -> None:
             self.configurations.append(options)
 
+        def itemconfigure(self, item_id: int, **options: object) -> None:
+            self.item_configurations.append((item_id, options))
+
     canvas = FakeCanvas()
 
     AiLoopGui._zoom_analysis_diagram(canvas, 10)
     assert canvas._analysis_zoom == 2.5
     assert canvas.scales[-1] == ("all", 0, 0, 2.5, 2.5)
     assert canvas.configurations[-1] == {"scrollregion": (0, 0, 320, 240)}
+    assert (11, {"font": ("TkDefaultFont", 25), "width": 410}) in (
+        canvas.item_configurations
+    )
+    assert (
+        21,
+        {"width": 5, "arrowshape": (25, 30, 12)},
+    ) in canvas.item_configurations
 
     AiLoopGui._zoom_analysis_diagram(canvas, 0.01)
     assert canvas._analysis_zoom == 0.4
+    assert (11, {"font": ("TkDefaultFont", 4), "width": 66}) in (
+        canvas.item_configurations
+    )
+    assert (
+        21,
+        {"width": 1, "arrowshape": (4, 5, 2)},
+    ) in canvas.item_configurations
     AiLoopGui._reset_analysis_diagram_zoom(canvas)
     assert canvas._analysis_zoom == 1.0
 
