@@ -2126,9 +2126,35 @@ class AiLoopGui(tk.Tk):
     def _build_project_analysis_frame(self, parent: ttk.Frame) -> None:
         """Build the opt-in project browser without starting an analysis."""
 
-        parent.rowconfigure(2, weight=1)
+        parent.rowconfigure(0, weight=1)
         parent.columnconfigure(0, weight=1)
-        controls = ttk.Frame(parent)
+        vertical_paned = ttk.PanedWindow(parent, orient=tk.VERTICAL)
+        vertical_paned.grid(row=0, column=0, sticky="nsew")
+        upper_pane = ttk.Frame(vertical_paned)
+        lower_pane = ttk.Frame(vertical_paned)
+        upper_pane.columnconfigure(0, weight=1)
+        lower_pane.rowconfigure(0, weight=1)
+        lower_pane.columnconfigure(0, weight=1)
+        vertical_paned.add(upper_pane, weight=0)
+        vertical_paned.add(lower_pane, weight=1)
+        self.analysis_vertical_paned = vertical_paned
+        self.analysis_upper_pane = upper_pane
+        self.analysis_lower_pane = lower_pane
+
+        def set_initial_vertical_split(event: tk.Event) -> None:
+            if (
+                getattr(vertical_paned, "_ai_loop_split_initialized", False)
+                or event.height <= 1
+            ):
+                return
+            vertical_paned._ai_loop_split_initialized = True
+            requested = upper_pane.winfo_reqheight()
+            maximum = max(80, event.height - 180)
+            vertical_paned.sashpos(0, min(max(80, requested), maximum))
+
+        vertical_paned.bind("<Configure>", set_initial_vertical_split, add="+")
+
+        controls = ttk.Frame(upper_pane)
         controls.grid(row=0, column=0, sticky="ew", pady=(0, 8))
         controls.columnconfigure(1, weight=1)
         ttk.Label(controls, text="Project directory").grid(
@@ -2211,7 +2237,9 @@ class AiLoopGui(tk.Tk):
             anchor="w",
         ).grid(row=2, column=0, columnspan=4, sticky="ew", pady=(6, 0))
 
-        summary_frame = ttk.LabelFrame(parent, text="Insights and Platform Capability")
+        summary_frame = ttk.LabelFrame(
+            upper_pane, text="Insights and Platform Capability"
+        )
         summary_frame.grid(row=1, column=0, sticky="ew", pady=(0, 8))
         summary_frame.columnconfigure(0, weight=1)
         self.analysis_summary_var = tk.StringVar(
@@ -2225,8 +2253,8 @@ class AiLoopGui(tk.Tk):
             padding=6,
         ).grid(row=0, column=0, sticky="ew")
 
-        paned = ttk.PanedWindow(parent, orient=tk.HORIZONTAL)
-        paned.grid(row=2, column=0, sticky="nsew")
+        paned = ttk.PanedWindow(lower_pane, orient=tk.HORIZONTAL)
+        paned.grid(row=0, column=0, sticky="nsew")
         tree_frame = ttk.Frame(paned)
         detail_notebook = ttk.Notebook(paned)
         source_frame = ttk.Frame(detail_notebook)

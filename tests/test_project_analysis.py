@@ -821,6 +821,17 @@ def test_project_analysis_excluded_folder_names_populate_listbox() -> None:
         )
         root.update_idletasks()
 
+        assert str(gui.analysis_vertical_paned.cget("orient")) == "vertical"
+        assert gui.analysis_vertical_paned.panes() == (
+            str(gui.analysis_upper_pane),
+            str(gui.analysis_lower_pane),
+        )
+        assert int(
+            gui.analysis_vertical_paned.pane(gui.analysis_upper_pane, "weight")
+        ) == 0
+        assert int(
+            gui.analysis_vertical_paned.pane(gui.analysis_lower_pane, "weight")
+        ) == 1
         assert gui.analysis_excluded_folders_var.get() == (
             "generated/cache",
             "build/output",
