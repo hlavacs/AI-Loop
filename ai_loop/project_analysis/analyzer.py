@@ -298,6 +298,9 @@ class _PythonSymbols(ast.NodeVisitor):
     def visit_ClassDef(self, node: ast.ClassDef) -> None:
         qualified_name = self._qualified(node.name)
         bases = [name for base in node.bases if (name := _expression_name(base))]
+        templated = bool(getattr(node, "type_params", ())) or any(
+            re.match(r"^(?:typing\.)?Generic\s*\[", base) for base in bases
+        )
         record: dict[str, Any] = {
             "name": node.name,
             "qualified_name": qualified_name,
@@ -306,6 +309,9 @@ class _PythonSymbols(ast.NodeVisitor):
             "bases": bases,
             "methods": [],
             "data_members": [],
+            "kind": "class",
+            "template": templated,
+            "class_category": "templated_class" if templated else "class",
         }
         if docstring := ast.get_docstring(node, clean=True):
             record["docstring"] = docstring
@@ -806,6 +812,28 @@ _CPP_QUALIFIED_CALL_RE = re.compile(
 _CPP_CONTROL_WORDS = {"catch", "for", "if", "return", "sizeof", "switch", "while"}
 
 
+def _cpp_is_templated_type(source: str, offset: int) -> bool:
+    """Return whether a type starts immediately after a template parameter list."""
+
+    cursor = offset - 1
+    while cursor >= 0 and source[cursor].isspace():
+        cursor -= 1
+    if cursor < 0 or source[cursor] != ">":
+        return False
+    depth = 0
+    while cursor >= 0:
+        character = source[cursor]
+        if character == ">":
+            depth += 1
+        elif character == "<":
+            depth -= 1
+            if depth == 0:
+                prefix = source[:cursor].rstrip()
+                return bool(re.search(r"\btemplate$", prefix))
+        cursor -= 1
+    return False
+
+
 def _cpp_platform_markers(source: str) -> list[dict[str, Any]]:
     markers: list[dict[str, Any]] = []
     guard_pattern = re.compile(r"^\s*#\s*(?:if|ifdef|ifndef|elif)\b(?P<body>.*)$")
@@ -965,6 +993,12 @@ def _analyze_cpp(source: str) -> dict[str, Any]:
             "methods": [],
             "data_members": [],
         }
+        if kind in {"class", "struct"}:
+            templated = _cpp_is_templated_type(cleaned, match.start())
+            record["template"] = templated
+            record["class_category"] = (
+                f"templated_{kind}" if templated else kind
+            )
         if leading_comment := _cpp_leading_comment(source, match.start()):
             record["leading_comment"] = leading_comment
         if kind in {"class", "struct"}:

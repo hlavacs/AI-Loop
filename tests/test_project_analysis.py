@@ -174,6 +174,73 @@ def test_analyze_project_discovers_cpp_brace_initialized_members(
     ]
 
 
+def test_analyze_project_distinguishes_cpp_class_categories(
+    tmp_path: Path,
+) -> None:
+    (tmp_path / "types.hpp").write_text(
+        "class Plain {};\n"
+        "struct Record {};\n"
+        "template <typename T>\n"
+        "class Box {};\n"
+        "template <class T>\n"
+        "struct Node {};\n",
+        encoding="utf-8",
+    )
+
+    model = analyze_project(tmp_path)
+    categories = {
+        class_model["name"]: class_model["class_category"]
+        for class_model in model["files"][0]["classes"]
+    }
+
+    assert categories == {
+        "Plain": "class",
+        "Record": "struct",
+        "Box": "templated_class",
+        "Node": "templated_struct",
+    }
+
+    diagram = ProjectAnalysisController(model).class_diagram()
+    diagram_categories = {
+        node["label"]: (node["kind"], node["subtitle"])
+        for node in diagram["nodes"]
+    }
+    assert diagram_categories == {
+        "Plain": ("class", "class"),
+        "Record": ("struct", "struct"),
+        "Box": ("templated_class", "templated class"),
+        "Node": ("templated_struct", "templated struct"),
+    }
+
+
+def test_project_analysis_class_category_colors_are_distinct() -> None:
+    from ai_loop_gui import AiLoopGui
+
+    categories = ("class", "struct", "templated_class", "templated_struct")
+
+    assert len(
+        {AiLoopGui._analysis_diagram_node_colors(kind) for kind in categories}
+    ) == len(categories)
+
+
+def test_analyze_project_marks_python_generic_as_templated_class(
+    tmp_path: Path,
+) -> None:
+    (tmp_path / "generic.py").write_text(
+        "from typing import Generic, TypeVar\n"
+        "T = TypeVar('T')\n"
+        "class Box(Generic[T]):\n"
+        "    pass\n",
+        encoding="utf-8",
+    )
+
+    model = analyze_project(tmp_path)
+
+    assert model["files"][0]["classes"][0]["class_category"] == (
+        "templated_class"
+    )
+
+
 def test_analyze_project_discovers_cpp_hierarchy_and_metadata() -> None:
     model = analyze_project(FIXTURE_PROJECT)
     header = _file_by_path(model, "include/widget.hpp")

@@ -403,16 +403,21 @@ class ProjectAnalysisController:
                     symbol.get("qualified_name") or symbol.get("name") or tree_node.label
                 )
                 simple_name = str(symbol.get("name") or qualified_name)
+                class_category = str(
+                    symbol.get("class_category")
+                    or ("struct" if symbol.get("kind") == "struct" else "class")
+                )
                 nodes.append(
                     {
                         "id": node_id,
                         "label": qualified_name,
-                        "kind": "class",
+                        "kind": class_category,
                         "tree_node_id": node_id,
                         "source_path": relative_path,
                         "line": location.line,
                         "end_line": location.end_line,
                         "description": tree_node.description or tree_node.summary,
+                        "subtitle": class_category.replace("_", " "),
                     }
                 )
                 aliases = {qualified_name, simple_name}
@@ -1252,6 +1257,9 @@ class ProjectAnalysisController:
         name = self._metadata_text(
             symbol.get("qualified_name") or symbol.get("name") or "This class"
         )
+        class_category = self._metadata_text(
+            str(symbol.get("class_category") or "class").replace("_", " ")
+        )
         documentation = self._documentation_sentences(symbol)
         data_count = sum(child.kind == "data_member" for child in children)
         method_count = sum(child.kind == "method" for child in children)
@@ -1264,12 +1272,13 @@ class ProjectAnalysisController:
         if bases := symbol.get("bases"):
             base_names = ", ".join(self._metadata_text(base) for base in bases)
             sentences.append(
-                f"{name} is a class that groups related state and behavior "
+                f"{name} is a {class_category} that groups related state and behavior "
                 f"while deriving from {base_names}."
             )
         else:
             sentences.append(
-                f"{name} is a class that defines a project-specific object type."
+                f"{name} is a {class_category} that defines a project-specific "
+                "object type."
             )
         sentences.append(
             f"It contains {data_count} {self._plural(data_count, 'data member')} "

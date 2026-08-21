@@ -1925,8 +1925,31 @@ class AiLoopGui(tk.Tk):
             background="#fff0a8",
             foreground="#202020",
         )
+        class_diagram_frame.rowconfigure(1, weight=1)
+        class_diagram_frame.columnconfigure(0, weight=1)
+        class_legend = ttk.Frame(class_diagram_frame)
+        class_legend.grid(row=0, column=0, sticky="w", pady=(0, 4))
+        for label, kind in (
+            ("Class", "class"),
+            ("Struct", "struct"),
+            ("Templated class", "templated_class"),
+            ("Templated struct", "templated_struct"),
+        ):
+            fill, outline = self._analysis_diagram_node_colors(kind)
+            tk.Label(
+                class_legend,
+                text=label,
+                background=fill,
+                foreground="#17293c",
+                highlightbackground=outline,
+                highlightthickness=1,
+                padx=5,
+                pady=2,
+            ).pack(side="left", padx=(0, 6))
+        class_canvas_frame = ttk.Frame(class_diagram_frame)
+        class_canvas_frame.grid(row=1, column=0, sticky="nsew")
         self.analysis_class_canvas = self._build_analysis_diagram_canvas(
-            class_diagram_frame,
+            class_canvas_frame,
             "Run an analysis to see class inheritance.",
         )
         call_graph_frame.rowconfigure(1, weight=1)
@@ -1960,6 +1983,20 @@ class AiLoopGui(tk.Tk):
             dependency_diagram_frame,
             "Run an analysis to see project-local file dependencies.",
         )
+
+    @staticmethod
+    def _analysis_diagram_node_colors(kind: str) -> tuple[str, str]:
+        """Return accessible fill and outline colors for one diagram node kind."""
+
+        return {
+            "class": ("#e7f0fb", "#315c8a"),
+            "struct": ("#fff1dc", "#a46318"),
+            "templated_class": ("#f2e8fb", "#74479a"),
+            "templated_struct": ("#e3f6f3", "#24776f"),
+            "method": ("#edf7e9", "#47723d"),
+            "data_member": ("#f4edfb", "#73528d"),
+            "file": ("#fff4df", "#8a652f"),
+        }.get(kind, ("#e7f0fb", "#315c8a"))
 
     @staticmethod
     def _build_analysis_diagram_canvas(
@@ -2273,14 +2310,7 @@ class AiLoopGui(tk.Tk):
             height = int(node["height"])
             node_tag = f"analysis_diagram_node_{index}"
             kind = str(node.get("kind", ""))
-            if kind == "method":
-                fill, outline = "#edf7e9", "#47723d"
-            elif kind == "data_member":
-                fill, outline = "#f4edfb", "#73528d"
-            elif kind == "file":
-                fill, outline = "#fff4df", "#8a652f"
-            else:
-                fill, outline = "#e7f0fb", "#315c8a"
+            fill, outline = self._analysis_diagram_node_colors(kind)
             canvas.create_rectangle(
                 x,
                 y,
