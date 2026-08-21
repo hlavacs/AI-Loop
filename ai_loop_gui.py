@@ -2438,6 +2438,7 @@ class AiLoopGui(tk.Tk):
             parent,
             background="#f7f8fa",
             highlightthickness=0,
+            cursor="fleur",
         )
         horizontal = ttk.Scrollbar(parent, orient="horizontal", command=canvas.xview)
         vertical = ttk.Scrollbar(parent, orient="vertical", command=canvas.yview)
@@ -2455,22 +2456,87 @@ class AiLoopGui(tk.Tk):
         canvas._analysis_zoom = 1.0
         canvas._analysis_text_items = {}
         canvas._analysis_edge_items = []
+        canvas._analysis_panning = False
+        canvas._analysis_pan_moved = False
+        for button in (1, 2):
+            canvas.bind(
+                f"<ButtonPress-{button}>",
+                lambda event, target=canvas: self._start_analysis_diagram_pan(
+                    target, event
+                ),
+                add="+",
+            )
+            canvas.bind(
+                f"<B{button}-Motion>",
+                lambda event, target=canvas: self._drag_analysis_diagram(
+                    target, event
+                ),
+                add="+",
+            )
+            canvas.bind(
+                f"<ButtonRelease-{button}>",
+                lambda event, target=canvas: self._end_analysis_diagram_pan(
+                    target, event
+                ),
+                add="+",
+            )
         canvas.bind(
-            "<Control-MouseWheel>",
+            "<MouseWheel>",
             lambda event: self._on_analysis_diagram_zoom_wheel(canvas, event),
             add="+",
         )
         canvas.bind(
-            "<Control-Button-4>",
+            "<Button-4>",
             lambda event: self._on_analysis_diagram_zoom_wheel(canvas, event),
             add="+",
         )
         canvas.bind(
-            "<Control-Button-5>",
+            "<Button-5>",
             lambda event: self._on_analysis_diagram_zoom_wheel(canvas, event),
             add="+",
         )
         return canvas
+
+    def _start_analysis_diagram_pan(
+        self, canvas: tk.Canvas, event: tk.Event
+    ) -> None:
+        """Start natural-speed two-axis panning for an analyzer diagram."""
+
+        canvas._analysis_panning = True
+        canvas._analysis_pan_moved = False
+        canvas._analysis_pan_origin = (int(event.x), int(event.y))
+        canvas.scan_mark(int(event.x), int(event.y))
+        canvas.configure(cursor="fleur")
+        self.help_tooltip.hide()
+
+    @staticmethod
+    def _drag_analysis_diagram(canvas: tk.Canvas, event: tk.Event) -> str:
+        """Pan an analyzer diagram horizontally and vertically."""
+
+        if not getattr(canvas, "_analysis_panning", False):
+            return "break"
+        origin_x, origin_y = getattr(
+            canvas, "_analysis_pan_origin", (int(event.x), int(event.y))
+        )
+        if abs(int(event.x) - origin_x) >= 2 or abs(int(event.y) - origin_y) >= 2:
+            canvas._analysis_pan_moved = True
+        canvas.scan_dragto(int(event.x), int(event.y), gain=1)
+        return "break"
+
+    @staticmethod
+    def _end_analysis_diagram_pan(canvas: tk.Canvas, _event: tk.Event) -> None:
+        """Finish a canvas pan while retaining whether the pointer moved."""
+
+        canvas._analysis_panning = False
+        canvas.configure(cursor="fleur")
+
+    def _activate_analysis_diagram_node(
+        self, canvas: tk.Canvas, node_id: str
+    ) -> None:
+        """Activate a diagram node only when the gesture was a click."""
+
+        if not getattr(canvas, "_analysis_pan_moved", False):
+            self._select_analysis_diagram_node(node_id)
 
     def _build_analysis_zoom_controls(
         self, parent: ttk.Frame, canvas: tk.Canvas
@@ -2483,7 +2549,7 @@ class AiLoopGui(tk.Tk):
                 width=3,
                 command=lambda: self._zoom_analysis_diagram(canvas, 0.8),
             ),
-            "Zoom out. You can also hold Ctrl and scroll down over the diagram.",
+            "Zoom out. You can also scroll down over the diagram.",
         ).pack(side="left")
         self.help_widget(
             ttk.Button(
@@ -2510,7 +2576,7 @@ class AiLoopGui(tk.Tk):
                 width=3,
                 command=lambda: self._zoom_analysis_diagram(canvas, 1.25),
             ),
-            "Zoom in. You can also hold Ctrl and scroll up over the diagram.",
+            "Zoom in. You can also scroll up over the diagram.",
         ).pack(side="left")
         return controls
 
@@ -2518,18 +2584,30 @@ class AiLoopGui(tk.Tk):
         self, canvas: tk.Canvas, event: tk.Event
     ) -> str:
         zoom_in = getattr(event, "num", None) == 4 or getattr(event, "delta", 0) > 0
-        self._zoom_analysis_diagram(canvas, 1.25 if zoom_in else 0.8)
+        pointer_x = float(canvas.canvasx(int(event.x)))
+        pointer_y = float(canvas.canvasy(int(event.y)))
+        self._zoom_analysis_diagram(
+            canvas,
+            1.25 if zoom_in else 0.8,
+            origin=(pointer_x, pointer_y),
+        )
         return "break"
 
     @staticmethod
-    def _zoom_analysis_diagram(canvas: tk.Canvas, factor: float) -> None:
+    def _zoom_analysis_diagram(
+        canvas: tk.Canvas,
+        factor: float,
+        *,
+        origin: tuple[float, float] | None = None,
+    ) -> None:
         current = float(getattr(canvas, "_analysis_zoom", 1.0))
         minimum_zoom = AiLoopGui._analysis_fit_zoom(canvas)
         target = min(2.5, max(minimum_zoom, current * factor))
         actual_factor = target / current
         if abs(actual_factor - 1.0) < 0.001:
             return
-        canvas.scale("all", 0, 0, actual_factor, actual_factor)
+        origin_x, origin_y = origin or (0.0, 0.0)
+        canvas.scale("all", origin_x, origin_y, actual_factor, actual_factor)
         canvas._analysis_zoom = target
         for item_id, text_style in getattr(
             canvas, "_analysis_text_items", {}
@@ -2817,9 +2895,9 @@ class AiLoopGui(tk.Tk):
             description = str(group.get("description", ""))
             canvas.tag_bind(
                 group_tag,
-                "<Button-1>",
+                "<ButtonRelease-1>",
                 lambda _event, selected=tree_node_id: (
-                    self._select_analysis_diagram_node(selected)
+                    self._activate_analysis_diagram_node(canvas, selected)
                 ),
             )
             canvas.tag_bind(
@@ -2978,9 +3056,9 @@ class AiLoopGui(tk.Tk):
             description = str(node.get("description", ""))
             canvas.tag_bind(
                 node_tag,
-                "<Button-1>",
+                "<ButtonRelease-1>",
                 lambda _event, selected=tree_node_id: (
-                    self._select_analysis_diagram_node(selected)
+                    self._activate_analysis_diagram_node(canvas, selected)
                 ),
             )
             canvas.tag_bind(
@@ -3017,12 +3095,15 @@ class AiLoopGui(tk.Tk):
     def _enter_analysis_diagram_node(
         self, canvas: tk.Canvas, description: str
     ) -> None:
-        canvas.configure(cursor="hand2")
-        if description:
+        panning = getattr(canvas, "_analysis_panning", False)
+        canvas.configure(
+            cursor="fleur" if panning else "hand2"
+        )
+        if description and not panning:
             self.help_tooltip._schedule_show(canvas, description)
 
     def _leave_analysis_diagram_node(self, canvas: tk.Canvas) -> None:
-        canvas.configure(cursor="")
+        canvas.configure(cursor="fleur")
         self.help_tooltip.hide()
 
     def _select_analysis_diagram_node(self, node_id: str) -> None:

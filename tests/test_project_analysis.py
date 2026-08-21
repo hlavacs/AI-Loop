@@ -578,6 +578,114 @@ def test_project_analysis_diagram_zoom_clamps_and_resets() -> None:
     assert canvas._analysis_zoom == pytest.approx(0.0488)
 
 
+def test_project_analysis_mouse_wheel_zoom_uses_pointer_as_origin() -> None:
+    from ai_loop_gui import AiLoopGui
+
+    class FakeCanvas:
+        _analysis_zoom = 1.0
+        _analysis_text_items: dict[int, tuple[int, str, int | None]] = {}
+        _analysis_edge_items: list[int] = []
+
+        def __init__(self) -> None:
+            self.scales: list[tuple[object, float, float, float, float]] = []
+
+        def canvasx(self, x: int) -> float:
+            return x + 500.0
+
+        def canvasy(self, y: int) -> float:
+            return y + 700.0
+
+        def scale(
+            self,
+            tag: object,
+            x_origin: float,
+            y_origin: float,
+            x_scale: float,
+            y_scale: float,
+        ) -> None:
+            self.scales.append((tag, x_origin, y_origin, x_scale, y_scale))
+
+        def bbox(self, _tag: object) -> tuple[int, int, int, int]:
+            return (0, 0, 2_000, 1_000)
+
+        def configure(self, **_options: object) -> None:
+            pass
+
+    gui = AiLoopGui.__new__(AiLoopGui)
+    canvas = FakeCanvas()
+
+    result = gui._on_analysis_diagram_zoom_wheel(
+        canvas, SimpleNamespace(num=4, delta=0, x=30, y=40)
+    )
+
+    assert result == "break"
+    assert canvas._analysis_zoom == 1.25
+    assert canvas.scales[-1] == ("all", 530.0, 740.0, 1.25, 1.25)
+
+    gui._on_analysis_diagram_zoom_wheel(
+        canvas, SimpleNamespace(num=None, delta=-120, x=70, y=80)
+    )
+
+    assert canvas._analysis_zoom == 1.0
+    assert canvas.scales[-1] == ("all", 570.0, 780.0, 0.8, 0.8)
+
+
+def test_project_analysis_diagram_mouse_drag_pans_without_activating_node() -> None:
+    from ai_loop_gui import AiLoopGui
+
+    class FakeTooltip:
+        def __init__(self) -> None:
+            self.hidden = 0
+
+        def hide(self) -> None:
+            self.hidden += 1
+
+    class FakeCanvas:
+        _analysis_panning = False
+        _analysis_pan_moved = False
+
+        def __init__(self) -> None:
+            self.marks: list[tuple[int, int]] = []
+            self.drags: list[tuple[int, int, int]] = []
+            self.cursors: list[str] = []
+
+        def scan_mark(self, x: int, y: int) -> None:
+            self.marks.append((x, y))
+
+        def scan_dragto(self, x: int, y: int, *, gain: int) -> None:
+            self.drags.append((x, y, gain))
+
+        def configure(self, *, cursor: str) -> None:
+            self.cursors.append(cursor)
+
+    gui = AiLoopGui.__new__(AiLoopGui)
+    gui.help_tooltip = FakeTooltip()
+    activated: list[str] = []
+    gui._select_analysis_diagram_node = activated.append
+    canvas = FakeCanvas()
+
+    gui._start_analysis_diagram_pan(canvas, SimpleNamespace(x=10, y=20))
+    assert gui._drag_analysis_diagram(
+        canvas, SimpleNamespace(x=35, y=5)
+    ) == "break"
+    gui._activate_analysis_diagram_node(canvas, "dragged-node")
+    gui._end_analysis_diagram_pan(canvas, SimpleNamespace(x=35, y=5))
+
+    assert canvas.marks == [(10, 20)]
+    assert canvas.drags == [(35, 5, 1)]
+    assert canvas._analysis_pan_moved is True
+    assert canvas._analysis_panning is False
+    assert activated == []
+    assert gui.help_tooltip.hidden == 1
+    assert canvas.cursors == ["fleur", "fleur"]
+
+    gui._start_analysis_diagram_pan(canvas, SimpleNamespace(x=4, y=7))
+    gui._activate_analysis_diagram_node(canvas, "clicked-node")
+    gui._end_analysis_diagram_pan(canvas, SimpleNamespace(x=4, y=7))
+
+    assert activated == ["clicked-node"]
+
+
 def test_analyze_project_marks_python_generic_as_templated_class(
     tmp_path: Path,
 ) -> None:
@@ -832,6 +940,14 @@ def test_project_analysis_excluded_folder_names_populate_listbox() -> None:
         assert int(
             gui.analysis_vertical_paned.pane(gui.analysis_lower_pane, "weight")
         ) == 1
+        for canvas in (
+            gui.analysis_class_canvas,
+            gui.analysis_call_canvas,
+            gui.analysis_dependency_canvas,
+        ):
+            assert canvas.bind("<MouseWheel>")
+            assert canvas.bind("<Button-4>")
+            assert canvas.bind("<Button-5>")
         assert gui.analysis_excluded_folders_var.get() == (
             "generated/cache",
             "build/output",
