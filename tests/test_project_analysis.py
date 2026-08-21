@@ -2,7 +2,9 @@ from __future__ import annotations
 
 import json
 import os
+import re
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -349,7 +351,7 @@ def test_project_analysis_controller_builds_file_and_symbol_tree() -> None:
     python_file = controller.root_node.children[1]
     assert [node.label for node in python_file.children] == [
         "Classes (2)",
-        "Functions (3)",
+        "Functions (2)",
         "Data Types (2)",
     ]
     assert [node.label for node in python_file.children[0].children] == [
@@ -367,6 +369,164 @@ def test_project_analysis_controller_builds_file_and_symbol_tree() -> None:
     assert greeter.summary == (
         "Greeter — sample.py, lines 10–12; 0 data members, 1 method"
     )
+    assert [node.label for node in python_file.children[1].children] == [
+        "format_message",
+        "load_greeter",
+    ]
+
+
+def test_project_analysis_controller_lists_cpp_methods_only_under_their_class() -> None:
+    controller = ProjectAnalysisController(analyze_project(FIXTURE_PROJECT))
+    header, _, implementation = controller.root_node.children
+
+    assert [node.label for node in header.children[1].children] == ["add"]
+    assert [node.label for node in implementation.children[0].children] == ["add"]
+    assert not any(
+        node.kind == "method"
+        for file_node in controller.root_node.children
+        for group in file_node.children
+        if group.kind == "group" and group.label.startswith("Functions")
+        for node in group.children
+    )
+
+
+def test_project_analysis_controller_descriptions_have_two_to_five_sentences() -> None:
+    model = analyze_project(FIXTURE_PROJECT)
+    python_file = _file_by_path(model, "sample.py")
+    greeter_symbol = next(
+        symbol for symbol in python_file["classes"] if symbol["name"] == "Greeter"
+    )
+    greet_symbol = next(
+        symbol for symbol in python_file["functions"] if symbol["name"] == "greet"
+    )
+    greeter_symbol["docstring"] = (
+        "Creates greeting objects. It coordinates inherited naming behavior."
+    )
+    greet_symbol["leading_comment"] = "# Produces a greeting for one recipient."
+
+    controller = ProjectAnalysisController(model)
+    greeter = _find_node(controller.root_node, kind="class", label="Greeter")
+
+    assert greeter is not None
+    method = next(node for node in greeter.children if node.kind == "method")
+    assert greeter.description.startswith("Creates greeting objects.")
+    assert method.description.startswith("Produces a greeting for one recipient.")
+    for node in (greeter, method):
+        sentence_count = len(re.findall(r"[.!?](?=\s|$)", node.description))
+        assert 2 <= sentence_count <= 5
+
+
+def test_project_analysis_controller_navigates_cpp_method_to_definition() -> None:
+    controller = ProjectAnalysisController(analyze_project(FIXTURE_PROJECT))
+    widget = _find_node(controller.root_node, kind="class", label="Widget")
+
+    assert widget is not None
+    assert controller.resolve_selection(widget.node_id).line_range == (10, 14)
+    methods = {node.label: node for node in widget.children}
+    constructor_location = controller.resolve_selection(methods["Widget"].node_id)
+    name_location = controller.resolve_selection(methods["name"].node_id)
+
+    assert constructor_location is not None
+    assert constructor_location.path == (FIXTURE_PROJECT / "src/widget.cpp").resolve()
+    assert constructor_location.line_range == (3, 3)
+    assert name_location is not None
+    assert name_location.path == (FIXTURE_PROJECT / "src/widget.cpp").resolve()
+    assert name_location.line_range == (5, 7)
+
+
+def test_project_analysis_gui_click_navigation() -> None:
+    from ai_loop_gui import AiLoopGui
+
+    controller = ProjectAnalysisController(analyze_project(FIXTURE_PROJECT))
+    widget = _find_node(controller.root_node, kind="class", label="Widget")
+    assert widget is not None
+    method = next(node for node in widget.children if node.kind == "method")
+
+    class FakeTree:
+        def __init__(self) -> None:
+            self.rows = {1: widget.node_id, 2: method.node_id}
+            self.selected: list[str] = []
+            self.focused: list[str] = []
+
+        def identify_row(self, y: int) -> str:
+            return self.rows.get(y, "")
+
+        def selection_set(self, node_id: str) -> None:
+            self.selected.append(node_id)
+
+        def focus(self, node_id: str) -> None:
+            self.focused.append(node_id)
+
+    class FakeNotebook:
+        def __init__(self) -> None:
+            self.selected: list[object] = []
+
+        def select(self, tab: object) -> None:
+            self.selected.append(tab)
+
+    gui = AiLoopGui.__new__(AiLoopGui)
+    gui._analysis_controller = controller
+    gui.analysis_tree = FakeTree()
+    gui.analysis_detail_notebook = FakeNotebook()
+    gui.analysis_source_frame = object()
+    shown: list[str] = []
+    gui._show_analysis_tree_node = shown.append
+
+    gui.on_analysis_tree_clicked(SimpleNamespace(y=1))
+    double_click_result = gui.on_analysis_tree_double_clicked(SimpleNamespace(y=2))
+
+    assert shown == [widget.node_id, method.node_id]
+    assert gui.analysis_tree.selected == [widget.node_id, method.node_id]
+    assert gui.analysis_tree.focused == [widget.node_id, method.node_id]
+    assert gui.analysis_detail_notebook.selected == [
+        gui.analysis_source_frame,
+        gui.analysis_source_frame,
+    ]
+    assert double_click_result == "break"
+
+
+def test_project_analysis_gui_hover_uses_controller_descriptions() -> None:
+    from ai_loop_gui import AiLoopGui
+
+    controller = ProjectAnalysisController(analyze_project(FIXTURE_PROJECT))
+    widget = _find_node(controller.root_node, kind="class", label="Widget")
+    assert widget is not None
+    method = next(node for node in widget.children if node.kind == "method")
+    group = controller.root_node.children[0].children[0]
+
+    class FakeTree:
+        def identify_row(self, y: int) -> str:
+            return {1: widget.node_id, 2: method.node_id, 3: group.node_id}.get(
+                y, ""
+            )
+
+    class FakeTooltip:
+        def __init__(self) -> None:
+            self.hidden = 0
+            self.scheduled: list[tuple[object, str]] = []
+
+        def hide(self) -> None:
+            self.hidden += 1
+
+        def _schedule_show(self, tree: object, text: str) -> None:
+            self.scheduled.append((tree, text))
+
+    gui = AiLoopGui.__new__(AiLoopGui)
+    gui._analysis_controller = controller
+    gui._analysis_tooltip_node_id = None
+    gui.analysis_tree = FakeTree()
+    gui.help_tooltip = FakeTooltip()
+
+    gui.on_analysis_tree_hover(SimpleNamespace(y=1))
+    gui.on_analysis_tree_hover(SimpleNamespace(y=1))
+    gui.on_analysis_tree_hover(SimpleNamespace(y=2))
+    gui.on_analysis_tree_hover(SimpleNamespace(y=3))
+
+    assert gui.help_tooltip.scheduled == [
+        (gui.analysis_tree, widget.description),
+        (gui.analysis_tree, method.description),
+    ]
+    assert gui._analysis_tooltip_node_id is None
 
 
 def test_project_analysis_controller_orders_class_members_by_source(

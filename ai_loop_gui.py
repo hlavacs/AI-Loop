@@ -1493,6 +1493,7 @@ class AiLoopGui(tk.Tk):
         self._verification_last_loaded_at = 0.0
         self._verification_last_loaded_job: str | None = None
         self._analysis_controller: ProjectAnalysisController | None = None
+        self._analysis_tooltip_node_id: str | None = None
         self._analysis_running = False
         self._redis_sampler_inflight = False
         self.watch_job_id: str | None = None
@@ -1890,6 +1891,21 @@ class AiLoopGui(tk.Tk):
         self.analysis_tree.bind(
             "<<TreeviewSelect>>", self.on_analysis_tree_selected
         )
+        self.analysis_tree.bind(
+            "<ButtonRelease-1>", self.on_analysis_tree_clicked, add="+"
+        )
+        self.analysis_tree.bind(
+            "<Double-1>", self.on_analysis_tree_double_clicked, add="+"
+        )
+        self.analysis_tree.bind(
+            "<Motion>", self.on_analysis_tree_hover, add="+"
+        )
+        self.analysis_tree.bind(
+            "<Leave>", self.on_analysis_tree_leave, add="+"
+        )
+        self.analysis_tree.bind(
+            "<ButtonPress>", self.on_analysis_tree_leave, add="+"
+        )
 
         self.analysis_source_var = tk.StringVar(value="No source selected")
         ttk.Label(
@@ -2061,6 +2077,7 @@ class AiLoopGui(tk.Tk):
             messagebox.showerror("Project Analysis Failed", str(exc))
             return
         self._analysis_controller = controller
+        self.on_analysis_tree_leave()
         for item in self.analysis_tree.get_children(""):
             self.analysis_tree.delete(item)
         self._insert_analysis_node("", controller.root_node)
@@ -2239,11 +2256,72 @@ class AiLoopGui(tk.Tk):
             self._insert_analysis_node(node.node_id, child)
 
     def on_analysis_tree_selected(self, _event: tk.Event | None = None) -> None:
-        controller = self._analysis_controller
         selected = self.analysis_tree.selection()
-        if controller is None or not selected:
+        if not selected:
             return
-        node = controller.node(selected[0])
+        self._show_analysis_tree_node(selected[0])
+
+    def on_analysis_tree_clicked(self, event: tk.Event) -> None:
+        node_id = self.analysis_tree.identify_row(event.y)
+        controller = self._analysis_controller
+        node = (
+            controller.node(node_id)
+            if controller is not None and node_id
+            else None
+        )
+        if node is None or node.kind != "class":
+            return
+        self.analysis_tree.selection_set(node_id)
+        self.analysis_tree.focus(node_id)
+        self._show_analysis_tree_node(node_id)
+        self.analysis_detail_notebook.select(self.analysis_source_frame)
+
+    def on_analysis_tree_double_clicked(self, event: tk.Event) -> str | None:
+        node_id = self.analysis_tree.identify_row(event.y)
+        controller = self._analysis_controller
+        node = (
+            controller.node(node_id)
+            if controller is not None and node_id
+            else None
+        )
+        if node is None or node.kind != "method":
+            return None
+        self.analysis_tree.selection_set(node_id)
+        self.analysis_tree.focus(node_id)
+        self._show_analysis_tree_node(node_id)
+        self.analysis_detail_notebook.select(self.analysis_source_frame)
+        return "break"
+
+    def on_analysis_tree_hover(self, event: tk.Event) -> None:
+        node_id = self.analysis_tree.identify_row(event.y)
+        controller = self._analysis_controller
+        node = (
+            controller.node(node_id)
+            if controller is not None and node_id
+            else None
+        )
+        if (
+            node is None
+            or node.kind not in {"class", "method"}
+            or not node.description
+        ):
+            self.on_analysis_tree_leave()
+            return
+        if node_id == getattr(self, "_analysis_tooltip_node_id", None):
+            return
+        self.help_tooltip.hide()
+        self._analysis_tooltip_node_id = node_id
+        self.help_tooltip._schedule_show(self.analysis_tree, node.description)
+
+    def on_analysis_tree_leave(self, _event: tk.Event | None = None) -> None:
+        self._analysis_tooltip_node_id = None
+        self.help_tooltip.hide()
+
+    def _show_analysis_tree_node(self, node_id: str) -> None:
+        controller = self._analysis_controller
+        if controller is None:
+            return
+        node = controller.node(node_id)
         if node is None:
             return
         self.analysis_status_var.set(

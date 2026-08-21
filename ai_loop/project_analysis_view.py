@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import posixpath
+import re
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -19,6 +20,7 @@ class ProjectTreeNode:
     end_line: int | None = None
     summary: str = ""
     children: tuple[ProjectTreeNode, ...] = ()
+    description: str = ""
 
 
 @dataclass(frozen=True)
@@ -210,6 +212,8 @@ class ProjectAnalysisController:
         self.project_path = Path(str(model["path"])).expanduser().resolve()
         self._locations: dict[str, SourceLocation] = {}
         self._nodes: dict[str, ProjectTreeNode] = {}
+        self._class_names = self._project_class_names()
+        self._method_definitions = self._project_method_definitions()
         self._insights = self._normalized_insights()
         self.root_node = self.build_tree()
 
@@ -511,6 +515,80 @@ class ProjectAnalysisController:
             self.model.get("files", ()), key=lambda item: str(item.get("path", ""))
         )
 
+    def _project_class_names(self) -> set[str]:
+        names = set()
+        for file_model in self.model.get("files", ()):
+            for class_symbol in file_model.get("classes", ()):
+                qualified_name = str(class_symbol.get("qualified_name") or "")
+                simple_name = str(class_symbol.get("name") or "")
+                names.update(name for name in (qualified_name, simple_name) if name)
+        return names
+
+    def _project_method_definitions(
+        self,
+    ) -> dict[str, list[tuple[Path, dict[str, Any]]]]:
+        definitions: dict[str, list[tuple[Path, dict[str, Any]]]] = {}
+        for file_model in self.model.get("files", ()):
+            relative_path = Path(str(file_model.get("path", "")))
+            for function_symbol in file_model.get("functions", ()):
+                if (
+                    function_symbol.get("kind") != "method"
+                    or function_symbol.get("declaration") is True
+                ):
+                    continue
+                qualified_name = str(function_symbol.get("qualified_name") or "")
+                if qualified_name:
+                    definitions.setdefault(qualified_name, []).append(
+                        (relative_path, function_symbol)
+                    )
+        return definitions
+
+    def _method_has_owning_class(self, symbol: dict[str, Any]) -> bool:
+        if symbol.get("kind") != "method":
+            return False
+        owner = str(symbol.get("owner") or "")
+        if not owner:
+            qualified_name = str(symbol.get("qualified_name") or "")
+            separator = "::" if "::" in qualified_name else "."
+            owner = qualified_name.rpartition(separator)[0]
+        return (
+            owner in self._class_names
+            or owner.rsplit("::", 1)[-1] in self._class_names
+        )
+
+    def _display_symbols(
+        self, file_model: dict[str, Any], model_key: str
+    ) -> tuple[tuple[int, dict[str, Any]], ...]:
+        symbols = tuple(enumerate(file_model.get(model_key, ())))
+        if model_key != "functions":
+            return symbols
+        return tuple(
+            (index, symbol)
+            for index, symbol in symbols
+            if not self._method_has_owning_class(symbol)
+        )
+
+    def _method_definition(
+        self, source_path: Path, symbol: dict[str, Any]
+    ) -> tuple[Path, dict[str, Any]]:
+        if symbol.get("declaration") is not True:
+            return source_path, symbol
+        qualified_name = str(symbol.get("qualified_name") or "")
+        candidates = self._method_definitions.get(qualified_name, ())
+        parameters = tuple(symbol.get("parameters", ()))
+        matching = [
+            candidate
+            for candidate in candidates
+            if tuple(candidate[1].get("parameters", ())) == parameters
+        ]
+        if len(matching) == 1:
+            relative_path, definition = matching[0]
+            return self._source_path(relative_path), definition
+        if len(candidates) == 1:
+            relative_path, definition = candidates[0]
+            return self._source_path(relative_path), definition
+        return source_path, symbol
+
     @staticmethod
     def _resolve_class_name(
         name: str,
@@ -658,28 +736,25 @@ class ProjectAnalysisController:
     ) -> ProjectTreeNode:
         node_id = f"file:{file_index}"
         relative_path = Path(str(file_model["path"]))
-        source_path = (self.project_path / relative_path).resolve()
-        try:
-            source_path.relative_to(self.project_path)
-        except ValueError as exc:
-            raise ValueError(
-                f"source path escapes project root: {relative_path}"
-            ) from exc
+        source_path = self._source_path(relative_path)
 
         line_count = max(1, self._line_number(file_model.get("line_count"), 1))
         self._locations[node_id] = SourceLocation(source_path, 1, line_count)
-        groups = tuple(
-            self._build_symbol_group(
-                file_index,
-                source_path,
-                file_model,
-                model_key,
-                label,
-                kind,
-            )
-            for model_key, label, kind in self._SYMBOL_GROUPS
-            if file_model.get(model_key)
-        )
+        groups = []
+        for model_key, label, kind in self._SYMBOL_GROUPS:
+            symbols = self._display_symbols(file_model, model_key)
+            if symbols:
+                groups.append(
+                    self._build_symbol_group(
+                        file_index,
+                        source_path,
+                        file_model,
+                        model_key,
+                        label,
+                        kind,
+                        symbols,
+                    )
+                )
         issues = self._build_issue_group(file_index, source_path, file_model)
         children = (*groups, *((issues,) if issues is not None else ()))
         language = str(file_model.get("language", "source"))
@@ -703,9 +778,10 @@ class ProjectAnalysisController:
         model_key: str,
         label: str,
         kind: str,
+        symbols: tuple[tuple[int, dict[str, Any]], ...],
     ) -> ProjectTreeNode:
         group_id = f"file:{file_index}:{model_key}"
-        symbols = tuple(
+        symbol_nodes = tuple(
             self._build_symbol_node(
                 group_id,
                 source_path,
@@ -714,14 +790,14 @@ class ProjectAnalysisController:
                 symbol,
                 kind,
             )
-            for symbol_index, symbol in enumerate(file_model.get(model_key, ()))
+            for symbol_index, symbol in symbols
         )
         node = ProjectTreeNode(
             node_id=group_id,
-            label=f"{label} ({len(symbols)})",
+            label=f"{label} ({len(symbol_nodes)})",
             kind="group",
-            summary=f"{len(symbols)} {label.lower()}",
-            children=symbols,
+            summary=f"{len(symbol_nodes)} {label.lower()}",
+            children=symbol_nodes,
         )
         self._nodes[group_id] = node
         return node
@@ -763,6 +839,9 @@ class ProjectAnalysisController:
                     f"{method_count} {self._plural(method_count, 'method')}"
                 )
             ]
+        description = ""
+        if kind == "class":
+            description = self._class_description(symbol, children)
         node = ProjectTreeNode(
             node_id=node_id,
             label=str(symbol.get("qualified_name") or symbol.get("name") or kind),
@@ -770,6 +849,7 @@ class ProjectAnalysisController:
             line=line,
             end_line=end_line,
             summary="; ".join(details),
+            description=description,
             children=children,
         )
         self._nodes[node_id] = node
@@ -824,25 +904,186 @@ class ProjectAnalysisController:
             sorted(members, key=lambda item: (item[0], item[1], item[3]))
         ):
             node_id = f"{class_node_id}:member:{member_index}"
-            line = self._line_number(member.get("line"), 1)
-            end_line = max(line, self._line_number(member.get("end_line"), line))
+            member_source_path = source_path
+            displayed_member = member
+            if member_kind == "method":
+                member_source_path, displayed_member = self._method_definition(
+                    source_path, member
+                )
+            line = self._line_number(displayed_member.get("line"), 1)
+            end_line = max(
+                line, self._line_number(displayed_member.get("end_line"), line)
+            )
             details = [member_kind.replace("_", " ")]
-            if data_type := member.get("type"):
+            if data_type := displayed_member.get("type"):
                 details.append(f"type: {data_type}")
-            if return_type := member.get("return_type"):
+            if return_type := displayed_member.get("return_type"):
                 details.append(f"returns: {return_type}")
             node = ProjectTreeNode(
                 node_id=node_id,
-                label=str(member.get("name") or member.get("qualified_name") or "member"),
+                label=str(
+                    displayed_member.get("name")
+                    or displayed_member.get("qualified_name")
+                    or "member"
+                ),
                 kind=member_kind,
                 line=line,
                 end_line=end_line,
                 summary="; ".join(details),
+                description=(
+                    self._method_description(displayed_member, member)
+                    if member_kind == "method"
+                    else ""
+                ),
             )
-            self._locations[node_id] = SourceLocation(source_path, line, end_line)
+            self._locations[node_id] = SourceLocation(
+                member_source_path, line, end_line
+            )
             self._nodes[node_id] = node
             nodes.append(node)
         return tuple(nodes)
+
+    def _class_description(
+        self,
+        symbol: dict[str, Any],
+        children: tuple[ProjectTreeNode, ...],
+    ) -> str:
+        """Return a deterministic explanation for a class tree node."""
+
+        name = self._metadata_text(
+            symbol.get("qualified_name") or symbol.get("name") or "This class"
+        )
+        documentation = self._documentation_sentences(symbol)
+        data_count = sum(child.kind == "data_member" for child in children)
+        method_count = sum(child.kind == "method" for child in children)
+        sentences = documentation
+        if bases := symbol.get("bases"):
+            base_names = ", ".join(self._metadata_text(base) for base in bases)
+            sentences.append(
+                f"{name} is a class that groups related state and behavior "
+                f"while deriving from {base_names}."
+            )
+        else:
+            sentences.append(
+                f"{name} is a class that defines a project-specific object type."
+            )
+        sentences.append(
+            f"It contains {data_count} {self._plural(data_count, 'data member')} "
+            f"and {method_count} {self._plural(method_count, 'method')}."
+        )
+        return " ".join(sentences[:5])
+
+    def _method_description(
+        self,
+        symbol: dict[str, Any],
+        declaration_symbol: dict[str, Any],
+    ) -> str:
+        """Return a deterministic explanation for a method tree node."""
+
+        documentation = self._documentation_sentences(symbol, declaration_symbol)
+        name = self._metadata_text(
+            symbol.get("qualified_name")
+            or declaration_symbol.get("qualified_name")
+            or symbol.get("name")
+            or "This method"
+        )
+        owner = self._metadata_text(
+            symbol.get("owner") or declaration_symbol.get("owner") or "its class"
+        )
+        sentences = documentation
+        sentences.append(
+            f"{name} is a method that implements an operation for {owner}."
+        )
+        parameters = symbol.get(
+            "parameters", declaration_symbol.get("parameters", ())
+        )
+        if not isinstance(parameters, (list, tuple)):
+            parameters = ()
+        parameter_names = [
+            self._metadata_text(parameter)
+            for parameter in parameters
+            if str(parameter).strip()
+        ]
+        if parameter_names:
+            parameter_text = ", ".join(parameter_names)
+            behavior = f"It accepts {parameter_text}"
+        else:
+            behavior = "It accepts no declared parameters"
+        return_type = symbol.get("return_type") or declaration_symbol.get(
+            "return_type"
+        )
+        if return_type:
+            behavior += f" and returns {self._metadata_text(return_type)}"
+        else:
+            behavior += " and has no declared return type"
+        sentences.append(f"{behavior}.")
+        return " ".join(sentences[:5])
+
+    @classmethod
+    def _documentation_sentences(
+        cls, *symbols: dict[str, Any]
+    ) -> list[str]:
+        """Extract at most three normalized sentences from symbol documentation."""
+
+        for symbol in symbols:
+            for field in (
+                "docstring",
+                "doc",
+                "documentation",
+                "leading_comment",
+                "comment",
+                "comments",
+            ):
+                value = symbol.get(field)
+                if isinstance(value, (list, tuple)):
+                    text = " ".join(str(item) for item in value if item)
+                elif isinstance(value, str):
+                    text = value
+                else:
+                    continue
+                text = cls._clean_documentation(text)
+                if not text:
+                    continue
+                sentences = [
+                    sentence.strip()
+                    for sentence in re.split(r"(?<=[.!?])\s+", text)
+                    if sentence.strip()
+                ][:3]
+                return [
+                    sentence
+                    if sentence.endswith((".", "!", "?"))
+                    else f"{sentence}."
+                    for sentence in sentences
+                ]
+        return []
+
+    @staticmethod
+    def _clean_documentation(text: str) -> str:
+        lines = []
+        for raw_line in text.splitlines():
+            line = raw_line.strip()
+            line = re.sub(r"^(?:/\*+|//+|\#+|\*+)\s?", "", line)
+            line = re.sub(r"\s*\*/$", "", line)
+            if line:
+                lines.append(line)
+        return " ".join(" ".join(lines).split())
+
+    @staticmethod
+    def _metadata_text(value: Any) -> str:
+        """Keep metadata inside one sentence even when it contains punctuation."""
+
+        text = " ".join(str(value).split()).strip(" .!?")
+        return re.sub(r"[.!?]+(?=\s|$)", ",", text) or "unspecified"
+
+    def _source_path(self, relative_path: Path) -> Path:
+        source_path = (self.project_path / relative_path).resolve()
+        try:
+            source_path.relative_to(self.project_path)
+        except ValueError as exc:
+            raise ValueError(
+                f"source path escapes project root: {relative_path}"
+            ) from exc
+        return source_path
 
     @staticmethod
     def _plural(count: int, singular: str) -> str:
