@@ -113,6 +113,57 @@ def test_configured_profile_injects_all_prompt_builders_with_task_metadata(
     assert '"acceptance": [\n    "All builders are covered"' in plan
 
 
+def test_plan_prompt_ignores_tilde_prefixed_numeric_approximations(
+    tmp_path: Path,
+) -> None:
+    (tmp_path / "AGENTS.md").write_text(
+        "Follow the repository instructions.\n", encoding="utf-8"
+    )
+    shader = tmp_path / "src" / "versions" / "simple" / "shaders"
+    shader.mkdir(parents=True)
+    (shader / "simple_forward.slang").write_text(
+        "// forward shader guidance\n", encoding="utf-8"
+    )
+    configured_job = job()
+    configured_job["worktree_path"] = str(tmp_path)
+    configured_job["goal"] = (
+        "Read `AGENTS.md` and update "
+        "`src/versions/simple/shaders/simple_forward.slang`. "
+        "Reduce the compare bias to `~0.0005`."
+    )
+
+    candidates = controller.referenced_file_candidates(configured_job)
+    prompt = controller.plan_prompt(configured_job)
+
+    assert "~0.0005" not in candidates
+    assert candidates == [
+        "AGENTS.md",
+        "src/versions/simple/shaders/simple_forward.slang",
+    ]
+    assert controller.safe_relative_path(tmp_path, "~0.0005") is None
+    assert controller.safe_relative_path(tmp_path, "~/AGENTS.md") is None
+    assert "Follow the repository instructions." in prompt
+    assert "// forward shader guidance" in prompt
+
+
+def test_plan_prompt_survives_optional_guidance_path_errors(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    configured_job = job()
+    configured_job["worktree_path"] = str(tmp_path)
+    configured_job["goal"] = "Read `AGENTS.md` before implementation."
+
+    def fail_path_resolution(_worktree: Path, _value: str) -> Path | None:
+        raise RuntimeError("Could not determine home directory.")
+
+    monkeypatch.setattr(controller, "safe_relative_path", fail_path_resolution)
+
+    prompt = controller.plan_prompt(configured_job)
+
+    assert "Read `AGENTS.md` before implementation." in prompt
+    assert "Refreshed referenced guidance files:\n[]" in prompt
+
+
 def test_no_profile_preserves_exact_existing_prompt_bytes(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
