@@ -164,6 +164,55 @@ def test_plan_prompt_survives_optional_guidance_path_errors(
     assert "Refreshed referenced guidance files:\n[]" in prompt
 
 
+def test_worker_prompt_ignores_tilde_prefixed_numeric_approximations(
+    tmp_path: Path,
+) -> None:
+    (tmp_path / "AGENTS.md").write_text("Worker instructions.\n", encoding="utf-8")
+    shader = tmp_path / "src" / "versions" / "simple" / "shaders"
+    shader.mkdir(parents=True)
+    (shader / "simple_forward.slang").write_text("// shader\n", encoding="utf-8")
+    configured_job = job()
+    configured_job["worktree_path"] = str(tmp_path)
+    configured_job["goal"] = (
+        "Read `AGENTS.md` and update "
+        "`src/versions/simple/shaders/simple_forward.slang`; use `~0.0005`."
+    )
+    configured_task = task()
+
+    candidates = worker.referenced_file_candidates(configured_job, configured_task)
+    guidance_files = worker.referenced_existing_files(
+        configured_job, configured_task
+    )
+    prompt = worker.codex_prompt(configured_job, configured_task)
+
+    assert "~0.0005" not in candidates
+    assert guidance_files == [
+        "AGENTS.md",
+        "src/versions/simple/shaders/simple_forward.slang",
+    ]
+    assert worker.safe_relative_path(tmp_path, "~0.0005") is None
+    assert worker.safe_relative_path(tmp_path, "~/AGENTS.md") is None
+    assert '"AGENTS.md"' in prompt
+    assert '"src/versions/simple/shaders/simple_forward.slang"' in prompt
+
+
+def test_worker_prompt_survives_optional_guidance_path_errors(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    configured_job = job()
+    configured_job["worktree_path"] = str(tmp_path)
+    configured_job["goal"] = "Read `AGENTS.md` before implementation."
+
+    def fail_path_resolution(_worktree: Path, _value: str) -> Path | None:
+        raise RuntimeError("Could not determine home directory.")
+
+    monkeypatch.setattr(worker, "safe_relative_path", fail_path_resolution)
+
+    prompt = worker.codex_prompt(configured_job, task())
+
+    assert "Referenced guidance files to refresh before work:\n[]" in prompt
+
+
 def test_no_profile_preserves_exact_existing_prompt_bytes(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
