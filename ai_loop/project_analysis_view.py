@@ -213,7 +213,8 @@ def _layout_grouped_diagram(
 
     Connected members occupy a ring in their class panel. Every class involved
     in a cross-class call occupies one shared outer ring, while all remaining
-    classes use a separate compact grid.
+    classes use a separate compact grid. A top-level main() group is instead
+    fixed at the center of its call component, with its callees on the ring.
     """
 
     margin = 32
@@ -253,12 +254,36 @@ def _layout_grouped_diagram(
         group_id for component in external_components for group_id in component
     ]
     external_set = set(external_ids)
+    call_root_group_id = next(
+        (
+            str(group["id"])
+            for group in groups
+            if group.get("central_call_root")
+        ),
+        None,
+    )
+    central_group_id = call_root_group_id
+    primary_ids = external_ids
+    if central_group_id is not None:
+        primary_ids = [
+            central_group_id,
+            *(group_id for group_id in external_ids if group_id != central_group_id),
+        ]
+        external_set = set(primary_ids)
     compact_ids = [
         str(group["id"])
         for group in groups
         if str(group["id"]) not in external_set
     ]
-    external_geometry = _circular_class_geometry(external_ids, panels)
+    external_geometry = (
+        _centered_call_geometry(
+            central_group_id,
+            [group_id for group_id in primary_ids if group_id != central_group_id],
+            panels,
+        )
+        if central_group_id is not None
+        else _circular_class_geometry(primary_ids, panels)
+    )
     compact_geometry = _compact_class_geometry(
         compact_ids,
         panels,
@@ -268,7 +293,7 @@ def _layout_grouped_diagram(
     for group_id, position in external_geometry["positions"].items():
         placements[group_id] = (margin + position[0], margin + position[1])
     compact_y = margin
-    if external_ids:
+    if primary_ids:
         compact_y += int(external_geometry["height"]) + section_gap
     for group_id, position in compact_geometry["positions"].items():
         placements[group_id] = (margin + position[0], compact_y + position[1])
@@ -286,6 +311,11 @@ def _layout_grouped_diagram(
         panel = panels[group_id]
         panel_x, panel_y = placements[group_id]
         dependency_area = panel.get("dependency_area")
+        class_layout = "compact"
+        if group_id == call_root_group_id:
+            class_layout = "call_root_center"
+        elif group_id in external_set:
+            class_layout = "external_call_ring"
         laid_out_group = {
             **groups_by_id[group_id],
             "x": panel_x,
@@ -293,9 +323,7 @@ def _layout_grouped_diagram(
             "width": int(panel["width"]),
             "height": int(panel["height"]),
             "dependency_cluster": component_indexes[group_id],
-            "class_layout": (
-                "external_call_ring" if group_id in external_set else "compact"
-            ),
+            "class_layout": class_layout,
         }
         if isinstance(dependency_area, dict):
             laid_out_group["dependency_area"] = {
@@ -329,7 +357,7 @@ def _layout_grouped_diagram(
         int(external_geometry["width"]), int(compact_geometry["width"]), 1
     )
     content_height = int(external_geometry["height"])
-    if external_ids and compact_ids:
+    if primary_ids and compact_ids:
         content_height += section_gap
     content_height += int(compact_geometry["height"])
     height = content_height + 2 * margin if groups else 2 * margin
@@ -337,8 +365,9 @@ def _layout_grouped_diagram(
     diagram = ProjectDiagram(tuple(laid_out), tuple(edges), width, height).as_dict()
     diagram["groups"] = laid_out_groups
     diagram["layout"] = "dependency_radial"
-    diagram["external_class_count"] = len(external_ids)
+    diagram["external_class_count"] = len(primary_ids)
     diagram["compact_class_count"] = len(compact_ids)
+    diagram["central_call_root_id"] = call_root_group_id
     return diagram
 
 
@@ -356,6 +385,7 @@ def _member_panel_geometry(
     connected = sorted(
         (member for member in members if node_degree.get(str(member["id"]), 0)),
         key=lambda member: (
+            not bool(member.get("call_root_center")),
             -node_degree.get(str(member["id"]), 0),
             str(member.get("label", "")).casefold(),
             str(member["id"]),
@@ -371,11 +401,23 @@ def _member_panel_geometry(
     )
 
     connected_count = len(connected)
+    anchored_call_root = bool(connected and connected[0].get("call_root_center"))
     radius = 0.0
     if connected_count == 0:
         connected_width = connected_height = 0
     elif connected_count == 1:
         connected_width, connected_height = node_width, node_height
+    elif anchored_call_root:
+        clearance = math.hypot(node_width + node_gap, node_height + node_gap)
+        satellite_count = connected_count - 1
+        radius = clearance
+        if satellite_count > 1:
+            radius = max(
+                radius,
+                clearance / (2 * math.sin(math.pi / satellite_count)),
+            )
+        connected_width = math.ceil(2 * radius + node_width)
+        connected_height = math.ceil(2 * radius + node_height)
     elif connected_count == 2:
         connected_width = 2 * node_width + node_gap
         connected_height = node_height
@@ -414,13 +456,13 @@ def _member_panel_geometry(
 
     if connected_count == 1:
         positions[str(connected[0]["id"])] = (connected_x, connected_y)
-    elif connected_count == 2:
+    elif connected_count == 2 and not anchored_call_root:
         for index, member in enumerate(connected):
             positions[str(member["id"])] = (
                 connected_x + index * (node_width + node_gap),
                 connected_y,
             )
-    elif connected_count > 2:
+    elif connected_count > 1:
         center_x = connected_x + connected_width / 2
         center_y = connected_y + connected_height / 2
         positions[str(connected[0]["id"])] = (
@@ -453,6 +495,16 @@ def _member_panel_geometry(
         "height": panel_height,
         "positions": positions,
     }
+    call_root = next(
+        (member for member in members if member.get("call_root_center")), None
+    )
+    if call_root is not None:
+        root_position = positions.get(str(call_root["id"]))
+        if root_position is not None:
+            result["call_root_anchor"] = {
+                "x": root_position[0] + node_width / 2,
+                "y": root_position[1] + node_height / 2,
+            }
     if connected:
         result["dependency_area"] = {
             "x": connected_x - 12,
@@ -572,6 +624,92 @@ def _circular_class_geometry(
     normalized = {
         group_id: (position[0] - minimum_x, position[1] - minimum_y)
         for group_id, position in positions.items()
+    }
+    width = max(
+        x + int(panels[group_id]["width"])
+        for group_id, (x, _) in normalized.items()
+    )
+    height = max(
+        y + int(panels[group_id]["height"])
+        for group_id, (_, y) in normalized.items()
+    )
+    return {"positions": normalized, "width": width, "height": height}
+
+
+def _centered_call_geometry(
+    center_id: str,
+    satellite_ids: list[str],
+    panels: dict[str, dict[str, Any]],
+    *,
+    class_gap: int = 120,
+) -> dict[str, Any]:
+    """Place one call root at the center of its non-overlapping callee ring."""
+
+    if not satellite_ids:
+        return _circular_class_geometry([center_id], panels, class_gap=class_gap)
+    center_width = int(panels[center_id]["width"])
+    center_height = int(panels[center_id]["height"])
+    count = len(satellite_ids)
+    radius = 0.0
+    for satellite_id in satellite_ids:
+        satellite_width = int(panels[satellite_id]["width"])
+        satellite_height = int(panels[satellite_id]["height"])
+        radius = max(
+            radius,
+            math.hypot(
+                (center_width + satellite_width) / 2 + class_gap,
+                (center_height + satellite_height) / 2 + class_gap,
+            ),
+        )
+    if count > 1:
+        for first_index, first in enumerate(satellite_ids):
+            second = satellite_ids[(first_index + 1) % count]
+            chord_factor = 2 * math.sin(math.pi / count)
+            required_distance = math.hypot(
+                (int(panels[first]["width"]) + int(panels[second]["width"]))
+                / 2
+                + class_gap,
+                (int(panels[first]["height"]) + int(panels[second]["height"]))
+                / 2
+                + class_gap,
+            )
+            radius = max(radius, required_distance / chord_factor)
+
+    ring_center = radius + max(
+        center_width,
+        center_height,
+        *(int(panels[group_id]["width"]) for group_id in satellite_ids),
+        *(int(panels[group_id]["height"]) for group_id in satellite_ids),
+    )
+    center_anchor = panels[center_id].get("call_root_anchor", {})
+    center_anchor_x = float(center_anchor.get("x", center_width / 2))
+    center_anchor_y = float(center_anchor.get("y", center_height / 2))
+    positions: dict[str, tuple[int, int]] = {
+        center_id: (
+            round(ring_center - center_anchor_x),
+            round(ring_center - center_anchor_y),
+        )
+    }
+    for index, group_id in enumerate(satellite_ids):
+        angle = -math.pi / 2 + 2 * math.pi * index / count
+        positions[group_id] = (
+            round(
+                ring_center
+                + radius * math.cos(angle)
+                - int(panels[group_id]["width"]) / 2
+            ),
+            round(
+                ring_center
+                + radius * math.sin(angle)
+                - int(panels[group_id]["height"]) / 2
+            ),
+        )
+
+    minimum_x = min(position[0] for position in positions.values())
+    minimum_y = min(position[1] for position in positions.values())
+    normalized = {
+        group_id: (x - minimum_x, y - minimum_y)
+        for group_id, (x, y) in positions.items()
     }
     width = max(
         x + int(panels[group_id]["width"])
@@ -880,6 +1018,16 @@ class ProjectAnalysisController:
                 continue
             caller_method = str(relationship.get("caller_method", ""))
             callee_method = str(relationship.get("callee_method", ""))
+            if relationship.get("caller_kind") == "function":
+                caller_paths = {
+                    Path(str(relationship.get(path_key, ""))).as_posix()
+                    for path_key in ("call_path", "caller_path")
+                }
+                if not any(
+                    node_ids.get((path, caller_method))
+                    for path in caller_paths
+                ):
+                    continue
             source = self._resolve_method_node(
                 node_ids,
                 global_node_ids,
@@ -959,7 +1107,7 @@ class ProjectAnalysisController:
             incoming[edge.target] += 1
         for node in nodes:
             node_id = str(node["id"])
-            if node.get("kind") == "method":
+            if node.get("kind") in {"method", "function"}:
                 node["subtitle"] = (
                     f"{incoming[node_id]} incoming · {outgoing[node_id]} outgoing"
                 )
@@ -1110,6 +1258,15 @@ class ProjectAnalysisController:
             if group.get("class_layout") == "external_call_ring"
             and group_id in nodes_by_id
         ]
+        central_id = next(
+            (
+                group_id
+                for group_id, group in groups_by_id.items()
+                if group.get("class_layout") == "call_root_center"
+                and group_id in nodes_by_id
+            ),
+            None,
+        )
         if external_ids:
             center_x = sum(
                 int(groups_by_id[group_id]["x"])
@@ -1135,7 +1292,8 @@ class ProjectAnalysisController:
                 )
                 % (2 * math.pi)
             )
-        external_set = set(external_ids)
+        primary_ids = [*external_ids, *((central_id,) if central_id else ())]
+        external_set = set(primary_ids)
         compact_ids = [
             str(node["id"])
             for node in nodes
@@ -1148,8 +1306,12 @@ class ProjectAnalysisController:
             }
             for node in nodes
         }
-        external_geometry = _circular_class_geometry(
-            external_ids, panels, class_gap=28
+        external_geometry = (
+            _centered_call_geometry(
+                central_id, external_ids, panels, class_gap=28
+            )
+            if central_id is not None
+            else _circular_class_geometry(external_ids, panels, class_gap=28)
         )
         compact_geometry = _compact_class_geometry(
             compact_ids,
@@ -1157,7 +1319,7 @@ class ProjectAnalysisController:
             preferred_width=max(1, int(external_geometry["width"])),
         )
         compact_y = margin
-        if external_ids and compact_ids:
+        if primary_ids and compact_ids:
             compact_y += int(external_geometry["height"]) + 60
         for group_id, (x, y) in external_geometry["positions"].items():
             nodes_by_id[group_id]["x"] = margin + x
@@ -1172,7 +1334,7 @@ class ProjectAnalysisController:
             1,
         )
         content_height = int(external_geometry["height"])
-        if external_ids and compact_ids:
+        if primary_ids and compact_ids:
             content_height += 60
         content_height += int(compact_geometry["height"])
         return (
@@ -1189,12 +1351,102 @@ class ProjectAnalysisController:
         dict[str, list[str]],
         list[dict[str, Any]],
     ]:
-        """Build member nodes, class panels, and method lookup aliases."""
+        """Build the main-function core, class panels, and callable aliases."""
 
         nodes: list[dict[str, Any]] = []
         node_ids: dict[tuple[str, str], list[str]] = {}
         global_node_ids: dict[str, list[str]] = {}
         groups: list[dict[str, Any]] = []
+        relationships = [
+            relationship
+            for relationship in self.model.get("call_relationships", ())
+            if isinstance(relationship, dict)
+        ]
+        free_function_definitions = {
+            (
+                Path(str(file_model.get("path", ""))).as_posix(),
+                str(
+                    function_symbol.get("qualified_name")
+                    or function_symbol.get("name")
+                    or ""
+                ),
+            )
+            for file_model in self._sorted_files()
+            for function_symbol in file_model.get("functions", ())
+            if isinstance(function_symbol, dict)
+            and function_symbol.get("kind") == "function"
+            and function_symbol.get("declaration") is not True
+        }
+        main_groups_by_path: dict[str, str] = {}
+        main_group_records: list[dict[str, Any]] = []
+        for file_index, file_model in enumerate(self._sorted_files()):
+            source_path = Path(str(file_model.get("path", ""))).as_posix()
+            for function_index, function_symbol in enumerate(
+                file_model.get("functions", ())
+            ):
+                if (
+                    not isinstance(function_symbol, dict)
+                    or function_symbol.get("kind") != "function"
+                    or function_symbol.get("declaration") is True
+                    or str(function_symbol.get("qualified_name") or "") != "main"
+                    or main_group_records
+                ):
+                    continue
+                tree_node_id = f"file:{file_index}:functions:{function_index}"
+                tree_node = self.node(tree_node_id)
+                location = self.resolve_selection(tree_node_id)
+                if tree_node is None or location is None:
+                    continue
+                group_id = f"function-class:{tree_node_id}"
+                main_groups_by_path[source_path] = group_id
+                main_group_records.append(
+                    {
+                        "id": group_id,
+                        "label": "main()",
+                        "tree_node_id": tree_node_id,
+                        "description": tree_node.description or tree_node.summary,
+                        "kind": "class",
+                        "source_path": source_path,
+                        "line": location.line,
+                        "end_line": location.end_line,
+                        "function_as_class": True,
+                        "central_call_root": True,
+                    }
+                )
+        groups.extend(main_group_records)
+        function_edges_by_caller: dict[
+            tuple[str, str], list[tuple[str, str]]
+        ] = {}
+        for relationship in relationships:
+            if (
+                relationship.get("caller_kind") != "function"
+                or relationship.get("callee_kind") != "function"
+            ):
+                continue
+            caller_ref = (
+                Path(str(relationship.get("caller_path", ""))).as_posix(),
+                str(relationship.get("caller_method") or ""),
+            )
+            callee_ref = (
+                Path(str(relationship.get("callee_path", ""))).as_posix(),
+                str(relationship.get("callee_method") or ""),
+            )
+            function_edges_by_caller.setdefault(caller_ref, []).append(callee_ref)
+
+        main_path_by_reachable_function: dict[tuple[str, str], str] = {}
+        pending_functions: list[tuple[tuple[str, str], str]] = []
+        for main_path in main_groups_by_path:
+            main_ref = (main_path, "main")
+            main_path_by_reachable_function[main_ref] = main_path
+            pending_functions.append((main_ref, main_path))
+        while pending_functions:
+            caller_ref, main_path = pending_functions.pop(0)
+            for callee_ref in function_edges_by_caller.get(caller_ref, ()):
+                if callee_ref in main_path_by_reachable_function:
+                    continue
+                main_path_by_reachable_function[callee_ref] = main_path
+                pending_functions.append((callee_ref, main_path))
+        free_function_refs = set(main_path_by_reachable_function)
         for file_index, file_model in enumerate(self._sorted_files()):
             class_path = Path(str(file_model.get("path", ""))).as_posix()
             for class_index, class_symbol in enumerate(file_model.get("classes", ())):
@@ -1282,6 +1534,66 @@ class ProjectAnalysisController:
                         global_node_ids.setdefault(qualified_name, []).append(
                             member_node.node_id
                         )
+            for function_index, function_symbol in enumerate(
+                file_model.get("functions", ())
+            ):
+                if (
+                    not isinstance(function_symbol, dict)
+                    or (
+                        function_symbol.get("kind") != "function"
+                        and self._method_has_owning_class(function_symbol)
+                    )
+                ):
+                    continue
+                qualified_name = str(
+                    function_symbol.get("qualified_name")
+                    or function_symbol.get("name")
+                    or ""
+                )
+                simple_name = str(function_symbol.get("name") or qualified_name)
+                if (class_path, qualified_name) not in free_function_refs:
+                    continue
+                if (
+                    function_symbol.get("declaration") is True
+                    and (class_path, qualified_name) in free_function_definitions
+                ):
+                    continue
+                tree_node_id = f"file:{file_index}:functions:{function_index}"
+                tree_node = self.node(tree_node_id)
+                location = self.resolve_selection(tree_node_id)
+                if tree_node is None or location is None:
+                    continue
+                source_path = location.path.relative_to(
+                    self.project_path
+                ).as_posix()
+                main_path = main_path_by_reachable_function.get(
+                    (class_path, qualified_name)
+                )
+                group_id = main_groups_by_path.get(main_path or "")
+                if group_id is None:
+                    continue
+                nodes.append(
+                    {
+                        "id": tree_node_id,
+                        "label": f"{simple_name}()",
+                        "kind": "function",
+                        "tree_node_id": tree_node_id,
+                        "source_path": source_path,
+                        "line": location.line,
+                        "end_line": location.end_line,
+                        "description": tree_node.description or tree_node.summary,
+                        "subtitle": "",
+                        "group": group_id,
+                        "call_root_center": qualified_name == "main",
+                    }
+                )
+                for path in {class_path, source_path}:
+                    node_ids.setdefault((path, qualified_name), []).append(
+                        tree_node_id
+                    )
+                global_node_ids.setdefault(qualified_name, []).append(
+                    tree_node_id
+                )
         return nodes, node_ids, global_node_ids, groups
 
     def _resolve_method_node(
@@ -1305,7 +1617,16 @@ class ProjectAnalysisController:
                     and location.line <= selected_line <= location.end_line
                 ):
                     line_matches.append(node_id)
-            return line_matches[0] if len(line_matches) == 1 else None
+            if len(line_matches) == 1:
+                return line_matches[0]
+            owning_nodes = {
+                node_id.rpartition(":member:")[0]
+                for node_id in unique_matches
+                if ":member:" in node_id
+            }
+            if len(owning_nodes) == 1:
+                return unique_matches[0]
+            return None
 
         for value in paths:
             path = Path(str(value or "")).as_posix()

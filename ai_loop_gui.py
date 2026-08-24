@@ -2394,7 +2394,11 @@ class AiLoopGui(tk.Tk):
         )
         member_legend = ttk.Frame(call_graph_frame)
         member_legend.grid(row=1, column=0, sticky="ew", pady=(0, 4))
-        for label, kind in (("Method", "method"), ("Data member", "data_member")):
+        for label, kind in (
+            ("Function", "function"),
+            ("Method", "method"),
+            ("Data member", "data_member"),
+        ):
             fill, outline = self._analysis_diagram_node_colors(kind)
             tk.Label(
                 member_legend,
@@ -2408,11 +2412,14 @@ class AiLoopGui(tk.Tk):
             ).pack(side="left", padx=(0, 6))
         ttk.Label(
             member_legend,
-            text="Arrow: caller → callee",
+            text="Arrow: caller → callee · orange: leaves inner function",
         ).pack(side="left", padx=(4, 0))
         ttk.Label(
             member_legend,
-            text=" · Class ring: external calls · dashed oval: member calls",
+            text=(
+                " · Inner circle: functions reachable from main()"
+                " · outer ring: called/calling class members"
+            ),
         ).pack(side="left")
         call_graph_canvas_frame = ttk.Frame(call_graph_frame)
         call_graph_canvas_frame.grid(row=2, column=0, sticky="nsew")
@@ -2438,6 +2445,7 @@ class AiLoopGui(tk.Tk):
             "templated_class": ("#f2e8fb", "#74479a"),
             "templated_struct": ("#e3f6f3", "#24776f"),
             "method": ("#edf7e9", "#47723d"),
+            "function": ("#e7f0fb", "#315c8a"),
             "data_member": ("#f4edfb", "#73528d"),
             "file": ("#fff4df", "#8a652f"),
         }.get(kind, ("#e7f0fb", "#315c8a"))
@@ -3001,12 +3009,14 @@ class AiLoopGui(tk.Tk):
                 edge_label_x = node_right + loop_reach
                 edge_label_y = source_y - int(source["height"]) - 9
                 smooth_edge = True
+            function_edge = source.get("kind") == "function"
+            edge_color = "#b24a2f" if function_edge else "#1f5f99"
             edge_line = canvas.create_line(
                 *line_coordinates,
                 arrow=tk.LAST,
-                width=2,
-                arrowshape=(10, 12, 5),
-                fill="#1f5f99",
+                width=3 if function_edge else 2,
+                arrowshape=(12, 14, 6) if function_edge else (10, 12, 5),
+                fill=edge_color,
                 smooth=smooth_edge,
             )
             canvas._analysis_edge_items.append(edge_line)
@@ -3038,7 +3048,7 @@ class AiLoopGui(tk.Tk):
                     edge_label_x,
                     edge_label_y,
                     text=edge_label,
-                    fill="#40566e",
+                    fill=edge_color if function_edge else "#40566e",
                     font=("TkDefaultFont", 8),
                 )
                 canvas._analysis_text_items[edge_text] = (8, "", None)

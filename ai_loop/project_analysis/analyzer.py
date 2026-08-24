@@ -40,10 +40,12 @@ _IGNORED_DIRECTORIES = {
     ".svn",
     ".tox",
     ".venv",
+    ".gui-venv",
     "__pycache__",
     "build",
     "dist",
     "node_modules",
+    "site-packages",
     "vcpkg_installed",
     "venv",
 }
@@ -587,6 +589,15 @@ class _DetailedCallVisitor(ast.NodeVisitor):
                         "line": node.lineno,
                     }
                 )
+        elif isinstance(node.func, ast.Name):
+            self.call_sites.append(
+                {
+                    "name": node.func.id,
+                    "method": node.func.id,
+                    "receiver": "",
+                    "line": node.lineno,
+                }
+            )
         self.generic_visit(node)
 
     def visit_Assign(self, node: ast.Assign) -> None:
@@ -793,6 +804,9 @@ _CPP_TYPE_RE = re.compile(
     r"(?P<name>[A-Za-z_]\w*)\s*(?:final\s*)?"
     r"(?::\s*(?P<bases>[^;{]+))?\s*(?P<terminator>[{;])"
 )
+_CPP_NAMESPACE_RE = re.compile(
+    r"\bnamespace(?:\s+(?P<name>[A-Za-z_]\w*(?:::[A-Za-z_]\w*)*))?\s*\{"
+)
 _CPP_USING_RE = re.compile(r"\busing\s+(?P<name>[A-Za-z_]\w*)\s*=\s*(?P<type>[^;]+);")
 _CPP_TYPEDEF_RE = re.compile(
     r"\btypedef\s+(?P<type>[^;{}]+?)\s+(?P<name>[A-Za-z_]\w*)\s*;"
@@ -808,16 +822,25 @@ _CPP_FUNCTION_RE = re.compile(
 _CPP_DATA_MEMBER_RE = re.compile(r"(?m)^[ \t]*(?P<declaration>[^#;()\n]+);")
 _CPP_QUALIFIED_CALL_RE = re.compile(
     r"(?<![\w:])(?P<class>(?:[A-Za-z_]\w*::)*[A-Za-z_]\w*)::"
-    r"(?P<method>[A-Za-z_]\w*)\s*\("
+    r"(?P<method>[A-Za-z_]\w*)\s*(?:<[^;{}()]*>\s*)?\("
 )
 _CPP_UNQUALIFIED_CALL_RE = re.compile(
-    r"(?<![\w:.>])(?P<method>[A-Za-z_]\w*)\s*\("
+    r"(?<![\w:.>])(?P<method>[A-Za-z_]\w*)\s*(?:<[^;{}()]*>\s*)?\("
 )
 _CPP_THIS_CALL_RE = re.compile(r"\bthis\s*->\s*(?P<method>[A-Za-z_]\w*)\s*\(")
 _CPP_MEMBER_CALL_RE = re.compile(
     r"(?<![\w:])(?P<receiver>(?:this|[A-Za-z_]\w*)"
     r"(?:(?:\s*\.\s*|\s*->\s*)[A-Za-z_]\w*)*)"
-    r"\s*(?:\.|->)\s*(?P<method>[A-Za-z_]\w*)\s*\("
+    r"\s*(?:\.|->)\s*(?P<method>[A-Za-z_]\w*)"
+    r"\s*(?:<[^;{}()]*>\s*)?\("
+)
+_CPP_CONSTRUCTED_CHAIN_RE = re.compile(
+    r"(?<![\w:])(?P<type>(?:[A-Za-z_]\w*::)*[A-Za-z_]\w*)"
+    r"(?:\s*<[^;{}()]*>)?\s*\{"
+)
+_CPP_CHAIN_METHOD_RE = re.compile(
+    r"\s*(?:\.|->)\s*(?P<method>[A-Za-z_]\w*)"
+    r"\s*(?:<(?P<template>[^;{}()]*)>\s*)?\("
 )
 _CPP_LOCAL_VARIABLE_RE = re.compile(
     r"(?m)^[ \t]*(?P<type>"
@@ -840,6 +863,14 @@ _CPP_NON_TYPE_WORDS = _CPP_CONTROL_WORDS | {
     "new",
     "throw",
 }
+_CPP_STANDARD_LIBRARY_PREFIXES = ("std::", "__gnu_cxx::", "__cxxabiv1::")
+
+
+def _cpp_standard_library_callable(name: str) -> bool:
+    """Return whether a qualified callable belongs to the C++ runtime."""
+
+    normalized = name.strip().removeprefix("::")
+    return normalized.startswith(_CPP_STANDARD_LIBRARY_PREFIXES)
 
 
 def _cpp_is_templated_type(source: str, offset: int) -> bool:
@@ -862,6 +893,39 @@ def _cpp_is_templated_type(source: str, offset: int) -> bool:
                 return bool(re.search(r"\btemplate$", prefix))
         cursor -= 1
     return False
+
+
+def _cpp_namespace_ranges(source: str) -> list[tuple[int, int, str]]:
+    """Return the named and anonymous namespace blocks in *source*."""
+
+    ranges = []
+    for match in _CPP_NAMESPACE_RE.finditer(source):
+        opening = match.end() - 1
+        closing = _matching_brace(source, opening)
+        if closing is not None:
+            ranges.append((opening, closing, match.group("name") or ""))
+    return ranges
+
+
+def _cpp_namespace_at(
+    ranges: Iterable[tuple[int, int, str]], offset: int
+) -> str:
+    """Return the fully nested named namespace containing *offset*."""
+
+    names = [
+        name
+        for opening, closing, name in sorted(ranges)
+        if name and opening < offset < closing
+    ]
+    return "::".join(names)
+
+
+def _cpp_qualified_in_namespace(namespace: str, name: str) -> str:
+    """Qualify a C++ symbol relative to its enclosing namespace."""
+
+    if not namespace or name == namespace or name.startswith(f"{namespace}::"):
+        return name
+    return f"{namespace}::{name}"
 
 
 def _cpp_platform_markers(source: str) -> list[dict[str, Any]]:
@@ -954,11 +1018,37 @@ def _line_number(source: str, offset: int) -> int:
 
 
 def _matching_brace(source: str, opening: int) -> int | None:
+    return _matching_delimiter(source, opening)
+
+
+def _matching_delimiter(source: str, opening: int) -> int | None:
+    pairs = {"{": "}", "(": ")", "[": "]", "<": ">"}
+    opening_character = source[opening] if 0 <= opening < len(source) else ""
+    closing_character = pairs.get(opening_character)
+    if closing_character is None:
+        return None
     depth = 0
     for position in range(opening, len(source)):
-        if source[position] == "{":
+        if source[position] == opening_character:
             depth += 1
-        elif source[position] == "}":
+        elif source[position] == closing_character:
+            depth -= 1
+            if depth == 0:
+                return position
+    return None
+
+
+def _matching_opening_delimiter(source: str, closing: int) -> int | None:
+    pairs = {"}": "{", ")": "(", "]": "[", ">": "<"}
+    closing_character = source[closing] if 0 <= closing < len(source) else ""
+    opening_character = pairs.get(closing_character)
+    if opening_character is None:
+        return None
+    depth = 0
+    for position in range(closing, -1, -1):
+        if source[position] == closing_character:
+            depth += 1
+        elif source[position] == opening_character:
             depth -= 1
             if depth == 0:
                 return position
@@ -1061,6 +1151,33 @@ def _cpp_local_variable_types(
         if type_name.split(None, 1)[0] in _CPP_NON_TYPE_WORDS:
             continue
         result[match.group("name")] = type_name
+    body = source[body_start:body_end]
+    auto_initializers = re.finditer(
+        r"\b(?:const\s+)?auto\s+(?P<name>[A-Za-z_]\w*)\s*=\s*"
+        r"(?P<initializer>[^;]+);",
+        body,
+        re.DOTALL,
+    )
+    for match in auto_initializers:
+        initializer = match.group("initializer")
+        get_result = re.search(
+            r"\.\s*get\s*<\s*(?P<type>(?:[A-Za-z_]\w*::)*"
+            r"[A-Za-z_]\w*(?:\s*<[^;{}()]*>)?)\s*>\s*\(\s*\)\s*$",
+            initializer,
+        )
+        if get_result is not None:
+            result[match.group("name")] = get_result.group("type").strip()
+            continue
+        constructed = re.match(
+            r"\s*(?P<type>(?:[A-Za-z_]\w*::)*[A-Za-z_]\w*)"
+            r"(?:\s*<[^;{}()]*>)?\s*\{",
+            initializer,
+        )
+        if constructed is None or not re.search(r"\.\s*build\s*\(", initializer):
+            continue
+        builder_type = constructed.group("type")
+        if builder_type.endswith("Builder"):
+            result[match.group("name")] = builder_type.removesuffix("Builder")
     return result
 
 
@@ -1142,6 +1259,85 @@ def _cpp_qualified_call_sites(
     return sites
 
 
+def _cpp_fluent_call_sites(
+    source: str, body_start: int, body_end: int
+) -> list[dict[str, Any]]:
+    """Collect calls after temporary objects and returned call values."""
+
+    sites: list[dict[str, Any]] = []
+    for root in _CPP_CONSTRUCTED_CHAIN_RE.finditer(source, body_start, body_end):
+        opening = root.end() - 1
+        closing = _matching_delimiter(source, opening)
+        if closing is None or closing >= body_end:
+            continue
+        position = closing + 1
+        while position < body_end:
+            call = _CPP_CHAIN_METHOD_RE.match(source, position, body_end)
+            if call is None:
+                break
+            call_opening = call.end() - 1
+            call_closing = _matching_delimiter(source, call_opening)
+            if call_closing is None or call_closing >= body_end:
+                break
+            receiver_type = root.group("type")
+            method_name = call.group("method")
+            sites.append(
+                {
+                    "name": f"{receiver_type}::{method_name}",
+                    "method": method_name,
+                    "receiver": receiver_type,
+                    "receiver_type": receiver_type,
+                    "line": _line_number(source, call.start()),
+                }
+            )
+            position = call_closing + 1
+
+    for call in _CPP_CHAIN_METHOD_RE.finditer(source, body_start, body_end):
+        cursor = call.start() - 1
+        while cursor >= body_start and source[cursor].isspace():
+            cursor -= 1
+        if cursor < body_start or source[cursor] != ")":
+            continue
+        previous_opening = _matching_opening_delimiter(source, cursor)
+        if previous_opening is None:
+            continue
+        token_end = previous_opening
+        while token_end > body_start and source[token_end - 1].isspace():
+            token_end -= 1
+        template_arguments = ""
+        if token_end > body_start and source[token_end - 1] == ">":
+            template_opening = _matching_opening_delimiter(source, token_end - 1)
+            if template_opening is None:
+                continue
+            template_arguments = source[template_opening + 1 : token_end - 1].strip()
+            token_end = template_opening
+            while token_end > body_start and source[token_end - 1].isspace():
+                token_end -= 1
+        token_start = token_end
+        while token_start > body_start and (
+            source[token_start - 1].isalnum() or source[token_start - 1] == "_"
+        ):
+            token_start -= 1
+        previous_method = source[token_start:token_end]
+        if not previous_method:
+            continue
+        if previous_method == "get" and template_arguments:
+            receiver_type = template_arguments.split(",", 1)[0].strip()
+        else:
+            receiver_type = previous_method[:1].upper() + previous_method[1:]
+        method_name = call.group("method")
+        sites.append(
+            {
+                "name": f"{receiver_type}::{method_name}",
+                "method": method_name,
+                "receiver": f"{previous_method}()",
+                "receiver_type": receiver_type,
+                "line": _line_number(source, call.start()),
+            }
+        )
+    return sites
+
+
 def _cpp_method_call_sites(
     source: str,
     body_start: int,
@@ -1154,6 +1350,15 @@ def _cpp_method_call_sites(
     """Collect resolvable qualified, member, and same-class C++ calls."""
 
     sites = _cpp_qualified_call_sites(source, body_start, body_end)
+    fluent_sites = _cpp_fluent_call_sites(source, body_start, body_end)
+    existing_methods = {
+        (int(site["line"]), str(site["method"])) for site in sites
+    }
+    for site in fluent_sites:
+        key = (int(site["line"]), str(site["method"]))
+        if key not in existing_methods:
+            existing_methods.add(key)
+            sites.append(site)
     seen = {(int(site["line"]), str(site["name"])) for site in sites}
     variable_types = {
         str(member["name"]): str(member["type"])
@@ -1176,10 +1381,13 @@ def _cpp_method_call_sites(
         separator = "::" if receiver_type else "."
         qualified_name = f"{display_receiver}{separator}{method_name}"
         line = _line_number(source, match.start())
+        if (line, method_name) in existing_methods:
+            continue
         key = (line, qualified_name)
         if key in seen:
             continue
         seen.add(key)
+        existing_methods.add((line, method_name))
         site = {
             "name": qualified_name,
             "method": method_name,
@@ -1195,26 +1403,29 @@ def _cpp_method_call_sites(
             method_name = match.group("method")
             if method_name in _CPP_CONTROL_WORDS:
                 continue
-            qualified_name = f"{owner}::{method_name}"
+            qualified_name = (
+                f"{owner}::{method_name}" if owner else method_name
+            )
             line = _line_number(source, match.start())
             key = (line, qualified_name)
             if key in seen:
                 continue
             seen.add(key)
-            sites.append(
-                {
-                    "name": qualified_name,
-                    "method": method_name,
-                    "receiver": owner,
-                    "receiver_type": owner,
-                    "line": line,
-                }
-            )
+            site = {
+                "name": qualified_name,
+                "method": method_name,
+                "receiver": owner,
+                "line": line,
+            }
+            if owner:
+                site["receiver_type"] = owner
+            sites.append(site)
     return sorted(sites, key=lambda site: (int(site["line"]), str(site["name"])))
 
 
 def _analyze_cpp(source: str) -> dict[str, Any]:
     cleaned = _strip_cpp_comments_and_literals(source)
+    namespace_ranges = _cpp_namespace_ranges(cleaned)
     classes: list[dict[str, Any]] = []
     data_types: list[dict[str, Any]] = []
     functions: list[dict[str, Any]] = []
@@ -1225,6 +1436,8 @@ def _analyze_cpp(source: str) -> dict[str, Any]:
         raw_kind = match.group("kind")
         kind = "enum" if raw_kind.startswith("enum") else raw_kind
         name = match.group("name")
+        namespace = _cpp_namespace_at(namespace_ranges, match.start())
+        qualified_name = _cpp_qualified_in_namespace(namespace, name)
         line = _line_number(cleaned, match.start())
         bases = [
             parsed
@@ -1233,7 +1446,7 @@ def _analyze_cpp(source: str) -> dict[str, Any]:
         ]
         record: dict[str, Any] = {
             "name": name,
-            "qualified_name": name,
+            "qualified_name": qualified_name,
             "line": line,
             "end_line": line,
             "kind": kind,
@@ -1321,13 +1534,23 @@ def _analyze_cpp(source: str) -> dict[str, Any]:
             None,
         )
         containing_class = containing_range[2] if containing_range else None
+        namespace = _cpp_namespace_at(namespace_ranges, match.start())
         if containing_range is not None:
             opening, _, _ = containing_range
             prefix = cleaned[opening + 1 : match.start()]
             if prefix.count("{") != prefix.count("}"):
                 continue
         explicit_owner = name.rsplit("::", 1)[0] if "::" in name else None
-        owner = containing_class["name"] if containing_class else explicit_owner
+        qualified_explicit_owner = (
+            _cpp_qualified_in_namespace(namespace, explicit_owner)
+            if explicit_owner
+            else None
+        )
+        owner = (
+            containing_class["qualified_name"]
+            if containing_class
+            else qualified_explicit_owner
+        )
         owner_record = containing_class
         if owner_record is None and owner:
             owner_record = _cpp_class_aliases(classes).get(owner)
@@ -1337,11 +1560,11 @@ def _analyze_cpp(source: str) -> dict[str, Any]:
         if not head and not is_constructor:
             continue
         qualified_name = (
-            name
+            _cpp_qualified_in_namespace(namespace, name)
             if explicit_owner
             else f"{owner}::{simple_name}"
             if owner
-            else simple_name
+            else _cpp_qualified_in_namespace(namespace, simple_name)
         )
         line = _line_number(cleaned, match.start())
         record = {
@@ -1376,7 +1599,15 @@ def _analyze_cpp(source: str) -> dict[str, Any]:
                         classes,
                     )
                     if owner
-                    else _cpp_qualified_call_sites(cleaned, body_start, closing)
+                    else _cpp_method_call_sites(
+                        cleaned,
+                        body_start,
+                        closing,
+                        "",
+                        match.group("parameters"),
+                        None,
+                        classes,
+                    )
                 )
                 record["calls"] = sorted(
                     {str(site["name"]) for site in record["call_sites"]}
@@ -1404,10 +1635,12 @@ def _analyze_cpp(source: str) -> dict[str, Any]:
 def _project_call_relationships(
     files: list[dict[str, Any]],
 ) -> list[dict[str, Any]]:
-    """Resolve method call sites whose caller and callee are project classes."""
+    """Resolve project-local function and method call relationships."""
 
     names_by_file: dict[int, dict[str, list[dict[str, Any]]]] = {}
     names_global: dict[str, list[dict[str, Any]]] = {}
+    functions_by_file: dict[int, dict[str, list[dict[str, Any]]]] = {}
+    functions_global: dict[str, list[dict[str, Any]]] = {}
     imports_by_file: dict[int, dict[str, str]] = {}
 
     def add_alias(
@@ -1449,22 +1682,122 @@ def _project_call_relationships(
                 add_alias(local_names, alias, class_record)
                 add_alias(names_global, alias, class_record)
         names_by_file[file_index] = local_names
+        local_functions: dict[str, list[dict[str, Any]]] = {}
+        for function_model in file_model.get("functions", ()):
+            if not isinstance(function_model, dict):
+                continue
+            qualified_name = str(
+                function_model.get("qualified_name")
+                or function_model.get("name")
+                or ""
+            )
+            simple_name = str(function_model.get("name") or qualified_name)
+            owner = str(function_model.get("owner") or "")
+            if _cpp_standard_library_callable(qualified_name) or (
+                owner and _cpp_standard_library_callable(f"{owner}::")
+            ):
+                continue
+            function_record = {
+                "file_index": file_index,
+                "path": relative_path,
+                "name": qualified_name,
+                "simple_name": simple_name,
+                "model": function_model,
+                "owner": owner,
+            }
+            aliases = {qualified_name, simple_name}
+            if file_model.get("language") == "python" and module_name:
+                aliases.add(f"{module_name}.{qualified_name}")
+            for alias in aliases:
+                add_alias(local_functions, alias, function_record)
+                add_alias(functions_global, alias, function_record)
+        functions_by_file[file_index] = local_functions
         imports_by_file[file_index] = _python_import_aliases(
             file_model.get("imports"), relative_path
         )
 
+    def class_owned_function(function_record: dict[str, Any]) -> bool:
+        owner = str(function_record.get("owner") or "")
+        if not owner:
+            return False
+        file_index = int(function_record["file_index"])
+        for candidate in _class_reference_candidates(owner):
+            if names_by_file.get(file_index, {}).get(candidate):
+                return True
+            if names_global.get(candidate):
+                return True
+        return False
+
+    for aliases in (*functions_by_file.values(), functions_global):
+        for alias, matches in tuple(aliases.items()):
+            aliases[alias] = [
+                match for match in matches if not class_owned_function(match)
+            ]
+
     def resolve_class(reference: str, file_index: int) -> dict[str, Any] | None:
+        def canonical_match(
+            matches: Iterable[dict[str, Any]],
+        ) -> dict[str, Any] | None:
+            by_identity: dict[str, dict[str, Any]] = {}
+            for match in matches:
+                identity = str(match.get("name") or "")
+                existing = by_identity.get(identity)
+                score = (
+                    len(match["model"].get("methods", ())),
+                    len(match["model"].get("data_members", ())),
+                    int(match["model"].get("end_line", 1))
+                    - int(match["model"].get("line", 1)),
+                )
+                existing_score = (
+                    (
+                        len(existing["model"].get("methods", ())),
+                        len(existing["model"].get("data_members", ())),
+                        int(existing["model"].get("end_line", 1))
+                        - int(existing["model"].get("line", 1)),
+                    )
+                    if existing is not None
+                    else None
+                )
+                if existing_score is None or score > existing_score:
+                    by_identity[identity] = match
+            return next(iter(by_identity.values())) if len(by_identity) == 1 else None
+
         for candidate in _class_reference_candidates(reference):
             imported = _expand_import_alias(
                 candidate, imports_by_file.get(file_index, {})
             )
             for resolved_name in (candidate, imported):
                 matches = names_by_file.get(file_index, {}).get(resolved_name, ())
-                if len(matches) == 1:
-                    return matches[0]
+                if match := canonical_match(matches):
+                    return match
                 matches = names_global.get(resolved_name, ())
-                if len(matches) == 1:
-                    return matches[0]
+                if match := canonical_match(matches):
+                    return match
+        return None
+
+    def resolve_function(reference: str, file_index: int) -> dict[str, Any] | None:
+        candidates = [reference]
+        imported = _expand_import_alias(
+            reference, imports_by_file.get(file_index, {})
+        )
+        if imported != reference:
+            candidates.append(imported)
+        for candidate in candidates:
+            matches = functions_by_file.get(file_index, {}).get(candidate, ())
+            if not matches:
+                matches = functions_global.get(candidate, ())
+            definitions = [
+                match
+                for match in matches
+                if match["model"].get("declaration") is not True
+            ]
+            usable = definitions or list(matches)
+            unique = {
+                (str(match["path"]), str(match["name"])): match
+                for match in usable
+            }
+            if len(unique) == 1:
+                return next(iter(unique.values()))
         return None
 
     def cpp_member_receiver_type(
@@ -1590,6 +1923,118 @@ def _project_call_relationships(
                     "callee_method_path": str(callee_method.get("path", "")),
                     "line": call_line,
                     "callee_line": callee_line,
+                }
+                key = (
+                    relationship["caller_path"],
+                    relationship["caller_class"],
+                    relationship["callee_path"],
+                    relationship["callee_method"],
+                    call_line,
+                )
+                if key not in seen:
+                    seen.add(key)
+                    relationships.append(relationship)
+
+    # Resolve top-level function calls as well as method calls.  The
+    # presentation layer follows these relationships from main() so unrelated
+    # utility functions do not clutter the central call graph.
+    for file_index, file_model in enumerate(files):
+        for function in file_model.get("functions", ()):
+            owner = str(function.get("owner") or "") if isinstance(function, dict) else ""
+            if (
+                not isinstance(function, dict)
+                or function.get("declaration") is True
+                or (
+                    function.get("kind") != "function"
+                    and (not owner or resolve_class(owner, file_index) is not None)
+                )
+            ):
+                continue
+            caller_name = str(
+                function.get("qualified_name") or function.get("name") or "function"
+            )
+            caller_simple_name = str(function.get("name") or caller_name)
+            if _cpp_standard_library_callable(caller_name):
+                continue
+            call_sites = function.get("call_sites", ())
+            if not isinstance(call_sites, (list, tuple)):
+                continue
+            for call_site in call_sites:
+                if not isinstance(call_site, dict):
+                    continue
+                reference = str(
+                    call_site.get("receiver_type")
+                    or call_site.get("receiver")
+                    or ""
+                )
+                method_name = str(call_site.get("method") or "")
+                call_name = str(call_site.get("name") or method_name)
+                if _cpp_standard_library_callable(call_name) or (
+                    reference and _cpp_standard_library_callable(f"{reference}::")
+                ):
+                    continue
+                callee_class = resolve_class(reference, file_index) if reference else None
+                callee_method = (
+                    callee_class["methods"].get(method_name)
+                    if callee_class is not None and method_name
+                    else None
+                )
+                if callee_class is None and not reference:
+                    constructed_class = resolve_class(call_name, file_index)
+                    if constructed_class is not None:
+                        constructor_names = (
+                            "__init__",
+                            str(constructed_class.get("simple_name") or ""),
+                        )
+                        constructor = next(
+                            (
+                                constructed_class["methods"][name]
+                                for name in constructor_names
+                                if name in constructed_class["methods"]
+                            ),
+                            None,
+                        )
+                        if constructor is not None:
+                            callee_class = constructed_class
+                            callee_method = constructor
+                callee_function = None
+                if callee_method is None:
+                    callee_function = resolve_function(call_name, file_index)
+                if callee_method is None and callee_function is None:
+                    continue
+                try:
+                    call_line = max(1, int(call_site.get("line", 1)))
+                except (TypeError, ValueError):
+                    continue
+                if callee_method is not None and callee_class is not None:
+                    callee_name = str(
+                        callee_method.get("qualified_name") or method_name
+                    )
+                    callee_path = str(callee_method.get("path", callee_class["path"]))
+                    callee_class_name = str(callee_class["name"])
+                    callee_kind = "method"
+                    callee_line = max(1, int(callee_method.get("line", 1)))
+                else:
+                    assert callee_function is not None
+                    callee_model = callee_function["model"]
+                    callee_name = str(callee_function["name"])
+                    callee_path = str(callee_function["path"])
+                    callee_class_name = f"{callee_function['simple_name']}()"
+                    callee_kind = "function"
+                    callee_line = max(1, int(callee_model.get("line", 1)))
+                relationship = {
+                    "caller_class": f"{caller_simple_name}()",
+                    "callee_class": callee_class_name,
+                    "caller_method": caller_name,
+                    "callee_method": callee_name,
+                    "caller_path": str(file_model.get("path", "")),
+                    "callee_path": callee_path,
+                    "call_path": str(file_model.get("path", "")),
+                    "callee_method_path": callee_path,
+                    "line": call_line,
+                    "callee_line": callee_line,
+                    "caller_kind": "function",
+                    "callee_kind": callee_kind,
                 }
                 key = (
                     relationship["caller_path"],
