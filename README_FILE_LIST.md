@@ -24,7 +24,12 @@
 ├── worker.py
 ├── resume_job.py
 ├── start_job.py
+├── start_ai_loop_with_email.py
+├── start-ai-loop-with-email.bash
+├── start-ai-loop-with-email.cmd
+├── start-ai-loop-with-email.example.json
 ├── watcher.py
+├── ai_gui.cmd
 ├── ai_check_job.bash
 ├── ai_clear_db.bash
 ├── ai_clear_log.bash
@@ -55,6 +60,10 @@
 - `worker.py`: model-neutral implementation worker process.
 - `resume_job.py`: job resume entrypoint.
 - `start_job.py`: job creation entrypoint.
+- `start_ai_loop_with_email.py`: email launcher helper that loads private JSON settings from the parent directory.
+- `start-ai-loop-with-email.bash`: Bash email-enabled GUI launcher using the parent JSON configuration.
+- `start-ai-loop-with-email.cmd`: Windows email-enabled GUI launcher.
+- `start-ai-loop-with-email.example.json`: template for the private parent-directory email configuration.
 - `watcher.py`: event watcher process.
 
 ## Package
@@ -73,6 +82,9 @@
 
 ## Shell Scripts
 
+- `ai_gui.cmd`
+- `start-ai-loop-with-email.bash`
+- `start-ai-loop-with-email.cmd`
 - `ai_check_job.bash`
 - `ai_clear_db.bash`
 - `ai_clear_log.bash`

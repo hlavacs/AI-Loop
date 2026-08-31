@@ -1,0 +1,16 @@
+{
+  "AI_LOOP_NOTIFY_EMAIL": "recipient@example.edu",
+  "AI_LOOP_SMTP_HOST": "mail.example.edu",
+  "AI_LOOP_SMTP_PORT": 465,
+  "AI_LOOP_SMTP_USER": "account-id",
+  "AI_LOOP_SMTP_FROM": "sender@example.edu",
+  "AI_LOOP_SMTP_SSL": true,
+  "AI_LOOP_SMTP_STARTTLS": false,
+  "AI_LOOP_IMAP_HOST": "imap.example.edu",
+  "AI_LOOP_IMAP_PORT": 993,
+  "AI_LOOP_IMAP_USER": "account-id",
+  "AI_LOOP_IMAP_SSL": true,
+  "AI_LOOP_IMAP_STARTTLS": false,
+  "CODEX_BYPASS_SANDBOX": false,
+  "password_prompt": "Mail password: "
+}

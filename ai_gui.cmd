@@ -2,13 +2,28 @@
 setlocal EnableExtensions
 
 set "SCRIPT_DIR=%~dp0"
-set "PARENT_LAUNCHER=%SCRIPT_DIR%..\start-ai-loop-with-email.cmd"
+set "EMAIL_LAUNCHER=%SCRIPT_DIR%start-ai-loop-with-email.cmd"
+set "EMAIL_CONFIG=%SCRIPT_DIR%..\start-ai-loop-with-email.json"
 
-rem Match ai_gui.bash: delegate once to a private parent launcher when present.
+rem Delegate once to the checked-in email launcher when private parent config exists.
 if "%AI_LOOP_PARENT_LAUNCHER_ACTIVE%"=="1" goto local_launcher
-if not exist "%PARENT_LAUNCHER%" goto local_launcher
-set "AI_LOOP_PARENT_LAUNCHER_ACTIVE=1"
-call "%PARENT_LAUNCHER%" %*
+if "%AI_LOOP_EMAIL_CONFIG%"=="" goto default_email_config
+set "EMAIL_CONFIG=%AI_LOOP_EMAIL_CONFIG%"
+if not exist "%EMAIL_CONFIG%" (
+    echo AI_LOOP_EMAIL_CONFIG points to a missing file: %EMAIL_CONFIG% 1>&2
+    exit /b 1
+)
+goto email_launcher
+
+:default_email_config
+if not exist "%EMAIL_CONFIG%" goto local_launcher
+
+:email_launcher
+if not exist "%EMAIL_LAUNCHER%" (
+    echo AI-Loop email launcher not found at %EMAIL_LAUNCHER% 1>&2
+    exit /b 1
+)
+call "%EMAIL_LAUNCHER%" %*
 set "LAUNCHER_ERROR=%ERRORLEVEL%"
 exit /b %LAUNCHER_ERROR%
 

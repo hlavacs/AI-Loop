@@ -9,6 +9,7 @@ __pycache__/
 .venv/
 .gui-venv/
 .DS_Store
+start-ai-loop-with-email.json
 
 .coverage
 *.egg-info/

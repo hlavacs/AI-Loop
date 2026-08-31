@@ -89,7 +89,7 @@ Install Python, Git, and Redis with your preferred package manager, then create 
 
 ### Windows installation
 
-Install Python with Tkinter, Git, and Redis or a Redis-compatible service. Run the Python entry points directly from PowerShell. The Bash wrappers require WSL, Git Bash, or another Bash environment.
+Install Python with Tkinter, Git, and Redis or a Redis-compatible service. Run the Python entry points directly from PowerShell, or use `ai_gui.cmd` from Command Prompt or PowerShell. The Bash wrappers require WSL, Git Bash, or another Bash environment.
 
 ### Verify the installation
 
@@ -145,73 +145,55 @@ All settings are optional unless your environment needs an override.
 | `AI_LOOP_IMAP_STARTTLS` | Upgrade non-SSL IMAP with STARTTLS | true |
 | `AI_LOOP_EMAIL_POLL_SECONDS` | Reply polling interval, minimum 5 seconds | 30 |
 
-### Private email launcher
+### Private email configuration
 
-The easiest way to keep the mail settings out of the repository is to place a launcher beside the `AI-Loop` folder. Name it `start-ai-loop-with-email.bash`. Replace the example values with your SMTP and IMAP settings. Do not put the password in the file.
+On Windows, the repository includes `start-ai-loop-with-email.cmd`. Keep personal mail settings outside the repository in a JSON file beside the `AI-Loop` folder, named `start-ai-loop-with-email.json`. Copy the checked-in example and adapt it:
 
-```bash
-#!/usr/bin/env bash
-
-set -euo pipefail
-
-AI_LOOP_NOTIFY_EMAIL="recipient@example.edu"
-AI_LOOP_SMTP_HOST="mail.example.edu"
-AI_LOOP_SMTP_PORT="465"
-AI_LOOP_SMTP_USER="account-id"
-AI_LOOP_SMTP_FROM="sender@example.edu"
-AI_LOOP_SMTP_SSL="1"
-AI_LOOP_SMTP_STARTTLS="0"
-AI_LOOP_IMAP_HOST="mail.example.edu"
-AI_LOOP_IMAP_PORT="993"
-AI_LOOP_IMAP_USER="account-id"
-AI_LOOP_IMAP_SSL="1"
-
-read -r -s -p "Mail password: " AI_LOOP_SMTP_PASSWORD
-printf "\n"
-
-: "${AI_LOOP_SMTP_PASSWORD:?Mail password is required}"
-
-export AI_LOOP_NOTIFY_EMAIL
-export AI_LOOP_SMTP_HOST
-export AI_LOOP_SMTP_PORT
-export AI_LOOP_SMTP_USER
-export AI_LOOP_SMTP_PASSWORD
-export AI_LOOP_SMTP_FROM
-export AI_LOOP_SMTP_STARTTLS
-export AI_LOOP_SMTP_SSL
-export AI_LOOP_IMAP_HOST
-export AI_LOOP_IMAP_PORT
-export AI_LOOP_IMAP_USER
-export AI_LOOP_IMAP_SSL
-
-launcher_dir="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
-repo_dir="$launcher_dir/AI-Loop"
-
-if [[ ! -x "$repo_dir/ai_gui.bash" ]]
-then
-    echo "AI-Loop launcher not found at $repo_dir/ai_gui.bash" >&2
-    exit 1
-fi
-
-cd "$repo_dir"
-exec ./ai_gui.bash "$@"
+```bat
+copy start-ai-loop-with-email.example.json ..\start-ai-loop-with-email.json
+notepad ..\start-ai-loop-with-email.json
 ```
 
-Make the launcher private and executable:
+Example JSON:
 
-```bash
-chmod 700 ../start-ai-loop-with-email.bash
+```json
+{
+  "AI_LOOP_NOTIFY_EMAIL": "recipient@example.edu",
+  "AI_LOOP_SMTP_HOST": "mail.example.edu",
+  "AI_LOOP_SMTP_PORT": 465,
+  "AI_LOOP_SMTP_USER": "account-id",
+  "AI_LOOP_SMTP_FROM": "sender@example.edu",
+  "AI_LOOP_SMTP_SSL": true,
+  "AI_LOOP_SMTP_STARTTLS": false,
+  "AI_LOOP_IMAP_HOST": "imap.example.edu",
+  "AI_LOOP_IMAP_PORT": 993,
+  "AI_LOOP_IMAP_USER": "account-id",
+  "AI_LOOP_IMAP_SSL": true,
+  "AI_LOOP_IMAP_STARTTLS": false,
+  "CODEX_BYPASS_SANDBOX": false,
+  "password_prompt": "Mail password: "
+}
 ```
 
-Run it from the repository:
+Run the email-enabled Windows launcher from the repository:
 
-```bash
-./ai_gui.bash
+```bat
+start-ai-loop-with-email.cmd
 ```
 
-`ai_gui.bash` checks its parent directory first. If `start-ai-loop-with-email.bash` exists there, it delegates to that script and does nothing else; the parent launcher calls back once with `AI_LOOP_PARENT_LAUNCHER_ACTIVE=1`, after which the local Python GUI starts. If no parent launcher exists, `ai_gui.bash` starts the GUI directly.
+`ai_gui.cmd` also checks for `..\start-ai-loop-with-email.json`. If the file exists, it delegates once to `start-ai-loop-with-email.cmd`, which loads the JSON, prompts for the SMTP password, exports the settings only to the launched AI-Loop process, and then starts the GUI. Set `AI_LOOP_EMAIL_CONFIG` to point at another JSON file when the private configuration lives somewhere else.
 
-The launcher asks only for the password. The input is hidden and exported only to the AI-Loop processes started by that script. `AI_LOOP_IMAP_PASSWORD` defaults to `AI_LOOP_SMTP_PASSWORD`, so a second secret is needed only when the accounts differ. The password is not written to the launcher or the job database. Keep the launcher outside the repository so its fixed account settings are not committed. Notification delivery failures are recorded as events and do not erase a successful job result.
+Do not put `AI_LOOP_SMTP_PASSWORD` or `AI_LOOP_IMAP_PASSWORD` in the JSON file. The launcher asks for the SMTP password, and `AI_LOOP_IMAP_PASSWORD` defaults to that same password unless it is already set in the environment.
+
+On Bash environments, the repository also includes `start-ai-loop-with-email.bash`, which reads the same parent JSON file and prompts for the password. Run the email-enabled Bash launcher from the repository:
+
+```bash
+./start-ai-loop-with-email.bash
+```
+
+`ai_gui.bash` checks for `../start-ai-loop-with-email.json` first. If the JSON file exists, it delegates once to `start-ai-loop-with-email.bash`; otherwise it falls back to the older private parent `start-ai-loop-with-email.bash` wrapper if one exists, then starts the GUI directly when no email configuration is present.
+
+The launchers ask only for the password. The input is hidden and exported only to the AI-Loop processes started by that script. The password is not written to the launcher, JSON file, or job database. Keep private configuration outside the repository so fixed account settings are not committed. Notification delivery failures are recorded as events and do not erase a successful job result.
 
 > **SMTP port remark:** The example uses implicit SSL on port `465`. If your provider uses STARTTLS, port `587` is the common choice. Set `AI_LOOP_SMTP_PORT="587"`, `AI_LOOP_SMTP_SSL="0"`, and `AI_LOOP_SMTP_STARTTLS="1"`. Use the values published by your email provider if they differ.
 
@@ -252,11 +234,20 @@ or:
 ./ai_gui.bash --list-themes
 ```
 
+On Windows:
+
+```bat
+ai_gui.cmd --theme default
+ai_gui.cmd --list-themes
+```
+
 The Bash launcher checks Python, Tkinter, Git, and `redis-server`. When one is
 missing, it attempts installation with Homebrew, `apt-get`, `dnf`, or `pacman`.
 If installation fails, startup prints the underlying error and the usual manual
-install command. If the selected Python lacks `redis-py`, the GUI creates
-`.gui-venv`, installs `redis`, and restarts itself.
+install command. The Windows launcher checks Python, Tkinter, and Git, and warns
+when no Redis-compatible local service is discoverable. If the selected Python
+lacks `redis-py`, the GUI creates `.gui-venv`, installs `redis`, and restarts
+itself.
 
 When a job is created, the GUI also checks its selected Codex, Claude, or Gemini
 CLIs. It attempts to install a missing standard CLI through npm. If npm is

@@ -3,10 +3,21 @@ set -euo pipefail
 
 script_dir="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 parent_launcher="$script_dir/../start-ai-loop-with-email.bash"
+email_launcher="$script_dir/start-ai-loop-with-email.bash"
+email_config="${AI_LOOP_EMAIL_CONFIG:-$script_dir/../start-ai-loop-with-email.json}"
 
 # The private parent launcher calls this script again after exporting its
 # settings. Delegate only on the initial entry so that callback continues
 # with the local Python GUI instead of recursing indefinitely.
+if [[ "${AI_LOOP_PARENT_LAUNCHER_ACTIVE:-0}" != "1" && "${AI_LOOP_EMAIL_CONFIG:-}" != "" && ! -f "$email_config" ]]; then
+  echo "AI_LOOP_EMAIL_CONFIG points to a missing file: $email_config" >&2
+  exit 1
+fi
+
+if [[ "${AI_LOOP_PARENT_LAUNCHER_ACTIVE:-0}" != "1" && -f "$email_config" && -f "$email_launcher" ]]; then
+  exec bash "$email_launcher" "$@"
+fi
+
 if [[ "${AI_LOOP_PARENT_LAUNCHER_ACTIVE:-0}" != "1" && -f "$parent_launcher" ]]; then
   export AI_LOOP_PARENT_LAUNCHER_ACTIVE=1
   exec bash "$parent_launcher" "$@"
