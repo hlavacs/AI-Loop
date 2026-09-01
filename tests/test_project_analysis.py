@@ -347,6 +347,146 @@ def test_analyze_project_resolves_cpp_object_pointer_and_chained_calls(
             )
 
 
+def test_analyze_project_resolves_namespaced_cpp_class_with_ambiguous_simple_name(
+    tmp_path: Path,
+) -> None:
+    (tmp_path / "public.ixx").write_text(
+        "export namespace vve {\n"
+        "class RenderSystem {\n"
+        "public:\n"
+        "    void addTexturedCuboid() {}\n"
+        "};\n"
+        "}\n",
+        encoding="utf-8",
+    )
+    (tmp_path / "internal.ixx").write_text(
+        "namespace vve::simple {\n"
+        "class RenderSystem {\n"
+        "public:\n"
+        "    void addTexturedCuboid() {}\n"
+        "};\n"
+        "}\n",
+        encoding="utf-8",
+    )
+    (tmp_path / "game.cpp").write_text(
+        "void loadGameScene(vve::RenderSystem render) {\n"
+        "    render.addTexturedCuboid();\n"
+        "}\n"
+        "int main() {\n"
+        "    loadGameScene({});\n"
+        "}\n",
+        encoding="utf-8",
+    )
+
+    model = analyze_project(tmp_path)
+    relationship = next(
+        relationship
+        for relationship in model["call_relationships"]
+        if relationship["caller_method"] == "loadGameScene"
+    )
+
+    assert relationship["caller_class"] == "loadGameScene()"
+    assert relationship["callee_class"] == "vve::RenderSystem"
+    assert relationship["callee_method"] == "vve::RenderSystem::addTexturedCuboid"
+    assert relationship["line"] == 2
+
+    diagram = ProjectAnalysisController(model).member_graph_diagram()
+    nodes_by_label = {node["label"]: node for node in diagram["nodes"]}
+    assert any(
+        edge["source"] == nodes_by_label["loadGameScene()"]["id"]
+        and edge["target"] == nodes_by_label["addTexturedCuboid"]["id"]
+        for edge in diagram["edges"]
+    )
+
+
+def test_analyze_project_resolves_cpp_fluent_builder_and_world_calls(
+    tmp_path: Path,
+) -> None:
+    (tmp_path / "engine.cpp").write_text(
+        "namespace app {\n"
+        "class RenderSystem {\n"
+        "public:\n"
+        "    void draw() {}\n"
+        "};\n"
+        "class World {\n"
+        "public:\n"
+        "    template <typename T> T& get();\n"
+        "};\n"
+        "class Engine {\n"
+        "public:\n"
+        "    void init() {}\n"
+        "    World world() { return {}; }\n"
+        "    void step() {}\n"
+        "};\n"
+        "class WindowSetup {\n"
+        "public:\n"
+        "    WindowSetup& id() { return *this; }\n"
+        "    WindowSetup& title() { return *this; }\n"
+        "};\n"
+        "template <typename... T> class EngineBuilder {\n"
+        "public:\n"
+        "    EngineBuilder& applicationName() { return *this; }\n"
+        "    EngineBuilder& addWindow(WindowSetup) { return *this; }\n"
+        "    Engine build() { return {}; }\n"
+        "};\n"
+        "}\n"
+        "int main() {\n"
+        "    auto engine = app::EngineBuilder<>{}\n"
+        "        .applicationName()\n"
+        "        .addWindow(app::WindowSetup{}.id().title())\n"
+        "        .build();\n"
+        "    engine.init();\n"
+        "    auto render = engine.world().get<app::RenderSystem>();\n"
+        "    render.draw();\n"
+        "    engine.step();\n"
+        "}\n",
+        encoding="utf-8",
+    )
+
+    model = analyze_project(tmp_path)
+    callees = {
+        relationship["callee_method"]
+        for relationship in model["call_relationships"]
+        if relationship["caller_method"] == "main"
+    }
+
+    assert {
+        "app::EngineBuilder::applicationName",
+        "app::EngineBuilder::addWindow",
+        "app::EngineBuilder::build",
+        "app::WindowSetup::id",
+        "app::WindowSetup::title",
+        "app::Engine::init",
+        "app::Engine::world",
+        "app::World::get",
+        "app::RenderSystem::draw",
+        "app::Engine::step",
+    } <= callees
+
+    diagram = ProjectAnalysisController(model).member_graph_diagram()
+    main_node = next(node for node in diagram["nodes"] if node["label"] == "main()")
+    expected_labels = {
+        "applicationName",
+        "addWindow",
+        "build",
+        "id",
+        "title",
+        "init",
+        "world",
+        "get",
+        "draw",
+        "step",
+    }
+    target_labels = {
+        node["label"]
+        for edge in diagram["edges"]
+        if edge["source"] == main_node["id"]
+        for node in diagram["nodes"]
+        if node["id"] == edge["target"]
+    }
+    assert expected_labels <= target_labels
+
+
 def test_member_layout_clusters_dependency_connected_classes_in_a_ring(
     tmp_path: Path,
 ) -> None:
@@ -447,6 +587,325 @@ def test_member_layout_clusters_dependency_connected_classes_in_a_ring(
     )
 
 
+def test_main_is_a_class_like_center_with_arrows_to_called_functions(
+    tmp_path: Path,
+) -> None:
+    (tmp_path / "program.cpp").write_text(
+        "void prepare() {}\n"
+        "void render() {}\n"
+        "void unused() {}\n"
+        "int main() {\n"
+        "    prepare();\n"
+        "    return 0;\n"
+        "}\n",
+        encoding="utf-8",
+    )
+
+    controller = ProjectAnalysisController(analyze_project(tmp_path))
+    relationships = controller.model["call_relationships"]
+    assert {
+        (item["caller_method"], item["callee_method"])
+        for item in relationships
+    } == {("main", "prepare")}
+
+    diagram = controller.member_graph_diagram()
+    groups = {group["label"]: group for group in diagram["groups"]}
+    nodes = {node["label"]: node for node in diagram["nodes"]}
+
+    assert set(groups) == {"main()"}
+    assert set(nodes) == {"main()", "prepare()"}
+    assert groups["main()"]["function_as_class"] is True
+    assert groups["main()"]["class_layout"] == "call_root_center"
+    assert diagram["central_call_root_id"] == groups["main()"]["id"]
+    dependency_area = groups["main()"]["dependency_area"]
+    assert dependency_area["member_count"] == 2
+    assert {node["group"] for node in nodes.values()} == {
+        groups["main()"]["id"]
+    }
+    assert {
+        (edge["source"], edge["target"])
+        for edge in diagram["edges"]
+    } == {(nodes["main()"]["id"], nodes["prepare()"]["id"])}
+
+    main_center = (
+        nodes["main()"]["x"] + nodes["main()"]["width"] / 2,
+        nodes["main()"]["y"] + nodes["main()"]["height"] / 2,
+    )
+    circle_center = (
+        dependency_area["x"] + dependency_area["width"] / 2,
+        dependency_area["y"] + dependency_area["height"] / 2,
+    )
+    assert main_center == pytest.approx(circle_center, abs=1)
+
+    collapsed = controller.member_graph_diagram(collapse_classes=True)
+    collapsed_nodes = {node["label"]: node for node in collapsed["nodes"]}
+    assert set(collapsed_nodes) == {"main()"}
+    assert collapsed["edges"] == []
+
+
+def test_member_diagram_renders_only_one_main_function_circle(
+    tmp_path: Path,
+) -> None:
+    (tmp_path / "first.cpp").write_text(
+        "void firstStep() {}\n"
+        "int main() {\n"
+        "    firstStep();\n"
+        "}\n",
+        encoding="utf-8",
+    )
+    (tmp_path / "second.cpp").write_text(
+        "void secondStep() {}\n"
+        "int main() {\n"
+        "    secondStep();\n"
+        "}\n",
+        encoding="utf-8",
+    )
+
+    diagram = ProjectAnalysisController(
+        analyze_project(tmp_path)
+    ).member_graph_diagram()
+
+    assert [group["label"] for group in diagram["groups"]].count("main()") == 1
+    assert [node["label"] for node in diagram["nodes"]].count("main()") == 1
+    assert {node["label"] for node in diagram["nodes"]} == {
+        "main()",
+        "firstStep()",
+    }
+    nodes = {node["label"]: node for node in diagram["nodes"]}
+    assert {
+        (edge["source"], edge["target"])
+        for edge in diagram["edges"]
+    } == {(nodes["main()"]["id"], nodes["firstStep()"]["id"])}
+
+
+def test_main_member_is_centered_in_the_outer_cross_class_call_ring(
+    tmp_path: Path,
+) -> None:
+    (tmp_path / "program.cpp").write_text(
+        "class Left {\n"
+        "public:\n"
+        "    void run() {}\n"
+        "};\n"
+        "class Right {\n"
+        "public:\n"
+        "    void run() {}\n"
+        "};\n"
+        "int main() {\n"
+        "    Left left;\n"
+        "    Right right;\n"
+        "    left.run();\n"
+        "    right.run();\n"
+        "    return 0;\n"
+        "}\n",
+        encoding="utf-8",
+    )
+
+    diagram = ProjectAnalysisController(
+        analyze_project(tmp_path)
+    ).member_graph_diagram()
+    groups = {group["label"]: group for group in diagram["groups"]}
+    main_node = next(node for node in diagram["nodes"] if node["label"] == "main()")
+
+    assert groups["main()"]["class_layout"] == "call_root_center"
+    assert all(
+        groups[name]["class_layout"] == "external_call_ring"
+        for name in ("Left", "Right")
+    )
+    main_center = (
+        main_node["x"] + main_node["width"] / 2,
+        main_node["y"] + main_node["height"] / 2,
+    )
+    ring_member_centers = [
+        (
+            groups[name]["x"] + groups[name]["width"] / 2,
+            groups[name]["y"] + groups[name]["height"] / 2,
+        )
+        for name in ("Left", "Right")
+    ]
+    outer_ring_center = tuple(
+        sum(center[axis] for center in ring_member_centers)
+        / len(ring_member_centers)
+        for axis in (0, 1)
+    )
+    assert main_center == pytest.approx(outer_ring_center, abs=1)
+
+
+def test_main_inner_function_chain_connects_to_outer_member_call_chain(
+    tmp_path: Path,
+) -> None:
+    (tmp_path / "program.cpp").write_text(
+        "class Logger {\n"
+        "public:\n"
+        "    void write() {}\n"
+        "};\n"
+        "class Worker {\n"
+        "public:\n"
+        "    void run(Logger& logger) {\n"
+        "        logger.write();\n"
+        "    }\n"
+        "};\n"
+        "void invoke(Worker& worker, Logger& logger) {\n"
+        "    worker.run(logger);\n"
+        "}\n"
+        "void dispatch(Worker& worker, Logger& logger) {\n"
+        "    invoke(worker, logger);\n"
+        "}\n"
+        "void unrelated() {}\n"
+        "int main() {\n"
+        "    Worker worker;\n"
+        "    Logger logger;\n"
+        "    dispatch(worker, logger);\n"
+        "    return 0;\n"
+        "}\n",
+        encoding="utf-8",
+    )
+
+    diagram = ProjectAnalysisController(
+        analyze_project(tmp_path)
+    ).member_graph_diagram()
+    groups = {group["label"]: group for group in diagram["groups"]}
+    nodes = {node["label"]: node for node in diagram["nodes"]}
+
+    assert {"main()", "dispatch()", "invoke()", "run", "write"} <= set(nodes)
+    assert "unrelated()" not in nodes
+    inner_group_id = groups["main()"]["id"]
+    assert {
+        nodes[name]["group"] for name in ("main()", "dispatch()", "invoke()")
+    } == {inner_group_id}
+    assert groups["main()"]["dependency_area"]["member_count"] == 3
+    assert groups["main()"]["width"] > max(
+        groups["Worker"]["width"], groups["Logger"]["width"]
+    )
+
+    edge_pairs = {
+        (edge["source"], edge["target"]) for edge in diagram["edges"]
+    }
+    assert {
+        (nodes["main()"]["id"], nodes["dispatch()"]["id"]),
+        (nodes["dispatch()"]["id"], nodes["invoke()"]["id"]),
+        (nodes["invoke()"]["id"], nodes["run"]["id"]),
+        (nodes["run"]["id"], nodes["write"]["id"]),
+    } <= edge_pairs
+    assert groups["main()"]["class_layout"] == "call_root_center"
+    assert all(
+        groups[name]["class_layout"] == "external_call_ring"
+        for name in ("Worker", "Logger")
+    )
+
+
+def test_main_inner_circle_follows_cpp_namespace_functions(tmp_path: Path) -> None:
+    (tmp_path / "program.cpp").write_text(
+        "namespace app {\n"
+        "    void leaf();\n"
+        "    void step();\n"
+        "}\n"
+        "void app::leaf() {}\n"
+        "void app::step() {\n"
+        "    leaf();\n"
+        "}\n"
+        "int main() {\n"
+        "    app::step();\n"
+        "    return 0;\n"
+        "}\n",
+        encoding="utf-8",
+    )
+
+    diagram = ProjectAnalysisController(
+        analyze_project(tmp_path)
+    ).member_graph_diagram()
+    groups = {group["label"]: group for group in diagram["groups"]}
+    nodes = {node["label"]: node for node in diagram["nodes"]}
+
+    assert {"main()", "step()", "leaf()"} <= set(nodes)
+    assert {
+        nodes[name]["group"] for name in ("main()", "step()", "leaf()")
+    } == {groups["main()"]["id"]}
+    edge_pairs = {
+        (edge["source"], edge["target"]) for edge in diagram["edges"]
+    }
+    assert {
+        (nodes["main()"]["id"], nodes["step()"]["id"]),
+        (nodes["step()"]["id"], nodes["leaf()"]["id"]),
+    } <= edge_pairs
+
+
+def test_main_inner_circle_excludes_std_and_keeps_templated_call_arrows(
+    tmp_path: Path,
+) -> None:
+    (tmp_path / "program.cpp").write_text(
+        "namespace std { void noise(); }\n"
+        "void std::noise() {}\n"
+        "template <typename T>\n"
+        "void leaf() {}\n"
+        "template <typename T>\n"
+        "void step() {\n"
+        "    leaf<T>();\n"
+        "}\n"
+        "int main() {\n"
+        "    std::noise();\n"
+        "    step<int>();\n"
+        "    return 0;\n"
+        "}\n",
+        encoding="utf-8",
+    )
+
+    model = analyze_project(tmp_path)
+    diagram = ProjectAnalysisController(model).member_graph_diagram()
+    nodes = {node["label"]: node for node in diagram["nodes"]}
+    edge_pairs = {
+        (edge["source"], edge["target"]) for edge in diagram["edges"]
+    }
+
+    assert {"main()", "step()", "leaf()"} <= set(nodes)
+    assert "noise()" not in nodes
+    assert all(
+        not str(relationship.get("callee_method", "")).startswith("std::")
+        for relationship in model["call_relationships"]
+    )
+    assert {
+        (nodes["main()"]["id"], nodes["step()"]["id"]),
+        (nodes["step()"]["id"], nodes["leaf()"]["id"]),
+    } <= edge_pairs
+
+
+def test_main_function_chain_connects_to_python_constructor_and_method(
+    tmp_path: Path,
+) -> None:
+    (tmp_path / "program.py").write_text(
+        "class App:\n"
+        "    def __init__(self) -> None:\n"
+        "        pass\n"
+        "    def run(self) -> None:\n"
+        "        pass\n"
+        "\n"
+        "def launch(app: App) -> None:\n"
+        "    app.run()\n"
+        "\n"
+        "def main() -> None:\n"
+        "    launch(App())\n",
+        encoding="utf-8",
+    )
+
+    diagram = ProjectAnalysisController(
+        analyze_project(tmp_path)
+    ).member_graph_diagram()
+    groups = {group["label"]: group for group in diagram["groups"]}
+    nodes = {node["label"]: node for node in diagram["nodes"]}
+    edge_pairs = {
+        (edge["source"], edge["target"]) for edge in diagram["edges"]
+    }
+
+    assert {"main()", "launch()", "__init__", "run"} <= set(nodes)
+    assert nodes["main()"]["group"] == nodes["launch()"]["group"]
+    assert nodes["main()"]["group"] == groups["main()"]["id"]
+    assert {
+        (nodes["main()"]["id"], nodes["launch()"]["id"]),
+        (nodes["main()"]["id"], nodes["__init__"]["id"]),
+        (nodes["launch()"]["id"], nodes["run"]["id"]),
+    } <= edge_pairs
+    assert groups["App"]["class_layout"] == "external_call_ring"
+
+
 def test_analyze_project_ignores_vcpkg_installed_by_default(tmp_path: Path) -> None:
     vendored = tmp_path / "vcpkg_installed" / "include"
     vendored.mkdir(parents=True)
@@ -463,6 +922,25 @@ def test_analyze_project_ignores_vcpkg_installed_by_default(tmp_path: Path) -> N
         "project.cpp"
     ]
     assert model["file_count"] == 1
+
+
+def test_analyze_project_ignores_virtual_environment_sources_by_default(
+    tmp_path: Path,
+) -> None:
+    dependency = tmp_path / ".gui-venv" / "lib" / "site-packages"
+    dependency.mkdir(parents=True)
+    (dependency / "dependency.py").write_text(
+        "def main():\n    return dependency_entry()\n",
+        encoding="utf-8",
+    )
+    (tmp_path / "main.py").write_text(
+        "def main():\n    return 0\n",
+        encoding="utf-8",
+    )
+
+    model = analyze_project(tmp_path)
+
+    assert [file_model["path"] for file_model in model["files"]] == ["main.py"]
 
 
 def test_analyze_project_resolves_cpp_fields_declared_in_a_header(

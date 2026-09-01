@@ -628,13 +628,27 @@ def referenced_file_candidates(job: dict[str, Any], task: dict[str, Any] | None 
             value = match.strip().strip(".,;:)")
             if value.startswith(("http://", "https://")):
                 continue
+            # Approximate numeric values are commonly written as `~0.0005`.
+            # They match the permissive quoted-filename pattern above, but
+            # must never be interpreted as ``~user`` home-directory paths.
+            if value.startswith("~"):
+                continue
             if value and value not in candidates:
                 candidates.append(value)
     return candidates
 
 
 def safe_relative_path(worktree: Path, value: str) -> Path | None:
-    raw = Path(value).expanduser()
+    value = value.strip()
+    if not value or value.startswith("~"):
+        return None
+    try:
+        # Referenced guidance is intentionally worktree-scoped. Expanding
+        # ``~`` is unnecessary here and can raise for prose that resembles an
+        # unknown user's home directory, so malformed references fail closed.
+        raw = Path(value)
+    except (OSError, RuntimeError, ValueError):
+        return None
     if raw.is_absolute():
         try:
             raw.relative_to(worktree)
@@ -650,37 +664,46 @@ def refreshed_instruction_files(job: dict[str, Any], task: dict[str, Any] | None
     worktree = Path(str(job["worktree_path"]))
     found: list[Path] = []
     for candidate in referenced_file_candidates(job, task):
-        path = safe_relative_path(worktree, candidate)
-        if path is None:
-            continue
-        matches: list[Path] = []
-        if path.is_file():
-            matches = [path]
-        elif "/" not in candidate and "\\" not in candidate:
-            matches = [item for item in worktree.rglob(candidate) if item.is_file()]
-        for match in matches:
-            resolved = match.resolve()
-            try:
-                resolved.relative_to(worktree.resolve())
-            except ValueError:
+        try:
+            path = safe_relative_path(worktree, candidate)
+            if path is None:
                 continue
-            if resolved not in found:
-                found.append(resolved)
-            if len(found) >= INSTRUCTION_FILE_LIMIT:
-                break
+            matches: list[Path] = []
+            if path.is_file():
+                matches = [path]
+            elif "/" not in candidate and "\\" not in candidate:
+                matches = [
+                    item for item in worktree.rglob(candidate) if item.is_file()
+                ]
+            for match in matches:
+                resolved = match.resolve()
+                try:
+                    resolved.relative_to(worktree.resolve())
+                except ValueError:
+                    continue
+                if resolved not in found:
+                    found.append(resolved)
+                if len(found) >= INSTRUCTION_FILE_LIMIT:
+                    break
+        except (OSError, RuntimeError, ValueError):
+            # Guidance discovery is best-effort context enrichment. A token
+            # that merely resembles a path must never make the job itself die.
+            continue
         if len(found) >= INSTRUCTION_FILE_LIMIT:
             break
 
     snapshots: list[dict[str, Any]] = []
     for path in found:
-        relative = str(path.relative_to(worktree.resolve()))
-        stat = path.stat()
         try:
+            relative = str(path.relative_to(worktree.resolve()))
+            stat = path.stat()
             content = path.read_text(encoding="utf-8")[:INSTRUCTION_FILE_BYTES]
             truncated = stat.st_size > INSTRUCTION_FILE_BYTES
         except UnicodeDecodeError:
             content = "<binary or non-UTF-8 file not included>"
             truncated = True
+        except (OSError, RuntimeError, ValueError):
+            continue
         snapshots.append(
             {
                 "path": relative,

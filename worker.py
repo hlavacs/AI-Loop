@@ -219,13 +219,25 @@ def referenced_file_candidates(job: dict, task: dict) -> list[str]:
             value = match.strip().strip(".,;:)")
             if value.startswith(("http://", "https://")):
                 continue
+            # Approximate numeric values such as `~0.0005` are prose, not
+            # ``~user`` home-directory paths or repository guidance files.
+            if value.startswith("~"):
+                continue
             if value and value not in candidates:
                 candidates.append(value)
     return candidates
 
 
 def safe_relative_path(worktree: Path, value: str) -> Path | None:
-    raw = Path(value).expanduser()
+    value = value.strip()
+    if not value or value.startswith("~"):
+        return None
+    try:
+        # Worker guidance is worktree-scoped, so home-directory expansion is
+        # both unnecessary and unsafe for prose that only resembles a path.
+        raw = Path(value)
+    except (OSError, RuntimeError, ValueError):
+        return None
     if raw.is_absolute():
         try:
             raw.relative_to(worktree)
@@ -241,24 +253,31 @@ def referenced_existing_files(job: dict, task: dict) -> list[str]:
     worktree = Path(str(job["worktree_path"]))
     found: list[Path] = []
     for candidate in referenced_file_candidates(job, task):
-        path = safe_relative_path(worktree, candidate)
-        if path is None:
-            continue
-        matches: list[Path] = []
-        if path.is_file():
-            matches = [path]
-        elif "/" not in candidate and "\\" not in candidate:
-            matches = [item for item in worktree.rglob(candidate) if item.is_file()]
-        for match in matches:
-            resolved = match.resolve()
-            try:
-                resolved.relative_to(worktree.resolve())
-            except ValueError:
+        try:
+            path = safe_relative_path(worktree, candidate)
+            if path is None:
                 continue
-            if resolved not in found:
-                found.append(resolved)
-            if len(found) >= INSTRUCTION_FILE_LIMIT:
-                break
+            matches: list[Path] = []
+            if path.is_file():
+                matches = [path]
+            elif "/" not in candidate and "\\" not in candidate:
+                matches = [
+                    item for item in worktree.rglob(candidate) if item.is_file()
+                ]
+            for match in matches:
+                resolved = match.resolve()
+                try:
+                    resolved.relative_to(worktree.resolve())
+                except ValueError:
+                    continue
+                if resolved not in found:
+                    found.append(resolved)
+                if len(found) >= INSTRUCTION_FILE_LIMIT:
+                    break
+        except (OSError, RuntimeError, ValueError):
+            # Referenced-file discovery enriches the prompt but is not a
+            # prerequisite for running the implementation task itself.
+            continue
         if len(found) >= INSTRUCTION_FILE_LIMIT:
             break
     return [str(path.relative_to(worktree.resolve())) for path in found]
