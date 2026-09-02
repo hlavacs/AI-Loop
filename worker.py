@@ -20,6 +20,7 @@ from ai_loop.config import (
     load_settings,
     sanitized_child_env,
 )
+from ai_loop.job_status import active_job_status
 from ai_loop.notifications import delivery_outcome, terminal_email
 from ai_loop.planning import normalize_granularity
 from ai_loop.process_runner import run_bounded_process
@@ -458,7 +459,7 @@ def process_task(settings, client, task_id: str) -> None:
 
     with db.transaction(settings.db_path) as conn:
         db.update_task_status(conn, task_id, "running")
-        running_status = "fixing" if str(task["created_by"]) == "claude:repair" else "implementing"
+        running_status = active_job_status([{**task, "status": "running"}]) or "implementing"
         db.update_job_status(conn, job["id"], running_status)
 
     print(f"task {task_id}: job {job['id']} iteration {task['iteration']}")
@@ -532,7 +533,7 @@ def process_task(settings, client, task_id: str) -> None:
             codex_cmd = wrap_with_systemd_sandbox(
                 codex_cmd, writable_paths=[worktree_path]
             )
-        worker_stage = "fixing" if str(task["created_by"]) == "claude:repair" else "implementing"
+        worker_stage = "implementing"
         log_worker_stage(job["id"], task_id, worker_stage, f"{worker_label} process started; source changes may not exist until it finishes")
         codex_input = prompt if worker == "codex" else None
         while True:

@@ -122,6 +122,7 @@ from ai_loop.config import (
     sanitized_child_env,
 )
 from ai_loop.progress import estimate_progress
+from ai_loop.job_status import active_job_status, current_active_task
 from ai_loop.elicitation import CliStructuredOutputProvider
 from ai_loop.specification_gui import VerificationDashboardView, open_specification_editor
 from ai_loop.specification_workflow import derive_formal_job_inputs
@@ -545,18 +546,17 @@ class LoopBackend:
                 item = db.row_to_job(row)
                 item["task_count"] = int(row["task_count"])
                 item["run_count"] = int(row["run_count"])
-                task = db.latest_task(conn, str(row["id"]))
+                tasks = [
+                    db.row_to_task(task_row)
+                    for task_row in conn.execute(
+                        "SELECT * FROM tasks WHERE job_id = ? AND status IN ('queued', 'running', 'waiting_tokens')",
+                        (str(row["id"]),),
+                    )
+                ]
+                task = current_active_task(tasks) or db.latest_task(conn, str(row["id"]))
                 status = str(row["status"])
                 if task is not None and status in ACTIVE_STATUSES:
-                    task_status = str(task["status"])
-                    if task_status == "running":
-                        expected = "fixing" if str(task["created_by"]) == "claude:repair" else "implementing"
-                    elif task_status == "waiting_tokens":
-                        expected = "waiting_tokens"
-                    elif task_status == "queued":
-                        expected = "fixing" if str(task["created_by"]) == "claude:repair" else "queued"
-                    else:
-                        expected = status
+                    expected = active_job_status(tasks) or status
                     if expected != status:
                         db.update_job_status(conn, str(row["id"]), expected)
                         status = expected
@@ -4128,10 +4128,7 @@ class AiLoopGui(tk.Tk):
 
     def current_task(self, details: dict[str, Any]) -> dict[str, Any] | None:
         tasks = details.get("tasks", [])
-        active = next(
-            (task for task in tasks if str(task.get("status")) in {"queued", "running", "waiting_tokens"}),
-            None,
-        )
+        active = current_active_task(tasks)
         if active is not None:
             return active
         if str(details["job"].get("status")) in {"implementing", "fixing"} and tasks:

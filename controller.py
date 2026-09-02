@@ -25,6 +25,7 @@ from ai_loop.config import (
     load_settings,
     sanitized_child_env,
 )
+from ai_loop.job_status import active_job_status
 from ai_loop.queues import (
     claim_pending,
     consumer_name,
@@ -1656,7 +1657,15 @@ def create_next_task(settings, client, job: dict[str, Any], decision: dict[str, 
             requirement_ids=list(next_task.get("requirement_ids") or []),
             verification_ids=list(next_task.get("verification_ids") or []),
         )
-        db.update_job_status(conn, job["id"], next_status, decision["history_summary"])
+        active_tasks = [
+            db.row_to_task(row)
+            for row in conn.execute(
+                "SELECT * FROM tasks WHERE job_id = ? AND status IN ('queued', 'running', 'waiting_tokens')",
+                (job["id"],),
+            )
+        ]
+        effective_status = active_job_status(active_tasks) or next_status
+        db.update_job_status(conn, job["id"], effective_status, decision["history_summary"])
         db.add_event(
             conn,
             job_id=job["id"],
@@ -1665,7 +1674,7 @@ def create_next_task(settings, client, job: dict[str, Any], decision: dict[str, 
                 "task_id": task_id,
                 "iteration": iteration,
                 "action": action,
-                "status": next_status,
+                "status": effective_status,
                 "reason": decision["reason"],
                 "goal": str(next_task["goal"]),
                 "test_cmd": str(job["test_cmd"]),
@@ -1676,7 +1685,7 @@ def create_next_task(settings, client, job: dict[str, Any], decision: dict[str, 
     with db.transaction(settings.db_path) as conn:
         persisted_task = db.get_task(conn, task_id)
     publish_worker_task(client, persisted_task, scoped=bool(scoped_job_id()))
-    if next_status == "fixing":
+    if effective_status == "fixing":
         print(f"job {job['id']}: fixing - {decision['reason']}")
         print(f"job {job['id']}: fixing task {task_id} - {next_task['goal']}")
     else:
