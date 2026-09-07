@@ -1,0 +1,106 @@
+{
+  "checked": "2026-09-07",
+  "note": "Two best models per binary as the vendor describes them. 'enabled' is set once the invocation template was verified against the installed binary (M2). {prompt} is passed as an argument unless prompt_mode is 'stdin'.",
+  "providers": [
+    {
+      "id": "claude",
+      "label": "Claude Code (Anthropic)",
+      "command": "claude",
+      "invocation": ["{binary}", "-p", "--model", "{model}", "--output-format", "text",
+                     "--disallowedTools", "Edit,Write,MultiEdit,NotebookEdit,Bash", "{prompt}"],
+      "prompt_mode": "arg",
+      "models": [
+        {"id": "claude-fable-5-1", "label": "Claude Fable 5.1"},
+        {"id": "claude-opus-5", "label": "Claude Opus 5"}
+      ],
+      "enabled": true,
+      "verified": false,
+      "login_hint": "run 'claude' once interactively and log in"
+    },
+    {
+      "id": "codex",
+      "label": "Codex CLI (OpenAI)",
+      "command": "codex",
+      "invocation": ["{binary}", "exec", "--cd", "{cwd}", "-m", "{model}", "--sandbox", "read-only", "-"],
+      "prompt_mode": "stdin",
+      "models": [
+        {"id": "gpt-6-astra", "label": "GPT-6 Astra"},
+        {"id": "gpt-5.6-sol", "label": "GPT-5.6 Sol"}
+      ],
+      "enabled": true,
+      "verified": false,
+      "login_hint": "run 'codex login'"
+    },
+    {
+      "id": "gemini",
+      "label": "Gemini CLI (Google)",
+      "command": "gemini",
+      "invocation": ["{binary}", "-m", "{model}", "-p", "{prompt}"],
+      "prompt_mode": "arg",
+      "models": [
+        {"id": "gemini-3.1-pro-preview", "label": "Gemini 3.1 Pro"},
+        {"id": "gemini-3.8-flash", "label": "Gemini 3.8 Flash"}
+      ],
+      "enabled": true,
+      "verified": false,
+      "login_hint": "run 'gemini' once interactively and log in"
+    },
+    {
+      "id": "opencode",
+      "label": "OpenCode (open source, any provider)",
+      "command": "opencode",
+      "invocation": ["{binary}", "run", "-m", "{model}", "{prompt}"],
+      "prompt_mode": "arg",
+      "models": [
+        {"id": "anthropic/claude-fable-5-1", "label": "Claude Fable 5.1 via Anthropic"},
+        {"id": "openai/gpt-6-astra", "label": "GPT-6 Astra via OpenAI"}
+      ],
+      "enabled": false,
+      "verified": false,
+      "login_hint": "run 'opencode auth login'"
+    },
+    {
+      "id": "aider",
+      "label": "Aider (open source, any provider)",
+      "command": "aider",
+      "invocation": ["{binary}", "--model", "{model}", "--message", "{prompt}", "--dry-run", "--no-auto-commits",
+                     "--yes-always"],
+      "prompt_mode": "arg",
+      "models": [
+        {"id": "anthropic/claude-fable-5-1", "label": "Claude Fable 5.1 via Anthropic"},
+        {"id": "openai/gpt-6-astra", "label": "GPT-6 Astra via OpenAI"}
+      ],
+      "enabled": false,
+      "verified": false,
+      "login_hint": "set ANTHROPIC_API_KEY or OPENAI_API_KEY"
+    },
+    {
+      "id": "copilot",
+      "label": "GitHub Copilot CLI",
+      "command": "copilot",
+      "invocation": ["{binary}", "-p", "{prompt}", "--model", "{model}"],
+      "prompt_mode": "arg",
+      "models": [
+        {"id": "gpt-6-astra", "label": "GPT-6 Astra"},
+        {"id": "claude-fable-5-1", "label": "Claude Fable 5.1"}
+      ],
+      "enabled": false,
+      "verified": false,
+      "login_hint": "run 'copilot' once interactively and log in with GitHub"
+    },
+    {
+      "id": "qwen",
+      "label": "Qwen Code (Alibaba)",
+      "command": "qwen",
+      "invocation": ["{binary}", "-p", "{prompt}", "-m", "{model}"],
+      "prompt_mode": "arg",
+      "models": [
+        {"id": "qwen3-coder-plus", "label": "Qwen3 Coder Plus"},
+        {"id": "qwen3-coder-flash", "label": "Qwen3 Coder Flash"}
+      ],
+      "enabled": false,
+      "verified": false,
+      "login_hint": "run 'qwen' once interactively and log in"
+    }
+  ]
+}
