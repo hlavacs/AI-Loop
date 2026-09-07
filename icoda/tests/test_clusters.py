@@ -43,6 +43,8 @@ def test_a_file_bound_elsewhere_moves() -> None:
     model = DerivedModel("/p")
     for f in ("a/x.cpp", "a/y.cpp", "b/stray.cpp", "b/z.cpp", "b/w.cpp"):
         model.files[f] = FileInfo(f)
+    for _ in range(6):
+        model.edges.append(Edge(EdgeKind.CALLS, "a/x.cpp", "a/y.cpp", line=len(model.edges)))
     for target in ("a/x.cpp", "a/y.cpp"):
         for _ in range(5):
             model.edges.append(Edge(EdgeKind.CALLS, "b/stray.cpp", target, line=len(model.edges)))
