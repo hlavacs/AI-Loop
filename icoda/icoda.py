@@ -11,6 +11,7 @@ import queue
 import sys
 import threading
 import tkinter as tk
+import traceback
 from pathlib import Path
 from tkinter import filedialog, messagebox, ttk
 from typing import Any
@@ -303,7 +304,8 @@ class App:
     def _analyse(self, root: Path) -> None:
         try:
             self.results.put(session.open_project(root, self.config))
-        except Exception as exc:  # noqa: BLE001  (reported in the status bar)
+        except Exception as exc:  # noqa: BLE001  (reported in the status bar and logged with its traceback)
+            session.log_event("analysis failed:\n" + traceback.format_exc(), root)
             self.results.put(exc)
 
     def _poll(self) -> None:
@@ -313,8 +315,9 @@ class App:
             self.root.after(100, self._poll)
             return
         if isinstance(result, Exception):
-            self.status.set(f"Analysis failed: {result}")
-            messagebox.showerror("ICODA", str(result))
+            log = (self.project or Path(".")) / ".icoda" / "icoda.log"
+            self.status.set(f"Analysis failed: {result!r}  (details in {log})")
+            messagebox.showerror("ICODA", f"{result!r}\n\nDetails: {log}")
         else:
             self.show(result)
 

@@ -7,6 +7,7 @@ import shutil
 import subprocess
 import sys
 from dataclasses import dataclass, field
+from datetime import datetime, timezone
 from pathlib import Path
 
 from icoda_core import analysis, clusters, persistence, toolchain, views
@@ -40,9 +41,24 @@ def choose_libclang(config: persistence.UserConfig) -> toolchain.Loaded | None:
     for path in paths:
         try:
             return toolchain.load(path)
-        except (RuntimeError, OSError):
+        except Exception as exc:  # noqa: BLE001  (a candidate that does not load is skipped, and logged)
+            log_event(f"libclang candidate {path} rejected: {exc!r}")
             continue
     return None
+
+
+LOG_NAME = "icoda.log"
+
+
+def log_event(message: str, root: Path | None = None) -> None:
+    """Append a line to the project's ``.icoda/icoda.log`` (or the user config folder before a project is open)."""
+    target = (persistence.ProjectStore(root).dir if root else persistence.config_path().parent) / LOG_NAME
+    try:
+        target.parent.mkdir(parents=True, exist_ok=True)
+        with target.open("a", encoding="utf-8") as handle:
+            handle.write(f"{datetime.now(timezone.utc).astimezone().isoformat(timespec='seconds')} {message}\n")
+    except OSError:
+        pass
 
 
 def open_project(root: Path, config: persistence.UserConfig, width: float = 1600.0,

@@ -129,6 +129,9 @@ def load(path: str) -> Loaded:
         if os.path.realpath(current) != os.path.realpath(path):
             raise RuntimeError(f"libclang already loaded from {current}; restart ICODA to switch to {path}")
     else:
+        # The bindings belong to one LLVM release; an older library (Apple's) lacks a few of the functions
+        # they register. ICODA uses none of those, so missing functions must not abort the load.
+        cindex.Config.set_compatibility_check(False)
         cindex.Config.set_library_file(path)
     version_text = _version_string(cindex)
     if not _self_test(cindex):
