@@ -432,7 +432,7 @@ class Extractor:
             self._current.edges.append(Edge(kind, source, f"external:{library}", file, line, display))
 
     def _inclusion(self, cursor: Any) -> None:
-        included = cursor.get_included_file()
+        included = _included_file(cursor)
         if included is None or not cursor.location.file or Path(cursor.location.file.name).resolve() != self._main:
             return
         source = self.relative(self._main)
@@ -455,6 +455,14 @@ class Extractor:
 
 
 # --------------------------------------------------------------------------- cursor helpers
+
+def _included_file(cursor: Any) -> Any:
+    """The file an inclusion directive resolved to, or None when it did not resolve (the bindings assert then)."""
+    try:
+        return cursor.get_included_file()
+    except AssertionError:
+        return None
+
 
 def qualified_name(cursor: Any) -> str:
     parts = []
