@@ -19,7 +19,8 @@ These were settled on 2026-09-07 and the rest of the document assumes them.
 
 **New standalone app.** ICODA is its own repository and its own Python package. It imports selected AI-Loop modules as
 a library dependency; nothing in AI-Loop depends on ICODA. AI-Loop's unattended machinery (controller/worker/watcher,
-Redis Streams, e-mail commands, token-wait as a job state, resumption after crashes) is not used.
+Redis Streams, e-mail commands, token-wait as a job state, resumption after crashes) is not used. The application
+is `icoda.py`, started through the launcher `icoda.bash` (see Program layout).
 
 **The source code and the specification are the truth.** The specification says what the system must do; the source
 code says what exists. ICODA keeps no architecture model of its own. The model it shows and reasons about is *derived*
@@ -66,6 +67,39 @@ test run, not an evidence pipeline.
 
 Rule: when ICODA needs a change in a reused module, the change is made in AI-Loop if it is compatible with AI-Loop;
 otherwise the module is copied into ICODA and diverges from there. There is never a reverse dependency.
+
+## Program layout
+
+ICODA follows the launcher pattern of AI-Loop (`ai_gui.bash` → `ai_loop_gui.py`).
+
+**`icoda.py`** is the application: the Tkinter main window, the panel with the views, the step loop and the wiring
+between them. It is what the launcher executes. Supporting code lives in the package `icoda/` next to it, so that
+`icoda.py` itself stays within the code requirements of this document instead of growing into one file:
+
+| Module | Responsibility |
+|---|---|
+| `icoda/model.py` | derived model schema, USR identity, status bookkeeping |
+| `icoda/analysis.py` | libclang detection and parsing, incremental cache, heuristic fallback |
+| `icoda/clusters.py` | community detection, cluster pins, circle layout |
+| `icoda/views.py` | File, Class, Call and mind-map presentation on top of AI-Loop's view model |
+| `icoda/steps.py` | worktree-based step protocol, approve/reject/adapt/undo, step log |
+| `icoda/generator.py` | step 0 skeleton, module-based code generation, Doxygen and `@satisfies` |
+| `icoda/agent.py` | provider invocation, prompt assembly, response validation |
+| `icoda/persistence.py` | `.icoda/` files and the user configuration |
+
+**`icoda.bash`** is the launcher for macOS and Linux, modelled on `ai_gui.bash`. It chooses a Python 3.10+ (the
+`choose_ai_loop_python` logic, copied as `icoda_python.bash`), checks for Tkinter, git, CMake, Ninja, a clang
+toolchain with libclang, and vcpkg — installing what it can through the package manager, as `ai_gui.bash` does,
+and printing the manual command otherwise — creates or updates the virtual environment `.icoda-venv` with the
+Python dependencies (the `clang` bindings matching the detected libclang, `networkx` for clustering, and AI-Loop in
+editable mode from a sibling checkout, `../AI-Loop` by default, overridable with `ICODA_AI_LOOP_DIR`), and then
+runs `exec "$python_bin" icoda.py "$@"`. Redis is not checked; ICODA does not use it.
+
+**`icoda.cmd`** is the Windows counterpart, modelled on `ai_gui.cmd`.
+
+Command line: `icoda.bash` without arguments opens the last project; `icoda.bash <directory>` opens that project,
+creating `.icoda/` if it is missing (Phase 0 for an empty directory, Phase 3 import for an existing CMake project).
+No further options are planned.
 
 ## Core concepts
 
@@ -408,12 +442,13 @@ Answers to the open questions of the first draft; all of them are folded into th
 - libclang comes from the toolchain — the Visual Studio clang component, Xcode or Homebrew LLVM, the distribution's
   LLVM — chosen flexibly by the developer; the analysis build uses the same clang; the pip wheel is the fallback.
 - ICODA is not used to develop ICODA for the time being.
+- ICODA is implemented in `icoda.py` (with the `icoda/` package) and started by `icoda.bash` (`icoda.cmd` on Windows).
 
 ## Roadmap
 
 | Milestone | Content |
 |---|---|
-| M1 App skeleton | New repository; Tkinter shell; libclang detection; import of an existing CMake project via libclang (headers and C++20 modules); derived model schema; File View with clusters and coloured arrows. |
+| M1 App skeleton | New repository; `icoda.py`, `icoda.bash` and `icoda.cmd`; Tkinter shell; libclang detection; import of an existing CMake project via libclang (headers and C++20 modules); derived model schema; File View with clusters and coloured arrows. |
 | M2 Architecture loop | Phase 0 with the reused wizard and the Code Profile; step 0 module-based skeleton generation; worktree-based step protocol with approve/reject/adapt and undo; Call View. |
 | M3 Implementation loop | Proposals in prose; function and test generation; bottom-up order; batching; status colours. |
 | M4 Class View and coverage | Class View; specification coverage; rule checks; mind map. |
