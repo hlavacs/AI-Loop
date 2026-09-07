@@ -36,52 +36,52 @@ with clang, CMake and Ninja installed; MIT licence; Python 3.10+; `ruff` and `my
 ## M1 — App skeleton, core helpers, import, File View
 
 1. Scaffold in `icoda/`: `pyproject.toml` (name `icoda`; dependencies `clang`, `networkx`, `jsonschema`; dev: pytest,
-   ruff, mypy), `icoda.py` with the main window and an empty panel, the `icoda/` package with one stub module per
+   ruff, mypy), `icoda.py` with the main window and an empty panel, the `icoda_core/` package with one stub module per
    row of the Program layout table in `EVOLUTION.md`, `icoda.bash`, `icoda_python.bash`, `icoda.cmd`, `.gitignore`,
    a short `README.md`, `tests/` with the Tk stub, and a second job in the root `.github/workflows/ci.yml` with
    working directory `icoda`. The licence is the repository's.
    *verify:* `icoda.bash` opens an empty window on your Mac; `pytest` is green in the VM and in CI.
-2. Core helpers, written new with their tests: `icoda/git.py` (run git, create and remove worktrees, status, promote
-   a worktree's changes onto the working tree with rollback when a copy fails half-way), `icoda/process.py`
-   (subprocess with timeout, bounded output and process-tree kill), the provider invocation part of `icoda/agent.py`
+2. Core helpers, written new with their tests: `icoda_core/git.py` (run git, create and remove worktrees, status, promote
+   a worktree's changes onto the working tree with rollback when a copy fails half-way), `icoda_core/process.py`
+   (subprocess with timeout, bounded output and process-tree kill), the provider invocation part of `icoda_core/agent.py`
    (command templates from `providers.json`, rate-limit detection and waiting), a hover tooltip for the GUI, and
    `icoda_python.bash` (pick a Python 3.10+ with Tkinter).
    *verify:* tests in the VM for promotion rollback on a mid-copy failure, output truncation, argv of the three
-   first-class binaries, and rate-limit parsing; `grep -ri ai_loop icoda/ icoda.py tests/` finds nothing.
+   first-class binaries, and rate-limit parsing; `grep -ri ai_loop icoda_core/ icoda.py tests/` finds nothing.
 3. Sample project `tests/sample_project/`: CMake with `CMakePresets.json` and Ninja, C++20 modules (`.cppm`), one
    wrapper module around a "third-party" header, complete enums, two small class hierarchies, a template (`Stack<T>`)
    used with two types, a lambda passed to an STL algorithm, a free-function cluster, `main()` calling into all of it.
    This is also the spike for the module build with Apple clang: if it does not build on your Mac with the Xcode
    toolchain, we know on day two, not in M2.
    *verify:* builds with clang + Ninja in the VM and in CI; **you** build it on your Mac with `build.sh` and report.
-4. libclang detection (`icoda/analysis.py`): candidates on macOS (Xcode toolchain, Command Line Tools, Homebrew
+4. libclang detection (`icoda_core/analysis.py`): candidates on macOS (Xcode toolchain, Command Line Tools, Homebrew
    `llvm`), Windows (Visual Studio LLVM component, LLVM installer, PATH), Linux (`llvm-config`, `/usr/lib/llvm-*`),
    the environment variable `ICODA_LIBCLANG`, then the pip wheel; Apple-clang → LLVM mapping table; start-up
    self-test (parse a one-line translation unit, read the version); result shown in the status bar and in the
    launcher output.
    *verify:* unit tests with a fake filesystem for every platform branch; on your Mac the status bar names the Xcode
    libclang and its version.
-5. Derived model (`icoda/model.py`): entity and edge types from `EVOLUTION.md`, USR identity, JSON round trip for the
+5. Derived model (`icoda_core/model.py`): entity and edge types from `EVOLUTION.md`, USR identity, JSON round trip for the
    cache, the status structure fed from `steps.jsonl`.
    *verify:* round-trip tests; schema documented in the module docstring.
-6. Parsing (`icoda/analysis.py`): per translation unit from `compile_commands.json` — declarations, definitions,
+6. Parsing (`icoda_core/analysis.py`): per translation unit from `compile_commands.json` — declarations, definitions,
    bases, members, template parameters, call expressions with the referenced declaration and the template arguments
    as edge label, includes and imports, Doxygen comment with `@satisfies`; incremental cache keyed by content hash;
    stale marking when the project does not compile.
    *verify:* tests against the sample project assert known facts: `main → Renderer::draw`, `Stack<T>` is one entity
    with two label variants on its edges, `std` is one external node, the enum has all enumerators, the `@satisfies`
    tag of one function is read; a deliberately broken copy of the sample yields the previous model marked stale.
-7. Clusters (`icoda/clusters.py`): weighted undirected file graph; seeded label propagation (own implementation,
+7. Clusters (`icoda_core/clusters.py`): weighted undirected file graph; seeded label propagation (own implementation,
    directory as seed) with `networkx` for the graph; split clusters above 40 files; pins and names from
    `layout.json`.
    *verify:* deterministic tests; every file in exactly one cluster; a synthetic 300-file project with everything
    reachable from `main()` yields more than one cluster.
-8. File View (`icoda/views.py` for geometry, `icoda.py` for the canvas): one circle per cluster, files on the
+8. File View (`icoda_core/views.py` for geometry, `icoda.py` for the canvas): one circle per cluster, files on the
    circumference ordered for few crossings, arrows coloured by type with merged badges, thick centre-to-centre
    arrows at project zoom, zoom and pan, hover tooltip, click expands a file into its class list (placeholder until
    M4), double click opens the editor, external nodes.
    *verify:* geometry tests without Tk; you open the sample project on your Mac and see the clusters and arrows.
-9. Persistence (`icoda/persistence.py`): `.icoda/` created on open, `layout.json`, `cache/`, `ui.json`; user config
+9. Persistence (`icoda_core/persistence.py`): `.icoda/` created on open, `layout.json`, `cache/`, `ui.json`; user config
    with known projects, last project, the libclang choice and the default binary and model.
    *verify:* tests; reopening the sample project restores the view.
 10. Launcher hardening: `icoda.bash` checks Python, Tkinter, git, CMake, Ninja, a clang toolchain with libclang and
@@ -93,25 +93,25 @@ zoomable, and the status bar names the Xcode libclang.
 
 ## M2 — Architecture loop
 
-1. Spike first: the step 0 skeleton generator (`icoda/generator.py`) emits a module-based CMake project with
+1. Spike first: the step 0 skeleton generator (`icoda_core/generator.py`) emits a module-based CMake project with
    presets, `build.sh`/`build.cmd`, `vcpkg.json`, `Doxyfile`, a CTest smoke test and `main()` importing an empty
    module; the sample project's CMake setup is the template.
    *verify:* the generated skeleton builds and runs on your Mac and in CI.
-2. Phase 0: the specification schema (`icoda/specification.schema.json`: title, summary, objectives, scope,
+2. Phase 0: the specification schema (`icoda_core/specification.schema.json`: title, summary, objectives, scope,
    stakeholders, assumptions, constraints, dependencies, use cases, requirements, decisions, risks, verification,
-   open questions, Code Profile) and the specification editor (`icoda/specification.py`): one page per section,
+   open questions, Code Profile) and the specification editor (`icoda_core/specification.py`): one page per section,
    list editing for use cases, requirements, decisions, risks and verification, a Code Profile page, validation with
    `jsonschema` on save, load and save of `.icoda/specification.json`.
    *verify:* a specification saved from ICODA validates against the schema and reloads unchanged; Tk-stub tests of
    every page.
-3. Agent integration (`icoda/agent.py`): `providers.json` with the seven binaries, their invocation templates and
+3. Agent integration (`icoda_core/agent.py`): `providers.json` with the seven binaries, their invocation templates and
    their two models (table in `EVOLUTION.md`); the Binary/Model field with model options that follow the binary;
    prompt assembly (Code Profile, compact specification, model subset, step request, prior rejections and
    adaptations); `response.schema.json` (rationale + files); validation with error-fed remake; rate-limit waiting.
    *verify:* argv tests for all seven templates, checked against the installed binaries' `--help` where available
    (unverifiable ones stay disabled in the list); a Tk-stub test that switching the binary swaps the model options
    and restores a typed custom model; tests with a scripted fake provider; prompt size measured on the sample project.
-4. Step protocol (`icoda/steps.py`) on `icoda/git.py`: worktree per step, apply files, configure and build, parse,
+4. Step protocol (`icoda_core/steps.py`) on `icoda_core/git.py`: worktree per step, apply files, configure and build, parse,
    compute the delta, at most K attempts with compiler output; approve promotes, commits and appends to
    `steps.jsonl`; reject records the reason; adapt via prompt, structured summary or manual edit in the worktree;
    undo reverts the last step.

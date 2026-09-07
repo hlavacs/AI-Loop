@@ -58,22 +58,23 @@ possible without touching the rest.
 ICODA is a Python application with a shell launcher.
 
 **`icoda.py`** is the application: the Tkinter main window, the panel with the views, the step loop and the wiring
-between them. It is what the launcher executes. Supporting code lives in the package `icoda/` next to it, so that
+between them. It is what the launcher executes. Supporting code lives in the package `icoda_core/` next to it (a
+package cannot be called `icoda/` beside `icoda.py`: Python and mypy would see two modules of one name), so that
 `icoda.py` itself stays within the code requirements of this document instead of growing into one file:
 
 | Module | Responsibility |
 |---|---|
-| `icoda/model.py` | derived model schema, USR identity, status bookkeeping |
-| `icoda/analysis.py` | libclang detection and parsing, incremental cache, stale marking |
-| `icoda/clusters.py` | community detection, cluster pins, circle layout |
-| `icoda/views.py` | File, Class, Call and mind-map geometry and presentation |
-| `icoda/specification.py` | specification editor and validation against `specification.schema.json`, Code Profile |
-| `icoda/git.py` | git, worktrees, promotion with rollback |
-| `icoda/process.py` | bounded subprocess with output limits |
-| `icoda/steps.py` | worktree-based step protocol, approve/reject/adapt/undo, step log |
-| `icoda/generator.py` | step 0 skeleton, module-based code generation, Doxygen and `@satisfies` |
-| `icoda/agent.py` | provider invocation from `providers.json`, prompt assembly, response validation |
-| `icoda/persistence.py` | `.icoda/` files and the user configuration |
+| `icoda_core/model.py` | derived model schema, USR identity, status bookkeeping |
+| `icoda_core/analysis.py` | libclang detection and parsing, incremental cache, stale marking |
+| `icoda_core/clusters.py` | community detection, cluster pins, circle layout |
+| `icoda_core/views.py` | File, Class, Call and mind-map geometry and presentation |
+| `icoda_core/specification.py` | specification editor and validation against `specification.schema.json`, Code Profile |
+| `icoda_core/git.py` | git, worktrees, promotion with rollback |
+| `icoda_core/process.py` | bounded subprocess with output limits |
+| `icoda_core/steps.py` | worktree-based step protocol, approve/reject/adapt/undo, step log |
+| `icoda_core/generator.py` | step 0 skeleton, module-based code generation, Doxygen and `@satisfies` |
+| `icoda_core/agent.py` | provider invocation from `providers.json`, prompt assembly, response validation |
+| `icoda_core/persistence.py` | `.icoda/` files and the user configuration |
 
 **`icoda.bash`** is the launcher for macOS and Linux. It chooses a Python 3.10+ (`icoda_python.bash`), checks for
 Tkinter, git, CMake, Ninja, a clang toolchain with libclang, and vcpkg — installing what it can through the package
@@ -131,7 +132,7 @@ with the code as truth there is nothing to drift from, only requirements that ar
 developer decides on. Steps are numbered per project and form a linear history.
 
 **Worktree.** Every step is generated in a git worktree of the project, using the worktree and promotion
-helpers in `icoda/git.py`. ICODA builds and parses the worktree; the difference between the worktree's derived model and the current one
+helpers in `icoda_core/git.py`. ICODA builds and parses the worktree; the difference between the worktree's derived model and the current one
 is the model delta shown to the developer. The delta is computed by ICODA, never claimed by the agent. Approving
 promotes the worktree onto the working tree; rejecting discards it.
 
@@ -362,7 +363,7 @@ clusters touched by the step and their neighbours, not the whole model, to keep 
 step request, and the rejections and adaptations recorded for this step so far.
 
 The response is structured JSON validated against a schema — rationale and files, as full contents or unified diffs —
-(`icoda/response.schema.json`); an invalid response is fed back with the validation error
+(`icoda_core/response.schema.json`); an invalid response is fed back with the validation error
 for a remake. ICODA applies the files in the worktree, builds and parses; the model delta the developer sees is
 computed from the parsed result, so the agent cannot misdescribe what it did. When a provider reports a rate limit,
 ICODA waits for the replenishment time it names and retries instead of failing the step.
@@ -378,7 +379,7 @@ which case that one is restored. The selection is saved per project in `.icoda/u
 machine-specific), the default for new projects in the user configuration, and every record in `steps.jsonl` notes
 the binary and model that produced the step.
 
-The list ships as data, `icoda/providers.json`, so that it can be updated without touching code: for each binary its
+The list ships as data, `icoda_core/providers.json`, so that it can be updated without touching code: for each binary its
 command, the argument template for a one-shot invocation, the model flag, and its two models. "Two best" means the
 vendor's most capable model and its strongest runner-up as the vendor describes them, checked at every ICODA release
 and stamped with the date. The launcher checks that the chosen binary is on `PATH` and prints its login hint when a
@@ -456,7 +457,7 @@ Answers to the open questions of the first draft; all of them are folded into th
 - libclang comes from the toolchain — the Visual Studio clang component, Xcode or Homebrew LLVM, the distribution's
   LLVM — chosen flexibly by the developer; the analysis build uses the same clang; the pip wheel is the fallback.
 - ICODA is not used to develop ICODA for the time being.
-- ICODA is implemented in `icoda.py` (with the `icoda/` package) and started by `icoda.bash` (`icoda.cmd` on Windows).
+- ICODA is implemented in `icoda.py` (with the `icoda_core/` package) and started by `icoda.bash` (`icoda.cmd` on Windows).
 - One repository, two subfolders: AI-Loop in `ai-loop/`, ICODA in `icoda/`; `.github/`, `.gitignore`, `CLAUDE.md`
   and `LICENSE` at the root are the only things they have in common.
 - ICODA shares nothing with AI-Loop: no code, no files, no formats. Everything is written for ICODA, including its

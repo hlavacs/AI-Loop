@@ -1,0 +1,12 @@
+.icoda-venv/
+.venv/
+__pycache__/
+*.pyc
+*.egg-info/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+build/
+.icoda/cache/
+.icoda/ui.json
+tests/sample_project/build/
