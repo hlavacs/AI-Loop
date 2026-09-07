@@ -39,7 +39,9 @@ Progress 2026-09-07: steps 1–9 implemented and tested in the VM (clang 18 buil
 CMake and Ninja from pip); step 10 is the launcher as written in step 1. Two findings worth knowing: libclang
 does not visit declarations inside `export`, so module units are parsed through a shadow copy with the module
 keywords blanked (offsets preserved; USRs match); and the package is `icoda_core/` because a package named
-`icoda/` cannot sit beside `icoda.py`. Awaiting the Mac acceptance run.
+`icoda/` cannot sit beside `icoda.py`. Mac spike result (2026-09-07): Apple clang (Xcode) builds the module sample once CMake is given the toolchain's
+`clang-scan-deps` (`build.sh` passes `xcrun --find clang-scan-deps`); no Homebrew LLVM needed. The generated
+projects of M2 use the same build script logic. Awaiting the `icoda.bash` run.
 
 1. Scaffold in `icoda/`: `pyproject.toml` (name `icoda`; dependencies `clang`, `networkx`, `jsonschema`; dev: pytest,
    ruff, mypy), `icoda.py` with the main window and an empty panel, the `icoda_core/` package with one stub module per
@@ -159,9 +161,10 @@ has been used on a real project of yours; not detailed yet.
 
 ## Risks and how the plan handles them
 
-- Apple clang and C++20 modules: Apple's clang lags LLVM in module support (`import std;` in particular). The sample
-  project in M1 step 3 is the spike; if it fails on your Mac, the fallback is Homebrew LLVM for the analysis preset,
-  or header-based generation until Xcode catches up. Decided at M1, not later.
+- Apple clang and C++20 modules: resolved 2026-09-07 — the module sample builds with Xcode's clang when CMake is
+  given the toolchain's `clang-scan-deps` (CMake looks next to `/usr/bin/clang++`, where Apple keeps only a shim).
+  `import std;` remains unsupported there; generated code includes the standard library in the global module
+  fragment, as the sample does.
 - Apple libclang and the Python bindings: the mapping table plus the start-up self-test catch a mismatch on the first
   run; the pip wheel remains the fallback for header-based code.
 - Writing the core helpers new: worktree promotion with rollback and bounded subprocess handling are the two places
