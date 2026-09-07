@@ -65,7 +65,9 @@ package cannot be called `icoda/` beside `icoda.py`: Python and mypy would see t
 | Module | Responsibility |
 |---|---|
 | `icoda_core/model.py` | derived model schema, USR identity, status bookkeeping |
-| `icoda_core/analysis.py` | libclang detection and parsing, incremental cache, stale marking |
+| `icoda_core/toolchain.py` | finding and loading libclang, versions, the compiler's resource directory |
+| `icoda_core/analysis.py` | parsing with libclang (shadow parse of module units), incremental cache, stale marking |
+| `icoda_core/session.py` | opening a project end to end without a GUI: configuration, libclang, parse, clusters, layout |
 | `icoda_core/clusters.py` | community detection, cluster pins, circle layout |
 | `icoda_core/views.py` | File, Class, Call and mind-map geometry and presentation |
 | `icoda_core/specification.py` | specification editor and validation against `specification.schema.json`, Code Profile |

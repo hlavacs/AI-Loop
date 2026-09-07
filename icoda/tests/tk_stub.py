@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import sys
 import types
+from collections.abc import Iterator
 from typing import Any
 
 
@@ -19,6 +20,12 @@ class _Widget:
 
     def __call__(self, *args: Any, **kwargs: Any) -> _Widget:
         return _Widget(*args, **kwargs)
+
+    def __iter__(self) -> Iterator[Any]:
+        return iter(())
+
+    def __len__(self) -> int:
+        return 0
 
 
 class _Var:

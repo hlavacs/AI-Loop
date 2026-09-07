@@ -11,3 +11,4 @@ build/
 .icoda/ui.json
 tests/sample_project/build/
 tests/sample_project/bin/
+tests/sample_project/.icoda/

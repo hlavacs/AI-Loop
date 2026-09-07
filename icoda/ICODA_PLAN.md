@@ -35,6 +35,12 @@ with clang, CMake and Ninja installed; MIT licence; Python 3.10+; `ruff` and `my
 
 ## M1 — App skeleton, core helpers, import, File View
 
+Progress 2026-09-07: steps 1–9 implemented and tested in the VM (clang 18 built from the LLVM release tarball,
+CMake and Ninja from pip); step 10 is the launcher as written in step 1. Two findings worth knowing: libclang
+does not visit declarations inside `export`, so module units are parsed through a shadow copy with the module
+keywords blanked (offsets preserved; USRs match); and the package is `icoda_core/` because a package named
+`icoda/` cannot sit beside `icoda.py`. Awaiting the Mac acceptance run.
+
 1. Scaffold in `icoda/`: `pyproject.toml` (name `icoda`; dependencies `clang`, `networkx`, `jsonschema`; dev: pytest,
    ruff, mypy), `icoda.py` with the main window and an empty panel, the `icoda_core/` package with one stub module per
    row of the Program layout table in `EVOLUTION.md`, `icoda.bash`, `icoda_python.bash`, `icoda.cmd`, `.gitignore`,
