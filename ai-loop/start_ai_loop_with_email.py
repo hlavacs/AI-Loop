@@ -58,7 +58,7 @@ def load_config(path: Path) -> dict[str, Any]:
     except FileNotFoundError as exc:
         raise ConfigError(
             f"email configuration file not found: {path}\n"
-            "Copy start-ai-loop-with-email.example.json to the parent directory as "
+            "Copy start-ai-loop-with-email.example.json to the directory beside the repository as "
             "start-ai-loop-with-email.json and adapt it."
         ) from exc
     except json.JSONDecodeError as exc:
@@ -119,8 +119,8 @@ def ensure_passwords(env: dict[str, str], prompt: str) -> None:
 
 
 def main(argv: list[str]) -> int:
-    repo_dir = Path(__file__).resolve().parent
-    default_config = repo_dir.parent / "start-ai-loop-with-email.json"
+    ai_loop_dir = Path(__file__).resolve().parent
+    default_config = ai_loop_dir.parent.parent / "start-ai-loop-with-email.json"
 
     parser = argparse.ArgumentParser(add_help=False)
     parser.add_argument("--email-config", type=Path, default=None)

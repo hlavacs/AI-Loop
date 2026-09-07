@@ -2,9 +2,9 @@
 set -euo pipefail
 
 script_dir="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
-parent_launcher="$script_dir/../start-ai-loop-with-email.bash"
+parent_launcher="$script_dir/../../start-ai-loop-with-email.bash"
 email_launcher="$script_dir/start-ai-loop-with-email.bash"
-email_config="${AI_LOOP_EMAIL_CONFIG:-$script_dir/../start-ai-loop-with-email.json}"
+email_config="${AI_LOOP_EMAIL_CONFIG:-$script_dir/../../start-ai-loop-with-email.json}"
 
 # The private parent launcher calls this script again after exporting its
 # settings. Delegate only on the initial entry so that callback continues

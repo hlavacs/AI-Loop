@@ -74,7 +74,7 @@ platform-specific installed files.
 
 `ai_gui.bash` is the automatic GUI bootstrap path:
 
-1. Before local bootstrap, delegate exclusively to `../start-ai-loop-with-email.bash` when that private parent launcher exists; its guarded callback continues locally without recursion.
+1. Before local bootstrap, delegate exclusively to `../../start-ai-loop-with-email.bash` when that private parent launcher exists; its guarded callback continues locally without recursion.
 2. Source `ai_loop_python.bash` and select a runnable Python 3.10 or newer.
 3. On macOS, avoid executing `/usr/bin/python3` when it is only the unavailable
    Command Line Tools stub.
@@ -172,7 +172,7 @@ Every message is JSON round-trip checked. Per-job processes use groups suffixed 
 3. Build granularity constraints.
 4. Build and store a four-milestone static plan.
 5. Create a pre-job snapshot commit if the target checkout is dirty.
-6. Create `ai/<job-id>` and `../ai-runs/<job-id>` unless `--no-worktree` is selected.
+6. Create `ai/<job-id>` and `../../ai-runs/<job-id>` (beside the repository) unless `--no-worktree` is selected.
 7. Copy the dirty checkout overlay into the worktree.
 8. Insert the `planning` job row and creation event.
 9. Create job-scoped Redis groups.

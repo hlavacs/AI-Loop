@@ -113,7 +113,7 @@ def env_bool(name: str, default: bool = False) -> bool:
 def load_settings() -> Settings:
     root_dir = Path(__file__).resolve().parent.parent
     db_path = Path(os.getenv("AI_LOOP_DB", root_dir / "ai_loop.sqlite3")).expanduser()
-    runs_dir = Path(os.getenv("AI_LOOP_RUNS_DIR", root_dir.parent / "ai-runs")).expanduser()
+    runs_dir = Path(os.getenv("AI_LOOP_RUNS_DIR", root_dir.parent.parent / "ai-runs")).expanduser()
     return Settings(
         root_dir=root_dir,
         db_path=db_path,

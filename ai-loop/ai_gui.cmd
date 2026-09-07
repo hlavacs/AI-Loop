@@ -3,7 +3,7 @@ setlocal EnableExtensions
 
 set "SCRIPT_DIR=%~dp0"
 set "EMAIL_LAUNCHER=%SCRIPT_DIR%start-ai-loop-with-email.cmd"
-set "EMAIL_CONFIG=%SCRIPT_DIR%..\start-ai-loop-with-email.json"
+set "EMAIL_CONFIG=%SCRIPT_DIR%..\..\start-ai-loop-with-email.json"
 
 rem Delegate once to the checked-in email launcher when private parent config exists.
 if "%AI_LOOP_PARENT_LAUNCHER_ACTIVE%"=="1" goto local_launcher

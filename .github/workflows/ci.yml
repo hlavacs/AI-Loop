@@ -9,6 +9,9 @@ on:
 jobs:
   tests:
     runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: ai-loop
     strategy:
       matrix:
         python-version: ["3.10", "3.12"]
@@ -32,6 +35,9 @@ jobs:
 
   compile:
     runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: ai-loop
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5

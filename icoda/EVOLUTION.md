@@ -1,12 +1,12 @@
 # ICODA — Interactive Code Development and Analysis
 
-Status: design document, 2026-09-07. Supersedes the previous EVOLUTION.md (AI-Loop backlog, see appendix).
+Status: design document, 2026-09-07. Supersedes the previous EVOLUTION.md; its AI-Loop backlog now lives in `AI_LOOP_BACKLOG.md`.
 
 ## Vision
 
-ICODA is a new, standalone application. It grows out of AI-Loop and borrows from it, but it is not a mode of it.
-Where AI-Loop runs a coding agent unattended until a job is finished, ICODA keeps the developer in the loop at every
-step. It always presents the software architecture visually, at various levels of detail, and it performs only one
+ICODA is a new, standalone application that shares nothing with AI-Loop: no code, no files, no formats. Where a
+batch runner like AI-Loop drives a coding agent unattended until a job is finished, ICODA keeps the developer in the
+loop at every step. It always presents the software architecture visually, at various levels of detail, and it performs only one
 specific step at a time. The developer keeps full control and builds up a gradually growing mind map of the system.
 
 The details of function implementations are less important than the organisation of the code: data structures,
@@ -17,10 +17,11 @@ that call graph.
 
 These were settled on 2026-09-07 and the rest of the document assumes them.
 
-**New standalone app.** ICODA is its own repository and its own Python package. It imports selected AI-Loop modules as
-a library dependency; nothing in AI-Loop depends on ICODA. AI-Loop's unattended machinery (controller/worker/watcher,
-Redis Streams, e-mail commands, token-wait as a job state, resumption after crashes) is not used. The application
-is `icoda.py`, started through the launcher `icoda.bash` (see Program layout).
+**New standalone app that shares nothing with AI-Loop.** ICODA lives in its own subfolder `icoda/` of the
+repository, beside `ai-loop/`, and is its own Python package; all paths in this document are relative to `icoda/`.
+It does not import AI-Loop, does not copy code from it, and does not share files or formats with it; everything in
+ICODA is written for ICODA. Unattended batch operation (job queues, e-mail commands, resumption after crashes) is
+out of scope. The application is `icoda.py`, started through the launcher `icoda.bash` (see Program layout).
 
 **The source code and the specification are the truth.** The specification says what the system must do; the source
 code says what exists. ICODA keeps no architecture model of its own. The model it shows and reasons about is *derived*
@@ -35,8 +36,8 @@ cannot. ICODA uses the clang that is installed on the machine — the Visual Stu
 Homebrew LLVM on macOS, the distribution's LLVM on Linux — detects the candidates, lets the developer choose, and
 builds the analysis configuration of the project with that same clang (`clang-cl` on Windows, which stays
 ABI-compatible with MSVC and vcpkg), so that compiler and parser agree and C++20 modules resolve. The `libclang` pip
-wheel is the fallback when no toolchain libclang is found. The existing heuristic analyzer from AI-Loop stays as a
-degraded fallback for code that does not compile and as the Python parser.
+wheel is the fallback when no toolchain libclang is found. There is no heuristic fallback parser: when the project
+does not compile, ICODA shows the last derived model and marks it stale.
 
 **C++23 first, Python later.** The derived model, the step protocol and the views are language-neutral. The
 generator, the code rules and the analysis ship end-to-end for C++23 first. Python follows as a second language
@@ -48,29 +49,13 @@ used only where a library or a platform forces them (the Code Profile can overri
 libclang comes from the toolchain: module files can only be read by the clang that built
 them.
 
-**Tkinter.** The GUI reuses AI-Loop's Tkinter shell and the GUI-independent view model from
-`ai_loop/project_analysis_view.py` (layouts, diagram nodes and edges, zoom). If the canvas becomes the limiting factor,
-the view model is what makes a later port to Qt possible without touching the rest.
-
-## Relationship to AI-Loop
-
-Reused as a library: the specification schema and wizard (`specifications.py`, `specification_gui*.py`,
-`specification_workflow.py`, `specification_compiler.py`); provider invocation (`process_runner.py`,
-`prompt_profiles.py`, `token_wait.py`); `project_analysis` (heuristic analyzer as fallback, Python parser) and
-`project_analysis_view.py` (layouts, diagram model); the git snapshot, worktree and promotion helpers currently living
-in `controller.py`, which should be extracted into a module of their own; `gui_components.py`; the SQLite pattern from
-`db.py`.
-
-Not reused: `controller.py`, `worker.py`, `watcher.py`, `queues.py`, `email_commands.py`, `notifications.py`,
-`recovery.py`, `systemd_sandbox.py`, `verification_orchestrator.py`. Verification in ICODA is a per-step build and
-test run, not an evidence pipeline.
-
-Rule: when ICODA needs a change in a reused module, the change is made in AI-Loop if it is compatible with AI-Loop;
-otherwise the module is copied into ICODA and diverges from there. There is never a reverse dependency.
+**Tkinter.** The GUI is Tkinter. The geometry code (circular layouts, member ring, zoom) in `icoda/views.py` is
+GUI-independent; if the canvas becomes the limiting factor, that separation is what makes a later port to Qt
+possible without touching the rest.
 
 ## Program layout
 
-ICODA follows the launcher pattern of AI-Loop (`ai_gui.bash` → `ai_loop_gui.py`).
+ICODA is a Python application with a shell launcher.
 
 **`icoda.py`** is the application: the Tkinter main window, the panel with the views, the step loop and the wiring
 between them. It is what the launcher executes. Supporting code lives in the package `icoda/` next to it, so that
@@ -79,23 +64,24 @@ between them. It is what the launcher executes. Supporting code lives in the pac
 | Module | Responsibility |
 |---|---|
 | `icoda/model.py` | derived model schema, USR identity, status bookkeeping |
-| `icoda/analysis.py` | libclang detection and parsing, incremental cache, heuristic fallback |
+| `icoda/analysis.py` | libclang detection and parsing, incremental cache, stale marking |
 | `icoda/clusters.py` | community detection, cluster pins, circle layout |
-| `icoda/views.py` | File, Class, Call and mind-map presentation on top of AI-Loop's view model |
+| `icoda/views.py` | File, Class, Call and mind-map geometry and presentation |
+| `icoda/specification.py` | specification editor and validation against `specification.schema.json`, Code Profile |
+| `icoda/git.py` | git, worktrees, promotion with rollback |
+| `icoda/process.py` | bounded subprocess with output limits |
 | `icoda/steps.py` | worktree-based step protocol, approve/reject/adapt/undo, step log |
 | `icoda/generator.py` | step 0 skeleton, module-based code generation, Doxygen and `@satisfies` |
-| `icoda/agent.py` | provider invocation, prompt assembly, response validation |
+| `icoda/agent.py` | provider invocation from `providers.json`, prompt assembly, response validation |
 | `icoda/persistence.py` | `.icoda/` files and the user configuration |
 
-**`icoda.bash`** is the launcher for macOS and Linux, modelled on `ai_gui.bash`. It chooses a Python 3.10+ (the
-`choose_ai_loop_python` logic, copied as `icoda_python.bash`), checks for Tkinter, git, CMake, Ninja, a clang
-toolchain with libclang, and vcpkg — installing what it can through the package manager, as `ai_gui.bash` does,
-and printing the manual command otherwise — creates or updates the virtual environment `.icoda-venv` with the
-Python dependencies (the `clang` bindings matching the detected libclang, `networkx` for clustering, and AI-Loop in
-editable mode from a sibling checkout, `../AI-Loop` by default, overridable with `ICODA_AI_LOOP_DIR`), and then
-runs `exec "$python_bin" icoda.py "$@"`. Redis is not checked; ICODA does not use it.
+**`icoda.bash`** is the launcher for macOS and Linux. It chooses a Python 3.10+ (`icoda_python.bash`), checks for
+Tkinter, git, CMake, Ninja, a clang toolchain with libclang, and vcpkg — installing what it can through the package
+manager and printing the manual command otherwise — creates or updates the virtual environment `.icoda-venv` with the
+Python dependencies (the `clang` bindings matching the detected libclang, `networkx` for clustering, `jsonschema`
+for the specification), and then runs `exec "$python_bin" icoda.py "$@"`. Redis is not checked; ICODA does not use it.
 
-**`icoda.cmd`** is the Windows counterpart, modelled on `ai_gui.cmd`.
+**`icoda.cmd`** is the Windows counterpart.
 
 Command line: `icoda.bash` without arguments opens the last project; `icoda.bash <directory>` opens that project,
 creating `.icoda/` if it is missing (Phase 0 for an empty directory, Phase 3 import for an existing CMake project).
@@ -144,8 +130,8 @@ with the code as truth there is nothing to drift from, only requirements that ar
 **Step.** The unit of work. A step is a proposal from the agent — rationale in prose and a code change — that the
 developer decides on. Steps are numbered per project and form a linear history.
 
-**Worktree.** Every step is generated in a git worktree of the project, using the AI-Loop worktree and promotion
-helpers. ICODA builds and parses the worktree; the difference between the worktree's derived model and the current one
+**Worktree.** Every step is generated in a git worktree of the project, using the worktree and promotion
+helpers in `icoda/git.py`. ICODA builds and parses the worktree; the difference between the worktree's derived model and the current one
 is the model delta shown to the developer. The delta is computed by ICODA, never claimed by the agent. Approving
 promotes the worktree onto the working tree; rejecting discards it.
 
@@ -157,9 +143,9 @@ promotes the worktree onto the working tree; rejecting discards it.
 
 ### Phase 0 — Specification
 
-When creating a new project, the developer specifies it like in AI-Loop: title, summary, objectives, scope,
+When creating a new project, the developer writes a specification: title, summary, objectives, scope,
 stakeholders, assumptions, constraints, dependencies, use cases, requirements, decisions, risks, verification, open
-questions (the AI-Loop specification schema, entered through the reused wizard). ICODA adds a **Code Profile** to the
+questions (ICODA's own `specification.schema.json`, entered through the specification editor). ICODA adds a **Code Profile** to the
 specification: language and standard, the code requirements below, the library policy, target platforms, build layout.
 The specification is stored in `.icoda/specification.json`, is committed, and is sent, compacted, with every step
 prompt. It is one of the two truths and can be changed at any time; a change shows up as uncovered requirements.
@@ -264,8 +250,7 @@ level and which aspect is shown.
 | Class | members with types and signatures, relations between members | Function |
 | Function | signature, Doxygen text, callers and callees, source | — |
 
-Behaviour common to all views: zoom with the mouse wheel centred on the cursor, pan by dragging (both exist in the
-AI-Loop analyzer already); a click expands a node one level in place; a double click opens the source location in the
+Behaviour common to all views: zoom with the mouse wheel centred on the cursor, pan by dragging; a click expands a node one level in place; a double click opens the source location in the
 developer's editor; hovering shows the Doxygen brief; a right click offers *propose the next step here* (Phase 1),
 *implement this function* (Phase 2) and *run the tests of changed functions*. Filters by cluster, namespace and edge type. A stale model (code changed since
 the last parse) is marked as such in every view. Specification coverage can be switched on: entities without a
@@ -321,7 +306,7 @@ Nodes are the structs, classes, enums and aliases of one file, one cluster or th
 
 A collapsed class shows its name and its counts (data members, methods, lines). An expanded class shows its members
 with types and signatures; members that call each other are placed on a ring inside the class panel with callers and
-callees adjacent — the member graph from the AI-Loop analyzer is the starting point for this. Enums show all their
+callees adjacent. Enums show all their
 enumerators. Template classes show their template parameters and a badge with the types they are used with. Selecting a class highlights its complete neighbourhood
 and dims the rest.
 
@@ -350,8 +335,7 @@ with its `@satisfies` tags. Module interface and implementation units are parsed
 and `import` relations become includes/imports edges. Parsing is incremental: only translation units whose files or included headers changed
 since the last run are re-parsed, decided by content hash, and parsed units are cached under `.icoda/cache/`. ICODA
 re-parses after every step and whenever it notices changed files (on focus, or through a file watcher). When the
-project does not compile, ICODA keeps the last derived model, marks it stale, and offers the heuristic analyzer as a
-degraded fallback.
+project does not compile, ICODA keeps the last derived model and marks it stale.
 
 **libclang location and version.** At start-up ICODA looks for libclang in the usual toolchain locations — on Windows
 `VC\Tools\Llvm\x64\bin\libclang.dll` of the Visual Studio clang component or an LLVM installation, on macOS the Xcode
@@ -361,27 +345,57 @@ bindings for the supported LLVM majors, checks the version at start-up and refus
 rather than failing later. The version is recorded in `.icoda/cache/`, and a change invalidates the cache. Templates
 are one entity each; the template arguments seen at a call site are recorded on the call edge.
 
-**Python (later).** The existing `ast`-based analyzer from AI-Loop produces a derived model in the same schema.
+**Python (later).** An `ast`-based parser produces a derived model in the same schema.
 
-**Rule checks** are computed from the derived model and shown as issues in the views, in the same way the AI-Loop
-analyzer shows issue groups today: function line counts, member counts per class, functions with many parameters,
+**Rule checks** are computed from the derived model and shown as issues in the views: function line counts, member counts per class, functions with many parameters,
 entities without Doxygen comments, entities without `@satisfies` tags, platform-specific API use without a portable
 wrapper.
 
 ## Agent integration
 
-ICODA uses the same providers and CLIs as AI-Loop (Claude Code, Codex, Gemini) through non-interactive invocations,
-one invocation per step or per proposal round. The provider is chosen per project and can be changed per step.
+Every step in ICODA is carried out by an LLM through a command-line binary, in a non-interactive invocation, one
+invocation per step or per proposal round. Which binary and which model is a field in the GUI (see *LLM binary and
+model* below); it is set per project and can be changed before any step.
 
 The prompt contains the Code Profile, the compacted specification, the relevant subset of the derived model (the
 clusters touched by the step and their neighbours, not the whole model, to keep prompts small on large projects), the
 step request, and the rejections and adaptations recorded for this step so far.
 
 The response is structured JSON validated against a schema — rationale and files, as full contents or unified diffs —
-in the way AI-Loop validates against `decision.schema.json`; an invalid response is fed back with the validation error
+(`icoda/response.schema.json`); an invalid response is fed back with the validation error
 for a remake. ICODA applies the files in the worktree, builds and parses; the model delta the developer sees is
-computed from the parsed result, so the agent cannot misdescribe what it did. Token-wait handling is reused from
-AI-Loop so that a rate limit pauses the step instead of failing it.
+computed from the parsed result, so the agent cannot misdescribe what it did. When a provider reports a rate limit,
+ICODA waits for the replenishment time it names and retries instead of failing the step.
+
+### LLM binary and model
+
+The step panel has two fields. **Binary** is a combo box listing the supported command-line agents; it is editable,
+so a full path (`/opt/homebrew/bin/claude`) or an unlisted binary can be typed. **Model** is a combo box offering the
+two best models available for the chosen binary, the first one preselected; it is editable too, so any other model
+ID the binary accepts can be typed. Choosing a different binary swaps the model options to that binary's two models
+and preselects the first, unless the developer had typed a custom model for that binary earlier in the session, in
+which case that one is restored. The selection is saved per project in `.icoda/ui.json` (the binary path is
+machine-specific), the default for new projects in the user configuration, and every record in `steps.jsonl` notes
+the binary and model that produced the step.
+
+The list ships as data, `icoda/providers.json`, so that it can be updated without touching code: for each binary its
+command, the argument template for a one-shot invocation, the model flag, and its two models. "Two best" means the
+vendor's most capable model and its strongest runner-up as the vendor describes them, checked at every ICODA release
+and stamped with the date. The launcher checks that the chosen binary is on `PATH` and prints its login hint when a
+call fails with an authentication error.
+
+| Binary | Command | One-shot invocation | Two models (checked 2026-09-07) |
+|---|---|---|---|
+| Claude Code (Anthropic) | `claude` | `claude -p --model <m> …` | `claude-fable-5-1` (Fable 5.1), `claude-opus-5` (Opus 5) |
+| Codex CLI (OpenAI) | `codex` | `codex exec -m <m> …` | `gpt-6-astra` (GPT-6 Astra), `gpt-5.6-sol` (GPT-5.6 Sol) |
+| Gemini CLI (Google) | `gemini` | `gemini -m <m> -p …` | `gemini-3.1-pro-preview` (3.1 Pro), `gemini-3.8-flash` (3.8 Flash) |
+| OpenCode (open source, any provider) | `opencode` | `opencode run -m <provider/m> …` | `anthropic/claude-fable-5-1`, `openai/gpt-6-astra` |
+| Aider (open source, any provider) | `aider` | `aider --model <m> --message …` | `anthropic/claude-fable-5-1`, `openai/gpt-6-astra` |
+| GitHub Copilot CLI | `copilot` | `copilot -p … --model <m>` | GPT-6 Astra, Claude Fable 5.1 (IDs as listed by `/model`) |
+| Qwen Code (Alibaba) | `qwen` | `qwen -p … -m <m>` | `qwen3-coder-plus`, `qwen3-coder-flash` |
+
+Every invocation template is verified against the installed binary before it is enabled in the list (M2). Binaries that route to many providers (OpenCode, Aider) take provider-prefixed model IDs, which is why their
+two entries name the same frontier models through a prefix.
 
 ## Persistence
 
@@ -389,7 +403,7 @@ Inside the project, `.icoda/` holds `specification.json` (committed); `steps.jso
 the history travels with the code; one record per step with phase, request, proposals, decision, commit hash, USRs
 added or changed, status changes, rename pairs); `layout.json` (cluster names and pins, committed); `cache/` (derived
 model and parsed translation units, ignored by git) and `ui.json` (view state, ignored by git). ICODA's own settings
-and the list of known projects live in the user's config directory, like AI-Loop's configuration.
+and the list of known projects live in the user's config directory.
 
 Every approved step is exactly one git commit. ICODA requires a clean working tree before a step so that a step never
 mixes with manual edits; uncommitted manual edits are committed first, as `manual edit`, on the developer's request.
@@ -443,30 +457,20 @@ Answers to the open questions of the first draft; all of them are folded into th
   LLVM — chosen flexibly by the developer; the analysis build uses the same clang; the pip wheel is the fallback.
 - ICODA is not used to develop ICODA for the time being.
 - ICODA is implemented in `icoda.py` (with the `icoda/` package) and started by `icoda.bash` (`icoda.cmd` on Windows).
+- One repository, two subfolders: AI-Loop in `ai-loop/`, ICODA in `icoda/`; `.github/`, `.gitignore`, `CLAUDE.md`
+  and `LICENSE` at the root are the only things they have in common.
+- ICODA shares nothing with AI-Loop: no code, no files, no formats. Everything is written for ICODA, including its
+  own specification schema and editor. There is no heuristic analyzer fallback, libclang only.
+- Every step is carried out by an LLM chosen in a Binary/Model field: seven command-line agents (Claude Code, Codex
+  CLI, Gemini CLI, OpenCode, Aider, GitHub Copilot CLI, Qwen Code), two best models each, shipped as
+  `providers.json`; the model options follow the chosen binary.
 
 ## Roadmap
 
 | Milestone | Content |
 |---|---|
-| M1 App skeleton | New repository; `icoda.py`, `icoda.bash` and `icoda.cmd`; Tkinter shell; libclang detection; import of an existing CMake project via libclang (headers and C++20 modules); derived model schema; File View with clusters and coloured arrows. |
-| M2 Architecture loop | Phase 0 with the reused wizard and the Code Profile; step 0 module-based skeleton generation; worktree-based step protocol with approve/reject/adapt and undo; Call View. |
+| M1 App skeleton | The `icoda/` subfolder; `icoda.py`, `icoda.bash` and `icoda.cmd`; Tkinter shell; libclang detection; import of an existing CMake project via libclang (headers and C++20 modules); derived model schema; File View with clusters and coloured arrows. |
+| M2 Architecture loop | Phase 0 with ICODA's own specification editor and the Code Profile; step 0 module-based skeleton generation; worktree-based step protocol with approve/reject/adapt and undo; Call View. |
 | M3 Implementation loop | Proposals in prose; function and test generation; bottom-up order; batching; status colours. |
 | M4 Class View and coverage | Class View; specification coverage; rule checks; mind map. |
-| M5 Python | Derived model from the existing analyzer; Python Code Profile; Python generation. |
-
-## Appendix — AI-Loop items from the previous EVOLUTION.md
-
-These are AI-Loop backlog items, not part of ICODA. They are kept here so that they are not lost; move them to
-`IMPLEMENTATION_STATUS.md` or drop them.
-
-- Connect approval to a real Start Implementation GUI action.
-- Enforce blocking automated coverage for mandatory and high-risk requirements.
-- Require runtime proof that the intended verification case actually executed.
-- Repair structured evidence editing.
-- Publish formal and retarget tasks through the normal controller queue.
-- Harden subprocess isolation and output limits.
-- Add configurable evidence adapters and task-scoped prompts.
-- Add one genuine GUI-to-completion integration test.
-- Improve the specification wizard's user experience: explain the process and every field in the GUI, meaningful
-  examples, saving and reloading the specification, immediate semantic feedback on input, a test button that analyses
-  the total input and suggests improvements. (Relevant to ICODA as well, since Phase 0 reuses the wizard.)
+| M5 Python | Derived model from an `ast`-based parser; Python Code Profile; Python generation. |
