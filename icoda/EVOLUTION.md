@@ -84,7 +84,10 @@ document instead of growing into one file:
 | `icoda_core/persistence.py` | `.icoda/` files and the user configuration |
 | `icoda_gui/spec_editor.py` | the specification editor: one page per section, numbered records, validation on save |
 | `icoda_gui/provider_field.py` | the Binary/Model field whose model options follow the binary |
-| `icoda_gui/proposal_panel.py` | the step panel: proposal prose, delta, approve/reject/adapt |
+| `icoda_gui/step_panel.py` | the step panel: phase and request, proposal prose, delta and build output, the decision buttons |
+| `icoda_gui/step_controller.py` | connects the step panel and the Call View to the step protocol; dialogs for reject and adapt |
+| `icoda_gui/call_view.py` | the Call View canvas: columns per call depth, status colours, delta outlines, callers switch |
+| `icoda_gui/tasks.py` | background work for the window with results delivered on the Tk thread |
 
 **`icoda.bash`** is the launcher for macOS and Linux. It chooses a Python 3.10+ (`icoda_python.bash`), checks for
 Tkinter, git, CMake, Ninja, a clang toolchain with libclang, and vcpkg — installing what it can through the package

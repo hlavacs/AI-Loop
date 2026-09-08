@@ -127,8 +127,13 @@ survives between steps), `prepare` (git init, build + parse, step 0 commit), `pr
 validation error or the compiler output; the delta comes from parsing the worktree), `approve` (promote, rebuild,
 log, one commit `icoda(<phase>) step N: <title>`), `reject` (reason into the next prompt), `rebuild` after manual
 edits in the worktree, `undo` (revert commit), `commit_manual_edits`; statuses stub/implemented/tested from the
-log. End-to-end test with a scripted provider and real builds passes in the VM (96 tests). The GUI side (step
-panel with Propose/Approve/Reject/Adapt/Undo, Call View) is step 5.
+log. End-to-end test with a scripted provider and real builds passes in the VM. Step 5 done: the window has a
+views notebook (File View, Call View: columns per call depth, status colours, green/orange outlines for a
+proposal's new and changed entities, depth spinner, callers switch, root from the entity list), a step panel at
+the bottom (phase, request, max entities; Propose, Approve, Reject…, Adapt…, Rebuild, Open worktree, Undo,
+Commit manual edits) driven by `icoda_gui/step_controller.py` with the slow parts in a worker thread; Project
+menu entries mirror the buttons. 101 tests in the VM. **Waiting for the Mac run:** `./icoda.bash`, File → New
+Project…, save the specification, run `build.sh` in the new project, Reload, then Propose with Claude Code.
 
 1. Spike first: the step 0 skeleton generator (`icoda_core/generator.py`) emits a module-based CMake project with
    presets, `build.sh`/`build.cmd`, `vcpkg.json`, `Doxyfile`, a CTest smoke test and `main()` importing an empty

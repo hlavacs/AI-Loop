@@ -103,10 +103,13 @@ def install() -> None:
     messagebox = _module("tkinter.messagebox", showerror=lambda *a, **k: None, showinfo=lambda *a, **k: None,
                          askyesno=lambda *a, **k: False)
     font = _module("tkinter.font")
+    simpledialog = _module("tkinter.simpledialog", askstring=lambda *a, **k: None)
     for name, module in (("tkinter", root), ("tkinter.ttk", ttk), ("tkinter.filedialog", filedialog),
-                         ("tkinter.messagebox", messagebox), ("tkinter.font", font)):
+                         ("tkinter.messagebox", messagebox), ("tkinter.font", font),
+                         ("tkinter.simpledialog", simpledialog)):
         sys.modules[name] = module
     root.ttk = ttk  # type: ignore[attr-defined]
+    root.simpledialog = simpledialog  # type: ignore[attr-defined]
     root.filedialog = filedialog  # type: ignore[attr-defined]
     root.messagebox = messagebox  # type: ignore[attr-defined]
     root.font = font  # type: ignore[attr-defined]

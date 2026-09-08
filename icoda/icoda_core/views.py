@@ -14,7 +14,7 @@ from collections import defaultdict
 from dataclasses import dataclass, field
 
 from icoda_core.clusters import Clustering
-from icoda_core.model import DerivedModel, EdgeKind
+from icoda_core.model import CALLABLE_KINDS, DerivedModel, EdgeKind
 
 ARROW_COLOURS = {EdgeKind.INCLUDES: "#8a8a8a", EdgeKind.IMPORTS: "#8a8a8a", EdgeKind.CALLS: "#1f77b4",
                  EdgeKind.INHERITS: "#2ca02c", EdgeKind.USES_TYPE: "#ff7f0e"}
@@ -191,3 +191,116 @@ def arrow_endpoints(a: Node, b: Node, margin: float = 12.0) -> tuple[float, floa
     length = math.hypot(dx, dy) or 1.0
     ux, uy = dx / length, dy / length
     return (a.x + ux * margin, a.y + uy * margin, b.x - ux * margin, b.y - uy * margin)
+
+
+# --------------------------------------------------------------------------- Call View
+
+COLUMN_WIDTH = 260.0
+ROW_HEIGHT = 44.0
+STATUS_COLOURS = {"stub": "#d9d9d9", "implemented": "#aec7e8", "tested": "#98df8a"}
+
+
+@dataclass
+class CallNode:
+    usr: str
+    label: str
+    x: float
+    y: float
+    level: int
+    status: str = "implemented"
+    kind: str = "function"
+    signature: str = ""
+    brief: str = ""
+
+
+@dataclass
+class CallEdge:
+    source: str
+    target: str
+    label: str = ""
+    loop: bool = False  # recursion or a call back towards the root
+
+
+@dataclass
+class CallViewLayout:
+    root: str
+    nodes: dict[str, CallNode]
+    edges: list[CallEdge]
+    path: set[str]
+    width: float
+    height: float
+
+
+def default_root(model: DerivedModel) -> str | None:
+    """The USR of ``main`` — the one with the most callees when several units define one — else any function."""
+    mains = [e for e in model.entities.values() if e.qualified_name == "main" and e.kind in CALLABLE_KINDS]
+    if mains:
+        return max(mains, key=lambda e: len(model.callees(e.usr))).usr
+    callables = [e for e in model.entities.values() if e.kind in CALLABLE_KINDS]
+    return callables[0].usr if callables else None
+
+
+def layout_call_view(model: DerivedModel, root: str, depth: int = 3, callers: bool = False,
+                     selected: str | None = None) -> CallViewLayout:
+    """Breadth-first over the call graph from ``root``: one column per level, discovery order within a level."""
+    levels: dict[str, int] = {root: 0}
+    parents: dict[str, str] = {}
+    queue = [root]
+    while queue:
+        usr = queue.pop(0)
+        if levels[usr] >= depth:
+            continue
+        for edge in (model.callers(usr) if callers else model.callees(usr)):
+            other = edge.source if callers else edge.target
+            if other not in levels:
+                levels[other] = levels[usr] + 1
+                parents[other] = usr
+                queue.append(other)
+    nodes = _call_nodes(model, levels)
+    edges = _call_edges(model, levels, callers)
+    path = _path_to(parents, selected) if selected in levels else set()
+    width = COLUMN_WIDTH * (max(levels.values()) + 1)
+    height = ROW_HEIGHT * max(list(levels.values()).count(level) for level in set(levels.values()))
+    return CallViewLayout(root, nodes, edges, path, width, height)
+
+
+def _call_nodes(model: DerivedModel, levels: dict[str, int]) -> dict[str, CallNode]:
+    per_level: dict[int, list[str]] = defaultdict(list)
+    for usr, level in levels.items():
+        per_level[level].append(usr)
+    nodes: dict[str, CallNode] = {}
+    for level, usrs in per_level.items():
+        for row, usr in enumerate(usrs):
+            entity = model.entities.get(usr)
+            x, y = COLUMN_WIDTH * level + COLUMN_WIDTH / 2, ROW_HEIGHT * (row + 0.5)
+            if entity is None:
+                library = usr.split(":", 1)[1] if usr.startswith("external:") else usr
+                nodes[usr] = CallNode(usr, library, x, y, level, kind="external")
+            else:
+                nodes[usr] = CallNode(usr, entity.qualified_name, x, y, level, entity.status, entity.kind.value,
+                                      entity.signature, entity.brief)
+    return nodes
+
+
+def _call_edges(model: DerivedModel, levels: dict[str, int], callers: bool) -> list[CallEdge]:
+    edges: list[CallEdge] = []
+    seen: set[tuple[str, str, str]] = set()
+    for edge in model.edges_of(EdgeKind.CALLS):
+        if edge.source not in levels or edge.target not in levels:
+            continue
+        key = (edge.source, edge.target, edge.label)
+        if key in seen:
+            continue
+        seen.add(key)
+        forward = levels[edge.target] > levels[edge.source] if not callers else levels[edge.source] > levels[edge.target]
+        edges.append(CallEdge(edge.source, edge.target, edge.label, loop=not forward))
+    return edges
+
+
+def _path_to(parents: dict[str, str], selected: str | None) -> set[str]:
+    path: set[str] = set()
+    current = selected
+    while current is not None:
+        path.add(current)
+        current = parents.get(current)
+    return path

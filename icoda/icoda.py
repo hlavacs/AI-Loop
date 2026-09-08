@@ -17,7 +17,7 @@ from tkinter import filedialog, messagebox, ttk
 from typing import Any
 
 from icoda_core import __version__, agent, generator, persistence, session, specification, views
-from icoda_gui import provider_field, spec_editor
+from icoda_gui import call_view, provider_field, spec_editor, step_controller, step_panel, tasks
 
 NODE_RADIUS = 6
 CLUSTER_LEVEL_BELOW = 1.6  # file-level arrows appear once zoomed in this far beyond the fit
@@ -263,11 +263,15 @@ class App:
         self.status = tk.StringVar(value="No project open")
         self.results: queue.Queue[session.OpenedProject | Exception] = queue.Queue()
         self.providers = agent.load_providers()
+        self.tasks = tasks.UiTasks(root, on_failure=lambda trace: session.log_event("background task failed:\n"
+                                                                                 + trace, self.project))
+        self.run_async, self.run_on_ui = self.tasks.run_async, self.tasks.run_on_ui
         root.title("ICODA")
         root.geometry("1400x900")
         self._build_menu()
         self._build_panel()
         self._build_statusbar()
+        self.steps = step_controller.StepController(self)
         if project is not None:
             self.open_project(project)
 
@@ -286,9 +290,15 @@ class App:
         menubar.add_cascade(label="File", menu=file_menu)
         project_menu = tk.Menu(menubar, tearoff=0)
         project_menu.add_command(label="Specification…", command=self.edit_specification)
+        project_menu.add_separator()
+        project_menu.add_command(label="Propose Next Step", command=lambda: self.steps.action("propose"))
+        project_menu.add_command(label="Undo Last Step", command=lambda: self.steps.action("undo"))
+        project_menu.add_command(label="Commit Manual Edits", command=lambda: self.steps.action("commit_manual"))
         menubar.add_cascade(label="Project", menu=project_menu)
         view_menu = tk.Menu(menubar, tearoff=0)
         view_menu.add_command(label="Fit to Window", command=self.fit_view)
+        view_menu.add_command(label="File View", command=lambda: self.views.select(0))
+        view_menu.add_command(label="Call View", command=self.show_call_view)
         menubar.add_cascade(label="View", menu=view_menu)
         self.root.config(menu=menubar)
         self._fill_recent_menu()
@@ -296,6 +306,11 @@ class App:
     def fit_view(self) -> None:
         self.view.user_zoomed = False
         self.view.fit()
+        self.call_view.user_zoomed = False
+        self.call_view.fit()
+
+    def show_call_view(self) -> None:
+        self.views.select(1)
 
     def _fill_recent_menu(self) -> None:
         self.recent_menu.delete(0, tk.END)
@@ -306,10 +321,16 @@ class App:
         return lambda: self.open_project(path)
 
     def _build_panel(self) -> None:
-        paned = ttk.PanedWindow(self.root, orient=tk.HORIZONTAL)
-        paned.pack(fill=tk.BOTH, expand=True)
-        self.canvas = tk.Canvas(paned, background="white", highlightthickness=0, width=1050, height=800)
-        paned.add(self.canvas, weight=4)
+        vertical = ttk.PanedWindow(self.root, orient=tk.VERTICAL)
+        vertical.pack(fill=tk.BOTH, expand=True)
+        paned = ttk.PanedWindow(vertical, orient=tk.HORIZONTAL)
+        vertical.add(paned, weight=4)
+        self.views = ttk.Notebook(paned)
+        self.canvas = tk.Canvas(self.views, background="white", highlightthickness=0, width=1050, height=620)
+        self.views.add(self.canvas, text="File View")
+        self.call_view = call_view.CallViewCanvas(self.views, self.open_editor)
+        self.views.add(self.call_view.frame, text="Call View")
+        paned.add(self.views, weight=4)
         side = ttk.Frame(paned, width=320)
         paned.add(side, weight=0)
         llm = ttk.LabelFrame(side, text="LLM")
@@ -327,7 +348,10 @@ class App:
         self.tree.column("line", width=50)
         self.tree.pack(fill=tk.BOTH, expand=True)
         self.tree.bind("<Double-Button-1>", self.on_tree_double_click)
+        self.tree.bind("<<TreeviewSelect>>", self.on_tree_select)
         self.view = FileViewCanvas(self.canvas, self)
+        self.panel = step_panel.StepPanel(vertical, lambda action: self.steps.action(action))
+        vertical.add(self.panel.frame, weight=1)
 
     def _build_statusbar(self) -> None:
         bar = ttk.Frame(self.root)
@@ -435,6 +459,7 @@ class App:
         self.side_title.set("Entities")
         self.tree.delete(*self.tree.get_children())
         self._restore_provider(opened.root)
+        self.call_view.show(opened.model)
 
     # -- provider ---------------------------------------------------------------------------
 
@@ -491,6 +516,14 @@ class App:
             label = entity.name + (f"  {entity.signature}" if entity.signature else "")
             self.tree.insert(parent, tk.END, iid=entity.usr, text=label, values=(entity.kind.value, entity.line),
                              open=True)
+
+    def on_tree_select(self, _event: Any) -> None:
+        """A selected function becomes the root of the Call View."""
+        if self.opened is None:
+            return
+        for usr in self.tree.selection():
+            if usr in self.opened.model.entities:
+                self.call_view.set_root(usr)
 
     def on_tree_double_click(self, _event: Any) -> None:
         if self.opened is None:
