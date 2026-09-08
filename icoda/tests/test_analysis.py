@@ -163,3 +163,20 @@ def test_shadow_source_blanks_export_blocks_and_keeps_offsets(tmp_path: Path) ->
     assert shadow.text.splitlines()[4] == "int f();" and shadow.text.splitlines()[5].strip() == ""
     assert shadow.text.splitlines()[6] == "       int g();" and shadow.text.splitlines()[7].strip() == ""
     assert len(shadow.block_ranges) == 1 and len(shadow.export_ranges) == 1
+
+
+def test_missing_module_flags_are_recovered_from_pcm_files(sample: DerivedModel) -> None:
+    """Older CMake writes no module flags into compile_commands.json; the built .pcm files still resolve imports."""
+    commands = analysis.load_compile_commands(SAMPLE)
+    smoke = next(c for c in commands if c.file.endswith("smoke_test.cpp"))
+    stripped = analysis.CompileCommand(smoke.file, smoke.directory,
+                                       tuple(a for a in smoke.arguments if not a.startswith("-fmodule-file=")),
+                                       smoke.compiler, False)
+    resource_path = toolchain.resource_dir(smoke.compiler)
+    resource = {smoke.compiler: resource_path} if resource_path else {}
+    parser = analysis.Parser(resource)
+    assert any(a.startswith("-fprebuilt-module-path=") for a in parser.arguments(stripped))
+    unit, _ = parser.parse(stripped)
+    from clang import cindex
+
+    assert [d.spelling for d in unit.diagnostics if d.severity >= cindex.Diagnostic.Error] == []

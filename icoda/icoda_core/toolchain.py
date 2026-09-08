@@ -153,6 +153,21 @@ def _self_test(cindex) -> bool:  # type: ignore[no-untyped-def]
                for c in unit.cursor.get_children())
 
 
+@lru_cache(maxsize=1)
+def default_sysroot(platform: str = sys.platform) -> str | None:
+    """On macOS, the SDK the compiler would use by itself (``SDKROOT`` or ``xcrun --show-sdk-path``)."""
+    if platform != "darwin":
+        return None
+    if os.environ.get("SDKROOT"):
+        return os.environ["SDKROOT"]
+    try:
+        result = subprocess.run(["xcrun", "--show-sdk-path"], capture_output=True, text=True, timeout=30, check=False)
+    except (OSError, subprocess.SubprocessError):
+        return None
+    path = result.stdout.strip()
+    return path if result.returncode == 0 and path else None
+
+
 @lru_cache(maxsize=16)
 def resource_dir(compiler: str) -> str | None:
     """The compiler's builtin-header directory, passed to libclang as ``-resource-dir``."""

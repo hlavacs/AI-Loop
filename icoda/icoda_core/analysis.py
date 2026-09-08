@@ -205,18 +205,35 @@ def _blank_until_semicolon(tokens: Sequence[Any], index: int, blanks: list[tuple
 # --------------------------------------------------------------------------- parsing
 
 class Parser:
-    """Parses compile commands into translation units, through the shadow for module units."""
+    """Parses compile commands into translation units, through the shadow for module units.
 
-    def __init__(self, resource_dirs: dict[str, str] | None = None) -> None:
+    Compile commands do not always say everything libclang needs: CMake 4 omits ``-isysroot`` on macOS,
+    and older CMake writes no module flags at all. Both are supplied here.
+    """
+
+    def __init__(self, resource_dirs: dict[str, str] | None = None, sysroot: str | None = None) -> None:
         self.index = cindex.Index.create()
         self.resource_dirs = resource_dirs or {}
+        self.sysroot = sysroot
+        self._prebuilt: dict[str, list[str]] = {}
 
     def arguments(self, command: CompileCommand) -> list[str]:
         arguments = list(command.arguments)
         resource = self.resource_dirs.get(command.compiler)
         if resource and "-resource-dir" not in arguments:
             arguments += ["-resource-dir", resource]
+        if self.sysroot and "-isysroot" not in arguments and not any(a.startswith("--sysroot") for a in arguments):
+            arguments += ["-isysroot", self.sysroot]
+        if not any(a.startswith(("-fmodule-file=", "-fprebuilt-module-path=")) for a in arguments):
+            arguments += self.prebuilt_module_flags(command.directory)
         return arguments
+
+    def prebuilt_module_flags(self, directory: str) -> list[str]:
+        """``-fprebuilt-module-path`` for every folder under the build directory that holds ``.pcm`` files."""
+        if directory not in self._prebuilt:
+            folders = sorted({str(p.parent) for p in Path(directory).rglob("*.pcm")})
+            self._prebuilt[directory] = [f"-fprebuilt-module-path={folder}" for folder in folders]
+        return self._prebuilt[directory]
 
     def parse(self, command: CompileCommand) -> tuple[Any, Shadow | None]:
         source = Path(command.file).read_bytes()
@@ -593,10 +610,10 @@ def unit_cache_key(command: CompileCommand, contributing: Iterable[str], root: P
 
 def parse_project(root: Path, commands: Sequence[CompileCommand], *, resource_dirs: dict[str, str] | None = None,
                   cache_dir: Path | None = None, previous: DerivedModel | None = None,
-                  libclang_version: str = "") -> DerivedModel:
+                  libclang_version: str = "", sysroot: str | None = None) -> DerivedModel:
     """Parse every compile command (from cache where nothing changed) and assemble the derived model."""
     root = root.resolve()
-    parser = Parser(resource_dirs)
+    parser = Parser(resource_dirs, sysroot)
     extractor = Extractor(root, build_module_map(root, commands), (resource_dirs or {}).values())
     extractor.compiled_files = {str(Path(c.file).resolve()) for c in commands}
     results = [_unit_result(command, parser, extractor, root, cache_dir, libclang_version) for command in commands]

@@ -88,7 +88,8 @@ def _derive_model(root: Path, store: persistence.ProjectStore, loaded: toolchain
         return previous or DerivedModel(str(root), loaded.version)
     resource = {c.compiler: r for c in commands if (r := toolchain.resource_dir(c.compiler))}
     model = analysis.parse_project(root, commands, resource_dirs=resource, cache_dir=store.cache_dir,
-                                   previous=previous, libclang_version=loaded.version)
+                                   previous=previous, libclang_version=loaded.version,
+                                   sysroot=toolchain.default_sysroot())
     _report_errors(model, messages, root, loaded, resource)
     if not model.stale:
         store.save_model(model)
@@ -101,7 +102,7 @@ def _report_errors(model: DerivedModel, messages: list[str], root: Path, loaded:
     if not broken:
         return
     messages.append(f"{len(broken)} files with parse errors, first: {broken[0].path}: {broken[0].errors[0]}")
-    lines = [f"parse errors with {loaded.describe()}; resource dirs {resource}"]
+    lines = [f"parse errors with {loaded.describe()}; resource dirs {resource}; sysroot {toolchain.default_sysroot()}"]
     lines += [f"  {info.path}: {error}" for info in broken for error in info.errors[:3]]
     log_event("\n".join(lines), root)
 
