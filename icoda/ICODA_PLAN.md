@@ -115,7 +115,13 @@ Progress 2026-09-08: step 1 done (`icoda_core/generator.py`; the skeleton builds
 done: `specification.schema.json`, `icoda_core/specification.py` (validation with readable problems, cross
 references, ids, compact text for prompts) and the editor `icoda_gui/spec_editor.py`; File → New Project… opens the
 editor for an empty directory, and saving the specification of a project without code writes the step 0 skeleton
-(git init and the step 0 commit follow with step 4). Project → Specification… edits it later.
+(git init and the step 0 commit follow with step 4). Project → Specification… edits it later. Step 3 done:
+`response.schema.json` + `icoda_core/response.py` (JSON extraction from prose or fences, schema and path rules,
+applying files), `icoda_core/prompt.py` (role, Code Profile + compact specification, model subset = focus files
+plus neighbours, phase rules, rejections/constraints/compiler output/validation error, response format), and
+the Binary/Model field `icoda_gui/provider_field.py` in the side panel (options follow the binary, last model
+per binary remembered, saved in `.icoda/ui.json` and as the default in the user configuration). Not yet
+verified: the seven invocation templates against installed binaries (the VM has none; needs your Mac).
 
 1. Spike first: the step 0 skeleton generator (`icoda_core/generator.py`) emits a module-based CMake project with
    presets, `build.sh`/`build.cmd`, `vcpkg.json`, `Doxyfile`, a CTest smoke test and `main()` importing an empty

@@ -76,3 +76,20 @@ def test_new_project_writes_specification_and_skeleton_on_save(app_module, tmp_p
     assert app.spec_editor.save() and opened == [project]  # the skeleton is written once
     app.edit_specification()
     assert app.spec_editor.to_specification()["objectives"] == ["ship it", "twice"]
+
+
+def test_provider_selection_is_saved_per_project_and_as_default(app_module, tmp_path: Path) -> None:
+    config_path = tmp_path / "c.json"
+    app = app_module.App(app_module.tk.Tk(), config=persistence.UserConfig(), config_path=config_path)
+    app.show(opened_project(tmp_path))
+    assert app.provider_field.selection().provider_id == "claude"
+    app.provider_field.binary_var.set("/usr/local/bin/codex")
+    app.provider_field.model_var.set("my-model")
+    saved = persistence.ProjectStore(tmp_path).load_ui()["provider"]
+    assert saved == {"provider": "codex", "binary": "/usr/local/bin/codex", "model": "my-model"}
+    config = persistence.UserConfig.load(config_path)
+    assert (config.provider, config.model) == ("codex", "my-model")
+    again = app_module.App(app_module.tk.Tk(), config=config, config_path=config_path)
+    assert again.provider_field.selection().binary == "codex"  # the default: the command, not the path
+    again.show(opened_project(tmp_path))
+    assert again.provider_field.selection().binary == "/usr/local/bin/codex"

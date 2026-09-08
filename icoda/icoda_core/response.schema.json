@@ -1,0 +1,42 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://icoda.dev/response.schema.json",
+  "title": "ICODA step response",
+  "description": "What the agent returns for one step: a title, the rationale in prose, and the files to write or delete as full contents.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["title", "rationale", "files"],
+  "properties": {
+    "title": {"type": "string", "minLength": 1, "maxLength": 120},
+    "rationale": {"type": "string", "minLength": 1},
+    "files": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "object", "additionalProperties": false,
+        "required": ["path"],
+        "properties": {
+          "path": {"type": "string", "minLength": 1},
+          "action": {"enum": ["write", "delete"]},
+          "content": {"type": "string"}
+        }
+      }
+    },
+    "entities": {
+      "description": "Optional structured summary of what the files introduce or change, used for the adapt dialogue.",
+      "type": "array",
+      "items": {
+        "type": "object", "additionalProperties": false,
+        "required": ["name", "kind"],
+        "properties": {
+          "name": {"type": "string", "minLength": 1},
+          "kind": {"enum": ["module", "namespace", "struct", "class", "enum", "function", "method", "alias", "variable"]},
+          "file": {"type": "string"},
+          "signature": {"type": "string"},
+          "satisfies": {"type": "array", "items": {"type": "string"}}
+        }
+      }
+    },
+    "questions": {"type": "array", "items": {"type": "string"}}
+  }
+}

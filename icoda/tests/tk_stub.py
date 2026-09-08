@@ -33,14 +33,24 @@ class _Widget:
 
 
 class _Var:
+    """A variable whose write traces fire on ``set``, as Tk's do."""
+
     def __init__(self, value: Any = None, **kwargs: Any) -> None:
         self._value = value
+        self._traces: list[Any] = []
 
     def get(self) -> Any:
         return self._value
 
     def set(self, value: Any) -> None:
         self._value = value
+        for callback in list(self._traces):
+            callback("", "", "write")
+
+    def trace_add(self, mode: str, callback: Any) -> str:
+        if mode == "write":
+            self._traces.append(callback)
+        return f"trace{len(self._traces)}"
 
 
 class _Text(_Widget):

@@ -77,7 +77,9 @@ document instead of growing into one file:
 | `icoda_core/process.py` | bounded subprocess with output limits |
 | `icoda_core/steps.py` | worktree-based step protocol, approve/reject/adapt/undo, step log |
 | `icoda_core/generator.py` | step 0 skeleton, module-based code generation, Doxygen and `@satisfies` |
-| `icoda_core/agent.py` | provider invocation from `providers.json`, prompt assembly, response validation |
+| `icoda_core/agent.py` | provider invocation from `providers.json`, rate-limit waiting |
+| `icoda_core/prompt.py` | prompt assembly: Code Profile, compact specification, model subset around the step, phase rules, feedback |
+| `icoda_core/response.py` | the agent's reply: JSON extraction, validation against `response.schema.json`, path rules, applying files |
 | `icoda_core/persistence.py` | `.icoda/` files and the user configuration |
 | `icoda_gui/spec_editor.py` | the specification editor: one page per section, numbered records, validation on save |
 | `icoda_gui/provider_field.py` | the Binary/Model field whose model options follow the binary |

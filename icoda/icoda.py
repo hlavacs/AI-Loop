@@ -16,8 +16,8 @@ from pathlib import Path
 from tkinter import filedialog, messagebox, ttk
 from typing import Any
 
-from icoda_core import __version__, generator, persistence, session, specification, views
-from icoda_gui import spec_editor
+from icoda_core import __version__, agent, generator, persistence, session, specification, views
+from icoda_gui import provider_field, spec_editor
 
 NODE_RADIUS = 6
 CLUSTER_LEVEL_BELOW = 1.6  # file-level arrows appear once zoomed in this far beyond the fit
@@ -262,6 +262,7 @@ class App:
         self.config = config or persistence.UserConfig.load(self.config_path)
         self.status = tk.StringVar(value="No project open")
         self.results: queue.Queue[session.OpenedProject | Exception] = queue.Queue()
+        self.providers = agent.load_providers()
         root.title("ICODA")
         root.geometry("1400x900")
         self._build_menu()
@@ -311,6 +312,12 @@ class App:
         paned.add(self.canvas, weight=4)
         side = ttk.Frame(paned, width=320)
         paned.add(side, weight=0)
+        llm = ttk.LabelFrame(side, text="LLM")
+        llm.pack(fill=tk.X, padx=4, pady=(4, 2))
+        self.provider_field = provider_field.ProviderField(llm, self.providers, binary=self._default_binary(),
+                                                           model=self.config.model)
+        self.provider_field.frame.pack(fill=tk.X, padx=4, pady=4)
+        self.provider_field.on_change = self._provider_changed
         self.side_title = tk.StringVar(value="Entities")
         ttk.Label(side, textvariable=self.side_title, anchor="w").pack(fill=tk.X, padx=4, pady=2)
         self.tree = ttk.Treeview(side, columns=("kind", "line"), show="tree headings")
@@ -427,6 +434,32 @@ class App:
         self._fill_recent_menu()
         self.side_title.set("Entities")
         self.tree.delete(*self.tree.get_children())
+        self._restore_provider(opened.root)
+
+    # -- provider ---------------------------------------------------------------------------
+
+    def _default_binary(self) -> str:
+        """The command of the provider chosen in the user configuration, if it is still listed."""
+        try:
+            return agent.find_provider(self.providers, self.config.provider).command
+        except KeyError:
+            return ""
+
+    def _restore_provider(self, root: Path) -> None:
+        """Select the binary and model saved for the project in ``.icoda/ui.json``."""
+        saved = persistence.ProjectStore(root).load_ui().get("provider") or {}
+        if saved.get("binary"):
+            self.provider_field.set(saved["binary"], saved.get("model", ""))
+
+    def _provider_changed(self) -> None:
+        """Remember the selection per project (with the binary path) and as the default for new projects."""
+        selection = self.provider_field.selection()
+        if selection.provider_id:
+            self.config.provider, self.config.model = selection.provider_id, selection.model
+            self.config.save(self.config_path)
+        if self.opened is not None:
+            store = persistence.ProjectStore(self.opened.root)
+            store.save_ui({**store.load_ui(), "provider": selection.to_dict()})
 
     # -- nodes ------------------------------------------------------------------------------
 
