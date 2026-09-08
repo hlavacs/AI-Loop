@@ -53,17 +53,22 @@ def test_version_1_files_are_upgraded() -> None:
     assert spec["requirements"] == [{"id": "R-1", "title": "Check", "priority": "must"}]
     assert spec["code_profile"]["standard"] == "20" and spec["code_profile"]["max_methods"] == 15
     assert spec_module.upgrade(spec) is spec
+    partial = {"schema_version": 2, "title": "t"}
+    assert spec_module.upgrade(partial)["not_allowed"] == [] and spec_module.upgrade(partial)["done_when"] == []
 
 
 def test_compact_form() -> None:
     spec = spec_module.default_specification("Demo")
     spec["summary"] = "A small renderer."
     spec["goals"] = ["Draw shapes"]
+    spec["not_allowed"] = ["Boost"]
+    spec["done_when"] = ["All tests pass"]
     spec["use_cases"] = [{"id": "UC-1", "title": "Draw a scene", "description": "Adds shapes."}]
     spec["requirements"] = [{"id": "R-1", "title": "Render shapes", "priority": "must", "use_cases": ["UC-1"]}]
     text = spec_module.compact(spec)
     assert text.startswith("# Demo\nA small renderer.")
     assert "## goals\n- Draw shapes" in text
+    assert "## not allowed\n- Boost" in text and "## done when\n- All tests pass" in text
     assert "- UC-1: Draw a scene — Adds shapes." in text
     assert "- R-1: Render shapes — priority=must; use_cases=UC-1" in text
     assert "- max function lines: 30" in text and "- modules: True" in text

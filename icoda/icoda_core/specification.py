@@ -1,8 +1,9 @@
 """Specification schema validation and the Code Profile.
 
 The specification is one of the two truths (with the source code). It lives in ``.icoda/specification.json``,
-follows ``specification.schema.json`` (version 2: title, description, goals, what is left out, use cases,
-requirements, decisions, code profile), and is sent to the LLM in the compact text form of :func:`compact`.
+follows ``specification.schema.json`` (version 2: title, description, goals, what is left out, what must not be
+used, when the project is done, use cases, requirements, decisions, code profile), and is sent to the LLM in the
+compact text form of :func:`compact`.
 """
 
 from __future__ import annotations
@@ -17,10 +18,11 @@ import jsonschema
 
 SCHEMA_PATH = Path(__file__).with_name("specification.schema.json")
 SCHEMA_VERSION = 2
-LIST_SECTIONS = ("goals", "out_of_scope")
+LIST_SECTIONS = ("goals", "out_of_scope", "not_allowed", "done_when")
 RECORD_SECTIONS = {"use_cases": "UC", "requirements": "R", "decisions": "D"}
-SECTION_LABELS = {"goals": "Goals", "out_of_scope": "Not in scope", "use_cases": "Use cases",
-                  "requirements": "Requirements", "decisions": "Decisions", "code_profile": "Code profile"}
+SECTION_LABELS = {"goals": "Goals", "out_of_scope": "Not in scope", "not_allowed": "Not allowed",
+                  "done_when": "Done when", "use_cases": "Use cases", "requirements": "Requirements",
+                  "decisions": "Decisions", "code_profile": "Code profile"}
 
 Specification = dict[str, Any]
 
@@ -127,8 +129,13 @@ def save(path: Path, spec: Specification) -> None:
 
 
 def upgrade(spec: Specification) -> Specification:
-    """Version 1 (many sections) to version 2: goals from objectives and scope, records without extra fields."""
+    """Version 1 (many sections) to version 2: goals from objectives and scope, records without extra fields.
+
+    A version 2 file is completed in place: list sections added later start out empty.
+    """
     if spec.get("schema_version", SCHEMA_VERSION) >= SCHEMA_VERSION:
+        for section in LIST_SECTIONS:
+            spec.setdefault(section, [])
         return spec
     upgraded = default_specification(str(spec.get("title", "")))
     upgraded["summary"] = str(spec.get("summary", ""))

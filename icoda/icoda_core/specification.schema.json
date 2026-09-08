@@ -2,17 +2,19 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://icoda.dev/specification.schema.json",
   "title": "ICODA project specification",
-  "description": "What the project is (title, description, goals, what is left out), what users do with it (use cases), what it must fulfil (requirements), choices already made (decisions), and how the code is written (code profile).",
+  "description": "What the project is (title, description, goals, what is left out, what must not be used, when it is done), what users do with it (use cases), what it must fulfil (requirements), choices already made (decisions), and how the code is written (code profile).",
   "type": "object",
   "additionalProperties": false,
-  "required": ["schema_version", "title", "summary", "goals", "out_of_scope", "use_cases", "requirements",
-               "decisions", "code_profile"],
+  "required": ["schema_version", "title", "summary", "goals", "out_of_scope", "not_allowed", "done_when",
+               "use_cases", "requirements", "decisions", "code_profile"],
   "properties": {
     "schema_version": {"const": 2},
     "title": {"type": "string", "minLength": 1},
     "summary": {"type": "string"},
     "goals": {"$ref": "#/$defs/lines"},
     "out_of_scope": {"$ref": "#/$defs/lines"},
+    "not_allowed": {"$ref": "#/$defs/lines"},
+    "done_when": {"$ref": "#/$defs/lines"},
     "use_cases": {
       "type": "array",
       "items": {

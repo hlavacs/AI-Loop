@@ -1,4 +1,4 @@
-"""The specification editor: five pages — Overview, Use cases, Requirements, Decisions, Code profile.
+"""The specification editor: six pages — Overview, Scope, Use cases, Requirements, Decisions, Code profile.
 
 Every field has a tooltip with an example of what goes in; the pages keep their state in plain Python
 (:meth:`FieldSet.get`, :meth:`RecordListPage.values`) and the Tk widgets mirror it, so the editor can be driven
@@ -44,12 +44,20 @@ OVERVIEW_FIELDS = (
     FieldSpec("summary", "Description", "text", height=6,
               hint="What the program is and who uses it, in a few sentences.\nExample: A 2D game in which the "
                    "player steers a ship through an asteroid field and mines ore for points."),
+)
+SCOPE_FIELDS = (
     FieldSpec("goals", "Goals", "lines", height=5,
               hint="One goal per line: what the project must achieve.\nExample: Runs at 60 frames per second on "
                    "a laptop"),
     FieldSpec("out_of_scope", "Not in scope", "lines", height=4,
               hint="One item per line: what the project deliberately leaves out, so the agent does not add "
                    "it.\nExample: Multiplayer"),
+    FieldSpec("not_allowed", "Not allowed", "lines", height=4,
+              hint="One item per line: libraries, techniques or features the code must not use.\n"
+                   "Example: Boost\nExample: exceptions for control flow\nExample: global variables"),
+    FieldSpec("done_when", "Done when", "lines", height=4,
+              hint="One condition per line that marks the project as finished.\nExample: Every use case runs "
+                   "without a crash\nExample: Every implemented function has a passing unit test"),
 )
 RECORD_FIELDS: dict[str, tuple[FieldSpec, ...]] = {
     "use_cases": (
@@ -341,7 +349,7 @@ def _headline(record: Mapping[str, Any]) -> str:
 
 
 class SpecificationEditor:
-    """A window with five pages, Validate/Save/Close, and the problems of the last validation."""
+    """A window with six pages, Validate/Save/Close, and the problems of the last validation."""
 
     def __init__(self, parent: Any, spec: Specification, on_save: Callable[[Specification], None],
                  title: str = "Specification") -> None:
@@ -356,6 +364,7 @@ class SpecificationEditor:
         self.pages: dict[str, Any] = {}
         self.current_page = "overview"
         self.overview = FieldSet(self._page("Overview", "overview"), OVERVIEW_FIELDS)
+        self.scope = FieldSet(self._page("Scope", "scope"), SCOPE_FIELDS)
         self.records: dict[str, RecordListPage] = {
             section: RecordListPage(self._page(SECTION_TITLES[section], section), section, RECORD_FIELDS[section])
             for section in RECORD_SECTIONS
@@ -393,6 +402,7 @@ class SpecificationEditor:
     def load(self, spec: Specification) -> None:
         spec = specification.upgrade(spec)
         self.overview.set(spec)
+        self.scope.set(spec)
         for section, records in self.records.items():
             records.load(spec.get(section, []))
         profile = spec.get("code_profile", {})
@@ -402,7 +412,8 @@ class SpecificationEditor:
 
     def to_specification(self) -> Specification:
         spec: Specification = {"schema_version": specification.SCHEMA_VERSION, "title": "", "summary": "",
-                               "goals": [], "out_of_scope": [], **self.overview.get()}
+                               **{section: [] for section in specification.LIST_SECTIONS},
+                               **self.overview.get(), **self.scope.get()}
         for section, records in self.records.items():
             spec[section] = records.values()
         spec["code_profile"] = {**self.hidden_profile, **self.profile.get()}
@@ -444,5 +455,7 @@ def _page_of(problem: str) -> str:
     """The page a problem message points at, by the section label or key it starts with."""
     for key, label in specification.SECTION_LABELS.items():
         if problem.startswith((label, key)):
-            return key if key in RECORD_SECTIONS or key == "code_profile" else "overview"
+            if key in RECORD_SECTIONS or key == "code_profile":
+                return key
+            return "scope" if key in specification.LIST_SECTIONS else "overview"
     return "overview"

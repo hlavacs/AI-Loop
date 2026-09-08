@@ -58,7 +58,8 @@ def _role(request: StepRequest) -> str:
     return (f"You are {what} of a project developed step by step with ICODA. The developer approves, rejects or "
             "adapts every step; you propose exactly one step now, as small as the rules below allow, and reply "
             "with one JSON object and nothing else. Do not run tools, do not edit files yourself: return the "
-            "full contents of every file the step writes.")
+            "full contents of every file the step writes. Never use what the specification lists under "
+            "'not allowed'; the project is finished when every 'done when' condition holds.")
 
 
 def _step_text(request: StepRequest) -> str:

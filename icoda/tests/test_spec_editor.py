@@ -21,6 +21,8 @@ def full_specification() -> dict[str, Any]:
     spec["summary"] = "A project with\ntwo lines of summary."
     spec["goals"] = ["goal one", "goal two"]
     spec["out_of_scope"] = ["multiplayer"]
+    spec["not_allowed"] = ["Boost", "raw new"]
+    spec["done_when"] = ["all tests pass"]
     spec["use_cases"] = [{"id": "UC-1", "title": "Log in", "description": "Enter the system."}]
     spec["requirements"] = [{"id": "R-1", "title": "Password check", "priority": "must", "use_cases": ["UC-1"],
                              "description": "Reject wrong passwords."}]
@@ -36,7 +38,7 @@ def test_default_specification_round_trips_unchanged() -> None:
     assert editor.to_specification() == specification.default_specification("Demo")
     assert not editor.changed()
     assert editor.validate() == []
-    assert list(editor.pages) == ["overview", "use_cases", "requirements", "decisions", "code_profile"]
+    assert list(editor.pages) == ["overview", "scope", "use_cases", "requirements", "decisions", "code_profile"]
 
 
 def test_every_section_round_trips() -> None:
@@ -121,4 +123,14 @@ def test_version_1_specification_opens_in_the_editor() -> None:
            "verification": [], "open_questions": [], "code_profile": specification.default_code_profile()}
     editor, saved = editor_with(old)
     assert editor.to_specification()["goals"] == ["ship"] and editor.save()
+    assert saved[0]["not_allowed"] == [] and saved[0]["done_when"] == []
     assert saved[0]["schema_version"] == 2 and saved[0]["use_cases"] == [{"id": "UC-1", "title": "Start"}]
+
+
+def test_scope_page_holds_the_four_lists() -> None:
+    editor, _ = editor_with()
+    editor.scope.texts["not_allowed"].insert("1.0", "Boost\nexceptions\n")
+    editor.scope.texts["done_when"].insert("1.0", "every use case runs")
+    spec = editor.to_specification()
+    assert spec["not_allowed"] == ["Boost", "exceptions"] and spec["done_when"] == ["every use case runs"]
+    assert editor.validate() == [] and spec_editor._page_of("Done when: x") == "scope"
