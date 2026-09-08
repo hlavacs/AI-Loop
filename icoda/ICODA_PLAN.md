@@ -111,13 +111,19 @@ zoomable, and the status bar names the Xcode libclang.
 
 ## M2 — Architecture loop
 
+Progress 2026-09-08: step 1 done (`icoda_core/generator.py`; the skeleton builds, runs and analyses in the VM). Step 2
+done: `specification.schema.json`, `icoda_core/specification.py` (validation with readable problems, cross
+references, ids, compact text for prompts) and the editor `icoda_gui/spec_editor.py`; File → New Project… opens the
+editor for an empty directory, and saving the specification of a project without code writes the step 0 skeleton
+(git init and the step 0 commit follow with step 4). Project → Specification… edits it later.
+
 1. Spike first: the step 0 skeleton generator (`icoda_core/generator.py`) emits a module-based CMake project with
    presets, `build.sh`/`build.cmd`, `vcpkg.json`, `Doxyfile`, a CTest smoke test and `main()` importing an empty
    module; the sample project's CMake setup is the template.
    *verify:* the generated skeleton builds and runs on your Mac and in CI.
 2. Phase 0: the specification schema (`icoda_core/specification.schema.json`: title, summary, objectives, scope,
    stakeholders, assumptions, constraints, dependencies, use cases, requirements, decisions, risks, verification,
-   open questions, Code Profile) and the specification editor (`icoda_core/specification.py`): one page per section,
+   open questions, Code Profile) and the specification editor (`icoda_gui/spec_editor.py`): one page per section,
    list editing for use cases, requirements, decisions, risks and verification, a Code Profile page, validation with
    `jsonschema` on save, load and save of `.icoda/specification.json`.
    *verify:* a specification saved from ICODA validates against the schema and reloads unchanged; Tk-stub tests of
@@ -187,9 +193,9 @@ has been used on a real project of yours; not detailed yet.
 
 ## Open questions
 
-- Which editor should a double click open? A: 
-- Test framework for generated C++ tests: doctest (single header, vendored) or Catch2 (vcpkg)? Recommendation: doctest. A: 
-- Which provider for the first end-to-end run in M2: Claude Code (assumed), Codex or Gemini? A: 
+- Which editor should a double click open? A: (default taken 2026-09-08) VS Code with `code --goto` when it is on the PATH, otherwise the system opener; a template can be set in the user configuration (`editor`).
+- Test framework for generated C++ tests: doctest (single header, vendored) or Catch2 (vcpkg)? Recommendation: doctest. A: (default taken 2026-09-08) doctest.
+- Which provider for the first end-to-end run in M2: Claude Code (assumed), Codex or Gemini? A: (default taken 2026-09-08) Claude Code.
 
 ## What I need from you
 

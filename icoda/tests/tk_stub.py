@@ -43,6 +43,23 @@ class _Var:
         self._value = value
 
 
+class _Text(_Widget):
+    """A text box that keeps its content: ``insert``, ``delete`` and ``get`` for whole-text use."""
+
+    def __init__(self, *args: Any, **kwargs: Any) -> None:
+        super().__init__(*args, **kwargs)
+        self.content = ""
+
+    def insert(self, index: str, text: str) -> None:
+        self.content = text + self.content if str(index).startswith("1.0") else self.content + text
+
+    def delete(self, start: str = "1.0", end: str = "end") -> None:
+        self.content = ""
+
+    def get(self, start: str = "1.0", end: str = "end") -> str:
+        return self.content + ("\n" if str(end) == "end" else "")
+
+
 class _Tk(_Widget):
     def __init__(self, *args: Any, **kwargs: Any) -> None:
         super().__init__(*args, **kwargs)
@@ -66,10 +83,10 @@ def _module(name: str, **attrs: Any) -> types.ModuleType:
 
 def install() -> None:
     """Register the stub modules under the tkinter names in ``sys.modules``."""
-    root = _module("tkinter", Tk=_Tk, StringVar=_Var, IntVar=_Var, BooleanVar=_Var, DoubleVar=_Var,
-                   TclError=RuntimeError, BOTH="both", X="x", Y="y", LEFT="left", RIGHT="right", TOP="top",
-                   BOTTOM="bottom", END="end", W="w", E="e", N="n", S="s", NW="nw", NE="ne", SW="sw", SE="se",
-                   CENTER="center", HORIZONTAL="horizontal", VERTICAL="vertical", DISABLED="disabled",
+    root = _module("tkinter", Tk=_Tk, Toplevel=_Tk, Text=_Text, StringVar=_Var, IntVar=_Var, BooleanVar=_Var,
+                   DoubleVar=_Var, TclError=RuntimeError, BOTH="both", X="x", Y="y", LEFT="left", RIGHT="right",
+                   TOP="top", BOTTOM="bottom", END="end", W="w", E="e", N="n", S="s", NW="nw", NE="ne", SW="sw",
+                   SE="se", CENTER="center", HORIZONTAL="horizontal", VERTICAL="vertical", DISABLED="disabled",
                    NORMAL="normal")
     ttk = _module("tkinter.ttk")
     filedialog = _module("tkinter.filedialog", askdirectory=lambda **kwargs: "", askopenfilename=lambda **kwargs: "")

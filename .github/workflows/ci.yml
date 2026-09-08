@@ -66,7 +66,7 @@ jobs:
       - name: Lint
         run: ruff check .
       - name: Type-check
-        run: mypy icoda_core
+        run: mypy icoda.py icoda_core icoda_gui
       - name: Run tests
         env:
           ICODA_TK_STUB: "1"

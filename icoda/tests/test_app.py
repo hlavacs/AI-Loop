@@ -58,3 +58,21 @@ def test_zoom_keeps_the_point_under_the_cursor(app_module, tmp_path: Path) -> No
     view.on_wheel(Wheel())
     after = ((300 - view.offset[0]) / view.scale, (200 - view.offset[1]) / view.scale)
     assert abs(before[0] - after[0]) < 1e-6 and abs(before[1] - after[1]) < 1e-6 and view.scale > view.fit_scale
+
+
+def test_new_project_writes_specification_and_skeleton_on_save(app_module, tmp_path: Path) -> None:
+    app = app_module.App(app_module.tk.Tk(), config=persistence.UserConfig(), config_path=tmp_path / "c.json")
+    opened: list[Path] = []
+    app.open_project = opened.append
+    project = tmp_path / "fresh"
+    app.new_project(project)
+    assert app.spec_editor is not None and (project / ".icoda").is_dir()
+    assert app.spec_editor.to_specification()["title"] == "fresh"
+    app.spec_editor.lines["objectives"].load(["ship it"])
+    assert app.spec_editor.save()
+    assert (project / ".icoda" / "specification.json").is_file() and (project / "CMakeLists.txt").is_file()
+    assert (project / "src" / "app" / "app.cppm").is_file() and opened == [project]
+    app.spec_editor.lines["objectives"].load(["ship it", "twice"])
+    assert app.spec_editor.save() and opened == [project]  # the skeleton is written once
+    app.edit_specification()
+    assert app.spec_editor.to_specification()["objectives"] == ["ship it", "twice"]

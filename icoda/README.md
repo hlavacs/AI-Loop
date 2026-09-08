@@ -7,5 +7,6 @@ Run it with `./icoda.bash [project-directory]` on macOS and Linux, or `icoda.cmd
 The launcher picks a Python 3.10+ with Tkinter, creates the virtual environment `.icoda-venv`, installs the
 dependencies and starts `icoda.py`.
 
-The application is `icoda.py`; the supporting code lives in the package `icoda_core/`. Tests run with
+The application is `icoda.py`; the supporting code lives in the packages `icoda_core/` (no Tk) and `icoda_gui/`
+(the larger Tk widgets: the specification editor). Tests run with
 `ICODA_TK_STUB=1 python -m pytest` and need no display.

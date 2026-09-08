@@ -20,7 +20,10 @@ dev = [
 ]
 
 [tool.setuptools]
-packages = ["icoda_core"]
+packages = ["icoda_core", "icoda_gui"]
+
+[tool.setuptools.package-data]
+icoda_core = ["*.json"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

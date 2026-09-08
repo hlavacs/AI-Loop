@@ -16,7 +16,8 @@ from pathlib import Path
 from tkinter import filedialog, messagebox, ttk
 from typing import Any
 
-from icoda_core import __version__, persistence, session, views
+from icoda_core import __version__, generator, persistence, session, specification, views
+from icoda_gui import spec_editor
 
 NODE_RADIUS = 6
 CLUSTER_LEVEL_BELOW = 1.6  # file-level arrows appear once zoomed in this far beyond the fit
@@ -256,6 +257,7 @@ class App:
         self.root = root
         self.project: Path | None = None
         self.opened: session.OpenedProject | None = None
+        self.spec_editor: spec_editor.SpecificationEditor | None = None
         self.config_path = config_path or persistence.config_path()
         self.config = config or persistence.UserConfig.load(self.config_path)
         self.status = tk.StringVar(value="No project open")
@@ -273,6 +275,7 @@ class App:
     def _build_menu(self) -> None:
         menubar = tk.Menu(self.root)
         file_menu = tk.Menu(menubar, tearoff=0)
+        file_menu.add_command(label="New Project…", command=self.ask_new_project)
         file_menu.add_command(label="Open Project…", command=self.ask_open_project)
         self.recent_menu = tk.Menu(file_menu, tearoff=0)
         file_menu.add_cascade(label="Open Recent", menu=self.recent_menu)
@@ -280,6 +283,9 @@ class App:
         file_menu.add_separator()
         file_menu.add_command(label="Quit", command=self.root.destroy)
         menubar.add_cascade(label="File", menu=file_menu)
+        project_menu = tk.Menu(menubar, tearoff=0)
+        project_menu.add_command(label="Specification…", command=self.edit_specification)
+        menubar.add_cascade(label="Project", menu=project_menu)
         view_menu = tk.Menu(menubar, tearoff=0)
         view_menu.add_command(label="Fit to Window", command=self.fit_view)
         menubar.add_cascade(label="View", menu=view_menu)
@@ -334,6 +340,48 @@ class App:
         self.status.set(f"Analysing {self.project} …")
         threading.Thread(target=self._analyse, args=(self.project,), daemon=True).start()
         self.root.after(100, self._poll)
+
+    def ask_new_project(self) -> None:
+        chosen = filedialog.askdirectory(title="New project: choose an empty directory", mustexist=False)
+        if chosen:
+            self.new_project(Path(chosen))
+
+    def new_project(self, path: Path) -> None:
+        """Phase 0: create ``.icoda/`` and open the specification editor; saving it writes the step 0 skeleton."""
+        self.project = Path(path).expanduser().resolve()
+        self.project.mkdir(parents=True, exist_ok=True)
+        persistence.ProjectStore(self.project).ensure()
+        self.root.title(f"ICODA — {self.project.name}")
+        self.status.set(f"New project {self.project}: write the specification and save it")
+        self.edit_specification()
+
+    def edit_specification(self) -> None:
+        if self.project is None:
+            messagebox.showinfo("ICODA", "Open or create a project first.")
+            return
+        store = persistence.ProjectStore(self.project)
+        if store.specification_path.is_file():
+            spec = specification.load(store.specification_path)
+        else:
+            spec = specification.default_specification(self.project.name)
+        self.spec_editor = spec_editor.SpecificationEditor(self.root, spec, self._save_specification,
+                                                           title=f"Specification — {self.project.name}")
+
+    def _save_specification(self, spec: specification.Specification) -> None:
+        """Write ``.icoda/specification.json``; for a project without code, write the skeleton (step 0)."""
+        assert self.project is not None
+        store = persistence.ProjectStore(self.project)
+        store.ensure()
+        specification.save(store.specification_path, spec)
+        session.log_event("specification saved", self.project)
+        if (self.project / "CMakeLists.txt").exists():
+            self.status.set("specification saved")
+            return
+        written = generator.write_skeleton(self.project, self.project.name)
+        session.log_event(f"skeleton written: {written}", self.project)
+        messagebox.showinfo("ICODA", f"Specification saved and the project skeleton written ({len(written)} files)."
+                            f"\n\nRun build.sh in {self.project}, then File → Reload to analyse it.")
+        self.open_project(self.project)
 
     def reload(self) -> None:
         if self.project is not None:

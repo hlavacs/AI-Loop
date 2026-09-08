@@ -1,0 +1,110 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://icoda.dev/specification.schema.json",
+  "title": "ICODA project specification",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_version", "title", "summary", "objectives", "in_scope", "out_of_scope", "stakeholders",
+               "assumptions", "constraints", "dependencies", "use_cases", "requirements", "decisions", "risks",
+               "verification", "open_questions", "code_profile"],
+  "properties": {
+    "schema_version": {"const": 1},
+    "title": {"type": "string", "minLength": 1},
+    "summary": {"type": "string"},
+    "objectives": {"$ref": "#/$defs/lines"},
+    "in_scope": {"$ref": "#/$defs/lines"},
+    "out_of_scope": {"$ref": "#/$defs/lines"},
+    "stakeholders": {"$ref": "#/$defs/lines"},
+    "assumptions": {"$ref": "#/$defs/lines"},
+    "constraints": {"$ref": "#/$defs/lines"},
+    "dependencies": {"$ref": "#/$defs/lines"},
+    "open_questions": {"$ref": "#/$defs/lines"},
+    "use_cases": {
+      "type": "array",
+      "items": {
+        "type": "object", "additionalProperties": false,
+        "required": ["id", "title"],
+        "properties": {
+          "id": {"type": "string", "pattern": "^UC-[0-9]+$"},
+          "title": {"type": "string", "minLength": 1},
+          "actor": {"type": "string"},
+          "description": {"type": "string"}
+        }
+      }
+    },
+    "requirements": {
+      "type": "array",
+      "items": {
+        "type": "object", "additionalProperties": false,
+        "required": ["id", "title", "priority"],
+        "properties": {
+          "id": {"type": "string", "pattern": "^R-[0-9]+$"},
+          "title": {"type": "string", "minLength": 1},
+          "description": {"type": "string"},
+          "priority": {"enum": ["must", "should", "could"]},
+          "category": {"enum": ["functional", "quality", "interface", "constraint"]},
+          "use_cases": {"type": "array", "items": {"type": "string", "pattern": "^UC-[0-9]+$"}}
+        }
+      }
+    },
+    "decisions": {
+      "type": "array",
+      "items": {
+        "type": "object", "additionalProperties": false,
+        "required": ["id", "title"],
+        "properties": {
+          "id": {"type": "string", "pattern": "^D-[0-9]+$"},
+          "title": {"type": "string", "minLength": 1},
+          "rationale": {"type": "string"}
+        }
+      }
+    },
+    "risks": {
+      "type": "array",
+      "items": {
+        "type": "object", "additionalProperties": false,
+        "required": ["id", "title"],
+        "properties": {
+          "id": {"type": "string", "pattern": "^RK-[0-9]+$"},
+          "title": {"type": "string", "minLength": 1},
+          "mitigation": {"type": "string"},
+          "severity": {"enum": ["low", "medium", "high"]}
+        }
+      }
+    },
+    "verification": {
+      "type": "array",
+      "items": {
+        "type": "object", "additionalProperties": false,
+        "required": ["id", "requirement", "method"],
+        "properties": {
+          "id": {"type": "string", "pattern": "^V-[0-9]+$"},
+          "requirement": {"type": "string", "pattern": "^R-[0-9]+$"},
+          "method": {"enum": ["unit test", "integration test", "manual test", "review", "analysis"]},
+          "description": {"type": "string"}
+        }
+      }
+    },
+    "code_profile": {
+      "type": "object", "additionalProperties": false,
+      "required": ["language", "standard"],
+      "properties": {
+        "language": {"enum": ["C++", "Python"]},
+        "standard": {"type": "string"},
+        "modules": {"type": "boolean"},
+        "build": {"type": "string"},
+        "platforms": {"type": "array", "items": {"enum": ["macOS", "Linux", "Windows"]}},
+        "test_framework": {"type": "string"},
+        "library_policy": {"type": "string"},
+        "max_function_lines": {"type": "integer", "minimum": 1},
+        "hard_max_function_lines": {"type": "integer", "minimum": 1},
+        "max_data_members": {"type": "integer", "minimum": 1},
+        "max_methods": {"type": "integer", "minimum": 1},
+        "style_notes": {"$ref": "#/$defs/lines"}
+      }
+    }
+  },
+  "$defs": {
+    "lines": {"type": "array", "items": {"type": "string"}}
+  }
+}

@@ -59,9 +59,10 @@ possible without touching the rest.
 ICODA is a Python application with a shell launcher.
 
 **`icoda.py`** is the application: the Tkinter main window, the panel with the views, the step loop and the wiring
-between them. It is what the launcher executes. Supporting code lives in the package `icoda_core/` next to it (a
-package cannot be called `icoda/` beside `icoda.py`: Python and mypy would see two modules of one name), so that
-`icoda.py` itself stays within the code requirements of this document instead of growing into one file:
+between them. It is what the launcher executes. Supporting code lives in the packages `icoda_core/` (everything without Tk) and
+`icoda_gui/` (the larger Tk widgets) next to it (a package cannot be called `icoda/` beside `icoda.py`: Python and
+mypy would see two modules of one name), so that `icoda.py` itself stays within the code requirements of this
+document instead of growing into one file:
 
 | Module | Responsibility |
 |---|---|
@@ -71,13 +72,16 @@ package cannot be called `icoda/` beside `icoda.py`: Python and mypy would see t
 | `icoda_core/session.py` | opening a project end to end without a GUI: configuration, libclang, parse, clusters, layout |
 | `icoda_core/clusters.py` | community detection, cluster pins, circle layout |
 | `icoda_core/views.py` | File, Class, Call and mind-map geometry and presentation |
-| `icoda_core/specification.py` | specification editor and validation against `specification.schema.json`, Code Profile |
+| `icoda_core/specification.py` | specification schema and validation (`specification.schema.json`), Code Profile, compact text form for prompts |
 | `icoda_core/git.py` | git, worktrees, promotion with rollback |
 | `icoda_core/process.py` | bounded subprocess with output limits |
 | `icoda_core/steps.py` | worktree-based step protocol, approve/reject/adapt/undo, step log |
 | `icoda_core/generator.py` | step 0 skeleton, module-based code generation, Doxygen and `@satisfies` |
 | `icoda_core/agent.py` | provider invocation from `providers.json`, prompt assembly, response validation |
 | `icoda_core/persistence.py` | `.icoda/` files and the user configuration |
+| `icoda_gui/spec_editor.py` | the specification editor: one page per section, numbered records, validation on save |
+| `icoda_gui/provider_field.py` | the Binary/Model field whose model options follow the binary |
+| `icoda_gui/proposal_panel.py` | the step panel: proposal prose, delta, approve/reject/adapt |
 
 **`icoda.bash`** is the launcher for macOS and Linux. It chooses a Python 3.10+ (`icoda_python.bash`), checks for
 Tkinter, git, CMake, Ninja, a clang toolchain with libclang, and vcpkg — installing what it can through the package
