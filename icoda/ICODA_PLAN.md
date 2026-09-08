@@ -45,6 +45,14 @@ toolchain for ICODA is therefore Homebrew LLVM (`brew install llvm`): `build.sh`
 ICODA parses with the libclang beside the compiler named in `compile_commands.json`. Apple's libclang also
 needs `-fcxx-modules` to recognise `import`, which the parser adds for Apple libraries.
 
+**M1 accepted on the Mac, 2026-09-08:** `mac_check.sh` → sample built with Homebrew LLVM 22, `icoda.bash` shows
+the File View with 13 files, 88 entities, 260 relations, 7 clusters, no parse errors, fitted to the window. What it
+took beyond the VM: `-isysroot` from `xcrun --show-sdk-path` (CMake 4 omits it), `-fprebuilt-module-path` when
+compile commands carry no module flags, `-nostdinc++ -isystem <prefix>/include/c++/v1` so libclang uses the
+compiler's own libc++ (it cannot find it by itself and mixed in the SDK's copy), LLVM's `clang` bindings instead of
+the `libclang` wheel, the shadow parse kept as a module interface unit (module renamed in place), and the analysis
+in a child process so a libclang failure cannot take the window down.
+
 1. Scaffold in `icoda/`: `pyproject.toml` (name `icoda`; dependencies `clang`, `networkx`, `jsonschema`; dev: pytest,
    ruff, mypy), `icoda.py` with the main window and an empty panel, the `icoda_core/` package with one stub module per
    row of the Program layout table in `EVOLUTION.md`, `icoda.bash`, `icoda_python.bash`, `icoda.cmd`, `.gitignore`,
