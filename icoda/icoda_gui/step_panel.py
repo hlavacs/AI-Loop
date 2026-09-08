@@ -53,10 +53,10 @@ class StepPanel:
                   anchor="w").pack(fill=tk.X, padx=4)
         paned = ttk.PanedWindow(self.frame, orient=tk.HORIZONTAL)
         paned.pack(fill=tk.BOTH, expand=True, padx=4, pady=(2, 4))
-        self.rationale = tk.Text(paned, wrap="word", height=9, state="disabled")
-        paned.add(self.rationale, weight=3)
-        self.details = tk.Text(paned, wrap="none", height=9, state="disabled", font=("TkFixedFont", 10))
-        paned.add(self.details, weight=2)
+        self.rationale = _scrolled_text(paned, wrap="word")
+        paned.add(self.rationale.master, weight=3)
+        self.details = _scrolled_text(paned, wrap="none", font=("TkFixedFont", 10))
+        paned.add(self.details.master, weight=2)
 
     def _pressed(self, action: str) -> Callable[[], None]:
         return lambda: self.on_action(action)
@@ -85,6 +85,12 @@ class StepPanel:
             _set_text(self.details, proposal.build.output or proposal.error)
         self._update_buttons()
 
+    def show_failure(self, text: str) -> None:
+        """A step that raised: the whole message in the details box, buttons as before."""
+        self.title_var.set("Step failed — " + (text.strip().splitlines()[0] if text.strip() else "no details"))
+        _set_text(self.details, text)
+        self._update_buttons()
+
     def set_busy(self, busy: bool) -> None:
         self.busy = busy
         self._update_buttons()
@@ -96,6 +102,17 @@ class StepPanel:
             if action == "approve":
                 enabled = enabled and usable
             button.state(["!disabled"] if enabled else ["disabled"])
+
+
+def _scrolled_text(parent: Any, **options: Any) -> Any:
+    """A read-only Text with a vertical scrollbar; the frame is ``text.master``."""
+    frame = ttk.Frame(parent)
+    text = tk.Text(frame, height=9, state="disabled", **options)
+    bar = ttk.Scrollbar(frame, orient=tk.VERTICAL, command=text.yview)
+    text.configure(yscrollcommand=bar.set)
+    bar.pack(side=tk.RIGHT, fill=tk.Y)
+    text.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+    return text
 
 
 def _rationale_text(proposal: steps.Proposal) -> str:

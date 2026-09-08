@@ -13,6 +13,7 @@ from tkinter import messagebox, simpledialog
 from typing import Any
 
 from icoda_core import session, steps
+from icoda_gui import dialogs
 
 Work = Callable[[], Any]
 Done = Callable[[Any], None]
@@ -59,8 +60,9 @@ class StepController:
             if isinstance(result, steps.DirtyTree):
                 self._offer_manual_commit(str(result), lambda: self._start(work, done))
             elif isinstance(result, Exception):
-                self.window.status.set(f"step failed: {result}")
-                messagebox.showerror("ICODA", str(result))
+                self.window.status.set(f"step failed: {str(result).splitlines()[0] if str(result) else result!r}")
+                self.window.panel.show_failure(str(result))
+                dialogs.show_error("ICODA", str(result))
             else:
                 done(result)
 

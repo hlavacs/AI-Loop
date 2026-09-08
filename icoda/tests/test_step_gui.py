@@ -172,3 +172,17 @@ def test_controller_runs_the_protocol_through_the_window(tmp_path: Path, monkeyp
     controller.action("propose")
     assert "uncommitted changes" in window.status.get() and len(runners) == 1
     assert views.default_root(model_with_calls()) == "u:main"
+
+
+def test_failures_are_shortened_for_the_dialog_and_shown_in_full_in_the_panel(tmp_path: Path) -> None:
+    from icoda_gui import dialogs
+
+    long = "Claude Code failed (1): first line\n" + "\n".join(f"line {i}" for i in range(2, 60))
+    short = dialogs.shorten(long)
+    assert short.startswith("Claude Code failed (1): first line") and short.count("\n") <= 12
+    assert "full text is in the step panel" in short and "line 59" not in short
+    assert dialogs.shorten("all good") == "all good"
+    panel = step_panel.StepPanel(tk.Tk(), lambda action: None)
+    panel.show_failure(long)
+    assert panel.title_var.get() == "Step failed — Claude Code failed (1): first line"
+    assert "line 59" in panel.details.get("1.0", "end")

@@ -17,7 +17,16 @@ from tkinter import filedialog, messagebox, ttk
 from typing import Any
 
 from icoda_core import __version__, agent, generator, persistence, session, specification, views
-from icoda_gui import call_view, provider_field, screen, spec_editor, step_controller, step_panel, tasks
+from icoda_gui import (
+    call_view,
+    dialogs,
+    provider_field,
+    screen,
+    spec_editor,
+    step_controller,
+    step_panel,
+    tasks,
+)
 
 NODE_RADIUS = 6
 CLUSTER_LEVEL_BELOW = 1.6  # file-level arrows appear once zoomed in this far beyond the fit
@@ -434,7 +443,7 @@ class App:
         if isinstance(result, Exception):
             log = (self.project or Path(".")) / ".icoda" / "icoda.log"
             self.status.set(f"Analysis failed: {result!r}  (details in {log})")
-            messagebox.showerror("ICODA", f"{result!r}\n\nDetails: {log}")
+            dialogs.show_error("ICODA", f"{result!r}\n\nDetails: {log}")
         else:
             self.show(result)
 
