@@ -19,7 +19,7 @@ from typing import Any
 from icoda_core import __version__, persistence, session, views
 
 NODE_RADIUS = 6
-CLUSTER_LEVEL_BELOW = 1.0
+CLUSTER_LEVEL_BELOW = 1.6  # file-level arrows appear once zoomed in this far beyond the fit
 
 
 class Tooltip:
@@ -51,6 +51,8 @@ class FileViewCanvas:
         self.app = app
         self.layout: views.FileViewLayout | None = None
         self.scale = 1.0
+        self.fit_scale = 1.0
+        self.user_zoomed = False
         self.offset = (0.0, 0.0)
         self.drag_start: tuple[int, int] | None = None
         self.dragged = False
@@ -59,7 +61,8 @@ class FileViewCanvas:
         for event, handler in (("<MouseWheel>", self.on_wheel), ("<Button-4>", self.on_wheel),
                                ("<Button-5>", self.on_wheel), ("<ButtonPress-1>", self.on_press),
                                ("<B1-Motion>", self.on_drag), ("<ButtonRelease-1>", self.on_release),
-                               ("<Double-Button-1>", self.on_double_click), ("<Motion>", self.on_motion)):
+                               ("<Double-Button-1>", self.on_double_click), ("<Motion>", self.on_motion),
+                               ("<Configure>", self.on_resize)):
             canvas.bind(event, handler)
 
     # -- coordinates ------------------------------------------------------------------------
@@ -69,8 +72,29 @@ class FileViewCanvas:
 
     def show(self, layout: views.FileViewLayout) -> None:
         self.layout = layout
-        self.scale, self.offset = 1.0, (0.0, 0.0)
+        self.user_zoomed = False
+        self.fit()
+
+    def fit(self) -> None:
+        """Scale and centre the whole diagram inside the visible canvas."""
+        if self.layout is None or not self.layout.nodes:
+            self.redraw()
+            return
+        xs = [n.x for n in self.layout.nodes.values()]
+        ys = [n.y for n in self.layout.nodes.values()]
+        margin = 90.0
+        left, right, top, bottom = min(xs) - margin, max(xs) + margin, min(ys) - margin, max(ys) + margin
+        width = max(int(self.canvas.winfo_width() or 0), 200)
+        height = max(int(self.canvas.winfo_height() or 0), 200)
+        self.fit_scale = min(width / (right - left), height / (bottom - top))
+        self.scale = self.fit_scale
+        self.offset = ((width - (right - left) * self.scale) / 2 - left * self.scale,
+                       (height - (bottom - top) * self.scale) / 2 - top * self.scale)
         self.redraw()
+
+    def on_resize(self, _event: Any) -> None:
+        if not self.user_zoomed:
+            self.fit()
 
     # -- drawing ----------------------------------------------------------------------------
 
@@ -98,7 +122,7 @@ class FileViewCanvas:
 
     def _draw_arrows(self) -> None:
         assert self.layout is not None
-        cluster_level = self.scale < CLUSTER_LEVEL_BELOW
+        cluster_level = self.scale < self.fit_scale * CLUSTER_LEVEL_BELOW
         clustering = self.app.opened.clustering if self.app.opened else None
         for arrow in self.layout.file_arrows:
             same_cluster = clustering is not None and clustering.index_of(arrow.source) == clustering.index_of(arrow.target)
@@ -177,6 +201,7 @@ class FileViewCanvas:
         factor = new_scale / self.scale
         self.offset = (event.x - (event.x - self.offset[0]) * factor, event.y - (event.y - self.offset[1]) * factor)
         self.scale = new_scale
+        self.user_zoomed = True
         self.redraw()
 
     def on_press(self, event: Any) -> None:
@@ -188,6 +213,7 @@ class FileViewCanvas:
         dx, dy = event.x - self.drag_start[0], event.y - self.drag_start[1]
         if abs(dx) + abs(dy) > 3:
             self.dragged = True
+            self.user_zoomed = True
         self.offset = (self.offset[0] + dx, self.offset[1] + dy)
         self.drag_start = (event.x, event.y)
         self.redraw()
@@ -264,10 +290,10 @@ class App:
     def _build_panel(self) -> None:
         paned = ttk.PanedWindow(self.root, orient=tk.HORIZONTAL)
         paned.pack(fill=tk.BOTH, expand=True)
-        self.canvas = tk.Canvas(paned, background="white", highlightthickness=0)
+        self.canvas = tk.Canvas(paned, background="white", highlightthickness=0, width=1050, height=800)
         paned.add(self.canvas, weight=4)
-        side = ttk.Frame(paned)
-        paned.add(side, weight=1)
+        side = ttk.Frame(paned, width=320)
+        paned.add(side, weight=0)
         self.side_title = tk.StringVar(value="Entities")
         ttk.Label(side, textvariable=self.side_title, anchor="w").pack(fill=tk.X, padx=4, pady=2)
         self.tree = ttk.Treeview(side, columns=("kind", "line"), show="tree headings")

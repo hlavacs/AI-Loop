@@ -12,6 +12,7 @@ import hashlib
 import json
 import re
 import shlex
+import subprocess
 from collections.abc import Callable, Iterable, Sequence
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
@@ -661,13 +662,32 @@ def _unit_result(command: CompileCommand, parser: Parser, extractor: Extractor, 
     try:
         unit, shadow = parser.parse(command)
     except cindex.TranslationUnitLoadError as exc:
-        return _unparsable(command, root, f"libclang could not parse this unit: {exc}")
+        explanation = explain_with_compiler(command, parser.arguments(command))
+        return _unparsable(command, root, f"libclang could not parse this unit: {exc}; compiler says: {explanation}")
     result = extractor.extract(unit, shadow, command)
+    if result.file.errors:
+        explanation = explain_with_compiler(command, parser.arguments(command))
+        result.file.errors = (*result.file.errors, f"compiler says: {explanation}")
     if cache_file:
         cache_file.parent.mkdir(parents=True, exist_ok=True)
         key = unit_cache_key(command, result.contributing, root, libclang_version)
         cache_file.write_text(json.dumps({"key": key, "result": result.to_json()}), encoding="utf-8")
     return result
+
+
+def explain_with_compiler(command: CompileCommand, arguments: Sequence[str]) -> str:
+    """Run the project's compiler in syntax-only mode with libclang's arguments; return its first messages."""
+    argv = [command.compiler, "-fsyntax-only", *[a for a in arguments if not a.startswith("-fmodule-output")],
+            command.file]
+    try:
+        completed = subprocess.run(argv, capture_output=True, text=True, timeout=120, check=False,
+                                   cwd=command.directory)
+    except (OSError, subprocess.SubprocessError) as exc:
+        return f"could not run {command.compiler}: {exc}"
+    if completed.returncode == 0:
+        return "accepts the unit with the same arguments (a libclang-only problem)"
+    lines = [line for line in completed.stderr.splitlines() if "error" in line or "note" in line][:4]
+    return " | ".join(lines) if lines else completed.stderr.strip()[:300]
 
 
 def _unparsable(command: CompileCommand, root: Path, reason: str) -> UnitResult:

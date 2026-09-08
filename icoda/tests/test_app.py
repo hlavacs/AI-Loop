@@ -57,4 +57,4 @@ def test_zoom_keeps_the_point_under_the_cursor(app_module, tmp_path: Path) -> No
     before = ((300 - view.offset[0]) / view.scale, (200 - view.offset[1]) / view.scale)
     view.on_wheel(Wheel())
     after = ((300 - view.offset[0]) / view.scale, (200 - view.offset[1]) / view.scale)
-    assert abs(before[0] - after[0]) < 1e-6 and abs(before[1] - after[1]) < 1e-6 and view.scale > 1.0
+    assert abs(before[0] - after[0]) < 1e-6 and abs(before[1] - after[1]) < 1e-6 and view.scale > view.fit_scale
