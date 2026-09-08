@@ -14,6 +14,7 @@ import json
 import re
 import shlex
 import subprocess
+import sys
 from collections.abc import Callable, Iterable, Sequence
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
@@ -231,6 +232,7 @@ class Parser:
             arguments += ["-resource-dir", resource]
         if self.sysroot and "-isysroot" not in arguments and not any(a.startswith("--sysroot") for a in arguments):
             arguments += ["-isysroot", self.sysroot]
+        arguments += libcxx_arguments(command.compiler, arguments)
         if self.apple and "-fcxx-modules" not in arguments:
             arguments.append("-fcxx-modules")  # Apple's libclang treats `import` as a keyword only with this
         if not any(a.startswith(("-fmodule-file=", "-fprebuilt-module-path=")) for a in arguments):
@@ -263,6 +265,22 @@ class Parser:
         unit = self.index.parse(command.file, args=plain, unsaved_files=[(command.file, shadow.text)],
                                 options=options)
         return unit, shadow
+
+
+def libcxx_arguments(compiler: str, arguments: Sequence[str], platform: str = sys.platform) -> list[str]:
+    """Point libclang at the libc++ installed beside a non-system clang.
+
+    The compiler finds ``<prefix>/include/c++/v1`` from its own executable path; libclang has no such
+    path and would fall back to the SDK's libc++, which does not match module files built against the
+    compiler's copy. Applies where libc++ is the compiler's default (macOS) or requested explicitly.
+    """
+    uses_libcxx = platform == "darwin" or "-stdlib=libc++" in arguments
+    if not uses_libcxx or "-nostdinc++" in arguments or "-stdlib=libstdc++" in arguments:
+        return []
+    libcxx = Path(compiler).resolve().parent.parent / "include" / "c++" / "v1"
+    if not (libcxx / "__config").is_file():
+        return []
+    return ["-nostdinc++", "-isystem", str(libcxx)]
 
 
 # --------------------------------------------------------------------------- extraction

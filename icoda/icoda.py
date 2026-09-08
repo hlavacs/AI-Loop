@@ -73,23 +73,27 @@ class FileViewCanvas:
     def show(self, layout: views.FileViewLayout) -> None:
         self.layout = layout
         self.user_zoomed = False
+        self.scale, self.offset = 1.0, (0.0, 0.0)
         self.fit()
+        self.canvas.after(150, self.on_resize, None)  # once more when the window geometry has settled
 
     def fit(self) -> None:
-        """Scale and centre the whole diagram inside the visible canvas."""
+        """Scale and centre the whole diagram — as drawn, labels included — inside the visible canvas."""
         if self.layout is None or not self.layout.nodes:
             self.redraw()
             return
-        xs = [n.x for n in self.layout.nodes.values()]
-        ys = [n.y for n in self.layout.nodes.values()]
-        margin = 90.0
-        left, right, top, bottom = min(xs) - margin, max(xs) + margin, min(ys) - margin, max(ys) + margin
         width = max(int(self.canvas.winfo_width() or 0), 200)
         height = max(int(self.canvas.winfo_height() or 0), 200)
-        self.fit_scale = min(width / (right - left), height / (bottom - top))
-        self.scale = self.fit_scale
-        self.offset = ((width - (right - left) * self.scale) / 2 - left * self.scale,
-                       (height - (bottom - top) * self.scale) / 2 - top * self.scale)
+        for _ in range(2):  # label sizes depend on the scale, so measure, fit, and measure once more
+            self.redraw()
+            bounds = self.canvas.bbox("all") or (0, 0, width, height)
+            left, top, right, bottom = (float(v) for v in bounds)
+            drawn_width, drawn_height = max(right - left, 1.0), max(bottom - top, 1.0)
+            factor = min((width - 24) / drawn_width, (height - 24) / drawn_height)
+            self.scale *= factor
+            self.offset = (self.offset[0] * factor + (width - drawn_width * factor) / 2 - left * factor,
+                           self.offset[1] * factor + (height - drawn_height * factor) / 2 - top * factor)
+        self.fit_scale = self.scale
         self.redraw()
 
     def on_resize(self, _event: Any) -> None:

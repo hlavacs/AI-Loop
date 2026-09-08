@@ -16,6 +16,10 @@ class _Widget:
         self.kwargs = kwargs
 
     def __getattr__(self, name: str) -> Any:
+        if name == "bbox":
+            return lambda *args, **kwargs: None
+        if name in ("winfo_width", "winfo_height"):
+            return lambda: 800
         return _Widget
 
     def __call__(self, *args: Any, **kwargs: Any) -> _Widget:

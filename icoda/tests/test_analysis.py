@@ -181,3 +181,18 @@ def test_missing_module_flags_are_recovered_from_pcm_files(sample: DerivedModel)
     from clang import cindex
 
     assert [d.spelling for d in unit.diagnostics if d.severity >= cindex.Diagnostic.Error] == []
+
+
+def test_libcxx_beside_the_compiler_is_used(tmp_path: Path) -> None:
+    prefix = tmp_path / "llvm"
+    (prefix / "bin").mkdir(parents=True)
+    (prefix / "include" / "c++" / "v1").mkdir(parents=True)
+    (prefix / "include" / "c++" / "v1" / "__config").write_text("")
+    compiler = prefix / "bin" / "clang++"
+    compiler.write_text("")
+    expected = ["-nostdinc++", "-isystem", str(prefix / "include/c++/v1")]
+    assert analysis.libcxx_arguments(str(compiler), [], platform="darwin") == expected
+    assert analysis.libcxx_arguments(str(compiler), ["-stdlib=libc++"], platform="linux") == expected
+    assert analysis.libcxx_arguments(str(compiler), [], platform="linux") == []
+    assert analysis.libcxx_arguments(str(compiler), ["-nostdinc++"], platform="darwin") == []
+    assert analysis.libcxx_arguments("/usr/bin/c++", [], platform="darwin") == []
