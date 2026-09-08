@@ -69,6 +69,8 @@ ensure_venv() {
   if [ ! -f "$stamp" ] || [ pyproject.toml -nt "$stamp" ]; then
     echo "icoda: installing Python dependencies" >&2
     "$venv_python" -m pip install --quiet --upgrade pip
+    # The libclang wheel and LLVM's clang bindings both own the clang/ package; only one may be installed.
+    "$venv_python" -m pip uninstall --quiet --yes libclang >/dev/null 2>&1 || true
     "$venv_python" -m pip install --quiet -e .
     date > "$stamp"
   fi

@@ -23,7 +23,7 @@ jobs:
       - name: Install system dependencies
         run: sudo apt-get update && sudo apt-get install -y redis-server
       - name: Install dependencies
-        run: pip install -e ".[dev]"
+        run: pip install -e ".[dev,fallback]"
       - name: Lint for correctness
         run: ruff check . --select E9,F63,F7,F82,F401
       - name: Type-check sandbox boundary
@@ -62,7 +62,7 @@ jobs:
       - name: Install system dependencies
         run: sudo apt-get update && sudo apt-get install -y clang libclang-dev cmake ninja-build
       - name: Install dependencies
-        run: pip install -e ".[dev]"
+        run: pip install -e ".[dev,fallback]"
       - name: Lint
         run: ruff check .
       - name: Type-check

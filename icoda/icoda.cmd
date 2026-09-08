@@ -48,6 +48,7 @@ if exist "%STAMP%" for /f %%A in ('powershell -NoProfile -Command "if ((Get-Item
 if "%NEED_INSTALL%"=="1" (
     echo icoda: installing Python dependencies 1>&2
     "%VENV_PY%" -m pip install --quiet --upgrade pip || exit /b 1
+    "%VENV_PY%" -m pip uninstall --quiet --yes libclang >nul 2>nul
     "%VENV_PY%" -m pip install --quiet -e . || exit /b 1
     echo installed > "%STAMP%"
 )

@@ -423,8 +423,8 @@ class Extractor:
             return
         while ctype.kind in _REFERENCE_TYPES:
             ctype = ctype.get_pointee()
-        declaration = ctype.get_declaration()
-        if declaration.kind in _TYPE_DECLS:
+        declaration = _valid(ctype.get_declaration())
+        if declaration is not None and declaration.kind in _TYPE_DECLS:
             self._reference(kind, entity.usr, declaration, entity.file, line, _template_label(declaration))
         canonical = ctype.get_canonical()
         for index in range(max(canonical.get_num_template_arguments(), 0)):
@@ -432,10 +432,10 @@ class Extractor:
 
     def _calls(self, cursor: Any, source: str) -> None:
         for node in cursor.walk_preorder():
-            if node.kind != CK.CALL_EXPR or node.referenced is None:
+            if node.kind != CK.CALL_EXPR:
                 continue
-            target = node.referenced
-            if target.kind not in _CALLABLE and target.kind != CK.CONVERSION_FUNCTION:
+            target = _valid(node.referenced)
+            if target is None or (target.kind not in _CALLABLE and target.kind != CK.CONVERSION_FUNCTION):
                 continue
             self._reference(EdgeKind.CALLS, source, target, self.relative(self._main), node.location.line,
                             _call_label(node, target))
@@ -481,6 +481,16 @@ class Extractor:
 
 # --------------------------------------------------------------------------- cursor helpers
 
+def _valid(cursor: Any) -> Any:
+    """``cursor`` unless it is None or a null cursor (newer bindings raise on any use of a null cursor)."""
+    if cursor is None:
+        return None
+    is_null = getattr(cursor, "is_null", None)
+    if callable(is_null) and is_null():
+        return None
+    return cursor
+
+
 def _included_file(cursor: Any) -> Any:
     """The file an inclusion directive resolved to, or None when it did not resolve (the bindings assert then)."""
     try:
@@ -491,22 +501,22 @@ def _included_file(cursor: Any) -> Any:
 
 def qualified_name(cursor: Any) -> str:
     parts = []
-    node = cursor
+    node = _valid(cursor)
     while node is not None and node.kind != CK.TRANSLATION_UNIT:
         if node.spelling and node.kind not in (CK.LINKAGE_SPEC, CK.UNEXPOSED_DECL):
             parts.append(node.spelling)
-        node = node.semantic_parent
+        node = _valid(node.semantic_parent)
     return "::".join(reversed(parts))
 
 
 def template_pattern(cursor: Any) -> Any:
     """The template a specialization or a member of a specialization comes from; else the cursor itself."""
-    specialized = cindex.conf.lib.clang_getSpecializedCursorTemplate(cursor)
+    specialized = _valid(cindex.conf.lib.clang_getSpecializedCursorTemplate(cursor))
     if specialized is not None and specialized.kind != CK.NO_DECL_FOUND and specialized.kind.is_declaration():
         return specialized
-    parent = cursor.semantic_parent
+    parent = _valid(cursor.semantic_parent)
     if parent is not None and parent.kind in (CK.CLASS_DECL, CK.STRUCT_DECL):
-        parent_template = cindex.conf.lib.clang_getSpecializedCursorTemplate(parent)
+        parent_template = _valid(cindex.conf.lib.clang_getSpecializedCursorTemplate(parent))
         if parent_template is not None and parent_template.kind == CK.CLASS_TEMPLATE:
             for member in parent_template.get_children():
                 if member.spelling == cursor.spelling and member.kind == cursor.kind:
@@ -516,7 +526,7 @@ def template_pattern(cursor: Any) -> Any:
 
 def _is_implicit_member(declaration: Any) -> bool:
     """Compiler-generated constructors and destructors sit exactly at their class's location."""
-    parent = declaration.semantic_parent
+    parent = _valid(declaration.semantic_parent)
     if declaration.kind not in (CK.CONSTRUCTOR, CK.DESTRUCTOR) or parent is None:
         return False
     return (declaration.location.line, declaration.location.column) == (parent.location.line, parent.location.column)
@@ -536,7 +546,7 @@ def _template_label(declaration: Any) -> str:
 
 
 def _call_label(call: Any, target: Any) -> str:
-    parent = target.semantic_parent
+    parent = _valid(target.semantic_parent)
     if parent is not None and parent.kind in (CK.CLASS_DECL, CK.STRUCT_DECL) and "<" in parent.type.spelling:
         return _template_label(parent)
     count = target.get_num_template_arguments()
