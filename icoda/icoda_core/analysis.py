@@ -644,13 +644,23 @@ def _unit_result(command: CompileCommand, parser: Parser, extractor: Extractor, 
         cached = json.loads(cache_file.read_text(encoding="utf-8"))
         if cached.get("key") == unit_cache_key(command, cached["result"]["contributing"], root, libclang_version):
             return UnitResult.from_json(cached["result"])
-    unit, shadow = parser.parse(command)
+    try:
+        unit, shadow = parser.parse(command)
+    except cindex.TranslationUnitLoadError as exc:
+        return _unparsable(command, root, f"libclang could not parse this unit: {exc}")
     result = extractor.extract(unit, shadow, command)
     if cache_file:
         cache_file.parent.mkdir(parents=True, exist_ok=True)
         key = unit_cache_key(command, result.contributing, root, libclang_version)
         cache_file.write_text(json.dumps({"key": key, "result": result.to_json()}), encoding="utf-8")
     return result
+
+
+def _unparsable(command: CompileCommand, root: Path, reason: str) -> UnitResult:
+    path = Path(command.file).resolve()
+    relative = path.relative_to(root).as_posix()
+    module, unit_kind = module_declaration(path.read_text(encoding="utf-8", errors="replace"))
+    return UnitResult(FileInfo(relative, module, unit_kind, _sha1(path.read_bytes()), (reason,)), [relative])
 
 
 def assemble(root: Path, results: Sequence[UnitResult], libclang_version: str) -> DerivedModel:

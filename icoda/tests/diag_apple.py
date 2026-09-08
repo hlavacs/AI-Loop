@@ -28,15 +28,18 @@ def main() -> None:
     lines = [run(["clang++", "--version"]).splitlines()[0] if run(["clang++", "--version"]) else "no clang++",
              run(["cmake", "--version"]).splitlines()[0] if run(["cmake", "--version"]) else "no cmake",
              "sdk: " + (toolchain.default_sysroot() or "none")]
-    loaded = toolchain.load(toolchain.candidates()[0].path)
-    lines.append(loaded.describe())
     commands = analysis.load_compile_commands(ROOT)
     smoke = next(c for c in commands if c.file.endswith("smoke_test.cpp"))
+    beside = toolchain.library_beside(smoke.compiler)
+    lines.append(f"library beside {smoke.compiler}: {beside}")
+    lines.append(f"candidates: {[c.path for c in toolchain.candidates()]}")
+    loaded = toolchain.load(beside or toolchain.candidates()[0].path)
+    lines.append(loaded.describe())
     lines.append(f"compile command: {smoke.compiler} {' '.join(smoke.arguments)}")
     pcms = sorted(str(p) for p in Path(smoke.directory).rglob("*.pcm"))
     lines.append(f"pcm files: {pcms}")
     resource = {smoke.compiler: r} if (r := toolchain.resource_dir(smoke.compiler)) else {}
-    parser = analysis.Parser(resource, toolchain.default_sysroot())
+    parser = analysis.Parser(resource, toolchain.default_sysroot(), loaded.apple)
     base = parser.arguments(smoke)
     lines.append(f"icoda arguments: {base}")
     from clang import cindex

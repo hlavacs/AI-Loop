@@ -72,6 +72,8 @@ def open_project(root: Path, config: persistence.UserConfig, width: float = 1600
     config.remember_project(root)
     compilers = sorted({c.compiler for c in analysis.load_compile_commands(root)})
     loaded = choose_libclang(config, compilers)
+    log_event(f"analysing {root} with {loaded.describe() if loaded else 'no libclang'}; compilers {compilers}; "
+              f"beside: {[toolchain.library_beside(c) for c in compilers]}", root)
     messages: list[str] = []
     model = _derive_model(root, store, loaded, messages)
     clustering = clusters.cluster_files(model, store.load_layout())
