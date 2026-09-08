@@ -204,10 +204,15 @@ class LinesPage:
 
 
 class RecordListPage:
-    """A section of numbered records: the list on the left, the fields of the selected record on the right."""
+    """A section of numbered records: the list on the left, a form on the right.
+
+    With nothing selected the form is a *new entry*: fill it in and press Add (or Return in the title). Clicking a
+    row selects the record; its edits are kept when another row is selected, on Add, New or Save.
+    """
 
     def __init__(self, parent: Any, section: str, fields: Sequence[FieldSpec]) -> None:
         self.section = section
+        self.fields = tuple(fields)
         self.records: list[dict[str, Any]] = []
         self.current: int | None = None
         self._selecting = False
@@ -223,52 +228,73 @@ class RecordListPage:
         buttons = ttk.Frame(left)
         buttons.pack(fill=tk.X, pady=(4, 0))
         ttk.Button(buttons, text="Add", command=self.add).pack(side=tk.LEFT)
-        ttk.Button(buttons, text="Remove", command=self.remove).pack(side=tk.LEFT, padx=4)
+        ttk.Button(buttons, text="New", command=self.new).pack(side=tk.LEFT, padx=4)
+        ttk.Button(buttons, text="Remove", command=self.remove).pack(side=tk.LEFT)
         right = ttk.Frame(parent)
         right.pack(side=tk.LEFT, fill=tk.BOTH, expand=True, padx=6, pady=6)
-        self.id_var = tk.StringVar(value="")
-        ttk.Label(right, textvariable=self.id_var, font=("TkDefaultFont", 11, "bold"),
+        self.header = tk.StringVar(value="")
+        ttk.Label(right, textvariable=self.header, font=("TkDefaultFont", 11, "bold"),
                   anchor="w").pack(fill=tk.X, padx=6, pady=(0, 6))
         form = ttk.Frame(right)
         form.pack(fill=tk.BOTH, expand=True)
-        self.form = FieldSet(form, fields)
+        self.form = FieldSet(form, self.fields)
+        self.form.widgets[self.fields[0].key].bind("<Return>", lambda _event: self.add())
         self._show(None)
+
+    # -- state ----------------------------------------------------------------------------
 
     def load(self, records: Sequence[Mapping[str, Any]]) -> None:
         self.records = [dict(r) for r in records]
         self.current = None
         self._refresh()
-        if self.records:
-            self.select(0)
-        else:
-            self._show(None)
+        self._show(None)
 
     def values(self) -> list[dict[str, Any]]:
         self._commit()
         return [dict(r) for r in self.records]
 
-    def add(self) -> dict[str, Any]:
-        """Append a record with the next free id and select it."""
-        self._commit()
+    # -- actions --------------------------------------------------------------------------
+
+    def add(self) -> dict[str, Any] | None:
+        """Append the form as a new record; with a record selected, keep its edits and start a new entry."""
+        if self.current is not None:
+            self.new()
+            return None
+        values = self.form.get()
+        headline = str(values.get(self.fields[0].key, "")).strip()
+        if not headline:
+            self.header.set(f"New entry: fill in the {self.fields[0].label.lower()} first, then press Add")
+            self.form.focus_first()
+            return None
         record = {"id": specification.next_id({self.section: self.records}, self.section),
-                  **RECORD_DEFAULTS.get(self.section, {})}
+                  **RECORD_DEFAULTS.get(self.section, {}), **values}
         self.records.append(record)
         self._refresh()
-        self.select(len(self.records) - 1)
+        self._show(None)
+        self.header.set(f"{record['id']} added — next entry: fill in the fields and press Add")
         self.form.focus_first()
         return record
 
+    def new(self) -> None:
+        """Keep the selected record's edits and switch the form to a new entry."""
+        self._commit()
+        self.current = None
+        self._selecting = True
+        try:
+            self.tree.selection_remove(*self.tree.get_children())
+        finally:
+            self._selecting = False
+        self._show(None)
+        self.form.focus_first()
+
     def remove(self) -> None:
         if self.current is None:
+            self.header.set("Select a row on the left to remove it")
             return
-        index = self.current
-        del self.records[index]
+        del self.records[self.current]
         self.current = None
         self._refresh()
-        if self.records:
-            self.select(min(index, len(self.records) - 1))
-        else:
-            self._show(None)
+        self._show(None)
 
     def select(self, index: int) -> None:
         self._commit()
@@ -288,8 +314,10 @@ class RecordListPage:
         if chosen and int(chosen[0]) != self.current:
             self.select(int(chosen[0]))
 
+    # -- internals ------------------------------------------------------------------------
+
     def _commit(self) -> None:
-        """Write the form back into the current record."""
+        """Write the form back into the selected record."""
         if self.current is None or self.current >= len(self.records):
             return
         record = {"id": self.records[self.current]["id"], **self.form.get()}
@@ -297,8 +325,12 @@ class RecordListPage:
         self.tree.item(str(self.current), text=record["id"], values=(_headline(record),))
 
     def _show(self, record: Mapping[str, Any] | None) -> None:
-        self.id_var.set(record["id"] if record else "no entry — press Add")
-        self.form.set(record or {})
+        if record is None:
+            self.header.set("New entry: fill in the fields and press Add")
+            self.form.set(RECORD_DEFAULTS.get(self.section, {}))
+        else:
+            self.header.set(f"{record['id']} — editing; press New for a new entry")
+            self.form.set(record)
 
     def _refresh(self) -> None:
         self.tree.delete(*self.tree.get_children())

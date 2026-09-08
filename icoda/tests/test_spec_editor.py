@@ -47,38 +47,55 @@ def test_every_section_round_trips() -> None:
     assert editor.problems.get() == "saved"
 
 
-def test_records_get_consecutive_ids_and_defaults() -> None:
+def test_fill_in_then_add_creates_records_with_ids_and_defaults() -> None:
     editor, _ = editor_with()
     page = editor.records["requirements"]
-    first = page.add()
-    assert first["id"] == "R-1" and first["priority"] == "must"
+    assert page.add() is None and "title first" in page.header.get()  # an empty form adds nothing
     page.form.vars["title"].set("Fast start")
     page.form.vars["use_cases"].set("UC-1, UC-2")
     page.form.texts["description"].insert("1.0", "Starts within a second.")
+    first = page.add()
+    assert first is not None and first["id"] == "R-1" and first["priority"] == "must"
+    assert page.current is None and page.form.vars["title"].get() == ""  # the form is ready for the next entry
+    page.form.vars["title"].set("Second")
+    page.form.vars["priority"].set("could")
     second = page.add()
-    assert second["id"] == "R-2" and page.current == 1
-    records = page.values()
-    assert records[0] == {"id": "R-1", "title": "Fast start", "priority": "must", "use_cases": ["UC-1", "UC-2"],
-                          "description": "Starts within a second."}
+    assert second is not None and second["id"] == "R-2" and second["priority"] == "could"
+    assert page.values()[0] == {"id": "R-1", "title": "Fast start", "priority": "must",
+                                "use_cases": ["UC-1", "UC-2"], "description": "Starts within a second."}
+
+
+def test_selecting_edits_a_record_and_new_returns_to_a_new_entry() -> None:
+    editor, _ = editor_with(full_specification())
+    page = editor.records["use_cases"]
+    assert page.current is None and page.form.vars["title"].get() == ""
     page.select(0)
-    assert page.form.vars["title"].get() == "Fast start"
+    assert page.form.vars["title"].get() == "Log in" and "UC-1" in page.header.get()
+    page.form.vars["title"].set("Log in twice")
+    assert page.add() is None and page.current is None  # Add on a selected record keeps the edit, starts anew
+    assert page.values()[0]["title"] == "Log in twice"
+    page.form.vars["title"].set("Log out")
+    assert page.add() is not None and [r["id"] for r in page.values()] == ["UC-1", "UC-2"]
+    page.select(1)
     page.remove()
-    assert [r["id"] for r in page.values()] == ["R-2"] and page.current == 0
-    assert page.add()["id"] == "R-3"
+    assert [r["id"] for r in page.values()] == ["UC-1"] and page.current is None
+    page.form.vars["title"].set("Again")
+    assert page.add()["id"] == "UC-2"  # type: ignore[index]
 
 
 def test_saving_an_invalid_specification_reports_the_problems() -> None:
     editor, saved = editor_with()
     editor.overview.vars["title"].set("")
-    editor.records["verification"].add()
-    editor.records["verification"].form.vars["requirement"].set("R-9")
+    page = editor.records["verification"]
+    page.form.vars["requirement"].set("R-9")
+    assert page.add() is not None
     assert not editor.save() and saved == []
     problems = editor.problems.get()
     assert problems.startswith("Overview: title must not be empty") and "R-9" in problems
     assert editor.changed() and editor.current_page == "overview"
-    editor.overview.vars["title"].set("Demo")
-    editor.records["verification"].remove()
-    editor.records["use_cases"].add()
+    spec = specification.default_specification("Demo")
+    spec["use_cases"] = [{"id": "UC-1"}]
+    editor.load(spec)
     assert not editor.save() and editor.problems.get() == "Use cases UC-1: title is missing"
     assert editor.current_page == "use_cases"
 
