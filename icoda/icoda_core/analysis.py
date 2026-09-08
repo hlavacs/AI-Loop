@@ -1,9 +1,10 @@
 """Parsing a project with libclang into the derived model; incremental cache; stale marking.
 
-Module interface units are parsed twice: once as written (only to tokenize), then as an ordinary
-translation unit from memory with the ``export`` and ``module`` keywords blanked, because libclang does
+Module interface units are parsed twice: once as written (only to tokenize), then from memory as a
+*shadow*: still a module interface unit, but with its module renamed (same length, upper-cased, so it
+does not clash with the real module file) and every ``export`` keyword blanked, because libclang does
 not visit the declarations inside an ``export``. Offsets are preserved, so locations and USRs match
-what call sites in other units reference.
+what call sites in other units reference. Implementation units and ordinary sources need no shadow.
 """
 
 from __future__ import annotations
@@ -25,7 +26,7 @@ from icoda_core.model import DerivedModel, Edge, EdgeKind, Entity, External, Fil
 MODULE_SUFFIXES = frozenset({".cppm", ".ixx", ".mpp", ".cxxm", ".c++m", ".ccm"})
 HEADER_SUFFIXES = frozenset({".h", ".hh", ".hpp", ".hxx", ".h++", ".inl"})
 _MODULE_DECL = re.compile(r"^\s*(export\s+)?module\s+([A-Za-z_][\w.:]*)\s*;", re.MULTILINE)
-_NEEDS_SHADOW = re.compile(r"^\s*(export\s+)?module\b|^\s*export\b", re.MULTILINE)
+_NEEDS_SHADOW = re.compile(r"^\s*export\s+module\b", re.MULTILINE)
 
 CK = cindex.CursorKind
 _KINDS = {
@@ -128,7 +129,7 @@ def module_declaration(text: str) -> tuple[str, str]:
 
 @dataclass
 class Shadow:
-    """The blanked source text and the byte ranges that were ``export`` keywords or blocks."""
+    """The shadow text and the byte ranges that were ``export`` keywords or ``export { }`` blocks."""
 
     text: str
     export_ranges: list[tuple[int, int]] = field(default_factory=list)
@@ -136,46 +137,56 @@ class Shadow:
 
 
 def shadow_source(source: bytes, tokens: Sequence[Any]) -> Shadow:
-    """Blank ``export``, ``export { }`` braces and every ``module …;`` statement, keeping offsets."""
-    blanks: list[tuple[int, int]] = []
+    """Rename the module in ``export module …;`` (same length) and blank every other ``export`` (and block braces)."""
+    edits: list[tuple[int, int, bytes | None]] = []
     shadow = Shadow("")
     index = 0
     while index < len(tokens):
         token = tokens[index]
-        spelling, start, end = token.spelling, token.extent.start.offset, token.extent.end.offset
-        if spelling == "export" and token.kind == cindex.TokenKind.KEYWORD:
-            index = _blank_export(tokens, index, blanks, shadow)
-        elif spelling == "module" and index + 1 < len(tokens) and tokens[index + 1].spelling in (";", ":") \
-                or spelling == "module" and _starts_statement(tokens, index):
-            index = _blank_until_semicolon(tokens, index, blanks)
+        if token.spelling == "export" and token.kind == cindex.TokenKind.KEYWORD:
+            following = tokens[index + 1] if index + 1 < len(tokens) else None
+            if following is not None and following.spelling == "module":
+                index = _rename_module(tokens, index + 2, edits)
+            else:
+                index = _blank_export(tokens, index, edits, shadow)
         index += 1
     buffer = bytearray(source)
-    for start, end in blanks:
+    for start, end, replacement in edits:
         for offset in range(start, min(end, len(buffer))):
-            if buffer[offset] not in b"\n":
+            if replacement is None and buffer[offset] not in b"\n":
                 buffer[offset] = ord(" ")
+            elif replacement is not None:
+                buffer[offset] = replacement[offset - start]
     shadow.text = bytes(buffer).decode("utf-8", errors="replace")
     return shadow
 
 
-def _starts_statement(tokens: Sequence[Any], index: int) -> bool:
-    """``module name;`` at the start of a line (a module declaration, not the word in some expression)."""
-    previous = tokens[index - 1].spelling if index > 0 else ";"
-    following = tokens[index + 1] if index + 1 < len(tokens) else None
-    return previous in (";", "}", "{", "export") and following is not None and following.kind == cindex.TokenKind.IDENTIFIER
+def _rename_module(tokens: Sequence[Any], index: int, edits: list[tuple[int, int, bytes | None]]) -> int:
+    """Upper-case the identifiers of the module name up to ``;`` so the shadow is a different module."""
+    while index < len(tokens) and tokens[index].spelling != ";":
+        token = tokens[index]
+        if token.kind == cindex.TokenKind.IDENTIFIER:
+            original = token.spelling.encode("utf-8")
+            renamed = token.spelling.upper().encode("utf-8")
+            if renamed == original or len(renamed) != len(original):
+                renamed = b"X" * len(original)
+            edits.append((token.extent.start.offset, token.extent.end.offset, renamed))
+        index += 1
+    return index
 
 
-def _blank_export(tokens: Sequence[Any], index: int, blanks: list[tuple[int, int]], shadow: Shadow) -> int:
+def _blank_export(tokens: Sequence[Any], index: int, edits: list[tuple[int, int, bytes | None]],
+                  shadow: Shadow) -> int:
     token = tokens[index]
     start, end = token.extent.start.offset, token.extent.end.offset
-    blanks.append((start, end))
+    edits.append((start, end, None))
     following = tokens[index + 1] if index + 1 < len(tokens) else None
-    if following is not None and following.spelling in ("module", "import"):
+    if following is not None and following.spelling == "import":
         return index
     if following is not None and following.spelling == "{":
         close = _matching_brace(tokens, index + 1)
-        blanks.append((following.extent.start.offset, following.extent.end.offset))
-        blanks.append((tokens[close].extent.start.offset, tokens[close].extent.end.offset))
+        edits.append((following.extent.start.offset, following.extent.end.offset, None))
+        edits.append((tokens[close].extent.start.offset, tokens[close].extent.end.offset, None))
         shadow.block_ranges.append((following.extent.end.offset, tokens[close].extent.start.offset))
         return index + 1
     shadow.export_ranges.append((start, end))
@@ -192,15 +203,6 @@ def _matching_brace(tokens: Sequence[Any], open_index: int) -> int:
             if depth == 0:
                 return index
     return len(tokens) - 1
-
-
-def _blank_until_semicolon(tokens: Sequence[Any], index: int, blanks: list[tuple[int, int]]) -> int:
-    end = index
-    while end < len(tokens) and tokens[end].spelling != ";":
-        end += 1
-    end = min(end, len(tokens) - 1)
-    blanks.append((tokens[index].extent.start.offset, tokens[end].extent.end.offset))
-    return end
 
 
 # --------------------------------------------------------------------------- parsing
@@ -220,6 +222,7 @@ class Parser:
         self.apple = apple
         self._prebuilt: dict[str, list[str]] = {}
         self.missing_modules: set[str] = set()
+        self.last_shadow: Shadow | None = None
 
     def arguments(self, command: CompileCommand) -> list[str]:
         arguments = list(command.arguments)
@@ -253,16 +256,13 @@ class Parser:
         quick = self.index.parse(command.file, args=arguments,
                                  options=cindex.TranslationUnit.PARSE_SKIP_FUNCTION_BODIES)
         shadow = shadow_source(source, list(quick.get_tokens(extent=quick.cursor.extent)))
-        plain = _plain_arguments(arguments)
+        self.last_shadow = shadow
+        plain = [a for a in arguments if not a.startswith("-fmodule-output")]
+        if "c++-module" not in plain and Path(command.file).suffix not in MODULE_SUFFIXES:
+            plain = ["-x", "c++-module", *plain]
         unit = self.index.parse(command.file, args=plain, unsaved_files=[(command.file, shadow.text)],
                                 options=options)
         return unit, shadow
-
-
-def _plain_arguments(arguments: Sequence[str]) -> list[str]:
-    plain = [a for a in arguments if not a.startswith("-fmodule-output")]
-    return ["c++" if index > 0 and plain[index - 1] == "-x" and a == "c++-module" else a
-            for index, a in enumerate(plain)]
 
 
 # --------------------------------------------------------------------------- extraction
@@ -662,11 +662,11 @@ def _unit_result(command: CompileCommand, parser: Parser, extractor: Extractor, 
     try:
         unit, shadow = parser.parse(command)
     except cindex.TranslationUnitLoadError as exc:
-        explanation = explain_with_compiler(command, parser.arguments(command))
+        explanation = explain_with_compiler(command, parser.arguments(command), parser.last_shadow)
         return _unparsable(command, root, f"libclang could not parse this unit: {exc}; compiler says: {explanation}")
     result = extractor.extract(unit, shadow, command)
     if result.file.errors:
-        explanation = explain_with_compiler(command, parser.arguments(command))
+        explanation = explain_with_compiler(command, parser.arguments(command), shadow)
         result.file.errors = (*result.file.errors, f"compiler says: {explanation}")
     if cache_file:
         cache_file.parent.mkdir(parents=True, exist_ok=True)
@@ -675,13 +675,16 @@ def _unit_result(command: CompileCommand, parser: Parser, extractor: Extractor, 
     return result
 
 
-def explain_with_compiler(command: CompileCommand, arguments: Sequence[str]) -> str:
-    """Run the project's compiler in syntax-only mode with libclang's arguments; return its first messages."""
-    argv = [command.compiler, "-fsyntax-only", *[a for a in arguments if not a.startswith("-fmodule-output")],
-            command.file]
+def explain_with_compiler(command: CompileCommand, arguments: Sequence[str], shadow: Shadow | None = None) -> str:
+    """Run the project's compiler in syntax-only mode with libclang's arguments (and the shadow text, if any)."""
+    argv = [command.compiler, "-fsyntax-only", *[a for a in arguments if not a.startswith("-fmodule-output")]]
+    if shadow is not None:
+        argv += ["-x", "c++-module", "-"]
+    else:
+        argv.append(command.file)
     try:
         completed = subprocess.run(argv, capture_output=True, text=True, timeout=120, check=False,
-                                   cwd=command.directory)
+                                   cwd=command.directory, input=shadow.text if shadow else None)
     except (OSError, subprocess.SubprocessError) as exc:
         return f"could not run {command.compiler}: {exc}"
     if completed.returncode == 0:

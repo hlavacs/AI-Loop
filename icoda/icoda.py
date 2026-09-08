@@ -276,8 +276,15 @@ class App:
         file_menu.add_separator()
         file_menu.add_command(label="Quit", command=self.root.destroy)
         menubar.add_cascade(label="File", menu=file_menu)
+        view_menu = tk.Menu(menubar, tearoff=0)
+        view_menu.add_command(label="Fit to Window", command=self.fit_view)
+        menubar.add_cascade(label="View", menu=view_menu)
         self.root.config(menu=menubar)
         self._fill_recent_menu()
+
+    def fit_view(self) -> None:
+        self.view.user_zoomed = False
+        self.view.fit()
 
     def _fill_recent_menu(self) -> None:
         self.recent_menu.delete(0, tk.END)
@@ -352,7 +359,15 @@ class App:
         """Present an opened project: canvas, status bar, recent list, configuration."""
         self.opened = opened
         self.project = opened.root
-        self.view.show(opened.layout)
+        try:
+            self.view.show(opened.layout)
+        except Exception:  # noqa: BLE001  (a drawing problem must not hide the rest of the window)
+            session.log_event("drawing failed:\n" + traceback.format_exc(), opened.root)
+            self.status.set("drawing failed (details in .icoda/icoda.log)")
+            return
+        session.log_event(f"drawn: canvas {self.canvas.winfo_width()}x{self.canvas.winfo_height()}, "
+                          f"{len(opened.layout.nodes)} nodes, scale {self.view.scale:.3f}, offset {self.view.offset}",
+                          opened.root)
         libclang = opened.libclang or "libclang: none found"
         notes = ("  |  " + "; ".join(opened.messages)) if opened.messages else ""
         self.status.set(f"{opened.root.name}: {opened.summary}  |  {libclang}{notes}")

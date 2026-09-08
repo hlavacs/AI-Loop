@@ -158,10 +158,11 @@ def test_shadow_source_blanks_export_blocks_and_keeps_offsets(tmp_path: Path) ->
                                        options=cindex.TranslationUnit.PARSE_SKIP_FUNCTION_BODIES)
     shadow = analysis.shadow_source(source, list(unit.get_tokens(extent=unit.cursor.extent)))
     assert len(shadow.text) == len(source)
-    assert shadow.text.splitlines()[1] == "#include <vector>"
-    assert shadow.text.splitlines()[2].strip() == "" and shadow.text.splitlines()[3].strip() == ""
-    assert shadow.text.splitlines()[4] == "int f();" and shadow.text.splitlines()[5].strip() == ""
-    assert shadow.text.splitlines()[6] == "       int g();" and shadow.text.splitlines()[7].strip() == ""
+    lines = shadow.text.splitlines()
+    assert lines[0] == "module;" and lines[1] == "#include <vector>"
+    assert lines[2] == "export module M;"
+    assert lines[3].strip() == "" and lines[4] == "int f();" and lines[5].strip() == ""
+    assert lines[6] == "       int g();" and lines[7] == "module :private;"
     assert len(shadow.block_ranges) == 1 and len(shadow.export_ranges) == 1
 
 
