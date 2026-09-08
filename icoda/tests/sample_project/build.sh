@@ -10,22 +10,15 @@ if [ -f "$cache" ] && ! grep -qx "CMAKE_HOME_DIRECTORY:INTERNAL=$PWD" "$cache"; 
   rm -rf "build/$preset"
 fi
 extra=()
-if [ "$(uname -s)" = "Darwin" ] && [ -z "${CMAKE_CXX_COMPILER_CLANG_SCAN_DEPS:-}" ]; then
-  # Apple's clang keeps clang-scan-deps inside the Xcode toolchain, where CMake does not look for it.
-  scan_deps="$(xcrun --find clang-scan-deps 2>/dev/null || true)"
-  if [ -z "$scan_deps" ]; then
-    # The Command Line Tools ship clang-scan-deps only in some versions; look in the usual places.
-    for candidate in /Library/Developer/CommandLineTools/usr/bin/clang-scan-deps \
-                     /Applications/Xcode*.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/bin/clang-scan-deps \
-                     "$(brew --prefix llvm 2>/dev/null)/bin/clang-scan-deps"; do
-      if [ -x "$candidate" ]; then scan_deps="$candidate"; break; fi
-    done
-  fi
-  if [ -n "$scan_deps" ]; then
-    extra+=("-DCMAKE_CXX_COMPILER_CLANG_SCAN_DEPS=$scan_deps")
+if [ "$(uname -s)" = "Darwin" ] && [ -z "${CXX:-}" ]; then
+  # CMake cannot build C++20 modules with Apple's clang (its AppleClang configuration has no module scanning),
+  # so use Homebrew's LLVM when it is installed.
+  llvm_prefix="$(brew --prefix llvm 2>/dev/null || true)"
+  if [ -x "$llvm_prefix/bin/clang++" ]; then
+    export CC="$llvm_prefix/bin/clang" CXX="$llvm_prefix/bin/clang++"
+    echo "build.sh: using Homebrew LLVM at $llvm_prefix" >&2
   else
-    echo "build.sh: clang-scan-deps not found; C++20 modules need it. Either install Xcode (full) or" >&2
-    echo "build.sh: 'brew install llvm' and run: CC=\$(brew --prefix llvm)/bin/clang CXX=\$(brew --prefix llvm)/bin/clang++ ./build.sh" >&2
+    echo "build.sh: Apple's clang cannot build C++20 modules with CMake; install LLVM with 'brew install llvm'" >&2
   fi
 fi
 cmake --preset "$preset" ${extra[@]+"${extra[@]}"}

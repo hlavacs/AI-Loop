@@ -73,6 +73,16 @@ def _version_key(path: str) -> tuple[int, ...]:
     return tuple(int(n) for n in re.findall(r"\d+", path))
 
 
+def library_beside(compiler: str) -> str | None:
+    """The libclang shipped with ``compiler`` (``<prefix>/bin/clang++`` -> ``<prefix>/lib/libclang.*``), if any."""
+    prefix = Path(compiler).resolve().parent.parent
+    for name in ("libclang.dylib", "libclang.so", "libclang.dll", "libclang.so.1"):
+        candidate = prefix / ("bin" if name.endswith(".dll") else "lib") / name
+        if candidate.exists():
+            return str(candidate)
+    return None
+
+
 def wheel_library() -> Candidate | None:
     """The library bundled in the ``libclang`` pip wheel, if that wheel is installed."""
     try:

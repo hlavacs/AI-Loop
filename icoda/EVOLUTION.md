@@ -31,7 +31,8 @@ parse. What ICODA adds to the code is bookkeeping: which step introduced which e
 specification an entity serves.
 
 **libclang for C++, from the toolchain.** C++ analysis uses libclang through `compile_commands.json`, which CMake
-produces for free. This resolves overloads, templates, member calls and lambdas properly, which lexical heuristics
+produces for free. On macOS the toolchain is Homebrew LLVM, because CMake cannot build C++20 modules with Apple's
+clang; ICODA parses with the libclang that sits beside the compiler named in the compile commands. This resolves overloads, templates, member calls and lambdas properly, which lexical heuristics
 cannot. ICODA uses the clang that is installed on the machine — the Visual Studio clang component on Windows, Xcode or
 Homebrew LLVM on macOS, the distribution's LLVM on Linux — detects the candidates, lets the developer choose, and
 builds the analysis configuration of the project with that same clang (`clang-cl` on Windows, which stays

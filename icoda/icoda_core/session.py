@@ -34,9 +34,11 @@ class OpenedProject:
         return ", ".join(parts)
 
 
-def choose_libclang(config: persistence.UserConfig) -> toolchain.Loaded | None:
-    """The configured library if it still exists, else the first candidate; None when nothing loads."""
-    paths = [config.libclang] if config.libclang and Path(config.libclang).exists() else []
+def choose_libclang(config: persistence.UserConfig, compilers: list[str] | None = None) -> toolchain.Loaded | None:
+    """The library beside the project's compiler, else the configured one, else the first candidate."""
+    paths = [p for c in compilers or [] if (p := toolchain.library_beside(c))]
+    if config.libclang and Path(config.libclang).exists() and config.libclang not in paths:
+        paths.append(config.libclang)
     paths += [c.path for c in toolchain.candidates() if c.path not in paths]
     for path in paths:
         try:
@@ -68,7 +70,8 @@ def open_project(root: Path, config: persistence.UserConfig, width: float = 1600
     store = persistence.ProjectStore(root)
     store.ensure()
     config.remember_project(root)
-    loaded = choose_libclang(config)
+    compilers = sorted({c.compiler for c in analysis.load_compile_commands(root)})
+    loaded = choose_libclang(config, compilers)
     messages: list[str] = []
     model = _derive_model(root, store, loaded, messages)
     clustering = clusters.cluster_files(model, store.load_layout())
