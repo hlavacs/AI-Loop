@@ -2,7 +2,9 @@
 
 M1 provides the File View: one circle per cluster placed on a ring, the cluster's files on its
 circumference with related files next to each other, merged arrows between files, thick aggregate
-arrows between cluster centres, and one node per external library. Nothing here imports tkinter.
+arrows between cluster centres, and one node per external library. The circles are geometry only —
+they are never drawn — and a cluster with a single file has that file at its centre (radius 0).
+Nothing here imports tkinter.
 """
 
 from __future__ import annotations
@@ -75,6 +77,9 @@ class FileViewLayout:
 
 
 def circle_radius(file_count: int) -> float:
+    """Radius of the arrangement; a single file sits at the centre, so its cluster has no radius."""
+    if file_count <= 1:
+        return 0.0
     return max(MIN_RADIUS, file_count * FILE_SPACING / (2 * math.pi) + 20)
 
 
@@ -110,7 +115,7 @@ def place_circles(clustering: Clustering, width: float, height: float) -> list[C
     if count == 1:
         return [ClusterCircle(clustering.clusters[0].id, clustering.clusters[0].name, width / 2, height / 2,
                               radii[0], list(clustering.clusters[0].files))]
-    ring = max(sum(2 * r + 40 for r in radii) / (2 * math.pi), max(radii) + 60)
+    ring = max(sum(max(2 * r, 60) + 40 for r in radii) / (2 * math.pi), max(radii) + 60)
     circles = []
     for index, (cluster, radius) in enumerate(zip(clustering.clusters, radii, strict=True)):
         angle = -math.pi / 2 + 2 * math.pi * index / count

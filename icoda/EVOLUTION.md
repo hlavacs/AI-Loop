@@ -289,8 +289,9 @@ structure. Connected components are *not* used: in a real project everything is 
 the whole project would collapse into one circle. The developer can pin a file to a cluster and rename clusters; the
 assignments are stored in `.icoda/layout.json` so that they stay stable between runs and steps.
 
-**Layout.** Each cluster is a circle with its files on the circumference, ordered so that strongly related files are
-neighbours (fewest crossing chords). Cluster circles are placed on a ring, or by a force layout weighted with the
+**Layout.** Each cluster is arranged on a circle with its files on the circumference, ordered so that strongly related
+files are neighbours (fewest crossing chords). The circle is geometry only and is never drawn; the cluster name sits
+in its empty centre. A cluster with a single file has that file at the centre and no circle at all. Cluster circles are placed on a ring, or by a force layout weighted with the
 inter-cluster relations. At project level the arrows between clusters run from centre to centre, with the thickness
 showing the number of relations; zooming into a cluster draws the individual arrows between files. A circle holds
 about 40 files at most; a larger cluster is split by the algorithm. The view is zoomable, every file is clickable and

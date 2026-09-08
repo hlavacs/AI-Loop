@@ -87,11 +87,12 @@ class FileViewCanvas:
                                     text=f"STALE — {self.app.opened.model.stale_reason}")
 
     def _draw_circles(self) -> None:
+        """The circles themselves are never drawn; a multi-file cluster shows its name in the empty centre."""
         assert self.layout is not None
         for circle in self.layout.circles:
+            if len(circle.files) < 2:
+                continue
             cx, cy = self.to_screen(circle.cx, circle.cy)
-            r = circle.radius * self.scale
-            self.canvas.create_oval(cx - r, cy - r, cx + r, cy + r, outline="#c8c8c8", width=1.5, dash=(4, 3))
             self.canvas.create_text(cx, cy, text=circle.name, fill="#9a9a9a",
                                     font=("TkDefaultFont", max(8, int(12 * self.scale)), "bold"))
 
@@ -138,7 +139,7 @@ class FileViewCanvas:
 
     def _radius_of(self, node: views.Node) -> float:
         assert self.layout is not None
-        return next((c.radius for c in self.layout.circles if c.id == node.id), 30.0)
+        return max(next((c.radius for c in self.layout.circles if c.id == node.id), 30.0), 12.0)
 
     def _draw_nodes(self) -> None:
         assert self.layout is not None
