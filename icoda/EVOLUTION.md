@@ -157,9 +157,10 @@ promotes the worktree onto the working tree; rejecting discards it.
 
 ### Phase 0 — Specification
 
-When creating a new project, the developer writes a specification: title, summary, objectives, scope,
-stakeholders, assumptions, constraints, dependencies, use cases, requirements, decisions, risks, verification, open
-questions (ICODA's own `specification.schema.json`, entered through the specification editor). ICODA adds a **Code Profile** to the
+When creating a new project, the developer writes a specification that is deliberately lean: title, description,
+goals, what is not in scope, use cases (UC-n), requirements (R-n, with a priority and the use cases they serve)
+and decisions already taken (D-n) — ICODA's own `specification.schema.json`, entered through the specification
+editor, five pages with a tooltip example on every field. ICODA adds a **Code Profile** to the
 specification: language and standard, the code requirements below, the library policy, target platforms, build layout.
 The specification is stored in `.icoda/specification.json`, is committed, and is sent, compacted, with every step
 prompt. It is one of the two truths and can be changed at any time; a change shows up as uncovered requirements.

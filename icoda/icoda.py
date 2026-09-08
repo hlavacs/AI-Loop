@@ -26,31 +26,11 @@ from icoda_gui import (
     step_controller,
     step_panel,
     tasks,
+    tooltip,
 )
 
 NODE_RADIUS = 6
 CLUSTER_LEVEL_BELOW = 1.6  # file-level arrows appear once zoomed in this far beyond the fit
-
-
-class Tooltip:
-    """A small floating label shown near the pointer."""
-
-    def __init__(self, widget: Any) -> None:
-        self.widget = widget
-        self.window: Any = None
-
-    def show(self, text: str, x: int, y: int) -> None:
-        self.hide()
-        self.window = tk.Toplevel(self.widget)
-        self.window.wm_overrideredirect(True)
-        self.window.wm_geometry(f"+{x + 14}+{y + 12}")
-        tk.Label(self.window, text=text, justify="left", background="#ffffe0", relief="solid", borderwidth=1,
-                 padx=6, pady=3).pack()
-
-    def hide(self) -> None:
-        if self.window is not None:
-            self.window.destroy()
-            self.window = None
 
 
 class FileViewCanvas:
@@ -67,7 +47,7 @@ class FileViewCanvas:
         self.drag_start: tuple[int, int] | None = None
         self.dragged = False
         self.item_nodes: dict[int, str] = {}
-        self.tooltip = Tooltip(canvas)
+        self.tooltip = tooltip.Tooltip(canvas)
         for event, handler in (("<MouseWheel>", self.on_wheel), ("<Button-4>", self.on_wheel),
                                ("<Button-5>", self.on_wheel), ("<ButtonPress-1>", self.on_press),
                                ("<B1-Motion>", self.on_drag), ("<ButtonRelease-1>", self.on_release),

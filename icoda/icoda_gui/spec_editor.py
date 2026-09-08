@@ -1,7 +1,8 @@
-"""The specification editor: one notebook page per section of ``specification.schema.json``.
+"""The specification editor: five pages — Overview, Use cases, Requirements, Decisions, Code profile.
 
-The pages keep their state in plain Python (:meth:`FieldSet.get`, :meth:`RecordListPage.values`) and the Tk
-widgets mirror it, so the editor can be driven and tested without a display.
+Every field has a tooltip with an example of what goes in; the pages keep their state in plain Python
+(:meth:`FieldSet.get`, :meth:`RecordListPage.values`) and the Tk widgets mirror it, so the editor can be driven
+and tested without a display.
 """
 
 from __future__ import annotations
@@ -15,28 +16,10 @@ from typing import Any
 
 from icoda_core import specification
 from icoda_core.specification import RECORD_SECTIONS, Specification
-from icoda_gui import screen
+from icoda_gui import screen, tooltip
 
 ENTRY_WIDTH = 64
-SECTION_ORDER = ("objectives", "in_scope", "out_of_scope", "stakeholders", "assumptions", "constraints",
-                 "dependencies", "use_cases", "requirements", "decisions", "risks", "verification",
-                 "open_questions")
-SECTION_TITLES = {
-    "objectives": "Objectives", "in_scope": "In scope", "out_of_scope": "Out of scope",
-    "stakeholders": "Stakeholders", "assumptions": "Assumptions", "constraints": "Constraints",
-    "dependencies": "Dependencies", "use_cases": "Use cases", "requirements": "Requirements",
-    "decisions": "Decisions", "risks": "Risks", "verification": "Verification", "open_questions": "Open questions",
-}
-LINES_HINTS = {
-    "objectives": "What the project is for — one objective per line.",
-    "in_scope": "What the project does — one item per line.",
-    "out_of_scope": "What the project deliberately does not do — one item per line.",
-    "stakeholders": "Who cares about the project and why — one per line.",
-    "assumptions": "What is taken for granted — one per line.",
-    "constraints": "Limits the solution must respect (time, money, law, hardware) — one per line.",
-    "dependencies": "External systems, libraries and data the project relies on — one per line.",
-    "open_questions": "Questions nobody has answered yet — one per line.",
-}
+SECTION_TITLES = {"use_cases": "Use cases", "requirements": "Requirements", "decisions": "Decisions"}
 
 
 @dataclass(frozen=True)
@@ -45,6 +28,7 @@ class FieldSpec:
 
     ``kind`` is ``entry`` (one line), ``text`` (many lines), ``lines`` (a list, one per line), ``tags`` (a list,
     comma separated), ``choice`` (one of ``options``), ``multi`` (any of ``options``), ``flag`` or ``int``.
+    ``hint`` is the tooltip: what to enter, with an example.
     """
 
     key: str
@@ -52,43 +36,64 @@ class FieldSpec:
     kind: str = "entry"
     options: Sequence[str] = ()
     height: int = 4
+    hint: str = ""
 
 
-OVERVIEW_FIELDS = (FieldSpec("title", "Title"), FieldSpec("summary", "Summary", "text", height=8))
-RECORD_FIELDS: dict[str, tuple[FieldSpec, ...]] = {
-    "use_cases": (FieldSpec("title", "Title"), FieldSpec("actor", "Actor"),
-                  FieldSpec("description", "Description", "text", height=8)),
-    "requirements": (FieldSpec("title", "Title"),
-                     FieldSpec("priority", "Priority", "choice", ("must", "should", "could")),
-                     FieldSpec("category", "Category", "choice",
-                               ("", "functional", "quality", "interface", "constraint")),
-                     FieldSpec("use_cases", "Use cases (UC-1, UC-2, …)", "tags"),
-                     FieldSpec("description", "Description", "text", height=8)),
-    "decisions": (FieldSpec("title", "Title"), FieldSpec("rationale", "Rationale", "text", height=8)),
-    "risks": (FieldSpec("title", "Title"),
-              FieldSpec("severity", "Severity", "choice", ("", "low", "medium", "high")),
-              FieldSpec("mitigation", "Mitigation", "text", height=8)),
-    "verification": (FieldSpec("requirement", "Requirement (R-n)"),
-                     FieldSpec("method", "Method", "choice",
-                               ("unit test", "integration test", "manual test", "review", "analysis")),
-                     FieldSpec("description", "Description", "text", height=8)),
-}
-RECORD_DEFAULTS: dict[str, dict[str, Any]] = {"requirements": {"priority": "must"},
-                                              "verification": {"method": "unit test"}}
-PROFILE_FIELDS = (
-    FieldSpec("language", "Language", "choice", ("C++", "Python")),
-    FieldSpec("standard", "Standard"),
-    FieldSpec("modules", "C++20 modules", "flag"),
-    FieldSpec("build", "Build"),
-    FieldSpec("platforms", "Platforms", "multi", ("macOS", "Linux", "Windows")),
-    FieldSpec("test_framework", "Test framework"),
-    FieldSpec("library_policy", "Library policy"),
-    FieldSpec("max_function_lines", "Max function lines", "int"),
-    FieldSpec("hard_max_function_lines", "Hard max function lines", "int"),
-    FieldSpec("max_data_members", "Max data members", "int"),
-    FieldSpec("max_methods", "Max methods", "int"),
-    FieldSpec("style_notes", "Style notes (one per line)", "lines", height=8),
+OVERVIEW_FIELDS = (
+    FieldSpec("title", "Title", hint="A short name for the project.\nExample: Asteroid Miner"),
+    FieldSpec("summary", "Description", "text", height=6,
+              hint="What the program is and who uses it, in a few sentences.\nExample: A 2D game in which the "
+                   "player steers a ship through an asteroid field and mines ore for points."),
+    FieldSpec("goals", "Goals", "lines", height=5,
+              hint="One goal per line: what the project must achieve.\nExample: Runs at 60 frames per second on "
+                   "a laptop"),
+    FieldSpec("out_of_scope", "Not in scope", "lines", height=4,
+              hint="One item per line: what the project deliberately leaves out, so the agent does not add "
+                   "it.\nExample: Multiplayer"),
 )
+RECORD_FIELDS: dict[str, tuple[FieldSpec, ...]] = {
+    "use_cases": (
+        FieldSpec("title", "Use case", hint="One thing a user does with the program, as a short sentence.\n"
+                                            "Example: The player starts a new game"),
+        FieldSpec("description", "Details", "text", height=8,
+                  hint="Optional: the steps, the result, special cases.\nExample: The player picks a difficulty; "
+                       "the field is generated; the ship appears in the centre."),
+    ),
+    "requirements": (
+        FieldSpec("title", "Requirement", hint="One testable statement about what the program must do or be.\n"
+                                               "Example: The game saves its state when it is closed"),
+        FieldSpec("priority", "Priority", "choice", ("must", "should", "could"),
+                  hint="must: without it the project fails\nshould: important\ncould: nice to have"),
+        FieldSpec("use_cases", "Use cases", "tags",
+                  hint="Optional: the use cases this requirement serves, by id, comma separated.\n"
+                       "Example: UC-1, UC-3"),
+        FieldSpec("description", "Details", "text", height=8,
+                  hint="Optional: numbers, limits, formats.\nExample: Saving takes at most 100 ms"),
+    ),
+    "decisions": (
+        FieldSpec("title", "Decision", hint="A choice already made, so that the agent does not reopen it.\n"
+                                            "Example: Use SDL3 for graphics and input"),
+        FieldSpec("rationale", "Why", "text", height=8,
+                  hint="Optional: the reason.\nExample: Cross-platform, well documented, available in vcpkg"),
+    ),
+}
+RECORD_DEFAULTS: dict[str, dict[str, Any]] = {"requirements": {"priority": "must"}}
+PROFILE_FIELDS = (
+    FieldSpec("language", "Language", "choice", ("C++", "Python"), hint="C++ now; Python arrives in M5."),
+    FieldSpec("standard", "Standard", hint="The language standard the code is written in.\nExample: 23"),
+    FieldSpec("modules", "C++20 modules", "flag", hint="Generate C++20 modules instead of header files."),
+    FieldSpec("platforms", "Platforms", "multi", ("macOS", "Linux", "Windows"),
+              hint="Where the program must build and run."),
+    FieldSpec("test_framework", "Test framework", hint="The unit test framework the agent writes tests for.\n"
+                                                       "Example: doctest"),
+    FieldSpec("library_policy", "Libraries", hint="How third-party libraries are added.\nExample: vcpkg "
+                                                  "manifest; single-header libraries vendored under third_party/"),
+    FieldSpec("max_function_lines", "Max function lines", "int",
+              hint="Functions longer than this are split into smaller ones.\nExample: 30"),
+    FieldSpec("style_notes", "Style rules", "lines", height=6,
+              hint="One rule per line that the agent must follow.\nExample: Prefer STL algorithms to loops"),
+)
+HIDDEN_PROFILE_KEYS = ("build", "hard_max_function_lines", "max_data_members", "max_methods")
 
 
 class FieldSet:
@@ -100,31 +105,36 @@ class FieldSet:
         self.texts: dict[str, Any] = {}
         self.widgets: dict[str, Any] = {}
         for row, spec in enumerate(self.fields):
-            ttk.Label(parent, text=spec.label).grid(row=row, column=0, sticky="nw", padx=6, pady=3)
+            label = ttk.Label(parent, text=spec.label)
+            label.grid(row=row, column=0, sticky="nw", padx=6, pady=3)
             self._build(parent, row, spec)
+            if spec.hint:
+                tooltip.attach(label, spec.hint)
+                tooltip.attach(self.widgets[spec.key], spec.hint)
         parent.columnconfigure(1, weight=1)
 
     def _build(self, parent: Any, row: int, spec: FieldSpec) -> None:
+        widget: Any
         if spec.kind in ("text", "lines"):
-            text = tk.Text(parent, height=spec.height, width=ENTRY_WIDTH, wrap="word", undo=True)
-            text.grid(row=row, column=1, sticky="nsew", padx=6, pady=3)
+            widget = tk.Text(parent, height=spec.height, width=ENTRY_WIDTH, wrap="word", undo=True)
+            widget.grid(row=row, column=1, sticky="nsew", padx=6, pady=3)
             parent.rowconfigure(row, weight=1)
-            self.texts[spec.key] = self.widgets[spec.key] = text
+            self.texts[spec.key] = widget
         elif spec.kind == "flag":
             flag = tk.BooleanVar(value=False)
-            ttk.Checkbutton(parent, variable=flag).grid(row=row, column=1, sticky="w", padx=6, pady=3)
+            widget = ttk.Checkbutton(parent, variable=flag)
+            widget.grid(row=row, column=1, sticky="w", padx=6, pady=3)
             self.vars[spec.key] = flag
         elif spec.kind == "multi":
-            frame = ttk.Frame(parent)
-            frame.grid(row=row, column=1, sticky="w", padx=6, pady=3)
+            widget = ttk.Frame(parent)
+            widget.grid(row=row, column=1, sticky="w", padx=6, pady=3)
             choices: dict[str, Any] = {}
             for option in spec.options:
                 choices[option] = tk.BooleanVar(value=False)
-                ttk.Checkbutton(frame, text=option, variable=choices[option]).pack(side=tk.LEFT, padx=(0, 10))
+                ttk.Checkbutton(widget, text=option, variable=choices[option]).pack(side=tk.LEFT, padx=(0, 10))
             self.vars[spec.key] = choices
         else:
             var = tk.StringVar(value="")
-            widget: Any
             if spec.kind == "choice":
                 widget = ttk.Combobox(parent, textvariable=var, values=list(spec.options), state="readonly", width=24)
                 widget.grid(row=row, column=1, sticky="w", padx=6, pady=3)
@@ -132,7 +142,7 @@ class FieldSet:
                 widget = ttk.Entry(parent, textvariable=var, width=ENTRY_WIDTH)
                 widget.grid(row=row, column=1, sticky="ew", padx=6, pady=3)
             self.vars[spec.key] = var
-            self.widgets[spec.key] = widget
+        self.widgets[spec.key] = widget
 
     def focus_first(self) -> None:
         """Put the keyboard focus into the first field (the title, for records)."""
@@ -187,22 +197,6 @@ def _lines(text: str) -> list[str]:
     return [line.strip() for line in text.splitlines() if line.strip()]
 
 
-class LinesPage:
-    """A section that is a list of strings: one per line in a text box."""
-
-    def __init__(self, parent: Any, hint: str) -> None:
-        ttk.Label(parent, text=hint, anchor="w").pack(fill=tk.X, padx=6, pady=(6, 2))
-        self.text = tk.Text(parent, wrap="word", undo=True)
-        self.text.pack(fill=tk.BOTH, expand=True, padx=6, pady=6)
-
-    def load(self, lines: Sequence[str]) -> None:
-        self.text.delete("1.0", tk.END)
-        self.text.insert("1.0", "\n".join(lines))
-
-    def values(self) -> list[str]:
-        return _lines(self.text.get("1.0", tk.END))
-
-
 class RecordListPage:
     """A section of numbered records: the list on the left, a form on the right.
 
@@ -218,18 +212,22 @@ class RecordListPage:
         self._selecting = False
         left = ttk.Frame(parent)
         left.pack(side=tk.LEFT, fill=tk.Y, padx=6, pady=6)
-        self.tree = ttk.Treeview(left, columns=("title",), show="tree headings", height=18, selectmode="browse")
+        self.tree = ttk.Treeview(left, columns=("title",), show="tree headings", height=16, selectmode="browse")
         self.tree.heading("#0", text="id")
-        self.tree.heading("title", text="title")
-        self.tree.column("#0", width=70, stretch=False)
-        self.tree.column("title", width=240)
+        self.tree.heading("title", text=self.fields[0].label)
+        self.tree.column("#0", width=60, stretch=False)
+        self.tree.column("title", width=260)
         self.tree.pack(fill=tk.BOTH, expand=True)
         self.tree.bind("<<TreeviewSelect>>", self._on_select)
+        tooltip.attach(self.tree, "Click a row to edit it. Press New for a new entry, Remove to delete the row.")
         buttons = ttk.Frame(left)
         buttons.pack(fill=tk.X, pady=(4, 0))
-        ttk.Button(buttons, text="Add", command=self.add).pack(side=tk.LEFT)
-        ttk.Button(buttons, text="New", command=self.new).pack(side=tk.LEFT, padx=4)
-        ttk.Button(buttons, text="Remove", command=self.remove).pack(side=tk.LEFT)
+        for text, command, hint in (("Add", self.add, "Add what is in the form as a new entry (or press Return)."),
+                                    ("New", self.new, "Clear the form for a new entry."),
+                                    ("Remove", self.remove, "Delete the selected row.")):
+            button = ttk.Button(buttons, text=text, command=command)
+            button.pack(side=tk.LEFT, padx=(0, 4))
+            tooltip.attach(button, hint)
         right = ttk.Frame(parent)
         right.pack(side=tk.LEFT, fill=tk.BOTH, expand=True, padx=6, pady=6)
         self.header = tk.StringVar(value="")
@@ -271,7 +269,7 @@ class RecordListPage:
         self.records.append(record)
         self._refresh()
         self._show(None)
-        self.header.set(f"{record['id']} added — next entry: fill in the fields and press Add")
+        self.header.set(f"{record['id']} added — next entry")
         self.form.focus_first()
         return record
 
@@ -326,10 +324,10 @@ class RecordListPage:
 
     def _show(self, record: Mapping[str, Any] | None) -> None:
         if record is None:
-            self.header.set("New entry: fill in the fields and press Add")
+            self.header.set("New entry — fill in the form, then press Add")
             self.form.set(RECORD_DEFAULTS.get(self.section, {}))
         else:
-            self.header.set(f"{record['id']} — editing; press New for a new entry")
+            self.header.set(f"{record['id']} — editing (New starts a new entry)")
             self.form.set(record)
 
     def _refresh(self) -> None:
@@ -338,45 +336,31 @@ class RecordListPage:
             self.tree.insert("", tk.END, iid=str(index), text=record.get("id", "?"), values=(_headline(record),))
 
 
-def _page_of(problem: str) -> str:
-    """The page a problem message points at, by the section label it starts with."""
-    for key, label in specification.SECTION_LABELS.items():
-        if problem.startswith(label):
-            return key
-    for key in SECTION_ORDER:
-        if problem.startswith((key, SECTION_TITLES[key])):
-            return key
-    return "overview"
-
-
 def _headline(record: Mapping[str, Any]) -> str:
-    return str(record.get("title") or record.get("requirement") or "")
+    return str(record.get("title") or "")
 
 
 class SpecificationEditor:
-    """A window with one page per section, Validate/Save/Close, and the problems of the last validation."""
+    """A window with five pages, Validate/Save/Close, and the problems of the last validation."""
 
     def __init__(self, parent: Any, spec: Specification, on_save: Callable[[Specification], None],
                  title: str = "Specification") -> None:
         self.on_save = on_save
+        self.hidden_profile: dict[str, Any] = {}
         self.window = tk.Toplevel(parent)
         self.window.title(title)
-        screen.fit_to_screen(self.window, 1120, 760)
+        screen.fit_to_screen(self.window, 1000, 680)
         self._build_bar()  # packed first, at the bottom, so that the buttons stay visible on small screens
         self.notebook = ttk.Notebook(self.window)
         self.notebook.pack(fill=tk.BOTH, expand=True, padx=6, pady=6)
         self.pages: dict[str, Any] = {}
         self.current_page = "overview"
         self.overview = FieldSet(self._page("Overview", "overview"), OVERVIEW_FIELDS)
-        self.lines: dict[str, LinesPage] = {}
-        self.records: dict[str, RecordListPage] = {}
-        for section in SECTION_ORDER:
-            page = self._page(SECTION_TITLES[section], section)
-            if section in RECORD_SECTIONS:
-                self.records[section] = RecordListPage(page, section, RECORD_FIELDS[section])
-            else:
-                self.lines[section] = LinesPage(page, LINES_HINTS[section])
-        self.profile = FieldSet(self._page("Code Profile", "code_profile"), PROFILE_FIELDS)
+        self.records: dict[str, RecordListPage] = {
+            section: RecordListPage(self._page(SECTION_TITLES[section], section), section, RECORD_FIELDS[section])
+            for section in RECORD_SECTIONS
+        }
+        self.profile = FieldSet(self._page("Code profile", "code_profile"), PROFILE_FIELDS)
         self.window.protocol("WM_DELETE_WINDOW", self.close)
         self.load(spec)
 
@@ -385,10 +369,13 @@ class SpecificationEditor:
         bar.pack(side=tk.BOTTOM, fill=tk.X, padx=6, pady=(0, 6))
         self.problems = tk.StringVar(value="")
         ttk.Label(bar, textvariable=self.problems, foreground="#c00000", anchor="w",
-                  wraplength=760).pack(side=tk.LEFT, fill=tk.X, expand=True)
-        ttk.Button(bar, text="Close", command=self.close).pack(side=tk.RIGHT)
-        ttk.Button(bar, text="Save", command=self.save).pack(side=tk.RIGHT, padx=4)
-        ttk.Button(bar, text="Validate", command=self.validate).pack(side=tk.RIGHT)
+                  wraplength=700).pack(side=tk.LEFT, fill=tk.X, expand=True)
+        for text, command, hint in (("Close", self.close, "Close the editor; unsaved changes are asked about."),
+                                    ("Save", self.save, "Check the specification and write it to the project."),
+                                    ("Validate", self.validate, "Check the specification without saving.")):
+            button = ttk.Button(bar, text=text, command=command)
+            button.pack(side=tk.RIGHT, padx=(4, 0))
+            tooltip.attach(button, hint)
 
     def _page(self, title: str, key: str) -> Any:
         frame = ttk.Frame(self.notebook)
@@ -404,20 +391,21 @@ class SpecificationEditor:
     # -- state ----------------------------------------------------------------------------
 
     def load(self, spec: Specification) -> None:
+        spec = specification.upgrade(spec)
         self.overview.set(spec)
-        for section, lines in self.lines.items():
-            lines.load(spec.get(section, []))
         for section, records in self.records.items():
             records.load(spec.get(section, []))
-        self.profile.set(spec.get("code_profile", {}))
+        profile = spec.get("code_profile", {})
+        self.profile.set(profile)
+        self.hidden_profile = {key: profile[key] for key in HIDDEN_PROFILE_KEYS if key in profile}
         self.loaded = self.to_specification()
 
     def to_specification(self) -> Specification:
-        spec: Specification = {"schema_version": 1, "title": "", "summary": "", **self.overview.get()}
-        for section in SECTION_ORDER:
-            spec[section] = (self.records[section].values() if section in self.records
-                             else self.lines[section].values())
-        spec["code_profile"] = self.profile.get()
+        spec: Specification = {"schema_version": specification.SCHEMA_VERSION, "title": "", "summary": "",
+                               "goals": [], "out_of_scope": [], **self.overview.get()}
+        for section, records in self.records.items():
+            spec[section] = records.values()
+        spec["code_profile"] = {**self.hidden_profile, **self.profile.get()}
         return spec
 
     def changed(self) -> bool:
@@ -450,3 +438,11 @@ class SpecificationEditor:
                 and not self.save():
             return
         self.window.destroy()
+
+
+def _page_of(problem: str) -> str:
+    """The page a problem message points at, by the section label or key it starts with."""
+    for key, label in specification.SECTION_LABELS.items():
+        if problem.startswith((label, key)):
+            return key if key in RECORD_SECTIONS or key == "code_profile" else "overview"
+    return "overview"

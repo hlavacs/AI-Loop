@@ -68,14 +68,14 @@ def test_new_project_writes_specification_and_skeleton_on_save(app_module, tmp_p
     app.new_project(project)
     assert app.spec_editor is not None and (project / ".icoda").is_dir()
     assert app.spec_editor.to_specification()["title"] == "fresh"
-    app.spec_editor.lines["objectives"].load(["ship it"])
+    app.spec_editor.overview.texts["goals"].insert("1.0", "ship it")
     assert app.spec_editor.save()
     assert (project / ".icoda" / "specification.json").is_file() and (project / "CMakeLists.txt").is_file()
     assert (project / "src" / "app" / "app.cppm").is_file() and opened == [project]
-    app.spec_editor.lines["objectives"].load(["ship it", "twice"])
+    app.spec_editor.overview.texts["goals"].insert("1.0", "twice\n")
     assert app.spec_editor.save() and opened == [project]  # the skeleton is written once
     app.edit_specification()
-    assert app.spec_editor.to_specification()["objectives"] == ["ship it", "twice"]
+    assert app.spec_editor.to_specification()["goals"] == ["twice", "ship it"]
 
 
 def test_provider_selection_is_saved_per_project_and_as_default(app_module, tmp_path: Path) -> None:
