@@ -327,11 +327,9 @@ class App:
         self.opened = opened
         self.project = opened.root
         self.view.show(opened.layout)
-        libclang = opened.libclang.describe() if opened.libclang else "libclang: none found"
+        libclang = opened.libclang or "libclang: none found"
         notes = ("  |  " + "; ".join(opened.messages)) if opened.messages else ""
         self.status.set(f"{opened.root.name}: {opened.summary}  |  {libclang}{notes}")
-        if opened.libclang is not None:
-            self.config.libclang = opened.libclang.path
         self.config.save(self.config_path)
         self._fill_recent_menu()
         self.side_title.set("Entities")
