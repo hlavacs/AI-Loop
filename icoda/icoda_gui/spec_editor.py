@@ -15,6 +15,7 @@ from typing import Any
 
 from icoda_core import specification
 from icoda_core.specification import RECORD_SECTIONS, Specification
+from icoda_gui import screen
 
 ENTRY_WIDTH = 64
 SECTION_ORDER = ("objectives", "in_scope", "out_of_scope", "stakeholders", "assumptions", "constraints",
@@ -53,24 +54,24 @@ class FieldSpec:
     height: int = 4
 
 
-OVERVIEW_FIELDS = (FieldSpec("title", "Title"), FieldSpec("summary", "Summary", "text", height=10))
+OVERVIEW_FIELDS = (FieldSpec("title", "Title"), FieldSpec("summary", "Summary", "text", height=8))
 RECORD_FIELDS: dict[str, tuple[FieldSpec, ...]] = {
     "use_cases": (FieldSpec("title", "Title"), FieldSpec("actor", "Actor"),
-                  FieldSpec("description", "Description", "text", height=10)),
+                  FieldSpec("description", "Description", "text", height=8)),
     "requirements": (FieldSpec("title", "Title"),
                      FieldSpec("priority", "Priority", "choice", ("must", "should", "could")),
                      FieldSpec("category", "Category", "choice",
                                ("", "functional", "quality", "interface", "constraint")),
                      FieldSpec("use_cases", "Use cases (UC-1, UC-2, …)", "tags"),
-                     FieldSpec("description", "Description", "text", height=10)),
-    "decisions": (FieldSpec("title", "Title"), FieldSpec("rationale", "Rationale", "text", height=10)),
+                     FieldSpec("description", "Description", "text", height=8)),
+    "decisions": (FieldSpec("title", "Title"), FieldSpec("rationale", "Rationale", "text", height=8)),
     "risks": (FieldSpec("title", "Title"),
               FieldSpec("severity", "Severity", "choice", ("", "low", "medium", "high")),
               FieldSpec("mitigation", "Mitigation", "text", height=8)),
     "verification": (FieldSpec("requirement", "Requirement (R-n)"),
                      FieldSpec("method", "Method", "choice",
                                ("unit test", "integration test", "manual test", "review", "analysis")),
-                     FieldSpec("description", "Description", "text", height=10)),
+                     FieldSpec("description", "Description", "text", height=8)),
 }
 RECORD_DEFAULTS: dict[str, dict[str, Any]] = {"requirements": {"priority": "must"},
                                               "verification": {"method": "unit test"}}
@@ -204,7 +205,7 @@ class RecordListPage:
         self._selecting = False
         left = ttk.Frame(parent)
         left.pack(side=tk.LEFT, fill=tk.Y, padx=6, pady=6)
-        self.tree = ttk.Treeview(left, columns=("title",), show="tree headings", height=24, selectmode="browse")
+        self.tree = ttk.Treeview(left, columns=("title",), show="tree headings", height=18, selectmode="browse")
         self.tree.heading("#0", text="id")
         self.tree.heading("title", text="title")
         self.tree.column("#0", width=70, stretch=False)
@@ -308,7 +309,8 @@ class SpecificationEditor:
         self.on_save = on_save
         self.window = tk.Toplevel(parent)
         self.window.title(title)
-        self.window.geometry("1120x780")
+        screen.fit_to_screen(self.window, 1120, 760)
+        self._build_bar()  # packed first, at the bottom, so that the buttons stay visible on small screens
         self.notebook = ttk.Notebook(self.window)
         self.notebook.pack(fill=tk.BOTH, expand=True, padx=6, pady=6)
         self.overview = FieldSet(self._page("Overview"), OVERVIEW_FIELDS)
@@ -321,16 +323,18 @@ class SpecificationEditor:
             else:
                 self.lines[section] = LinesPage(page, LINES_HINTS[section])
         self.profile = FieldSet(self._page("Code Profile"), PROFILE_FIELDS)
+        self.window.protocol("WM_DELETE_WINDOW", self.close)
+        self.load(spec)
+
+    def _build_bar(self) -> None:
         bar = ttk.Frame(self.window)
-        bar.pack(fill=tk.X, padx=6, pady=(0, 6))
+        bar.pack(side=tk.BOTTOM, fill=tk.X, padx=6, pady=(0, 6))
         self.problems = tk.StringVar(value="")
         ttk.Label(bar, textvariable=self.problems, foreground="#c00000", anchor="w",
                   wraplength=760).pack(side=tk.LEFT, fill=tk.X, expand=True)
         ttk.Button(bar, text="Close", command=self.close).pack(side=tk.RIGHT)
         ttk.Button(bar, text="Save", command=self.save).pack(side=tk.RIGHT, padx=4)
         ttk.Button(bar, text="Validate", command=self.validate).pack(side=tk.RIGHT)
-        self.window.protocol("WM_DELETE_WINDOW", self.close)
-        self.load(spec)
 
     def _page(self, title: str) -> Any:
         frame = ttk.Frame(self.notebook)

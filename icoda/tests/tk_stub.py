@@ -20,6 +20,8 @@ class _Widget:
             return lambda *args, **kwargs: None
         if name in ("winfo_width", "winfo_height"):
             return lambda: 800
+        if name in ("winfo_screenwidth", "winfo_screenheight"):
+            return lambda: 1440 if name.endswith("width") else 900
         return _Widget
 
     def __call__(self, *args: Any, **kwargs: Any) -> _Widget:

@@ -17,7 +17,7 @@ from tkinter import filedialog, messagebox, ttk
 from typing import Any
 
 from icoda_core import __version__, agent, generator, persistence, session, specification, views
-from icoda_gui import call_view, provider_field, spec_editor, step_controller, step_panel, tasks
+from icoda_gui import call_view, provider_field, screen, spec_editor, step_controller, step_panel, tasks
 
 NODE_RADIUS = 6
 CLUSTER_LEVEL_BELOW = 1.6  # file-level arrows appear once zoomed in this far beyond the fit
@@ -267,10 +267,10 @@ class App:
                                                                                  + trace, self.project))
         self.run_async, self.run_on_ui = self.tasks.run_async, self.tasks.run_on_ui
         root.title("ICODA")
-        root.geometry("1400x900")
+        screen.fit_to_screen(root, 1400, 900)
         self._build_menu()
+        self._build_statusbar()  # packed first so that it is never squeezed out
         self._build_panel()
-        self._build_statusbar()
         self.steps = step_controller.StepController(self)
         if project is not None:
             self.open_project(project)
