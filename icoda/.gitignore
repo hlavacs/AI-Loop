@@ -12,3 +12,4 @@ build/
 tests/sample_project/build/
 tests/sample_project/bin/
 tests/sample_project/.icoda/
+tests/sample_project/.icoda-build.log
