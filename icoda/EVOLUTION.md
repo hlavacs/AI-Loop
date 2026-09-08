@@ -75,7 +75,8 @@ document instead of growing into one file:
 | `icoda_core/specification.py` | specification schema and validation (`specification.schema.json`), Code Profile, compact text form for prompts |
 | `icoda_core/git.py` | git, worktrees, promotion with rollback |
 | `icoda_core/process.py` | bounded subprocess with output limits |
-| `icoda_core/steps.py` | worktree-based step protocol, approve/reject/adapt/undo, step log |
+| `icoda_core/steps.py` | worktree-based step protocol: propose (K attempts with feedback), approve, reject, adapt, undo, manual commits |
+| `icoda_core/steplog.py` | `steps.jsonl` records and the function statuses derived from them |
 | `icoda_core/generator.py` | step 0 skeleton, module-based code generation, Doxygen and `@satisfies` |
 | `icoda_core/agent.py` | provider invocation from `providers.json`, rate-limit waiting |
 | `icoda_core/prompt.py` | prompt assembly: Code Profile, compact specification, model subset around the step, phase rules, feedback |

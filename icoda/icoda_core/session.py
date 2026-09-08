@@ -16,7 +16,7 @@ from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
 
-from icoda_core import analysis, clusters, persistence, toolchain, views
+from icoda_core import analysis, clusters, persistence, steplog, toolchain, views
 from icoda_core.model import DerivedModel
 
 LOG_NAME = "icoda.log"
@@ -180,6 +180,7 @@ def open_project(root: Path, config: persistence.UserConfig, width: float = 1600
     if result.libclang_path:
         config.libclang = result.libclang_path
     model = store.load_model() or DerivedModel(str(root))
+    steplog.apply_statuses(model, steplog.StepLog(store.steps_path))
     clustering = clusters.cluster_files(model, store.load_layout())
     layout = views.layout_file_view(model, clustering, width, height)
     return OpenedProject(root, model, clustering, layout, result.libclang, result.messages)

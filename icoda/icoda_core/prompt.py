@@ -8,7 +8,7 @@ output, a validation error), and the response format. Everything is plain text; 
 from __future__ import annotations
 
 import json
-from collections.abc import Iterable, Sequence
+from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass, field
 
 from icoda_core import response, specification
@@ -35,14 +35,17 @@ class StepRequest:
 
 
 def build_prompt(spec: specification.Specification, model: DerivedModel, request: StepRequest,
-                 skeleton_files: Iterable[str] = ()) -> str:
-    """The complete prompt text for ``request``."""
+                 skeleton_files: Iterable[str] = (), build_files: Mapping[str, str] | None = None) -> str:
+    """The complete prompt text for ``request``; ``build_files`` are shown verbatim (CMakeLists.txt and the like)."""
     parts = [
         _role(request),
         "# Specification and code profile\n\n" + specification.compact(spec),
         "# Current code\n\n" + describe_model(model, request.focus, skeleton_files),
-        "# This step\n\n" + _step_text(request),
     ]
+    if build_files:
+        parts.append("# Build files\n\n" + "\n".join(f"## {name}\n```\n{content.rstrip()}\n```"
+                                                     for name, content in sorted(build_files.items())))
+    parts.append("# This step\n\n" + _step_text(request))
     feedback = _feedback(request)
     if feedback:
         parts.append("# Feedback on earlier attempts\n\n" + feedback)

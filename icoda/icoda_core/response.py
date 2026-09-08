@@ -14,7 +14,7 @@ from typing import Any
 import jsonschema
 
 SCHEMA_PATH = Path(__file__).with_name("response.schema.json")
-FORBIDDEN_PREFIXES = (".git/", ".icoda/cache/", "build/", "bin/")
+FORBIDDEN_PREFIXES = (".git/", ".icoda/", "build/", "bin/")
 
 
 @dataclass(frozen=True)
@@ -103,7 +103,7 @@ def path_problem(path: str) -> str:
     if not path.strip() or path.strip() != path:
         return "must be a plain relative path"
     if any(str(posix).startswith(prefix) for prefix in FORBIDDEN_PREFIXES):
-        return "may not touch git, build output or the ICODA cache"
+        return "may not touch git, build output or the .icoda folder"
     return ""
 
 

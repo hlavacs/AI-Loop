@@ -122,6 +122,13 @@ plus neighbours, phase rules, rejections/constraints/compiler output/validation 
 the Binary/Model field `icoda_gui/provider_field.py` in the side panel (options follow the binary, last model
 per binary remembered, saved in `.icoda/ui.json` and as the default in the user configuration). Not yet
 verified: the seven invocation templates against installed binaries (the VM has none; needs your Mac).
+Step 4 done: `icoda_core/steps.py` + `steplog.py` — one persistent worktree `.icoda/worktree` (its `build/`
+survives between steps), `prepare` (git init, build + parse, step 0 commit), `propose` (K attempts fed with the
+validation error or the compiler output; the delta comes from parsing the worktree), `approve` (promote, rebuild,
+log, one commit `icoda(<phase>) step N: <title>`), `reject` (reason into the next prompt), `rebuild` after manual
+edits in the worktree, `undo` (revert commit), `commit_manual_edits`; statuses stub/implemented/tested from the
+log. End-to-end test with a scripted provider and real builds passes in the VM (96 tests). The GUI side (step
+panel with Propose/Approve/Reject/Adapt/Undo, Call View) is step 5.
 
 1. Spike first: the step 0 skeleton generator (`icoda_core/generator.py`) emits a module-based CMake project with
    presets, `build.sh`/`build.cmd`, `vcpkg.json`, `Doxyfile`, a CTest smoke test and `main()` importing an empty
