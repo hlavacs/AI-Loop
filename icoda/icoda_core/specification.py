@@ -57,15 +57,43 @@ def load_schema() -> dict[str, Any]:
     return json.loads(SCHEMA_PATH.read_text(encoding="utf-8"))
 
 
+SECTION_LABELS = {"use_cases": "Use cases", "requirements": "Requirements", "decisions": "Decisions",
+                  "risks": "Risks", "verification": "Verification", "code_profile": "Code profile"}
+
+
 def validate(spec: Specification) -> list[str]:
     """Human-readable problems; an empty list means the specification is valid."""
     validator = jsonschema.Draft202012Validator(load_schema())
     problems = []
     for error in sorted(validator.iter_errors(spec), key=lambda e: [str(p) for p in e.absolute_path]):
-        where = "/".join(str(p) for p in error.absolute_path) or "(root)"
-        problems.append(f"{where}: {error.message}")
+        problems.append(describe_problem(spec, error))
     problems.extend(_cross_reference_problems(spec))
     return problems
+
+
+def describe_problem(spec: Specification, error: jsonschema.ValidationError) -> str:
+    """``Use cases UC-1: title is missing`` rather than a JSON pointer, where the schema error allows it."""
+    parts = [str(p) for p in error.absolute_path]
+    where = "/".join(parts) or "(root)"
+    if error.validator == "required":
+        missing = str(error.message).split("'")[1] if "'" in str(error.message) else "a field"
+        return f"{_place(spec, parts)}: {missing} is missing"
+    if error.validator == "minLength":
+        return f"{_place(spec, parts[:-1])}: {parts[-1] if parts else 'value'} must not be empty"
+    return f"{where}: {error.message}"
+
+
+def _place(spec: Specification, parts: list[str]) -> str:
+    """Where a problem is, in the words of the editor: the section and the record id."""
+    if not parts:
+        return "Overview"
+    label = SECTION_LABELS.get(parts[0], parts[0].replace("_", " ").capitalize())
+    if len(parts) >= 2 and parts[1].isdigit():
+        records = spec.get(parts[0], [])
+        index = int(parts[1])
+        record_id = records[index].get("id", "") if index < len(records) and isinstance(records[index], dict) else ""
+        return f"{label} {record_id or '#' + str(index + 1)}"
+    return label
 
 
 def _cross_reference_problems(spec: Specification) -> list[str]:

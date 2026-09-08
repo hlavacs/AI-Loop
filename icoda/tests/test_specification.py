@@ -33,8 +33,11 @@ def test_schema_problems_are_readable() -> None:
     problems = spec_module.validate(spec)
     assert any(p.startswith("requirements/0/id") for p in problems)
     assert any("priority" in p and "urgent" in p for p in problems)
+    assert "Requirements REQ-1: title must not be empty" in problems
     del spec["title"]
-    assert any("'title' is a required property" in p for p in spec_module.validate(spec))
+    assert "Overview: title is missing" in spec_module.validate(spec)
+    spec["use_cases"].append({"id": "UC-1"})
+    assert "Use cases UC-1: title is missing" in spec_module.validate(spec)
 
 
 def test_compact_form() -> None:

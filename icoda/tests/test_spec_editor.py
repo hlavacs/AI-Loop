@@ -74,8 +74,13 @@ def test_saving_an_invalid_specification_reports_the_problems() -> None:
     editor.records["verification"].form.vars["requirement"].set("R-9")
     assert not editor.save() and saved == []
     problems = editor.problems.get()
-    assert "title" in problems and "R-9" in problems
-    assert editor.changed()
+    assert problems.startswith("Overview: title must not be empty") and "R-9" in problems
+    assert editor.changed() and editor.current_page == "overview"
+    editor.overview.vars["title"].set("Demo")
+    editor.records["verification"].remove()
+    editor.records["use_cases"].add()
+    assert not editor.save() and editor.problems.get() == "Use cases UC-1: title is missing"
+    assert editor.current_page == "use_cases"
 
 
 def test_profile_fields_convert_numbers_and_lists() -> None:

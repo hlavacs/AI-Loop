@@ -98,6 +98,7 @@ class FieldSet:
         self.fields = tuple(fields)
         self.vars: dict[str, Any] = {}  # a Tk variable, or option -> variable for ``multi``
         self.texts: dict[str, Any] = {}
+        self.widgets: dict[str, Any] = {}
         for row, spec in enumerate(self.fields):
             ttk.Label(parent, text=spec.label).grid(row=row, column=0, sticky="nw", padx=6, pady=3)
             self._build(parent, row, spec)
@@ -105,10 +106,10 @@ class FieldSet:
 
     def _build(self, parent: Any, row: int, spec: FieldSpec) -> None:
         if spec.kind in ("text", "lines"):
-            widget = tk.Text(parent, height=spec.height, width=ENTRY_WIDTH, wrap="word", undo=True)
-            widget.grid(row=row, column=1, sticky="nsew", padx=6, pady=3)
+            text = tk.Text(parent, height=spec.height, width=ENTRY_WIDTH, wrap="word", undo=True)
+            text.grid(row=row, column=1, sticky="nsew", padx=6, pady=3)
             parent.rowconfigure(row, weight=1)
-            self.texts[spec.key] = widget
+            self.texts[spec.key] = self.widgets[spec.key] = text
         elif spec.kind == "flag":
             flag = tk.BooleanVar(value=False)
             ttk.Checkbutton(parent, variable=flag).grid(row=row, column=1, sticky="w", padx=6, pady=3)
@@ -123,13 +124,20 @@ class FieldSet:
             self.vars[spec.key] = choices
         else:
             var = tk.StringVar(value="")
+            widget: Any
             if spec.kind == "choice":
-                ttk.Combobox(parent, textvariable=var, values=list(spec.options), state="readonly",
-                             width=24).grid(row=row, column=1, sticky="w", padx=6, pady=3)
+                widget = ttk.Combobox(parent, textvariable=var, values=list(spec.options), state="readonly", width=24)
+                widget.grid(row=row, column=1, sticky="w", padx=6, pady=3)
             else:
-                ttk.Entry(parent, textvariable=var, width=ENTRY_WIDTH).grid(row=row, column=1, sticky="ew",
-                                                                            padx=6, pady=3)
+                widget = ttk.Entry(parent, textvariable=var, width=ENTRY_WIDTH)
+                widget.grid(row=row, column=1, sticky="ew", padx=6, pady=3)
             self.vars[spec.key] = var
+            self.widgets[spec.key] = widget
+
+    def focus_first(self) -> None:
+        """Put the keyboard focus into the first field (the title, for records)."""
+        if self.fields:
+            self.widgets[self.fields[0].key].focus_set()
 
     def set(self, values: Mapping[str, Any]) -> None:
         for spec in self.fields:
@@ -247,6 +255,7 @@ class RecordListPage:
         self.records.append(record)
         self._refresh()
         self.select(len(self.records) - 1)
+        self.form.focus_first()
         return record
 
     def remove(self) -> None:
@@ -297,6 +306,17 @@ class RecordListPage:
             self.tree.insert("", tk.END, iid=str(index), text=record.get("id", "?"), values=(_headline(record),))
 
 
+def _page_of(problem: str) -> str:
+    """The page a problem message points at, by the section label it starts with."""
+    for key, label in specification.SECTION_LABELS.items():
+        if problem.startswith(label):
+            return key
+    for key in SECTION_ORDER:
+        if problem.startswith((key, SECTION_TITLES[key])):
+            return key
+    return "overview"
+
+
 def _headline(record: Mapping[str, Any]) -> str:
     return str(record.get("title") or record.get("requirement") or "")
 
@@ -313,16 +333,18 @@ class SpecificationEditor:
         self._build_bar()  # packed first, at the bottom, so that the buttons stay visible on small screens
         self.notebook = ttk.Notebook(self.window)
         self.notebook.pack(fill=tk.BOTH, expand=True, padx=6, pady=6)
-        self.overview = FieldSet(self._page("Overview"), OVERVIEW_FIELDS)
+        self.pages: dict[str, Any] = {}
+        self.current_page = "overview"
+        self.overview = FieldSet(self._page("Overview", "overview"), OVERVIEW_FIELDS)
         self.lines: dict[str, LinesPage] = {}
         self.records: dict[str, RecordListPage] = {}
         for section in SECTION_ORDER:
-            page = self._page(SECTION_TITLES[section])
+            page = self._page(SECTION_TITLES[section], section)
             if section in RECORD_SECTIONS:
                 self.records[section] = RecordListPage(page, section, RECORD_FIELDS[section])
             else:
                 self.lines[section] = LinesPage(page, LINES_HINTS[section])
-        self.profile = FieldSet(self._page("Code Profile"), PROFILE_FIELDS)
+        self.profile = FieldSet(self._page("Code Profile", "code_profile"), PROFILE_FIELDS)
         self.window.protocol("WM_DELETE_WINDOW", self.close)
         self.load(spec)
 
@@ -336,10 +358,16 @@ class SpecificationEditor:
         ttk.Button(bar, text="Save", command=self.save).pack(side=tk.RIGHT, padx=4)
         ttk.Button(bar, text="Validate", command=self.validate).pack(side=tk.RIGHT)
 
-    def _page(self, title: str) -> Any:
+    def _page(self, title: str, key: str) -> Any:
         frame = ttk.Frame(self.notebook)
         self.notebook.add(frame, text=title)
+        self.pages[key] = frame
         return frame
+
+    def show_page(self, key: str) -> None:
+        if key in self.pages:
+            self.current_page = key
+            self.notebook.select(self.pages[key])
 
     # -- state ----------------------------------------------------------------------------
 
@@ -370,6 +398,7 @@ class SpecificationEditor:
         if problems:
             shown = "; ".join(problems[:3])
             self.problems.set(shown + (f" … ({len(problems)} problems)" if len(problems) > 3 else ""))
+            self.show_page(_page_of(problems[0]))
         else:
             self.problems.set("valid")
         return problems
