@@ -7,14 +7,14 @@
       "label": "Claude Code (Anthropic)",
       "command": "claude",
       "invocation": ["{binary}", "-p", "--model", "{model}", "--output-format", "text",
-                     "--disallowedTools", "Edit,Write,MultiEdit,NotebookEdit,Bash", "{prompt}"],
-      "prompt_mode": "arg",
+                     "--disallowedTools", "Edit,Write,MultiEdit,NotebookEdit,Bash"],
+      "prompt_mode": "stdin",
       "models": [
         {"id": "claude-fable-5-1", "label": "Claude Fable 5.1"},
         {"id": "claude-opus-5", "label": "Claude Opus 5"}
       ],
       "enabled": true,
-      "verified": false,
+      "verified": true,
       "login_hint": "run 'claude' once interactively and log in"
     },
     {

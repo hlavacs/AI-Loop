@@ -25,7 +25,11 @@ def repo(tmp_path: Path) -> Path:
 
 
 def test_status_and_clean(repo: Path) -> None:
-    assert git.is_repository(repo) and git.is_clean(repo)
+    assert git.is_repository(repo) and git.is_clean(repo) and git.is_own_repository(repo)
+    nested = repo / "nested"
+    nested.mkdir()
+    assert git.is_repository(nested) and not git.is_own_repository(nested)
+    assert git.repository_root(nested) == repo.resolve()
     (repo / "new.txt").write_text("x")
     (repo / "keep.txt").write_text("changed")
     (repo / "src" / "a.cpp").unlink()

@@ -12,7 +12,7 @@ from collections.abc import Callable, Sequence
 from dataclasses import dataclass, replace
 from pathlib import Path
 
-from icoda_core import agent, git, persistence, prompt, response, session, specification
+from icoda_core import agent, analysis, git, persistence, prompt, response, session, specification
 from icoda_core.model import CALLABLE_KINDS, DerivedModel, Entity
 from icoda_core.process import run_bounded
 from icoda_core.steplog import StepLog, StepRecord, apply_statuses
@@ -143,9 +143,9 @@ class StepRunner:
         """Make the project a built, analysed git repository with a committed step 0; refuse manual edits."""
         self.store.ensure()
         _ensure_ignored(self.root / IGNORE_PATH, WORKTREE_DIR + "/")
-        if not git.is_repository(self.root):
+        if not git.is_own_repository(self.root):  # a project inside another repository gets its own
             git.run_git(["init", "-q"], self.root)
-        if self.store.load_model() is None:
+        if self.store.load_model() is None or analysis.find_compile_commands(self.root) is None:
             self.progress("step 0: building and parsing the project")
             build = self.build(self.root)
             if not build.ok:

@@ -22,11 +22,12 @@ def test_providers_file_lists_seven_binaries_with_two_models_each() -> None:
     assert {p.id for p in providers if p.enabled} == {"claude", "codex", "gemini"}
 
 
-def test_claude_command_puts_prompt_last_and_disables_editing_tools(tmp_path: Path) -> None:
+def test_claude_command_reads_the_prompt_from_stdin_and_disables_editing_tools(tmp_path: Path) -> None:
+    """``--disallowedTools`` takes a list, so a prompt argument after it would be swallowed: stdin it is."""
     claude = agent.find_provider(agent.load_providers(), "claude")
     argv, stdin_text = agent.build_command(claude, "claude-opus-5", "hello world", tmp_path)
-    assert argv[:4] == ["claude", "-p", "--model", "claude-opus-5"]
-    assert "--disallowedTools" in argv and argv[-1] == "hello world" and stdin_text is None
+    assert argv[:2] == ["claude", "-p"] and "--model" in argv and "claude-opus-5" in argv
+    assert "--disallowedTools" in argv and "hello world" not in argv and stdin_text == "hello world"
 
 
 def test_codex_command_reads_prompt_from_stdin_with_read_only_sandbox(tmp_path: Path) -> None:

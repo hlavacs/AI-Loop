@@ -38,6 +38,17 @@ def is_repository(path: Path | str) -> bool:
     return run_git(["rev-parse", "--is-inside-work-tree"], path, check=False).stdout.strip() == "true"
 
 
+def repository_root(path: Path | str) -> Path | None:
+    """The top level of the repository containing ``path`` (a parent repository counts), or None."""
+    output = run_git(["rev-parse", "--show-toplevel"], path, check=False).stdout.strip()
+    return Path(output).resolve() if output else None
+
+
+def is_own_repository(path: Path | str) -> bool:
+    """True when ``path`` itself is the top level of a repository, not merely inside a parent's."""
+    return repository_root(path) == Path(path).resolve()
+
+
 def head_commit(repo: Path | str) -> str:
     return run_git(["rev-parse", "HEAD"], repo).stdout.strip()
 
