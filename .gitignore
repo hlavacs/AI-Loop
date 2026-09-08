@@ -13,3 +13,6 @@ start-ai-loop-with-email.json
 
 .coverage
 *.egg-info/
+
+# ICODA playground projects (each is its own git repository)
+scratch/
