@@ -88,8 +88,8 @@ def _derive_model(root: Path, store: persistence.ProjectStore, loaded: toolchain
         return previous or DerivedModel(str(root), loaded.version)
     resource = {c.compiler: r for c in commands if (r := toolchain.resource_dir(c.compiler))}
     model = analysis.parse_project(root, commands, resource_dirs=resource, cache_dir=store.cache_dir,
-                                   previous=previous, libclang_version=loaded.version,
-                                   sysroot=toolchain.default_sysroot())
+                                   previous=previous, libclang_version=f"{loaded.version}|{toolchain.default_sysroot() or ''}",
+                                   sysroot=toolchain.default_sysroot(), apple=loaded.apple, notes=messages)
     _report_errors(model, messages, root, loaded, resource)
     if not model.stale:
         store.save_model(model)

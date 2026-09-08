@@ -211,11 +211,14 @@ class Parser:
     and older CMake writes no module flags at all. Both are supplied here.
     """
 
-    def __init__(self, resource_dirs: dict[str, str] | None = None, sysroot: str | None = None) -> None:
+    def __init__(self, resource_dirs: dict[str, str] | None = None, sysroot: str | None = None,
+                 apple: bool = False) -> None:
         self.index = cindex.Index.create()
         self.resource_dirs = resource_dirs or {}
         self.sysroot = sysroot
+        self.apple = apple
         self._prebuilt: dict[str, list[str]] = {}
+        self.missing_modules: set[str] = set()
 
     def arguments(self, command: CompileCommand) -> list[str]:
         arguments = list(command.arguments)
@@ -224,8 +227,13 @@ class Parser:
             arguments += ["-resource-dir", resource]
         if self.sysroot and "-isysroot" not in arguments and not any(a.startswith("--sysroot") for a in arguments):
             arguments += ["-isysroot", self.sysroot]
+        if self.apple and "-fcxx-modules" not in arguments:
+            arguments.append("-fcxx-modules")  # Apple's libclang treats `import` as a keyword only with this
         if not any(a.startswith(("-fmodule-file=", "-fprebuilt-module-path=")) for a in arguments):
-            arguments += self.prebuilt_module_flags(command.directory)
+            flags = self.prebuilt_module_flags(command.directory)
+            if not flags:
+                self.missing_modules.add(command.directory)
+            arguments += flags
         return arguments
 
     def prebuilt_module_flags(self, directory: str) -> list[str]:
@@ -610,13 +618,17 @@ def unit_cache_key(command: CompileCommand, contributing: Iterable[str], root: P
 
 def parse_project(root: Path, commands: Sequence[CompileCommand], *, resource_dirs: dict[str, str] | None = None,
                   cache_dir: Path | None = None, previous: DerivedModel | None = None,
-                  libclang_version: str = "", sysroot: str | None = None) -> DerivedModel:
+                  libclang_version: str = "", sysroot: str | None = None, apple: bool = False,
+                  notes: list[str] | None = None) -> DerivedModel:
     """Parse every compile command (from cache where nothing changed) and assemble the derived model."""
     root = root.resolve()
-    parser = Parser(resource_dirs, sysroot)
+    parser = Parser(resource_dirs, sysroot, apple)
     extractor = Extractor(root, build_module_map(root, commands), (resource_dirs or {}).values())
     extractor.compiled_files = {str(Path(c.file).resolve()) for c in commands}
     results = [_unit_result(command, parser, extractor, root, cache_dir, libclang_version) for command in commands]
+    if parser.missing_modules and notes is not None:
+        notes.append("no built module files (.pcm) under the build directory: imports cannot be resolved until the "
+                     "project is built (build.sh)")
     model = assemble(root, results, libclang_version)
     broken = [f"{r.file.path}: {r.file.errors[0]}" for r in results if r.file.errors]
     if broken and previous is not None:
