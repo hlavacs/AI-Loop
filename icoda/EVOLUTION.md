@@ -78,7 +78,7 @@ document instead of growing into one file:
 | `icoda_core/steps.py` | worktree-based step protocol: propose (K attempts with feedback), approve, reject, adapt, undo, manual commits |
 | `icoda_core/steplog.py` | `steps.jsonl` records and the function statuses derived from them |
 | `icoda_core/generator.py` | step 0 skeleton, module-based code generation, Doxygen and `@satisfies` |
-| `icoda_core/agent.py` | provider invocation from `providers.json`, rate-limit waiting |
+| `icoda_core/agent.py` | provider invocation and local CLI qualification from `providers.json`, rate-limit waiting |
 | `icoda_core/prompt.py` | prompt assembly: Code Profile, compact specification, model subset around the step, phase rules, feedback |
 | `icoda_core/response.py` | the agent's reply: JSON extraction, validation against `response.schema.json`, path rules, applying files |
 | `icoda_core/persistence.py` | `.icoda/` files and the user configuration |
@@ -406,7 +406,7 @@ vendor's most capable model and its strongest runner-up as the vendor describes 
 and stamped with the date. The launcher checks that the chosen binary is on `PATH` and prints its login hint when a
 call fails with an authentication error.
 
-| Binary | Command | One-shot invocation | Two models (checked 2026-09-07) |
+| Binary | Command | One-shot invocation | Two models (checked 2026-09-09) |
 |---|---|---|---|
 | Claude Code (Anthropic) | `claude` | `claude -p --model <m> …` | `claude-fable-5-1` (Fable 5.1), `claude-opus-5` (Opus 5) |
 | Codex CLI (OpenAI) | `codex` | `codex exec -m <m> …` | `gpt-6-astra` (GPT-6 Astra), `gpt-5.6-sol` (GPT-5.6 Sol) |
@@ -416,8 +416,13 @@ call fails with an authentication error.
 | GitHub Copilot CLI | `copilot` | `copilot -p … --model <m>` | GPT-6 Astra, Claude Fable 5.1 (IDs as listed by `/model`) |
 | Qwen Code (Alibaba) | `qwen` | `qwen -p … -m <m>` | `qwen3-coder-plus`, `qwen3-coder-flash` |
 
-Every invocation template is verified against the installed binary before it is enabled in the list (M2). Binaries that route to many providers (OpenCode, Aider) take provider-prefixed model IDs, which is why their
-two entries name the same frontier models through a prefix.
+Every invocation template is verified against the installed binary before it is enabled in the list (M2).
+`python -m icoda_core.provider_check` performs this side-effect-free qualification from `--help` and `--version`
+and emits a JSON report; it never sends a prompt. Qualification proves CLI compatibility, not authentication.
+The separate, explicit `tests/real_provider_acceptance.py` command consumes model usage and proves the complete
+create/propose/review/approve/undo path while retaining its prompt, reply, diff, build logs, parsed delta, step logs,
+Git history and final result. Binaries that route to many providers (OpenCode, Aider) take provider-prefixed model
+IDs, which is why their two entries name the same frontier models through a prefix.
 
 ## Persistence
 

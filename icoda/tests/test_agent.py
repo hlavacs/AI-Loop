@@ -2,10 +2,11 @@
 
 from __future__ import annotations
 
+import json
 from datetime import datetime, timezone
 from pathlib import Path
 
-from icoda_core import agent
+from icoda_core import agent, provider_check
 from icoda_core.process import ProcessResult
 
 EXPECTED_IDS = ["claude", "codex", "gemini", "opencode", "aider", "copilot", "qwen"]
@@ -18,8 +19,8 @@ def test_providers_file_lists_seven_binaries_with_two_models_each() -> None:
         assert len(provider.models) == 2, provider.id
         assert "{model}" in provider.invocation and "{binary}" in provider.invocation, provider.id
         assert ("{prompt}" in provider.invocation) == (provider.prompt_mode == "arg"), provider.id
-    assert agent.providers_checked_on() == "2026-09-07"
-    assert {p.id for p in providers if p.enabled} == {"claude", "codex", "gemini"}
+    assert agent.providers_checked_on() == "2026-09-09"
+    assert {p.id for p in providers if p.enabled} == {"claude", "codex"}
 
 
 def test_claude_command_reads_the_prompt_from_stdin_and_disables_editing_tools(tmp_path: Path) -> None:
@@ -41,6 +42,55 @@ def test_gemini_command(tmp_path: Path) -> None:
     gemini = agent.find_provider(agent.load_providers(), "gemini")
     argv, _ = agent.build_command(gemini, "gemini-3.8-flash", "p", tmp_path)
     assert argv == ["gemini", "-m", "gemini-3.8-flash", "-p", "p"]
+
+
+def test_provider_check_uses_subcommand_help_and_reports_missing_flags(tmp_path: Path) -> None:
+    codex = agent.find_provider(agent.load_providers(), "codex")
+
+    def compatible(command, **_kwargs):
+        output = "codex-cli 0.152.1" if "--version" in command else "-m --model --cd --sandbox"
+        return ProcessResult(command, 0, output, "")
+
+    check = agent.check_provider(codex, tmp_path, finder=lambda _command: "/opt/bin/codex", runner=compatible)
+    assert check.installed and check.compatible and check.version == "codex-cli 0.152.1"
+    assert check.help_command == ("/opt/bin/codex", "exec", "--help") and not check.missing_flags
+
+    def incompatible(command, **_kwargs):
+        return ProcessResult(command, 0, "codex help without configured options", "")
+
+    failed = agent.check_provider(codex, tmp_path, finder=lambda _command: "/opt/bin/codex", runner=incompatible)
+    assert failed.installed and not failed.compatible and set(failed.missing_flags) == {"--cd", "-m", "--sandbox"}
+
+
+def test_provider_check_does_not_run_an_unavailable_binary(tmp_path: Path) -> None:
+    gemini = agent.find_provider(agent.load_providers(), "gemini")
+
+    def should_not_run(*_args, **_kwargs):
+        raise AssertionError("runner called")
+
+    check = agent.check_provider(gemini, tmp_path, finder=lambda _command: None, runner=should_not_run)
+    assert not check.installed and not check.compatible and check.detail == "not installed"
+
+
+def test_provider_check_cli_writes_qualification_report(tmp_path: Path, monkeypatch) -> None:
+    checks = [agent.ProviderCheck("codex", True, True, True, True, "/opt/bin/codex", "codex 1",
+                                  ("/opt/bin/codex", "exec", "--help"), ("-m",), (), "options present")]
+    monkeypatch.setattr(provider_check.agent, "load_providers", list)
+    monkeypatch.setattr(provider_check.agent, "check_providers", lambda _providers, _cwd: checks)
+    monkeypatch.setattr(provider_check.agent, "providers_checked_on", lambda: "2026-09-09")
+    output = tmp_path / "qualification.json"
+    assert provider_check.main(["--output", str(output), "--cwd", str(tmp_path)]) == 0
+    data = json.loads(output.read_text(encoding="utf-8"))
+    assert data["configured_on"] == "2026-09-09"
+    assert data["providers"][0]["path"] == "/opt/bin/codex"
+
+
+def test_provider_check_cli_fails_for_an_enabled_incompatible_binary(tmp_path: Path, monkeypatch) -> None:
+    checks = [agent.ProviderCheck("codex", True, True, True, False, missing_flags=("--sandbox",),
+                                  detail="missing from help: --sandbox")]
+    monkeypatch.setattr(provider_check.agent, "load_providers", list)
+    monkeypatch.setattr(provider_check.agent, "check_providers", lambda _providers, _cwd: checks)
+    assert provider_check.main(["--cwd", str(tmp_path)]) == 1
 
 
 def test_rate_limit_detection_and_wait_times() -> None:

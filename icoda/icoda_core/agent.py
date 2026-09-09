@@ -44,6 +44,23 @@ class Provider:
         return self.models[0].id
 
 
+@dataclass(frozen=True)
+class ProviderCheck:
+    """Local evidence that an installed CLI accepts every option in its invocation template."""
+
+    provider_id: str
+    configured_enabled: bool
+    configured_verified: bool
+    installed: bool
+    compatible: bool
+    path: str = ""
+    version: str = ""
+    help_command: tuple[str, ...] = ()
+    required_flags: tuple[str, ...] = ()
+    missing_flags: tuple[str, ...] = ()
+    detail: str = ""
+
+
 def load_providers(path: Path = PROVIDERS_FILE) -> list[Provider]:
     """Read providers.json; the list order is the order shown in the Binary field."""
     raw = json.loads(path.read_text(encoding="utf-8"))
@@ -84,6 +101,64 @@ def build_command(provider: Provider, model: str, prompt: str, cwd: Path | str,
 def binary_available(provider: Provider, binary: str | None = None) -> bool:
     candidate = binary or provider.command
     return Path(candidate).is_file() or shutil.which(candidate) is not None
+
+
+def check_provider(
+    provider: Provider,
+    cwd: Path | str,
+    *,
+    finder: Callable[[str], str | None] = shutil.which,
+    runner: Callable[..., ProcessResult] = run_bounded,
+) -> ProviderCheck:
+    """Inspect one local CLI's help and version without making a model request."""
+    path = _binary_path(provider.command, finder)
+    flags = tuple(token for token in provider.invocation if token.startswith("-") and token != "-")
+    if not path:
+        return ProviderCheck(provider.id, provider.enabled, provider.verified, False, False,
+                             required_flags=flags, detail="not installed")
+    help_command = _help_command(provider, path)
+    help_result = runner(help_command, cwd=cwd, timeout=20.0)
+    help_text = help_result.stdout + help_result.stderr
+    missing = tuple(flag for flag in flags if flag not in help_text)
+    version_result = runner([path, "--version"], cwd=cwd, timeout=20.0)
+    version = (version_result.stdout.strip() or version_result.stderr.strip()).splitlines()[:1]
+    compatible = help_result.ok and not missing
+    detail = "invocation options present" if compatible else _check_failure(help_result, missing)
+    return ProviderCheck(provider.id, provider.enabled, provider.verified, True, compatible, path,
+                         version[0] if version else "", tuple(help_command), flags, missing, detail)
+
+
+def check_providers(
+    providers: Sequence[Provider],
+    cwd: Path | str,
+    *,
+    finder: Callable[[str], str | None] = shutil.which,
+    runner: Callable[..., ProcessResult] = run_bounded,
+) -> list[ProviderCheck]:
+    return [check_provider(provider, cwd, finder=finder, runner=runner) for provider in providers]
+
+
+def _binary_path(command: str, finder: Callable[[str], str | None]) -> str:
+    candidate = Path(command).expanduser()
+    if candidate.is_file():
+        return str(candidate.resolve())
+    found = finder(command)
+    return str(Path(found).resolve()) if found else ""
+
+
+def _help_command(provider: Provider, binary: str) -> list[str]:
+    command = [binary]
+    for token in provider.invocation[1:]:
+        if token.startswith(("-", "{")):
+            break
+        command.append(token)
+    return [*command, "--help"]
+
+
+def _check_failure(result: ProcessResult, missing: tuple[str, ...]) -> str:
+    if not result.ok:
+        return f"help command failed with exit code {result.returncode}"
+    return "missing from help: " + ", ".join(missing)
 
 
 _RATE_LIMIT_PATTERNS = (

@@ -1,6 +1,6 @@
 {
-  "checked": "2026-09-07",
-  "note": "Two best models per binary as the vendor describes them. 'enabled' is set once the invocation template was verified against the installed binary (M2). {prompt} is passed as an argument unless prompt_mode is 'stdin'.",
+  "checked": "2026-09-09",
+  "note": "Two best models per binary as the vendor describes them. 'enabled' is set once the invocation template was verified against an installed binary (M2). {prompt} is passed as an argument unless prompt_mode is 'stdin'. Run python -m icoda_core.provider_check for the local qualification report.",
   "providers": [
     {
       "id": "claude",
@@ -28,7 +28,7 @@
         {"id": "gpt-5.6-sol", "label": "GPT-5.6 Sol"}
       ],
       "enabled": true,
-      "verified": false,
+      "verified": true,
       "login_hint": "run 'codex login'"
     },
     {
@@ -41,7 +41,7 @@
         {"id": "gemini-3.1-pro-preview", "label": "Gemini 3.1 Pro"},
         {"id": "gemini-3.8-flash", "label": "Gemini 3.8 Flash"}
       ],
-      "enabled": true,
+      "enabled": false,
       "verified": false,
       "login_hint": "run 'gemini' once interactively and log in"
     },

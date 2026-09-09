@@ -22,3 +22,22 @@ after every code or GUI change:
 On Windows use `verify.cmd`. Each run retains timestamped command logs, JUnit and coverage reports, environment
 metadata, the ICODA analysis log, fitted and zoomed File View and Call View screenshots, and a populated proposal
 Delta and Source diff screenshot under `.icoda-test-artifacts/`; the `LATEST` file names the newest run.
+
+Provider qualification is local and does not consume model usage. It records installed paths, versions, the exact
+help command, and whether every configured invocation option is present:
+
+```bash
+.icoda-venv/bin/python -m icoda_core.provider_check \
+  --output .icoda-test-artifacts/provider-qualification.json
+```
+
+The explicit M2 real-provider acceptance does consume model usage and therefore stays outside `verify.bash`. Give
+it a new output directory each time. It generates a project from a specification, requests one architecture step,
+checks the source diff and parsed call graph, approves and commits it, undoes it, then rebuilds, tests, re-analyses,
+and proves the project is clean:
+
+```bash
+.icoda-venv/bin/python tests/real_provider_acceptance.py \
+  --provider codex --model gpt-5.6-sol \
+  --output .icoda-test-artifacts/real-provider-codex-YYYYMMDD-HHMMSS
+```

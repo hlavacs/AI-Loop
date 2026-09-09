@@ -40,25 +40,29 @@ with clang, CMake and Ninja installed; MIT licence; Python 3.10+; `ruff` and `my
 
 ## Verified baseline and completion order
 
-**Baseline, macOS 2026-09-09:** the development environment is installed from `.[dev]`; 106 tests pass with no
+**Baseline, macOS 2026-09-09:** the development environment is installed from `.[dev]`; 113 tests pass with no
 skips, `ruff check .`, `mypy icoda.py icoda_core icoda_gui` and byte-compilation are clean. The sample project builds
 and its CTest smoke test passes with Homebrew LLVM 22.1.4. Headless ICODA analysis selects the matching Homebrew
 libclang 22.1.4 and reports no errors. Module-building tests use the generated `build.sh`, so they exercise the same
 toolchain selection as a real ICODA project.
 
+**M2 accepted on the Mac, 2026-09-09:** the local, non-generative qualification checked Claude Code 2.1.191 and
+Codex CLI 0.152.1 against their configured help options; unavailable CLIs remain disabled. The explicit Codex
+`gpt-5.6-sol` acceptance generated and prepared a project from a valid specification, returned a one-entity proposal
+on its first attempt, built and parsed it, verified the source diff, specification tags and call edge, approved and
+committed it, undid it, rebuilt and tested the restored source, re-analysed it, and finished with a clean tree.
+
 Work continues in this dependency order:
 
-1. Close M2: verify each enabled provider with its installed CLI and pass a complete real-provider
-   create/propose/review/approve/undo run.
-2. Build the M3 state foundation: persisted phase transitions, deterministic bottom-up function selection, body
+1. Build the M3 state foundation: persisted phase transitions, deterministic bottom-up function selection, body
    hashes, test associations and accurate build-versus-test results.
-3. Complete M3: two-round approach then code/test proposals, explicit signature-change confirmation, targeted tests
+2. Complete M3: two-round approach then code/test proposals, explicit signature-change confirmation, targeted tests
    and safe per-function batching that stops on the first failure.
-4. Complete M4: Class View and common view interactions, specification coverage, rule checks included in prompts,
+3. Complete M4: Class View and common view interactions, specification coverage, rule checks included in prompts,
    and the persistent status/requirements/step mind map.
-5. Specify and complete M5: Python identities and uncertain dynamic calls first, then the AST parser, generator,
+4. Specify and complete M5: Python identities and uncertain dynamic calls first, then the AST parser, generator,
    project/test integration and a Python acceptance project.
-6. Qualify a release on macOS, Linux and Windows, including clean installation, recovery paths, large-project
+5. Qualify a release on macOS, Linux and Windows, including clean installation, recovery paths, large-project
    performance, migration, documentation and a versioned acceptance matrix.
 
 Every item is a gate: its automated tests and stated manual acceptance must pass before work starts on the next item.
@@ -150,8 +154,9 @@ editor for an empty directory, and saving the specification of a project without
 applying files), `icoda_core/prompt.py` (role, Code Profile + compact specification, model subset = focus files
 plus neighbours, phase rules, rejections/constraints/compiler output/validation error, response format), and
 the Binary/Model field `icoda_gui/provider_field.py` in the side panel (options follow the binary, last model
-per binary remembered, saved in `.icoda/ui.json` and as the default in the user configuration). Not yet
-verified: the seven invocation templates against installed binaries (the VM has none; needs your Mac).
+per binary remembered, saved in `.icoda/ui.json` and as the default in the user configuration). The local
+`provider_check` command now qualifies installed CLIs without making a model request and retains JSON evidence;
+Claude Code and Codex are compatible, while the five unavailable CLIs remain disabled.
 Step 4 done: `icoda_core/steps.py` + `steplog.py` — one persistent worktree `.icoda/worktree` (its `build/`
 survives between steps), `prepare` (git init, build + parse, step 0 commit), `propose` (K attempts fed with the
 validation error or the compiler output; the delta comes from parsing the worktree), `approve` (promote, rebuild,
@@ -165,9 +170,9 @@ Commit manual edits) driven by `icoda_gui/step_controller.py` with the slow part
 menu entries mirror the buttons. Proposal review has separate Delta, Source diff and Build tabs; the diff is computed
 from the actual worktree and includes untracked additions. The architecture entity budget counts new modules,
 types/aliases, callables and global variables from the parsed delta; an over-budget result becomes feedback for the
-next attempt, and the Delta tab shows the count. The 106-test macOS baseline is green. **M2 still awaits its
-real-provider acceptance:** `./icoda.bash`, File → New
-Project…, save the specification, run `build.sh` in the new project, Reload, then Propose with Claude Code.
+next attempt, and the Delta tab shows the count. `tests/real_provider_acceptance.py` additionally exercises a real
+Codex call and retains the prompt, raw output, source diff, build logs, parsed delta, step logs and Git history. It
+passed the complete create/propose/review/approve/undo/rebuild/re-analyse sequence on macOS on 2026-09-09.
 
 1. Spike first: the step 0 skeleton generator (`icoda_core/generator.py`) emits a module-based CMake project with
    presets, `build.sh`/`build.cmd`, `vcpkg.json`, `Doxyfile`, a CTest smoke test and `main()` importing an empty
@@ -194,8 +199,8 @@ Project…, save the specification, run `build.sh` in the new project, Reload, t
    *verify:* end-to-end test in a temporary git repository with the fake provider: three steps approved, one
    rejected, one undone, history linear, working tree clean.
 5. Proposal panel in `icoda.py`: rationale, delta list, diff, the four buttons, the Binary/Model field.
-   *verify:* Tk-stub tests of the wiring; manual run with Claude Code on your Mac creating a small project from a
-   specification.
+   *verify:* Tk-stub tests of the wiring; a real-provider run on the Mac creating a small project from a
+   specification, with retained review and undo evidence.
 6. Call View: rooted graph, depth slider, callers switch, path highlight, recursion loop, template labels; opened
    for each proposal with the added entities highlighted.
    *verify:* geometry tests; manual.
@@ -247,7 +252,8 @@ has been used on a real project of yours; not detailed yet.
 
 - Which editor should a double click open? A: (default taken 2026-09-08) VS Code with `code --goto` when it is on the PATH, otherwise the system opener; a template can be set in the user configuration (`editor`).
 - Test framework for generated C++ tests: doctest (single header, vendored) or Catch2 (vcpkg)? Recommendation: doctest. A: (default taken 2026-09-08) doctest.
-- Which provider for the first end-to-end run in M2: Claude Code (assumed), Codex or Gemini? A: (default taken 2026-09-08) Claude Code.
+- Which provider for the first end-to-end run in M2: Claude Code, Codex or Gemini? A: Codex CLI with `gpt-5.6-sol`
+  (accepted 2026-09-09; Claude Code was installed but not authenticated).
 
 ## What I need from you
 
