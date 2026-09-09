@@ -142,12 +142,12 @@ def main(argv: list[str]) -> int:
         return 1
 
     env["AI_LOOP_PARENT_LAUNCHER_ACTIVE"] = "1"
-    launcher = repo_dir / ("ai_gui.cmd" if os.name == "nt" else "ai_gui.bash")
+    launcher = ai_loop_dir / ("ai_gui.cmd" if os.name == "nt" else "ai_gui.bash")
     if not launcher.exists():
         print(f"AI-Loop launcher not found at {launcher}", file=sys.stderr)
         return 1
 
-    return subprocess.call([str(launcher), *gui_args], cwd=repo_dir, env=env)
+    return subprocess.call([str(launcher), *gui_args], cwd=ai_loop_dir, env=env)
 
 
 if __name__ == "__main__":
