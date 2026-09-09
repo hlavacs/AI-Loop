@@ -90,7 +90,7 @@ class StepPanel:
             self.title_var.set(f"Step {proposal.number}: {proposal.response.title}  "
                                f"(attempt {proposal.attempts})")
             _set_text(self.rationale, _rationale_text(proposal))
-            _set_text(self.details, proposal.delta.summary())
+            _set_text(self.details, _delta_text(proposal))
             _set_text(self.source_diff, proposal.source_diff or "No source changes.")
             _set_text(self.build_output, proposal.build.output or "Build passed without output.")
         else:
@@ -140,6 +140,15 @@ def _rationale_text(proposal: steps.Proposal) -> str:
     text = proposal.response.rationale
     if proposal.response.questions:
         text += "\n\nQuestions:\n" + "\n".join(f"- {q}" for q in proposal.response.questions)
+    return text
+
+
+def _delta_text(proposal: steps.Proposal) -> str:
+    assert proposal.delta is not None
+    text = proposal.delta.summary()
+    if proposal.request.phase == prompt.ARCHITECTURE:
+        text += (f"\n\nArchitecture entity budget: {proposal.delta.architecture_entity_count()} / "
+                 f"{proposal.request.max_entities}")
     return text
 
 

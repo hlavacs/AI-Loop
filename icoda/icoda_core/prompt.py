@@ -75,8 +75,10 @@ def _step_text(request: StepRequest) -> str:
 
 def _architecture_rules(request: StepRequest) -> list[str]:
     return [
-        (f"- At most {request.max_entities} new entities (modules, structs, classes, enums, functions) in this step; "
-         "any number of relations among them and to existing code."),
+        (f"- At most {request.max_entities} new architecture entities in this step. Each new module, type or alias, "
+         "function or method, constructor or destructor, and global variable counts. Fields and individual enum "
+         "values belong to their owning concept and do not consume separate slots. Any number of relations may "
+         "connect the new and existing entities."),
         ("- One C++20 module per concept with an exported interface; headers only where a library or platform "
          "forces them. Keep the CMake target lists in sync when files are added."),
         ("- Declarations with full signatures and empty bodies. The one exception: calls to other functions and the "

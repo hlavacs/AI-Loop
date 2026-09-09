@@ -180,10 +180,12 @@ one smoke test. The skeleton is module-based: `main()` imports a first, empty mo
 (CMake with Ninja and the toolchain's clang) is proven to work before any architecture step. The skeleton must build and run before the first architecture step is proposed.
 
 **Atomic step.** One concept and its immediate collaborators: a handful of structs, classes, enums or functions, not
-many. Budget: at most 5 new entities per step (configurable), any number of edges among them and to existing entities.
-A step must leave the project compiling. Steps are ordered top-down, starting from `main()` and following the use cases
-of the specification; the agent proposes the next step, and the developer can instead ask for a specific one
-("introduce the renderer now").
+many. Budget: at most 5 new architecture entities per step (configurable), any number of edges among them and to
+existing entities. Each new module, type or alias, callable, and global variable consumes one slot; fields and
+individual enum values belong to their owning concept and consume no separate slot. ICODA enforces the budget from
+the parsed worktree delta and feeds an over-budget result back to the agent for a smaller retry. A step must leave the
+project compiling. Steps are ordered top-down, starting from `main()` and following the use cases of the specification;
+the agent proposes the next step, and the developer can instead ask for a specific one ("introduce the renderer now").
 
 **What goes into the code in this phase.** One C++20 module per concept, with an exported interface; headers only
 where a library or platform forces them. Declarations with full signatures. Empty bodies, with one exception: calls

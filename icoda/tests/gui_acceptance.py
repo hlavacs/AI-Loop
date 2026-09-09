@@ -139,6 +139,8 @@ def main(argv: list[str] | None = None) -> int:
                           "@@ -8,3 +8,7 @@ export namespace app {\n"
                           "+/// @brief Returns the configured answer.\n"
                           "+int answer() {\n+    return 42;\n+}\n")
+        review_entities = tuple(entity for entity in app.opened.model.entities.values()
+                                if entity.kind in steps.ARCHITECTURE_ENTITY_KINDS)[:2]
         review = steps.Proposal(
             1,
             prompt.StepRequest(prompt.ARCHITECTURE, 1, "add the configured answer"),
@@ -146,10 +148,15 @@ def main(argv: list[str] | None = None) -> int:
             attempts=1,
             response=response.StepResponse("Add configured answer", "The specification requires it.", ()),
             build=steps.BuildResult(True, "Build and tests passed."),
-            delta=steps.Delta((), (), (), ("src/app/app.cppm",)),
+            delta=steps.Delta(review_entities, (), (), ("src/app/app.cppm",)),
             source_diff=displayed_diff,
         )
         app.panel.show(review)
+        app.panel.detail_notebook.select(app.panel.details.master)
+        root.update()
+        if "Architecture entity budget: 2 / 5" not in app.panel.details.get("1.0", "end"):
+            raise RuntimeError("proposal Delta tab did not show architecture budget use")
+        proposal_delta_metrics = capture(root, args.output / "proposal-delta.png")
         app.panel.detail_notebook.select(app.panel.source_diff.master)
         root.update()
         if displayed_diff.strip() not in app.panel.source_diff.get("1.0", "end"):
@@ -158,7 +165,7 @@ def main(argv: list[str] | None = None) -> int:
         state = {"status": app.status.get(), "summary": app.opened.summary,
                  "file_view": file_metrics, "file_view_zoomed": file_zoomed_metrics,
                  "call_view": call_metrics, "call_view_zoomed": call_zoomed_metrics,
-                 "proposal_source_diff": proposal_diff_metrics,
+                 "proposal_delta": proposal_delta_metrics, "proposal_source_diff": proposal_diff_metrics,
                  "navigation": {"file": {"fit_scale": file_fit_scale, "zoomed_scale": file_zoomed_scale,
                                            "pan": file_pan},
                                 "call": {"fit_scale": call_fit_scale, "zoomed_scale": call_zoomed_scale,

@@ -13,7 +13,7 @@ from dataclasses import dataclass, replace
 from pathlib import Path
 
 from icoda_core import agent, analysis, git, persistence, prompt, response, session, specification
-from icoda_core.model import CALLABLE_KINDS, DerivedModel, Entity
+from icoda_core.model import CALLABLE_KINDS, TYPE_KINDS, DerivedModel, Entity, Kind
 from icoda_core.process import run_bounded
 from icoda_core.steplog import StepLog, StepRecord, apply_statuses
 
@@ -24,6 +24,7 @@ MAX_ATTEMPTS = 3
 BUILD_TIMEOUT = 900.0
 PROVIDER_TIMEOUT = 1800.0
 OUTPUT_TAIL = 6000
+ARCHITECTURE_ENTITY_KINDS = TYPE_KINDS | CALLABLE_KINDS | frozenset({Kind.VARIABLE})
 
 
 class StepError(RuntimeError):
@@ -72,15 +73,21 @@ class Delta:
     removed: tuple[Entity, ...]
     changed: tuple[Entity, ...]
     files: tuple[str, ...]
+    modules: tuple[str, ...] = ()
 
     def summary(self) -> str:
         head = (f"{len(self.added)} entities added, {len(self.changed)} changed, {len(self.removed)} removed; "
                 f"files: {', '.join(self.files) or 'none'}")
         lines = [head]
         lines.extend(f"+ {e.kind.value} {e.qualified_name} {e.signature}".rstrip() for e in self.added)
+        lines.extend(f"+ module {name}" for name in self.modules)
         lines.extend(f"~ {e.kind.value} {e.qualified_name} {e.signature}".rstrip() for e in self.changed)
         lines.extend(f"- {e.kind.value} {e.qualified_name}" for e in self.removed)
         return "\n".join(lines)
+
+    def architecture_entity_count(self) -> int:
+        """New concepts charged to an architecture step's configurable entity budget."""
+        return len(self.modules) + sum(entity.kind in ARCHITECTURE_ENTITY_KINDS for entity in self.added)
 
 
 def compute_delta(before: DerivedModel, after: DerivedModel, files: Sequence[str]) -> Delta:
@@ -91,7 +98,21 @@ def compute_delta(before: DerivedModel, after: DerivedModel, files: Sequence[str
     removed = tuple(e for usr, e in before.entities.items() if usr not in after.entities)
     changed = tuple(e for usr, e in after.entities.items()
                     if usr in before.entities and shape(e) != shape(before.entities[usr]))
-    return Delta(added, removed, changed, tuple(files))
+    before_modules = {file.module for file in before.files.values() if file.module}
+    added_modules = tuple(sorted({file.module for file in after.files.values() if file.module} - before_modules))
+    return Delta(added, removed, changed, tuple(files), added_modules)
+
+
+def _delta_error(request: prompt.StepRequest, delta: Delta) -> str:
+    if request.phase != prompt.ARCHITECTURE:
+        return ""
+    count = delta.architecture_entity_count()
+    if count <= request.max_entities:
+        return ""
+    names = [f"module {name}" for name in delta.modules]
+    names.extend(entity.qualified_name for entity in delta.added if entity.kind in ARCHITECTURE_ENTITY_KINDS)
+    return (f"the parsed architecture delta adds {count} budgeted entities, exceeding the maximum of "
+            f"{request.max_entities}: {', '.join(names)}. Split this into a smaller atomic step")
 
 
 @dataclass
@@ -204,7 +225,7 @@ class StepRunner:
             self._apply_and_check(proposal)
             if proposal.ok:
                 return proposal
-            request = replace(request, validation_error="", build_errors=proposal.build.output)
+            request = self._retry_request(request, proposal)
         proposal.error = proposal.error or f"no usable proposal after {self.attempts} attempts"
         return proposal
 
@@ -217,6 +238,8 @@ class StepRunner:
     def _apply_and_check(self, proposal: Proposal) -> None:
         assert proposal.response is not None
         self._reset_worktree(proposal.worktree)
+        proposal.build, proposal.model, proposal.delta = BuildResult(False, ""), None, None
+        proposal.source_diff = ""
         try:
             response.apply_changes(proposal.worktree, proposal.response.files)
         except (OSError, ValueError) as exc:
@@ -235,6 +258,13 @@ class StepRunner:
         proposal.model = self.analyse(proposal.worktree)
         files = [c.path for c in git.status_changes(proposal.worktree)]
         proposal.delta = compute_delta(self.current_model(), proposal.model, files)
+        proposal.error = _delta_error(proposal.request, proposal.delta)
+
+    @staticmethod
+    def _retry_request(request: prompt.StepRequest, proposal: Proposal) -> prompt.StepRequest:
+        if proposal.build.ok and proposal.error:
+            return replace(request, validation_error=proposal.error, build_errors="")
+        return replace(request, validation_error="", build_errors=proposal.build.output)
 
     def _prompt(self, request: prompt.StepRequest) -> str:
         spec = specification.load(self.store.specification_path) if self.store.specification_path.is_file() \

@@ -44,6 +44,7 @@ def test_panel_shows_proposals_and_requests(tmp_path: Path) -> None:
     assert panel.title_var.get() == "Step 1: Add b  (attempt 2)"
     assert "Questions:\n- Why?" in panel.rationale.get("1.0", "end")
     assert "3 entities added" in panel.details.get("1.0", "end")
+    assert "Architecture entity budget: 3 / 5" in panel.details.get("1.0", "end")
     assert "diff --git a/m.cpp b/m.cpp" in panel.source_diff.get("1.0", "end")
     assert "built" in panel.build_output.get("1.0", "end")
     panel.show(fake_proposal(tmp_path, ok=False))

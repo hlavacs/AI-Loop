@@ -36,6 +36,15 @@ int run() {
 }  // namespace app
 """
 APP_BROKEN = "export module app;\nexport namespace app {\nint run() { return broken; }\n}\n"
+APP_OVER_BUDGET = APP_WITH_ANSWER.replace(
+    "/// @brief Runs the application.",
+    """/// @brief A second new architecture entity.
+int helper() {
+    return {};
+}
+
+/// @brief Runs the application.""",
+)
 
 
 def reply(title: str, path: str, content: str) -> str:
@@ -130,8 +139,22 @@ def test_step_zero_then_propose_approve_reject_undo(project: Path) -> None:
     assert runner.prepare() is None and any("building" in m for m in messages)
 
 
+def test_over_budget_architecture_delta_is_fed_to_a_smaller_retry(project: Path) -> None:
+    provider = ScriptedProvider([
+        reply("Too broad", "src/app/app.cppm", APP_OVER_BUDGET),
+        reply("Add only the answer", "src/app/app.cppm", APP_WITH_ANSWER),
+    ])
+    runner = steps.StepRunner(project, persistence.UserConfig(), "fake", "fake-bin", "fake-model", invoke=provider)
+    runner.prepare()
+    proposal = runner.propose(prompt.StepRequest(prompt.ARCHITECTURE, 0, max_entities=1))
+    assert proposal.ok and proposal.attempts == 2 and proposal.delta is not None
+    assert proposal.delta.architecture_entity_count() == 1
+    assert "parsed architecture delta adds 2 budgeted entities" in provider.prompts[1]
+    assert "app::answer" in provider.prompts[1] and "app::helper" in provider.prompts[1]
+
+
 def test_delta_and_log_helpers(tmp_path: Path) -> None:
-    from icoda_core.model import DerivedModel, Entity, Kind
+    from icoda_core.model import DerivedModel, Entity, FileInfo, Kind
 
     before, after = DerivedModel("/p"), DerivedModel("/p")
     before.add_entity(Entity("u:a", Kind.FUNCTION, "a", "a", "x.cpp", 1, signature="void a()"))
@@ -142,6 +165,16 @@ def test_delta_and_log_helpers(tmp_path: Path) -> None:
     assert [e.usr for e in delta.added] == ["u:b"] and [e.usr for e in delta.changed] == ["u:a"]
     assert [e.usr for e in delta.removed] == ["u:gone"]
     assert delta.summary().splitlines()[0] == "1 entities added, 1 changed, 1 removed; files: x.cpp, y.cppm"
+
+    budget_before, budget_after = DerivedModel("/p"), DerivedModel("/p")
+    budget_before.files["core.cppm"] = FileInfo("core.cppm", module="core")
+    budget_after.files.update(budget_before.files)
+    budget_after.files["render.cppm"] = FileInfo("render.cppm", module="render")
+    budget_after.add_entity(Entity("u:B", Kind.CLASS, "B", "B", "render.cppm", 1))
+    budget_after.add_entity(Entity("u:B:x", Kind.FIELD, "x", "B::x", "render.cppm", 2, parent="u:B"))
+    budget_after.add_entity(Entity("u:E:v", Kind.ENUMERATOR, "v", "E::v", "render.cppm", 3, parent="u:E"))
+    budget_delta = steps.compute_delta(budget_before, budget_after, ["render.cppm"])
+    assert budget_delta.modules == ("render",) and budget_delta.architecture_entity_count() == 2
 
     log = steplog.StepLog(tmp_path / "steps.jsonl")
     log.append(steplog.StepRecord(0, "architecture", "approved", entities_added=["u:a"]))

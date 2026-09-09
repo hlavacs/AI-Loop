@@ -33,7 +33,8 @@ def test_architecture_prompt_has_all_sections() -> None:
     for expected in ("software architect", "# Specification and code profile", "UC-1: Start the app",
                      "# Current code", "app::run int run() [stub] @satisfies UC-1 — Entry point.",
                      "relations: calls src/app/app.cppm (1), imports src/app/app.cppm (1)", "# This step",
-                     "At most 4 new entities", "introduce the renderer", "too many classes", "keep app::run",
+                     "At most 4 new architecture entities", "Fields and individual enum values", "introduce the renderer",
+                     "too many classes", "keep app::run",
                      "error: x", "no JSON", "# Response format", '"rationale"'):
         assert expected in text, expected
 

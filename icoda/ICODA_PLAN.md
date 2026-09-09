@@ -32,7 +32,7 @@ out to need more than about a day of work, it is split rather than stretched.
 After every code or GUI change, run `./verify.bash` (`verify.cmd` on Windows). The gate must pass before the change
 is accepted. It retains timestamped command logs, JUnit and branch-coverage reports, environment metadata, the
 project analysis log, nonblank, unclipped File View and Call View screenshots at fitted and zoomed scales, and a
-populated proposal Source diff screenshot in `.icoda-test-artifacts/`.
+populated proposal Delta and Source diff screenshot in `.icoda-test-artifacts/`.
 
 Conventions: pytest with a Tk stub (`ICODA_TK_STUB=1`) so the GUI is testable headless; GitHub Actions CI on Ubuntu
 with clang, CMake and Ninja installed; MIT licence; Python 3.10+; `ruff` and `mypy` clean; every function within the
@@ -48,8 +48,8 @@ toolchain selection as a real ICODA project.
 
 Work continues in this dependency order:
 
-1. Close M2: enforce architecture-step limits from the computed delta, verify each enabled provider with its
-   installed CLI, and pass a complete real-provider create/propose/review/approve/undo run.
+1. Close M2: verify each enabled provider with its installed CLI and pass a complete real-provider
+   create/propose/review/approve/undo run.
 2. Build the M3 state foundation: persisted phase transitions, deterministic bottom-up function selection, body
    hashes, test associations and accurate build-versus-test results.
 3. Complete M3: two-round approach then code/test proposals, explicit signature-change confirmation, targeted tests
@@ -163,8 +163,10 @@ proposal's new and changed entities, depth spinner, callers switch, root from th
 the bottom (phase, request, max entities; Propose, Approve, Reject…, Adapt…, Rebuild, Open worktree, Undo,
 Commit manual edits) driven by `icoda_gui/step_controller.py` with the slow parts in a worker thread; Project
 menu entries mirror the buttons. Proposal review has separate Delta, Source diff and Build tabs; the diff is computed
-from the actual worktree and includes untracked additions. The 106-test macOS baseline is green. **M2 still awaits
-architecture-limit enforcement and its real-provider acceptance:** `./icoda.bash`, File → New
+from the actual worktree and includes untracked additions. The architecture entity budget counts new modules,
+types/aliases, callables and global variables from the parsed delta; an over-budget result becomes feedback for the
+next attempt, and the Delta tab shows the count. The 106-test macOS baseline is green. **M2 still awaits its
+real-provider acceptance:** `./icoda.bash`, File → New
 Project…, save the specification, run `build.sh` in the new project, Reload, then Propose with Claude Code.
 
 1. Spike first: the step 0 skeleton generator (`icoda_core/generator.py`) emits a module-based CMake project with
