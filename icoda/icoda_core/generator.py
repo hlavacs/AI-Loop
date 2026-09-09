@@ -115,10 +115,11 @@ PRESETS = """{
 """
 
 BUILD_SH = """#!/usr/bin/env bash
-# Configure, build and test one preset (default: debug). Usage: ./build.sh [debug|release]
+# Configure/build and normally test one preset. Usage: ./build.sh [debug|release] [build-only]
 set -euo pipefail
 cd "$(dirname "${BASH_SOURCE[0]}")"
 preset="${1:-debug}"
+mode="${2:-all}"
 # A cache created from another checkout (or another machine) makes CMake refuse to configure; start fresh then.
 cache="build/$preset/CMakeCache.txt"
 if [ -f "$cache" ] && ! grep -qx "CMAKE_HOME_DIRECTORY:INTERNAL=$PWD" "$cache"; then
@@ -139,15 +140,18 @@ if [ "$(uname -s)" = "Darwin" ] && [ -z "${CXX:-}" ]; then
 fi
 cmake --preset "$preset" ${extra[@]+"${extra[@]}"}
 cmake --build --preset "$preset"
-ctest --preset "$preset"
+if [ "$mode" != "build-only" ]; then
+  ctest --preset "$preset"
+fi
 """
 
 BUILD_CMD = """@echo off
-rem Configure, build and test one preset (default: debug). Usage: build.cmd [debug|release]
+rem Configure/build and normally test one preset. Usage: build.cmd [debug|release] [build-only]
 setlocal
 cd /d "%~dp0"
 set "PRESET=%~1"
 if "%PRESET%"=="" set "PRESET=debug"
+set "MODE=%~2"
 if exist "build\\%PRESET%\\CMakeCache.txt" (
     findstr /x /c:"CMAKE_HOME_DIRECTORY:INTERNAL=%CD:\\=/%" "build\\%PRESET%\\CMakeCache.txt" >nul || (
         echo build.cmd: build\\%PRESET% was configured for another source directory; removing it 1>&2
@@ -159,6 +163,7 @@ if "%CXX%"=="" (
 )
 cmake --preset %PRESET% || exit /b 1
 cmake --build --preset %PRESET% || exit /b 1
+if /i "%MODE%"=="build-only" exit /b 0
 ctest --preset %PRESET% || exit /b 1
 """
 

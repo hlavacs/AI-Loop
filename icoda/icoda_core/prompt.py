@@ -193,6 +193,8 @@ def _entity_line(entity: Entity) -> str:
         text += f" {entity.signature}"
     if entity.kind in CALLABLE_KINDS:
         text += f" [{entity.status}]"
+        if entity.test_files:
+            text += " tests=" + ", ".join(entity.test_files)
     if entity.satisfies:
         text += " @satisfies " + ", ".join(entity.satisfies)
     if entity.brief:

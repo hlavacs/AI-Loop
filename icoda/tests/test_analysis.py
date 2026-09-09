@@ -47,6 +47,15 @@ def test_library_name() -> None:
     assert analysis.library_name("/home/u/llvm18/lib/clang/18/include/stddef.h", ["/home/u/llvm18/lib/clang/18"]) == "std"
 
 
+def test_unit_cache_key_changes_with_the_extractor_schema(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    source = tmp_path / "a.cpp"
+    source.write_text("int a() { return 1; }\n")
+    command = analysis.CompileCommand(str(source), str(tmp_path), ("-std=c++23",), "clang++", False)
+    before = analysis.unit_cache_key(command, ["a.cpp"], tmp_path, "clang 22")
+    monkeypatch.setattr(analysis, "UNIT_CACHE_VERSION", analysis.UNIT_CACHE_VERSION + 1)
+    assert analysis.unit_cache_key(command, ["a.cpp"], tmp_path, "clang 22") != before
+
+
 # --------------------------------------------------------------------------- with libclang
 
 def _libclang() -> toolchain.Loaded:
@@ -106,6 +115,13 @@ def test_main_calls_into_the_simulation(sample: DerivedModel) -> None:
     run = _by_name(sample, "Simulation::run")
     run_callees = {sample.entities[e.target].qualified_name for e in sample.callees(run.usr) if e.target in sample.entities}
     assert "Simulation::draw_all" in run_callees
+
+
+def test_callable_bodies_are_hashed_and_tests_are_associated(sample: DerivedModel) -> None:
+    run = _by_name(sample, "Simulation::run")
+    assert len(run.body_hash) == 64
+    assert run.test_files == ("tests/smoke_test.cpp",)
+    assert _by_name(sample, "Shape::area").body_hash == ""
 
 
 def test_stack_is_one_entity_with_labelled_edges(sample: DerivedModel) -> None:

@@ -13,7 +13,8 @@ def small_model() -> DerivedModel:
     model.add_entity(Entity("u:main", Kind.FUNCTION, "main", "main", "src/main.cpp", 3, signature="int main()",
                             status="implemented"))
     model.add_entity(Entity("u:run", Kind.FUNCTION, "run", "app::run", "src/app/app.cppm", 5,
-                            signature="int run()", status="stub", satisfies=("UC-1",), brief="Entry point."))
+                            signature="int run()", status="stub", satisfies=("UC-1",), brief="Entry point.",
+                            test_files=("tests/app_test.cpp",)))
     model.add_entity(Entity("u:log", Kind.FUNCTION, "log", "util::log", "src/util/log.cppm", 2,
                             signature="void log(std::string_view)"))
     model.add_entity(Entity("u:far", Kind.CLASS, "Far", "far::Far", "src/far/far.cppm", 1))
@@ -31,7 +32,7 @@ def test_architecture_prompt_has_all_sections() -> None:
                                  build_errors="error: x", validation_error="no JSON")
     text = prompt.build_prompt(spec, small_model(), request)
     for expected in ("software architect", "# Specification and code profile", "UC-1: Start the app",
-                     "# Current code", "app::run int run() [stub] @satisfies UC-1 — Entry point.",
+                     "# Current code", "app::run int run() [stub] tests=tests/app_test.cpp @satisfies UC-1 — Entry point.",
                      "relations: calls src/app/app.cppm (1), imports src/app/app.cppm (1)", "# This step",
                      "At most 4 new architecture entities", "Fields and individual enum values", "introduce the renderer",
                      "too many classes", "keep app::run",

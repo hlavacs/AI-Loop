@@ -8,7 +8,7 @@ from pathlib import Path
 import pytest
 
 MODULES = ["model", "analysis", "clusters", "views", "specification", "git", "process", "steps",
-           "generator", "agent", "persistence"]
+           "generator", "agent", "implementation", "persistence"]
 
 
 @pytest.mark.parametrize("name", MODULES)

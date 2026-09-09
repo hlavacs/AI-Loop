@@ -77,6 +77,7 @@ document instead of growing into one file:
 | `icoda_core/process.py` | bounded subprocess with output limits |
 | `icoda_core/steps.py` | worktree-based step protocol: propose (K attempts with feedback), approve, reject, adapt, undo, manual commits |
 | `icoda_core/steplog.py` | `steps.jsonl` records and the function statuses derived from them |
+| `icoda_core/implementation.py` | deterministic bottom-up implementation target selection over the call graph |
 | `icoda_core/generator.py` | step 0 skeleton, module-based code generation, Doxygen and `@satisfies` |
 | `icoda_core/agent.py` | provider invocation and local CLI qualification from `providers.json`, rate-limit waiting |
 | `icoda_core/prompt.py` | prompt assembly: Code Profile, compact specification, model subset around the step, phase rules, feedback |
@@ -84,7 +85,7 @@ document instead of growing into one file:
 | `icoda_core/persistence.py` | `.icoda/` files and the user configuration |
 | `icoda_gui/spec_editor.py` | the specification editor: one page per section, numbered records, validation on save |
 | `icoda_gui/provider_field.py` | the Binary/Model field whose model options follow the binary |
-| `icoda_gui/step_panel.py` | the step panel: phase and request, proposal prose, delta and build output, the decision buttons |
+| `icoda_gui/step_panel.py` | the step panel: phase and request, proposal prose, delta, build and test output, decision buttons |
 | `icoda_gui/step_controller.py` | connects the step panel and the Call View to the step protocol; dialogs for reject and adapt |
 | `icoda_gui/call_view.py` | the Call View canvas: columns per call depth, status colours, delta outlines, callers switch |
 | `icoda_gui/tasks.py` | background work for the window with results delivered on the Tk thread |
@@ -130,8 +131,10 @@ Identity is the libclang USR (Unified Symbol Resolution) of the entity; files ar
 has a status — `stub`, `implemented`, `tested` — that comes from the step log and the last test run, not from the
 parser. The step log also records which step introduced an entity; a rename creates a new USR, so the step log records
 rename pairs to keep the history attached. A function whose body was changed outside ICODA drops back from `tested`
-to `implemented` until its tests pass again; the change is detected by a hash of the function's source text, stored
-in the step log.
+to `implemented` until its tests pass again; the change is detected by a SHA-256 hash of its exact callable body,
+stored in the step log. `tested` means that compilation passed, CTest passed, the approved hash still matches the
+current body, and at least one test source is associated with the callable through the parsed call graph. A global
+green test run alone never gives an unassociated function that status.
 
 **Templates.** A template is one entity (`Stack<T>`), whatever types it is used with. The types seen at call sites
 are kept as labels on the call edges and as a badge on the node, never as nodes of their own.
@@ -220,7 +223,9 @@ One function per step; every step is approved, rejected or adapted by the develo
 functions only in simple cases that span a few lines in total, such as a getter/setter pair or a small overload set.
 
 **Order.** Bottom-up over the call graph by default, leaves first, so that each function can be tested the moment it
-is implemented. The developer can pick any function from the views instead.
+is implemented. Strongly connected components collapse recursive cycles; ICODA chooses a sink component and then a
+function within it by a stable lexical key, so the same model always yields the same next target. Test-source
+callables are excluded. The developer can pick any function from the views instead.
 
 **Each step.**
 
@@ -231,7 +236,7 @@ is implemented. The developer can pick any function from the views instead.
 3. The agent produces the function body and a unit test for it (doctest or Catch2 through CTest) in a worktree. A
    change to the function's signature is shown separately in the delta, because it changes the architecture, and
    needs an explicit confirmation.
-4. ICODA builds the worktree and runs the tests.
+4. ICODA builds the worktree and then runs CTest as a separate stage. Their outcomes and logs are shown separately.
 5. The developer approves: promotion, commit `icoda(impl) step N: <qualified function name>`, status becomes
    `implemented`, and `tested` when the test passed.
 
@@ -427,13 +432,19 @@ IDs, which is why their two entries name the same frontier models through a pref
 ## Persistence
 
 Inside the project, `.icoda/` holds `specification.json` (committed); `steps.jsonl`, the step log (committed so that
-the history travels with the code; one record per step with phase, request, proposals, decision, commit hash, USRs
-added or changed, status changes, rename pairs); `layout.json` (cluster names and pins, committed); `cache/` (derived
+the history travels with the code; records include phase transitions, requests, decisions, commit hash, USRs added
+or changed, callable body hashes, associated test files, and separate build/test outcomes); `layout.json` (cluster
+names and pins, committed); `cache/` (derived
 model and parsed translation units, ignored by git) and `ui.json` (view state, ignored by git). ICODA's own settings
 and the list of known projects live in the user's config directory.
 
+The translation-unit cache key includes an extractor-schema version. Adding derived facts such as callable hashes
+therefore invalidates old unit caches once, even when the project source and compiler arguments have not changed.
+
 Every approved step is exactly one git commit. ICODA requires a clean working tree before a step so that a step never
 mixes with manual edits; uncommitted manual edits are committed first, as `manual edit`, on the developer's request.
+Source edits are re-parsed before the next proposal and their callable identities are recorded so prior `tested`
+statuses are downgraded immediately. The latest phase transition is restored in the GUI when the project reopens.
 
 ## Code requirements
 

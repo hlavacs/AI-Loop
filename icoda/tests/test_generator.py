@@ -18,6 +18,8 @@ def test_identifier_and_files(tmp_path: Path) -> None:
     files = generator.skeleton_files("Demo App")
     assert "src/app/app.cppm" in files and "export module app;" in files["src/app/app.cppm"]
     assert "add_executable(Demo_App src/main.cpp)" in files["CMakeLists.txt"]
+    assert 'mode="${2:-all}"' in files["build.sh"] and 'if [ "$mode" != "build-only" ]' in files["build.sh"]
+    assert 'set "MODE=%~2"' in files["build.cmd"] and 'if /i "%MODE%"=="build-only"' in files["build.cmd"]
     written = generator.write_skeleton(tmp_path, "Demo App")
     assert sorted(written) == sorted(files)
     assert generator.write_skeleton(tmp_path, "Demo App") == []          # existing files are left alone

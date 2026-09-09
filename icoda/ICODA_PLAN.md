@@ -33,6 +33,7 @@ After every code or GUI change, run `./verify.bash` (`verify.cmd` on Windows). T
 is accepted. It retains timestamped command logs, JUnit and branch-coverage reports, environment metadata, the
 project analysis log, nonblank, unclipped File View and Call View screenshots at fitted and zoomed scales, and a
 populated proposal Delta and Source diff screenshot in `.icoda-test-artifacts/`.
+The proposal evidence also includes separate Build- and Tests-tab screenshots.
 
 Conventions: pytest with a Tk stub (`ICODA_TK_STUB=1`) so the GUI is testable headless; GitHub Actions CI on Ubuntu
 with clang, CMake and Ninja installed; MIT licence; Python 3.10+; `ruff` and `mypy` clean; every function within the
@@ -40,7 +41,7 @@ with clang, CMake and Ninja installed; MIT licence; Python 3.10+; `ruff` and `my
 
 ## Verified baseline and completion order
 
-**Baseline, macOS 2026-09-09:** the development environment is installed from `.[dev]`; 113 tests pass with no
+**Baseline, macOS 2026-09-09:** the development environment is installed from `.[dev]`; 127 tests pass with no
 skips, `ruff check .`, `mypy icoda.py icoda_core icoda_gui` and byte-compilation are clean. The sample project builds
 and its CTest smoke test passes with Homebrew LLVM 22.1.4. Headless ICODA analysis selects the matching Homebrew
 libclang 22.1.4 and reports no errors. Module-building tests use the generated `build.sh`, so they exercise the same
@@ -54,15 +55,13 @@ committed it, undid it, rebuilt and tested the restored source, re-analysed it, 
 
 Work continues in this dependency order:
 
-1. Build the M3 state foundation: persisted phase transitions, deterministic bottom-up function selection, body
-   hashes, test associations and accurate build-versus-test results.
-2. Complete M3: two-round approach then code/test proposals, explicit signature-change confirmation, targeted tests
+1. Complete M3: two-round approach then code/test proposals, explicit signature-change confirmation, targeted tests
    and safe per-function batching that stops on the first failure.
-3. Complete M4: Class View and common view interactions, specification coverage, rule checks included in prompts,
+2. Complete M4: Class View and common view interactions, specification coverage, rule checks included in prompts,
    and the persistent status/requirements/step mind map.
-4. Specify and complete M5: Python identities and uncertain dynamic calls first, then the AST parser, generator,
+3. Specify and complete M5: Python identities and uncertain dynamic calls first, then the AST parser, generator,
    project/test integration and a Python acceptance project.
-5. Qualify a release on macOS, Linux and Windows, including clean installation, recovery paths, large-project
+4. Qualify a release on macOS, Linux and Windows, including clean installation, recovery paths, large-project
    performance, migration, documentation and a versioned acceptance matrix.
 
 Every item is a gate: its automated tests and stated manual acceptance must pass before work starts on the next item.
@@ -167,7 +166,7 @@ views notebook (File View, Call View: columns per call depth, status colours, gr
 proposal's new and changed entities, depth spinner, callers switch, root from the entity list), a step panel at
 the bottom (phase, request, max entities; Propose, Approve, Reject…, Adapt…, Rebuild, Open worktree, Undo,
 Commit manual edits) driven by `icoda_gui/step_controller.py` with the slow parts in a worker thread; Project
-menu entries mirror the buttons. Proposal review has separate Delta, Source diff and Build tabs; the diff is computed
+menu entries mirror the buttons. Proposal review has separate Delta, Source diff, Build and Tests tabs; the diff is computed
 from the actual worktree and includes untracked additions. The architecture entity budget counts new modules,
 types/aliases, callables and global variables from the parsed delta; an over-budget result becomes feedback for the
 next attempt, and the Delta tab shows the count. `tests/real_provider_acceptance.py` additionally exercises a real
@@ -206,6 +205,16 @@ passed the complete create/propose/review/approve/undo/rebuild/re-analyse sequen
    *verify:* geometry tests; manual.
 
 ## M3 — Implementation loop
+
+Progress 2026-09-09: the state foundation is complete. Phase transitions are persisted in `steps.jsonl` and restored
+in the GUI. `icoda_core/implementation.py` selects non-test stubs bottom-up, collapses recursive cycles and resolves
+ties deterministically. Libclang analysis records SHA-256 hashes of exact callable bodies and associates conventional
+test sources transitively through the production call graph. Approved records retain those hashes, associations and
+separate compilation/CTest outcomes; `tested` requires all four facts to remain valid. Manual source commits are
+re-parsed and explicitly downgrade affected callables. Generated Bash and Windows build scripts expose an internal
+`build-only` mode, and proposal review shows independent Build and Tests tabs. Unit, parser, generated-project,
+worktree, GUI and screenshot acceptance coverage is part of the standard verification gate. The translation-unit
+cache schema is versioned so pre-M3 caches are invalidated and rebuilt with callable hashes.
 
 1. Bottom-up order over the call graph (leaves first, cycles broken deterministically); "pick this function" from
    the views.

@@ -60,6 +60,8 @@ class Entity:
     is_definition: bool = True
     exported: bool = False
     value: str = ""
+    body_hash: str = ""
+    test_files: tuple[str, ...] = ()
     status: str = "implemented"
 
 
@@ -193,6 +195,7 @@ def _entity_dict(entity: Entity) -> dict[str, Any]:
     data["kind"] = entity.kind.value
     data["satisfies"] = list(entity.satisfies)
     data["template_params"] = list(entity.template_params)
+    data["test_files"] = list(entity.test_files)
     return data
 
 
@@ -201,6 +204,8 @@ def _entity_from(data: dict[str, Any]) -> Entity:
     data["kind"] = Kind(data["kind"])
     data["satisfies"] = tuple(data["satisfies"])
     data["template_params"] = tuple(data["template_params"])
+    data["body_hash"] = str(data.get("body_hash", ""))
+    data["test_files"] = tuple(data.get("test_files", ()))
     return Entity(**data)
 
 
@@ -215,3 +220,27 @@ def merge_external_names(model: DerivedModel, library: str, names: Iterable[str]
     existing = model.externals.get(library)
     merged = tuple(sorted(set(existing.names if existing else ()) | set(names)))
     model.externals[library] = External(library, merged)
+
+
+def is_test_file(path: str) -> bool:
+    """Recognise conventional test source paths without depending on one C++ test framework."""
+    lowered = Path(path).as_posix().lower()
+    stem = Path(lowered).stem
+    return "tests" in Path(lowered).parts or stem.startswith("test_") or stem.endswith(("_test", "_tests"))
+
+
+def associate_test_files(model: DerivedModel) -> None:
+    """Attach each test source to the project callables reachable from calls made in that source."""
+    pending = [(edge.target, edge.file) for edge in model.edges_of(EdgeKind.CALLS) if is_test_file(edge.file)]
+    pending.extend((entity.usr, entity.file) for entity in model.entities.values()
+                   if entity.kind in CALLABLE_KINDS and is_test_file(entity.file))
+    associations: dict[str, set[str]] = defaultdict(set)
+    while pending:
+        usr, test_file = pending.pop()
+        entity = model.entities.get(usr)
+        if entity is None or test_file in associations[usr]:
+            continue
+        associations[usr].add(test_file)
+        pending.extend((edge.target, test_file) for edge in model.callees(usr))
+    for usr, files in associations.items():
+        model.entities[usr].test_files = tuple(sorted(files))

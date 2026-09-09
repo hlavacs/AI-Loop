@@ -161,5 +161,7 @@ class StepController:
         def done(record: steps.StepRecord | None) -> None:
             self.window.status.set("nothing to commit" if record is None
                                    else f"manual edits committed as step {record.number}")
+            if record is not None:
+                self.window.reload()
 
         self._start(runner.commit_manual_edits, done)

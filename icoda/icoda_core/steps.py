@@ -12,9 +12,19 @@ from collections.abc import Callable, Sequence
 from dataclasses import dataclass, replace
 from pathlib import Path
 
-from icoda_core import agent, analysis, git, persistence, prompt, response, session, specification
+from icoda_core import (
+    agent,
+    analysis,
+    git,
+    implementation,
+    persistence,
+    prompt,
+    response,
+    session,
+    specification,
+)
 from icoda_core.model import CALLABLE_KINDS, TYPE_KINDS, DerivedModel, Entity, Kind
-from icoda_core.process import run_bounded
+from icoda_core.process import ProcessResult, run_bounded
 from icoda_core.steplog import StepLog, StepRecord, apply_statuses
 
 WORKTREE_DIR = "worktree"
@@ -25,6 +35,7 @@ BUILD_TIMEOUT = 900.0
 PROVIDER_TIMEOUT = 1800.0
 OUTPUT_TAIL = 6000
 ARCHITECTURE_ENTITY_KINDS = TYPE_KINDS | CALLABLE_KINDS | frozenset({Kind.VARIABLE})
+SOURCE_SUFFIXES = analysis.MODULE_SUFFIXES | analysis.HEADER_SUFFIXES | frozenset({".c", ".cc", ".cpp", ".cxx"})
 
 
 class StepError(RuntimeError):
@@ -40,25 +51,43 @@ class DirtyTree(StepError):
 
 @dataclass(frozen=True)
 class BuildResult:
-    ok: bool
-    output: str
+    build_passed: bool
+    tests_passed: bool | None
+    build_output: str = ""
+    test_output: str = ""
+
+    @property
+    def ok(self) -> bool:
+        return self.build_passed and self.tests_passed is True
+
+    @property
+    def output(self) -> str:
+        parts = ["Build:\n" + self.build_output] if self.build_output else []
+        if self.test_output:
+            parts.append("Tests:\n" + self.test_output)
+        return "\n\n".join(parts)
 
 
-def build_project(root: Path, timeout: float = BUILD_TIMEOUT) -> BuildResult:
-    """Run the project's build script (configure, build, test); without one, configure and build with CMake."""
-    if sys.platform == "win32" and (root / "build.cmd").is_file():
-        commands = [["cmd", "/c", "build.cmd", "debug"]]
-    elif (root / "build.sh").is_file():
-        commands = [["bash", "build.sh", "debug"]]
-    else:
-        commands = [["cmake", "--preset", "debug"], ["cmake", "--build", "--preset", "debug"]]
+def build_project(root: Path, timeout: float = BUILD_TIMEOUT,
+                  runner: Callable[..., ProcessResult] = run_bounded) -> BuildResult:
+    """Configure/build first, then run CTest separately so their outcomes cannot be confused."""
     output = ""
-    for command in commands:
-        result = run_bounded(command, cwd=root, timeout=timeout)
+    for command in _build_commands(root):
+        result = runner(command, cwd=root, timeout=timeout)
         output += result.stdout + result.stderr
         if not result.ok:
-            return BuildResult(False, _tail(output))
-    return BuildResult(True, _tail(output))
+            return BuildResult(False, None, _tail(output))
+    result = runner(["ctest", "--preset", "debug"], cwd=root, timeout=timeout)
+    test_output = result.stdout + result.stderr
+    return BuildResult(True, result.ok, _tail(output), _tail(test_output))
+
+
+def _build_commands(root: Path) -> list[list[str]]:
+    if sys.platform == "win32" and (root / "build.cmd").is_file():
+        return [["cmd", "/c", "build.cmd", "debug", "build-only"]]
+    if (root / "build.sh").is_file():
+        return [["bash", "build.sh", "debug", "build-only"]]
+    return [["cmake", "--preset", "debug"], ["cmake", "--build", "--preset", "debug"]]
 
 
 def _tail(text: str) -> str:
@@ -91,8 +120,8 @@ class Delta:
 
 
 def compute_delta(before: DerivedModel, after: DerivedModel, files: Sequence[str]) -> Delta:
-    def shape(entity: Entity) -> tuple[str, str, str, str | None]:
-        return (entity.kind.value, entity.signature, entity.file, entity.parent)
+    def shape(entity: Entity) -> tuple[str, str, str, str | None, str, tuple[str, ...]]:
+        return (entity.kind.value, entity.signature, entity.file, entity.parent, entity.body_hash, entity.test_files)
 
     added = tuple(e for usr, e in after.entities.items() if usr not in before.entities)
     removed = tuple(e for usr, e in before.entities.items() if usr not in after.entities)
@@ -124,7 +153,7 @@ class Proposal:
     worktree: Path
     attempts: int = 0
     response: response.StepResponse | None = None
-    build: BuildResult = BuildResult(False, "")
+    build: BuildResult = BuildResult(False, None)
     model: DerivedModel | None = None
     delta: Delta | None = None
     source_diff: str = ""
@@ -194,8 +223,21 @@ class StepRunner:
         changes = [c for c in git.status_changes(self.root) if c.path not in (LOG_PATH, IGNORE_PATH)]
         if not changes:
             return None
+        files = [change.path for change in changes]
+        before = self.current_model()
+        touched = {entity.usr for entity in before.entities.values()
+                   if entity.kind in CALLABLE_KINDS and entity.file in files}
+        added: set[str] = set()
+        if any(Path(file).suffix.lower() in SOURCE_SUFFIXES for file in files):
+            self.progress("parsing manual source edits")
+            updated = self.analyse(self.root)
+            delta = compute_delta(before, updated, files)
+            added = {entity.usr for entity in delta.added if entity.kind in CALLABLE_KINDS}
+            touched.update(entity.usr for entity in delta.changed if entity.kind in CALLABLE_KINDS)
+            self.store.save_model(updated)
         record = self.log.append(StepRecord(self.log.next_number(), "manual", "manual", title="manual edit",
-                                            files=[c.path for c in changes]))
+                                            files=files, entities_added=sorted(added),
+                                            entities_changed=sorted(touched)))
         record.commit = git.commit_all(self.root, f"icoda step {record.number}: manual edit", *self._author())
         return record
 
@@ -204,10 +246,20 @@ class StepRunner:
         apply_statuses(model, self.log)
         return model
 
+    def transition_phase(self, phase: str) -> StepRecord | None:
+        """Persist a phase change in the pending step log; the next approved step commits it."""
+        if phase not in (prompt.ARCHITECTURE, prompt.IMPLEMENTATION):
+            raise StepError(f"unknown phase {phase!r}")
+        if self.log.current_phase() == phase:
+            return None
+        return self.log.append(StepRecord(self.log.next_number(), phase, "phase", title=f"enter {phase} phase"))
+
     # -- proposing ------------------------------------------------------------------------
 
     def propose(self, request: prompt.StepRequest) -> Proposal:
         """Ask the provider, apply, build and parse in the worktree; up to ``attempts`` tries with feedback."""
+        self.transition_phase(request.phase)
+        request = self._implementation_request(request)
         number = self.log.next_number()
         request = replace(request, number=number, rejections=request.rejections or self.log.rejections(number))
         proposal = Proposal(number, request, self._fresh_worktree())
@@ -238,7 +290,7 @@ class StepRunner:
     def _apply_and_check(self, proposal: Proposal) -> None:
         assert proposal.response is not None
         self._reset_worktree(proposal.worktree)
-        proposal.build, proposal.model, proposal.delta = BuildResult(False, ""), None, None
+        proposal.build, proposal.model, proposal.delta = BuildResult(False, None), None, None
         proposal.source_diff = ""
         try:
             response.apply_changes(proposal.worktree, proposal.response.files)
@@ -251,14 +303,15 @@ class StepRunner:
         proposal.source_diff = git.working_tree_diff(proposal.worktree)
         self.progress(f"step {proposal.number}: building the proposal")
         proposal.build = self.build(proposal.worktree)
-        if not proposal.build.ok:
+        if not proposal.build.build_passed:
             proposal.error = "the proposal does not build"
             return
         self.progress(f"step {proposal.number}: parsing the proposal")
         proposal.model = self.analyse(proposal.worktree)
         files = [c.path for c in git.status_changes(proposal.worktree)]
         proposal.delta = compute_delta(self.current_model(), proposal.model, files)
-        proposal.error = _delta_error(proposal.request, proposal.delta)
+        proposal.error = "the proposal's tests fail" if proposal.build.tests_passed is False \
+            else _delta_error(proposal.request, proposal.delta)
 
     @staticmethod
     def _retry_request(request: prompt.StepRequest, proposal: Proposal) -> prompt.StepRequest:
@@ -274,6 +327,16 @@ class StepRunner:
                        for name in tracked if Path(name).name in ("CMakeLists.txt", "vcpkg.json")}
         return prompt.build_prompt(spec, self.current_model(), request, tracked, build_files)
 
+    def _implementation_request(self, request: prompt.StepRequest) -> prompt.StepRequest:
+        if request.phase != prompt.IMPLEMENTATION or request.focus:
+            return request
+        target = implementation.next_target(self.current_model())
+        if target is None:
+            raise StepError("no stub function remains to implement")
+        self.progress(f"selected implementation target: {target.qualified_name}")
+        text = request.request or f"Implement {target.qualified_name}."
+        return replace(request, request=text, focus=(target.usr,))
+
     # -- deciding -------------------------------------------------------------------------
 
     def approve(self, proposal: Proposal) -> StepRecord:
@@ -282,13 +345,18 @@ class StepRunner:
             raise StepError("only a proposal that builds can be approved")
         self.progress(f"step {proposal.number}: promoting and rebuilding")
         files = git.promote_worktree(self.root, proposal.worktree)
-        build = self.build(self.root)
-        if not build.ok:
-            raise StepError("the promoted project does not build:\n" + build.output)
+        verification = self.build(self.root)
+        if not verification.ok:
+            raise StepError("the promoted project does not pass verification:\n" + verification.output)
         record = self._record(proposal, "approved")
-        record.files, record.tests_passed = files, True
+        record.files = files
+        record.build_passed = verification.build_passed
+        record.tests_passed = verification.tests_passed is True
         record.entities_added = [e.usr for e in proposal.delta.added]
         record.entities_changed = [e.usr for e in proposal.delta.changed]
+        affected = (*proposal.delta.added, *proposal.delta.changed)
+        record.body_hashes = {entity.usr: entity.body_hash for entity in affected if entity.body_hash}
+        record.test_files = {entity.usr: list(entity.test_files) for entity in affected if entity.test_files}
         self.log.append(record)
         record.commit = git.commit_all(self.root, f"icoda({proposal.request.phase}) step {record.number}: "
                                                   f"{record.title}", *self._author())

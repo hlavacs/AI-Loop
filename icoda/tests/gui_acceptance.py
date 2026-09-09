@@ -147,7 +147,7 @@ def main(argv: list[str] | None = None) -> int:
             args.project,
             attempts=1,
             response=response.StepResponse("Add configured answer", "The specification requires it.", ()),
-            build=steps.BuildResult(True, "Build and tests passed."),
+            build=steps.BuildResult(True, True, "Build completed successfully.", "All 8 tests passed."),
             delta=steps.Delta(review_entities, (), (), ("src/app/app.cppm",)),
             source_diff=displayed_diff,
         )
@@ -162,10 +162,21 @@ def main(argv: list[str] | None = None) -> int:
         if displayed_diff.strip() not in app.panel.source_diff.get("1.0", "end"):
             raise RuntimeError("proposal Source diff tab did not show the worktree diff")
         proposal_diff_metrics = capture(root, args.output / "proposal-source-diff.png")
+        app.panel.detail_notebook.select(app.panel.build_output.master)
+        root.update()
+        if "Build completed successfully." not in app.panel.build_output.get("1.0", "end"):
+            raise RuntimeError("proposal Build tab did not show the separate compiler output")
+        proposal_build_metrics = capture(root, args.output / "proposal-build.png")
+        app.panel.detail_notebook.select(app.panel.test_output.master)
+        root.update()
+        if "All 8 tests passed." not in app.panel.test_output.get("1.0", "end"):
+            raise RuntimeError("proposal Tests tab did not show the separate CTest output")
+        proposal_tests_metrics = capture(root, args.output / "proposal-tests.png")
         state = {"status": app.status.get(), "summary": app.opened.summary,
                  "file_view": file_metrics, "file_view_zoomed": file_zoomed_metrics,
                  "call_view": call_metrics, "call_view_zoomed": call_zoomed_metrics,
                  "proposal_delta": proposal_delta_metrics, "proposal_source_diff": proposal_diff_metrics,
+                 "proposal_build": proposal_build_metrics, "proposal_tests": proposal_tests_metrics,
                  "navigation": {"file": {"fit_scale": file_fit_scale, "zoomed_scale": file_zoomed_scale,
                                            "pan": file_pan},
                                 "call": {"fit_scale": call_fit_scale, "zoomed_scale": call_zoomed_scale,

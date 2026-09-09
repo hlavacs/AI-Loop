@@ -1,4 +1,4 @@
-"""The step panel: what the next step should do, the proposal's rationale, its delta and build output, and the
+"""The step panel: what the next step should do, rationale, delta, build and test output, and the
 decision buttons (Propose, Approve, Reject, Adapt, Rebuild, Undo)."""
 
 from __future__ import annotations
@@ -63,9 +63,11 @@ class StepPanel:
         self.details = _scrolled_text(self.detail_notebook, wrap="none", font=("TkFixedFont", 10))
         self.source_diff = _scrolled_text(self.detail_notebook, wrap="none", font=("TkFixedFont", 10))
         self.build_output = _scrolled_text(self.detail_notebook, wrap="none", font=("TkFixedFont", 10))
+        self.test_output = _scrolled_text(self.detail_notebook, wrap="none", font=("TkFixedFont", 10))
         self.detail_notebook.add(self.details.master, text="Delta")
         self.detail_notebook.add(self.source_diff.master, text="Source diff")
         self.detail_notebook.add(self.build_output.master, text="Build")
+        self.detail_notebook.add(self.test_output.master, text="Tests")
         paned.add(self.detail_notebook, weight=2)
 
     def _pressed(self, action: str) -> Callable[[], None]:
@@ -86,19 +88,22 @@ class StepPanel:
             _set_text(self.details, "")
             _set_text(self.source_diff, "")
             _set_text(self.build_output, "")
+            _set_text(self.test_output, "")
         elif proposal.ok and proposal.response is not None and proposal.delta is not None:
             self.title_var.set(f"Step {proposal.number}: {proposal.response.title}  "
                                f"(attempt {proposal.attempts})")
             _set_text(self.rationale, _rationale_text(proposal))
             _set_text(self.details, _delta_text(proposal))
             _set_text(self.source_diff, proposal.source_diff or "No source changes.")
-            _set_text(self.build_output, proposal.build.output or "Build passed without output.")
+            _set_text(self.build_output, proposal.build.build_output or "Build passed without output.")
+            _set_text(self.test_output, proposal.build.test_output or "Tests passed without output.")
         else:
             self.title_var.set(f"Step {proposal.number}: no usable proposal — {proposal.error}")
             _set_text(self.rationale, (proposal.response.rationale if proposal.response else "") or proposal.reply)
             _set_text(self.details, proposal.error)
             _set_text(self.source_diff, proposal.source_diff or "No source changes.")
-            _set_text(self.build_output, proposal.build.output or "Build did not run.")
+            _set_text(self.build_output, _build_text(proposal.build))
+            _set_text(self.test_output, _test_text(proposal.build))
         self._update_buttons()
 
     def show_failure(self, text: str) -> None:
@@ -150,6 +155,20 @@ def _delta_text(proposal: steps.Proposal) -> str:
         text += (f"\n\nArchitecture entity budget: {proposal.delta.architecture_entity_count()} / "
                  f"{proposal.request.max_entities}")
     return text
+
+
+def _build_text(result: steps.BuildResult) -> str:
+    if result.build_output:
+        return result.build_output
+    return "Build passed without output." if result.build_passed else "Build did not run."
+
+
+def _test_text(result: steps.BuildResult) -> str:
+    if result.test_output:
+        return result.test_output
+    if result.tests_passed is None:
+        return "Tests did not run because the build failed."
+    return "Tests passed without output." if result.tests_passed else "Tests failed without output."
 
 
 def _set_text(widget: Any, text: str) -> None:

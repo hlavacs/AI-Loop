@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from icoda_core import clusters, persistence, session, views
+from icoda_core import clusters, persistence, session, steplog, views
 from icoda_core.model import DerivedModel, Edge, EdgeKind, Entity, FileInfo, Kind, merge_external_names
 
 
@@ -32,6 +32,15 @@ def test_show_updates_status_config_and_canvas(app_module, tmp_path: Path) -> No
     assert "no libclang found" in app.status.get()
     assert app.view.layout is not None and "src/a.cpp" in app.view.layout.nodes
     assert config_path.is_file()
+
+
+def test_show_restores_the_persisted_phase(app_module, tmp_path: Path) -> None:
+    store = persistence.ProjectStore(tmp_path)
+    store.ensure()
+    steplog.StepLog(store.steps_path).append(steplog.StepRecord(1, "implementation", "phase"))
+    app = app_module.App(app_module.tk.Tk(), config=persistence.UserConfig(), config_path=tmp_path / "c.json")
+    app.show(opened_project(tmp_path))
+    assert app.panel.phase_var.get() == "implementation"
 
 
 def test_describe_and_select_nodes(app_module, tmp_path: Path) -> None:

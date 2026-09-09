@@ -157,9 +157,11 @@ def test_delta_and_log_helpers(tmp_path: Path) -> None:
     from icoda_core.model import DerivedModel, Entity, FileInfo, Kind
 
     before, after = DerivedModel("/p"), DerivedModel("/p")
-    before.add_entity(Entity("u:a", Kind.FUNCTION, "a", "a", "x.cpp", 1, signature="void a()"))
+    before.add_entity(Entity("u:a", Kind.FUNCTION, "a", "a", "x.cpp", 1, signature="void a()",
+                             body_hash="old-hash"))
     before.add_entity(Entity("u:gone", Kind.FUNCTION, "gone", "gone", "x.cpp", 5))
-    after.add_entity(Entity("u:a", Kind.FUNCTION, "a", "a", "x.cpp", 1, signature="int a()"))
+    after.add_entity(Entity("u:a", Kind.FUNCTION, "a", "a", "x.cpp", 1, signature="int a()",
+                            body_hash="current-hash", test_files=("tests/a_test.cpp",)))
     after.add_entity(Entity("u:b", Kind.CLASS, "B", "B", "y.cppm", 2))
     delta = steps.compute_delta(before, after, ["x.cpp", "y.cppm"])
     assert [e.usr for e in delta.added] == ["u:b"] and [e.usr for e in delta.changed] == ["u:a"]
@@ -177,12 +179,26 @@ def test_delta_and_log_helpers(tmp_path: Path) -> None:
     assert budget_delta.modules == ("render",) and budget_delta.architecture_entity_count() == 2
 
     log = steplog.StepLog(tmp_path / "steps.jsonl")
+    assert log.current_phase() == "architecture"
     log.append(steplog.StepRecord(0, "architecture", "approved", entities_added=["u:a"]))
-    log.append(steplog.StepRecord(1, "implementation", "approved", entities_changed=["u:a"], tests_passed=True))
+    log.append(steplog.StepRecord(1, "implementation", "phase"))
+    log.append(steplog.StepRecord(1, "implementation", "approved", entities_changed=["u:a"],
+                                  body_hashes={"u:a": "current-hash"},
+                                  test_files={"u:a": ["tests/a_test.cpp"]}, build_passed=True, tests_passed=True))
     log.append(steplog.StepRecord(2, "architecture", "rejected", reason="no"))
-    assert log.next_number() == 2 and log.rejections(2) == ("no",)
+    assert log.next_number() == 2 and log.rejections(2) == ("no",) and log.current_phase() == "architecture"
+    log.append(steplog.StepRecord(2, "implementation", "phase"))
+    assert log.current_phase() == "implementation"
     steplog.apply_statuses(after, log)
     assert after.entities["u:a"].status == "tested"
+    after.entities["u:a"].body_hash = "manually-edited-hash"
+    steplog.apply_statuses(after, log)
+    assert after.entities["u:a"].status == "implemented"
+    after.entities["u:a"].body_hash = "current-hash"
+    after.entities["u:a"].test_files = ()
+    steplog.apply_statuses(after, log)
+    assert after.entities["u:a"].status == "implemented"
+    after.entities["u:a"].test_files = ("tests/a_test.cpp",)
     log.append(steplog.StepRecord(1, "implementation", "undone", undoes=1))
     steplog.apply_statuses(after, log)
     assert after.entities["u:a"].status == "stub" and [r.number for r in log.approved()] == [0]

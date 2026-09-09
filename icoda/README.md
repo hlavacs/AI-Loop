@@ -21,7 +21,11 @@ after every code or GUI change:
 
 On Windows use `verify.cmd`. Each run retains timestamped command logs, JUnit and coverage reports, environment
 metadata, the ICODA analysis log, fitted and zoomed File View and Call View screenshots, and a populated proposal
-Delta and Source diff screenshot under `.icoda-test-artifacts/`; the `LATEST` file names the newest run.
+Delta, Source diff, Build and Tests screenshots under `.icoda-test-artifacts/`; the `LATEST` file names the newest run.
+
+ICODA treats compilation and CTest as separate verification stages. Generated `build.sh` and `build.cmd` files still
+build and test by default; their second `build-only` argument is the internal contract ICODA uses before invoking
+CTest itself and presenting the two outputs in separate proposal tabs.
 
 Provider qualification is local and does not consume model usage. It records installed paths, versions, the exact
 help command, and whether every configured invocation option is present:
