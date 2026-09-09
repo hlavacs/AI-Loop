@@ -41,10 +41,11 @@ class Loaded:
 
 def _mac_candidates(globber: Callable[[str], Iterable[str]]) -> list[Candidate]:
     xcode = "/Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/lib/libclang.dylib"
-    found = [Candidate(xcode, "xcode"),
-             Candidate("/Library/Developer/CommandLineTools/usr/lib/libclang.dylib", "clt")]
+    found: list[Candidate] = []
     for pattern in ("/opt/homebrew/opt/llvm*/lib/libclang.dylib", "/usr/local/opt/llvm*/lib/libclang.dylib"):
         found.extend(Candidate(p, "homebrew") for p in sorted(globber(pattern), reverse=True))
+    found.extend([Candidate(xcode, "xcode"),
+                  Candidate("/Library/Developer/CommandLineTools/usr/lib/libclang.dylib", "clt")])
     return found
 
 

@@ -21,7 +21,7 @@ def test_env_variable_comes_first_then_platform_then_wheel() -> None:
                                  globber=fake_globber({"/opt/homebrew/opt/llvm*/lib/libclang.dylib":
                                                        ["/opt/homebrew/opt/llvm/lib/libclang.dylib"]}))
     sources = [c.source for c in found if c.source != "wheel"]
-    assert sources == ["env", "xcode", "homebrew"]
+    assert sources == ["env", "homebrew", "xcode"]
 
 
 def test_windows_visual_studio_component() -> None:
@@ -47,8 +47,7 @@ def test_version_parsing_and_apple_mapping() -> None:
     assert toolchain.parse_version("garbage") == ("garbage", 0, False)
 
 
-@pytest.mark.skipif(not os.environ.get("ICODA_LIBCLANG") and toolchain.wheel_library() is None,
-                    reason="no libclang available")
+@pytest.mark.skipif(not toolchain.candidates(), reason="no libclang available")
 def test_load_and_self_test() -> None:
     chosen = toolchain.candidates()[0]
     loaded = toolchain.load(chosen.path)

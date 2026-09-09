@@ -35,17 +35,21 @@ class StepPanel:
         self.show(None)
 
     def _build_request_row(self) -> None:
-        row = ttk.Frame(self.frame)
-        row.pack(fill=tk.X, padx=4, pady=(4, 2))
-        ttk.Label(row, text="Phase").pack(side=tk.LEFT)
-        ttk.Combobox(row, textvariable=self.phase_var, values=[prompt.ARCHITECTURE, prompt.IMPLEMENTATION],
+        request_row = ttk.Frame(self.frame)
+        request_row.pack(fill=tk.X, padx=4, pady=(4, 2))
+        ttk.Label(request_row, text="Phase").pack(side=tk.LEFT)
+        ttk.Combobox(request_row, textvariable=self.phase_var, values=[prompt.ARCHITECTURE, prompt.IMPLEMENTATION],
                      state="readonly", width=14).pack(side=tk.LEFT, padx=(2, 10))
-        ttk.Label(row, text="Request (empty: the agent chooses)").pack(side=tk.LEFT)
-        ttk.Entry(row, textvariable=self.request_var).pack(side=tk.LEFT, fill=tk.X, expand=True, padx=(2, 10))
-        ttk.Label(row, text="Max entities").pack(side=tk.LEFT)
-        ttk.Spinbox(row, from_=1, to=20, width=3, textvariable=self.max_entities_var).pack(side=tk.LEFT, padx=(2, 10))
+        ttk.Label(request_row, text="Request (empty: the agent chooses)").pack(side=tk.LEFT)
+        ttk.Entry(request_row, textvariable=self.request_var).pack(side=tk.LEFT, fill=tk.X, expand=True,
+                                                                   padx=(2, 10))
+        ttk.Label(request_row, text="Max entities").pack(side=tk.LEFT)
+        ttk.Spinbox(request_row, from_=1, to=20, width=3, textvariable=self.max_entities_var).pack(side=tk.LEFT,
+                                                                                                  padx=(2, 10))
+        action_row = ttk.Frame(self.frame)
+        action_row.pack(fill=tk.X, padx=4, pady=(0, 2))
         for action in ACTIONS:
-            self.buttons[action] = ttk.Button(row, text=LABELS[action], command=self._pressed(action))
+            self.buttons[action] = ttk.Button(action_row, text=LABELS[action], command=self._pressed(action))
             self.buttons[action].pack(side=tk.LEFT, padx=2)
 
     def _build_texts(self) -> None:

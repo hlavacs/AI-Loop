@@ -60,14 +60,16 @@ jobs:
         with:
           python-version: ${{ matrix.python-version }}
       - name: Install system dependencies
-        run: sudo apt-get update && sudo apt-get install -y clang libclang-dev cmake ninja-build
+        run: sudo apt-get update && sudo apt-get install -y clang libclang-dev cmake ninja-build xvfb python3-tk
       - name: Install dependencies
         run: pip install -e ".[dev]"
-      - name: Lint
-        run: ruff check .
-      - name: Type-check
-        run: mypy icoda.py icoda_core icoda_gui
-      - name: Run tests
+      - name: Run complete verification gate
         env:
-          ICODA_TK_STUB: "1"
-        run: python -m pytest -q
+          ICODA_VERIFY_PYTHON: python
+        run: ./verify.bash
+      - name: Upload verification evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: icoda-verification-py${{ matrix.python-version }}
+          path: icoda/.icoda-test-artifacts/

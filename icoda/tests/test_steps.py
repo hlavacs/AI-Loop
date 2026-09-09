@@ -6,6 +6,7 @@ import json
 import os
 import shutil
 import subprocess
+import sys
 from pathlib import Path
 
 import pytest
@@ -53,10 +54,14 @@ class ScriptedProvider:
 
 
 @pytest.fixture
-def project(tmp_path: Path) -> Path:
-    os.environ.setdefault("CC", "clang")
-    os.environ.setdefault("CXX", "clang++")
-    if shutil.which(os.environ["CXX"]) is None:
+def project(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
+    if sys.platform == "darwin":
+        monkeypatch.delenv("CC", raising=False)
+        monkeypatch.delenv("CXX", raising=False)
+    else:
+        monkeypatch.setenv("CC", os.environ.get("CC", "clang"))
+        monkeypatch.setenv("CXX", os.environ.get("CXX", "clang++"))
+    if sys.platform != "darwin" and shutil.which(os.environ["CXX"]) is None:
         pytest.skip("no clang++")
     root = tmp_path / "demo"
     generator.write_skeleton(root, "demo")

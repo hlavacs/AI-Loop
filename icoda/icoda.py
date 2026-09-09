@@ -27,6 +27,7 @@ from icoda_gui import (
     step_panel,
     tasks,
     tooltip,
+    zoom_controls,
 )
 
 NODE_RADIUS = 6
@@ -47,13 +48,26 @@ class FileViewCanvas:
         self.drag_start: tuple[int, int] | None = None
         self.dragged = False
         self.item_nodes: dict[int, str] = {}
+        self.zoom_control_widgets: dict[str, Any] = {}
         self.tooltip = tooltip.Tooltip(canvas)
         for event, handler in (("<MouseWheel>", self.on_wheel), ("<Button-4>", self.on_wheel),
                                ("<Button-5>", self.on_wheel), ("<ButtonPress-1>", self.on_press),
                                ("<B1-Motion>", self.on_drag), ("<ButtonRelease-1>", self.on_release),
+                               ("<ButtonPress-2>", self.on_press), ("<B2-Motion>", self.on_drag),
+                               ("<ButtonRelease-2>", self.on_release),
                                ("<Double-Button-1>", self.on_double_click), ("<Motion>", self.on_motion),
                                ("<Configure>", self.on_resize)):
             canvas.bind(event, handler)
+
+    def build_zoom_controls(self, parent: Any) -> Any:
+        controls, self.zoom_control_widgets = zoom_controls.build(
+            parent,
+            zoom_out=lambda: self.zoom(zoom_controls.ZOOM_OUT),
+            fit=self.fit,
+            reset=self.reset_zoom,
+            zoom_in=lambda: self.zoom(zoom_controls.ZOOM_IN),
+        )
+        return controls
 
     # -- coordinates ------------------------------------------------------------------------
 
@@ -69,6 +83,7 @@ class FileViewCanvas:
 
     def fit(self) -> None:
         """Scale and centre the whole diagram — as drawn, labels included — inside the visible canvas."""
+        self.user_zoomed = False
         if self.layout is None or not self.layout.nodes:
             self.redraw()
             return
@@ -188,18 +203,34 @@ class FileViewCanvas:
 
     # -- interaction ------------------------------------------------------------------------
 
-    def on_wheel(self, event: Any) -> None:
-        delta = getattr(event, "delta", 0) or (120 if getattr(event, "num", 0) == 4 else -120)
-        factor = 1.1 if delta > 0 else 1 / 1.1
-        new_scale = min(8.0, max(0.2, self.scale * factor))
-        factor = new_scale / self.scale
-        self.offset = (event.x - (event.x - self.offset[0]) * factor, event.y - (event.y - self.offset[1]) * factor)
-        self.scale = new_scale
+    def zoom(self, factor: float, origin: tuple[float, float] | None = None) -> None:
+        """Zoom around ``origin`` while keeping the complete fitted diagram as the lower limit."""
+        if self.layout is None or self.scale <= 0:
+            return
+        target = min(max(zoom_controls.MAX_ZOOM, self.fit_scale), max(self.fit_scale, self.scale * factor))
+        actual_factor = target / self.scale
+        if abs(actual_factor - 1.0) < 0.001:
+            return
+        origin_x, origin_y = origin or (float(self.canvas.winfo_width()) / 2, float(self.canvas.winfo_height()) / 2)
+        self.offset = (origin_x - (origin_x - self.offset[0]) * actual_factor,
+                       origin_y - (origin_y - self.offset[1]) * actual_factor)
+        self.scale = target
         self.user_zoomed = True
         self.redraw()
 
+    def reset_zoom(self) -> None:
+        if self.layout is not None and self.scale > 0:
+            self.zoom(max(self.fit_scale, 1.0) / self.scale)
+
+    def on_wheel(self, event: Any) -> str:
+        delta = getattr(event, "delta", 0) or (120 if getattr(event, "num", 0) == 4 else -120)
+        self.zoom(zoom_controls.ZOOM_IN if delta > 0 else zoom_controls.ZOOM_OUT,
+                  (float(event.x), float(event.y)))
+        return "break"
+
     def on_press(self, event: Any) -> None:
         self.drag_start, self.dragged = (event.x, event.y), False
+        self.tooltip.hide()
 
     def on_drag(self, event: Any) -> None:
         if self.drag_start is None:
@@ -213,7 +244,7 @@ class FileViewCanvas:
         self.redraw()
 
     def on_release(self, event: Any) -> None:
-        if not self.dragged:
+        if not self.dragged and getattr(event, "num", 1) == 1:
             node = self.node_at(event.x, event.y)
             if node is not None:
                 self.app.select_node(node)
@@ -315,8 +346,13 @@ class App:
         paned = ttk.PanedWindow(vertical, orient=tk.HORIZONTAL)
         vertical.add(paned, weight=4)
         self.views = ttk.Notebook(paned)
-        self.canvas = tk.Canvas(self.views, background="white", highlightthickness=0, width=1050, height=620)
-        self.views.add(self.canvas, text="File View")
+        file_view = ttk.Frame(self.views)
+        file_toolbar = ttk.Frame(file_view)
+        file_toolbar.pack(fill=tk.X, padx=4, pady=2)
+        self.canvas = tk.Canvas(file_view, background="white", cursor="fleur", highlightthickness=0, width=1050,
+                                height=620)
+        self.canvas.pack(fill=tk.BOTH, expand=True)
+        self.views.add(file_view, text="File View")
         self.call_view = call_view.CallViewCanvas(self.views, self.open_editor)
         self.views.add(self.call_view.frame, text="Call View")
         paned.add(self.views, weight=4)
@@ -339,6 +375,7 @@ class App:
         self.tree.bind("<Double-Button-1>", self.on_tree_double_click)
         self.tree.bind("<<TreeviewSelect>>", self.on_tree_select)
         self.view = FileViewCanvas(self.canvas, self)
+        self.view.build_zoom_controls(file_toolbar).pack(side=tk.RIGHT)
         self.panel = step_panel.StepPanel(vertical, lambda action: self.steps.action(action))
         vertical.add(self.panel.frame, weight=1)
 

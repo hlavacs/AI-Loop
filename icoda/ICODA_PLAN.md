@@ -1,12 +1,12 @@
 # ICODA implementation plan
 
-Status: plan, 2026-09-07. Companion to `EVOLUTION.md`, which is the design; this file says in which order it gets
+Status: active, baseline verified 2026-09-09. Companion to `EVOLUTION.md`, which is the design; this file says in which order it gets
 built, how each step is verified, and what I need from you. Answer inline with `A:` where a question is open.
 
 ## Decisions taken today for the plan
 
-- I (Claude, in this Cowork session) write the code, milestone by milestone; you review each milestone by running
-  it on your Mac and reporting.
+- The coding agent writes the code milestone by milestone; you review each milestone by running its manual
+  acceptance checks and reporting what you observe.
 - One repository, two subfolders: AI-Loop was moved into `ai-loop/` on 2026-09-07 (history kept), ICODA is built
   in `icoda/`, where this plan and `EVOLUTION.md` already live. The connected folder stays the same; all paths in
   the milestones are relative to `icoda/`.
@@ -16,22 +16,51 @@ built, how each step is verified, and what I need from you. Answer inline with `
   shown and marked stale.
 - Every step is carried out by an LLM chosen in the Binary/Model field; the seven binaries and their two models each
   ship as `providers.json`.
-- Your Mac uses Xcode / Apple clang. libclang detection targets the Xcode toolchain first; Apple's version numbers
-  differ from LLVM's, so ICODA carries a small mapping table and a start-up self-test.
+- C++20 module projects on macOS use Homebrew LLVM. ICODA first selects the libclang beside the project compiler;
+  without a built project, Homebrew libclang precedes Xcode and Command Line Tools candidates. Apple's version
+  numbers differ from LLVM's, so ICODA carries a small mapping table and a start-up self-test.
 - The first test subject is a small sample C++ project that I write (about 15 files, CMake, C++20 modules, clusters,
   templates, lambdas). Your own C++ project becomes the acceptance test when you name it.
 
 ## Working method
 
 Every step below ends with *verify:* — the check that says the step is done (the goal-driven rule from `CLAUDE.md`).
-Automated tests run in my Linux VM with the `libclang` pip wheel; everything Mac-specific (Apple libclang, the
-module build with Xcode, Tkinter on macOS) is verified by you running `icoda.bash` and reporting. Each step is one
-commit on `develop`; you push after each milestone, since I cannot. The plan is small-step by design: if a step turns
+Automated tests run on Linux CI and locally on macOS; visual Tkinter behavior and real-provider workflows also get
+manual acceptance. Each accepted step is one commit on `develop`. The plan is small-step by design: if a step turns
 out to need more than about a day of work, it is split rather than stretched.
+
+After every code or GUI change, run `./verify.bash` (`verify.cmd` on Windows). The gate must pass before the change
+is accepted. It retains timestamped command logs, JUnit and branch-coverage reports, environment metadata, the
+project analysis log, and nonblank, unclipped File View and Call View screenshots in `.icoda-test-artifacts/`.
 
 Conventions: pytest with a Tk stub (`ICODA_TK_STUB=1`) so the GUI is testable headless; GitHub Actions CI on Ubuntu
 with clang, CMake and Ninja installed; MIT licence; Python 3.10+; `ruff` and `mypy` clean; every function within the
 30/50-line rule of `EVOLUTION.md`, since ICODA should obey the rules it imposes.
+
+## Verified baseline and completion order
+
+**Baseline, macOS 2026-09-09:** the development environment is installed from `.[dev]`; 106 tests pass with no
+skips, `ruff check .`, `mypy icoda.py icoda_core icoda_gui` and byte-compilation are clean. The sample project builds
+and its CTest smoke test passes with Homebrew LLVM 22.1.4. Headless ICODA analysis selects the matching Homebrew
+libclang 22.1.4 and reports no errors. Module-building tests use the generated `build.sh`, so they exercise the same
+toolchain selection as a real ICODA project.
+
+Work continues in this dependency order:
+
+1. Close M2: show the source diff, enforce architecture-step limits from the computed delta, verify each enabled
+   provider with its installed CLI, and pass a complete real-provider create/propose/review/approve/undo run.
+2. Build the M3 state foundation: persisted phase transitions, deterministic bottom-up function selection, body
+   hashes, test associations and accurate build-versus-test results.
+3. Complete M3: two-round approach then code/test proposals, explicit signature-change confirmation, targeted tests
+   and safe per-function batching that stops on the first failure.
+4. Complete M4: Class View and common view interactions, specification coverage, rule checks included in prompts,
+   and the persistent status/requirements/step mind map.
+5. Specify and complete M5: Python identities and uncertain dynamic calls first, then the AST parser, generator,
+   project/test integration and a Python acceptance project.
+6. Qualify a release on macOS, Linux and Windows, including clean installation, recovery paths, large-project
+   performance, migration, documentation and a versioned acceptance matrix.
+
+Every item is a gate: its automated tests and stated manual acceptance must pass before work starts on the next item.
 
 ## M1 — App skeleton, core helpers, import, File View
 
@@ -107,11 +136,11 @@ in a child process so a libclang failure cannot take the window down.
     *verify:* runs on your Mac from a clean clone; runs in the VM.
 
 Milestone acceptance: `icoda.bash tests/sample_project` on your Mac shows the cluster circles with coloured arrows,
-zoomable, and the status bar names the Xcode libclang.
+zoomable, and the status bar names the Homebrew libclang matching the compiler in `compile_commands.json`.
 
 ## M2 — Architecture loop
 
-Progress 2026-09-08: step 1 done (`icoda_core/generator.py`; the skeleton builds, runs and analyses in the VM). Step 2
+Progress 2026-09-09: step 1 done (`icoda_core/generator.py`; the skeleton builds, runs and analyses on macOS and in the VM). Step 2
 done: `specification.schema.json`, `icoda_core/specification.py` (validation with readable problems, cross
 references, ids, compact text for prompts) and the editor `icoda_gui/spec_editor.py`; File → New Project… opens the
 editor for an empty directory, and saving the specification of a project without code writes the step 0 skeleton
@@ -132,7 +161,7 @@ views notebook (File View, Call View: columns per call depth, status colours, gr
 proposal's new and changed entities, depth spinner, callers switch, root from the entity list), a step panel at
 the bottom (phase, request, max entities; Propose, Approve, Reject…, Adapt…, Rebuild, Open worktree, Undo,
 Commit manual edits) driven by `icoda_gui/step_controller.py` with the slow parts in a worker thread; Project
-menu entries mirror the buttons. 101 tests in the VM. **Waiting for the Mac run:** `./icoda.bash`, File → New
+menu entries mirror the buttons. The 106-test macOS baseline is green. **M2 still awaits its real-provider acceptance:** `./icoda.bash`, File → New
 Project…, save the specification, run `build.sh` in the new project, Reload, then Propose with Claude Code.
 
 1. Spike first: the step 0 skeleton generator (`icoda_core/generator.py`) emits a module-based CMake project with

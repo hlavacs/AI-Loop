@@ -601,7 +601,7 @@ def parse_doc_comment(comment: str) -> tuple[str, tuple[str, ...]]:
     satisfies = tuple(t for m in re.finditer(r"[@\\]satisfies\s+([^\n@\\]+)", text)
                       for t in re.split(r"[,\s]+", m.group(1).strip()) if t)
     brief_match = re.search(r"[@\\]brief\s+(.+?)(?=\n\s*\n|\n\s*[@\\]|$)", text, re.DOTALL)
-    brief = brief_match.group(1) if brief_match else re.split(r"\n\s*[@\\]|\n\s*\n", text, 1)[0]
+    brief = brief_match.group(1) if brief_match else re.split(r"\n\s*[@\\]|\n\s*\n", text, maxsplit=1)[0]
     return " ".join(brief.split()), satisfies
 
 

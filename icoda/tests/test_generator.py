@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import shutil
 import subprocess
+import sys
 from pathlib import Path
 
 import pytest
@@ -28,14 +29,17 @@ def test_skeleton_builds_and_is_analysable(tmp_path: Path) -> None:
     root = tmp_path / "demo"
     generator.write_skeleton(root, "demo")
     env = {**__import__("os").environ}
-    env.setdefault("CC", "clang")
-    env.setdefault("CXX", "clang++")
-    if shutil.which(env["CXX"]) is None:
+    if sys.platform == "darwin":
+        env.pop("CC", None)
+        env.pop("CXX", None)
+    else:
+        env.setdefault("CC", "clang")
+        env.setdefault("CXX", "clang++")
+    if sys.platform != "darwin" and shutil.which(env["CXX"]) is None:
         pytest.skip("no clang++")
-    for step in (["cmake", "--preset", "debug"], ["cmake", "--build", "--preset", "debug"],
-                 ["ctest", "--preset", "debug"]):
-        completed = subprocess.run(step, cwd=root, env=env, capture_output=True, text=True, check=False)
-        assert completed.returncode == 0, completed.stdout[-800:] + completed.stderr[-800:]
+    completed = subprocess.run(["bash", "build.sh", "debug"], cwd=root, env=env, capture_output=True, text=True,
+                               check=False)
+    assert completed.returncode == 0, completed.stdout[-800:] + completed.stderr[-800:]
     assert analysis.find_compile_commands(root) is not None
     if not toolchain.candidates():
         return

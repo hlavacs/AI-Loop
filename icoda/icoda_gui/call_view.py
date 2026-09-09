@@ -14,6 +14,7 @@ from typing import Any
 
 from icoda_core import views
 from icoda_core.model import DerivedModel
+from icoda_gui import zoom_controls
 
 BOX_WIDTH, BOX_HEIGHT = 200.0, 30.0
 ADDED, CHANGED = "#2ca02c", "#ff7f0e"
@@ -31,19 +32,22 @@ class CallViewCanvas:
         self.selected: str | None = None
         self.added: set[str] = set()
         self.changed: set[str] = set()
-        self.scale, self.offset, self.user_zoomed = 1.0, (0.0, 0.0), False
+        self.scale, self.fit_scale, self.offset, self.user_zoomed = 1.0, 1.0, (0.0, 0.0), False
         self.item_nodes: dict[int, str] = {}
         self.drag_start: tuple[int, int] | None = None
+        self.dragged = False
         self.depth_var = tk.IntVar(value=3)
         self.callers_var = tk.BooleanVar(value=False)
         self.root_var = tk.StringVar(value="")
         self.hover_var = tk.StringVar(value="")
         self._build_toolbar()
-        self.canvas = tk.Canvas(self.frame, background="white", highlightthickness=0)
+        self.canvas = tk.Canvas(self.frame, background="white", cursor="fleur", highlightthickness=0)
         self.canvas.pack(fill=tk.BOTH, expand=True)
         for event, handler in (("<MouseWheel>", self.on_wheel), ("<Button-4>", self.on_wheel),
                                ("<Button-5>", self.on_wheel), ("<ButtonPress-1>", self.on_press),
                                ("<B1-Motion>", self.on_drag), ("<ButtonRelease-1>", self.on_release),
+                               ("<ButtonPress-2>", self.on_press), ("<B2-Motion>", self.on_drag),
+                               ("<ButtonRelease-2>", self.on_release),
                                ("<Double-Button-1>", self.on_double_click), ("<Motion>", self.on_motion),
                                ("<Configure>", self.on_resize)):
             self.canvas.bind(event, handler)
@@ -51,16 +55,36 @@ class CallViewCanvas:
     def _build_toolbar(self) -> None:
         bar = ttk.Frame(self.frame)
         bar.pack(fill=tk.X, padx=4, pady=2)
-        ttk.Label(bar, text="Root:").pack(side=tk.LEFT)
-        ttk.Label(bar, textvariable=self.root_var, width=40, anchor="w").pack(side=tk.LEFT, padx=(2, 10))
-        ttk.Button(bar, text="From main", command=self.from_main).pack(side=tk.LEFT)
-        ttk.Label(bar, text="Depth:").pack(side=tk.LEFT, padx=(10, 2))
-        ttk.Spinbox(bar, from_=1, to=12, width=3, textvariable=self.depth_var,
-                    command=self.controls_changed).pack(side=tk.LEFT)
-        ttk.Checkbutton(bar, text="callers", variable=self.callers_var,
-                        command=self.controls_changed).pack(side=tk.LEFT, padx=10)
-        ttk.Label(bar, textvariable=self.hover_var, anchor="w", foreground="#555555").pack(side=tk.LEFT, fill=tk.X,
-                                                                                           expand=True)
+        root_row = ttk.Frame(bar)
+        root_row.pack(fill=tk.X)
+        ttk.Label(root_row, text="Root:").pack(side=tk.LEFT)
+        zoom, zoom_widgets = zoom_controls.build(
+            root_row,
+            zoom_out=lambda: self.zoom(zoom_controls.ZOOM_OUT),
+            fit=self.fit,
+            reset=self.reset_zoom,
+            zoom_in=lambda: self.zoom(zoom_controls.ZOOM_IN),
+        )
+        zoom.pack(side=tk.RIGHT)
+        ttk.Label(root_row, textvariable=self.root_var, anchor="w").pack(side=tk.LEFT, fill=tk.X, expand=True,
+                                                                          padx=(2, 0))
+        controls = ttk.Frame(bar)
+        controls.pack(fill=tk.X, pady=(2, 0))
+        from_main = ttk.Button(controls, text="From main", command=self.from_main)
+        depth_label = ttk.Label(controls, text="Depth:")
+        depth = ttk.Spinbox(controls, from_=1, to=12, width=3, textvariable=self.depth_var,
+                            command=self.controls_changed)
+        callers = ttk.Checkbutton(controls, text="callers", variable=self.callers_var,
+                                  command=self.controls_changed)
+        from_main.pack(side=tk.LEFT)
+        depth_label.pack(side=tk.LEFT, padx=(10, 2))
+        depth.pack(side=tk.LEFT)
+        callers.pack(side=tk.LEFT, padx=10)
+        ttk.Label(controls, textvariable=self.hover_var, anchor="w", foreground="#555555").pack(side=tk.LEFT,
+                                                                                                  fill=tk.X,
+                                                                                                  expand=True)
+        self.toolbar_controls = {"from-main": from_main, "depth-label": depth_label, "depth": depth,
+                                 "callers": callers, **zoom_widgets}
 
     # -- state ----------------------------------------------------------------------------
 
@@ -115,12 +139,14 @@ class CallViewCanvas:
         return (x * self.scale + self.offset[0], y * self.scale + self.offset[1])
 
     def fit(self) -> None:
+        self.user_zoomed = False
         if self.layout is None:
             return
         width = max(int(self.canvas.winfo_width() or 0), 200)
         height = max(int(self.canvas.winfo_height() or 0), 200)
         self.scale = min((width - 40) / max(self.layout.width, 1.0), (height - 40) / max(self.layout.height, 1.0),
                          1.5)
+        self.fit_scale = self.scale
         self.offset = ((width - self.layout.width * self.scale) / 2, (height - self.layout.height * self.scale) / 2)
         self.redraw()
 
@@ -182,19 +208,39 @@ class CallViewCanvas:
                 return self.item_nodes[item]
         return None
 
-    def on_wheel(self, event: Any) -> None:
-        factor = 1.1 if (getattr(event, "delta", 0) > 0 or getattr(event, "num", 0) == 4) else 1 / 1.1
-        self.scale *= factor
-        self.offset = (event.x - (event.x - self.offset[0]) * factor, event.y - (event.y - self.offset[1]) * factor)
+    def zoom(self, factor: float, origin: tuple[float, float] | None = None) -> None:
+        """Zoom around ``origin`` while keeping the complete fitted diagram as the lower limit."""
+        if self.layout is None or self.scale <= 0:
+            return
+        target = min(max(zoom_controls.MAX_ZOOM, self.fit_scale), max(self.fit_scale, self.scale * factor))
+        actual_factor = target / self.scale
+        if abs(actual_factor - 1.0) < 0.001:
+            return
+        origin_x, origin_y = origin or (float(self.canvas.winfo_width()) / 2, float(self.canvas.winfo_height()) / 2)
+        self.offset = (origin_x - (origin_x - self.offset[0]) * actual_factor,
+                       origin_y - (origin_y - self.offset[1]) * actual_factor)
+        self.scale = target
         self.user_zoomed = True
         self.redraw()
 
+    def reset_zoom(self) -> None:
+        if self.layout is not None and self.scale > 0:
+            self.zoom(max(self.fit_scale, 1.0) / self.scale)
+
+    def on_wheel(self, event: Any) -> str:
+        zoom_in = getattr(event, "delta", 0) > 0 or getattr(event, "num", 0) == 4
+        self.zoom(zoom_controls.ZOOM_IN if zoom_in else zoom_controls.ZOOM_OUT,
+                  (float(event.x), float(event.y)))
+        return "break"
+
     def on_press(self, event: Any) -> None:
-        self.drag_start = (event.x, event.y)
+        self.drag_start, self.dragged = (event.x, event.y), False
 
     def on_drag(self, event: Any) -> None:
         if self.drag_start is not None:
             dx, dy = event.x - self.drag_start[0], event.y - self.drag_start[1]
+            if abs(dx) + abs(dy) > 3:
+                self.dragged = True
             self.offset = (self.offset[0] + dx, self.offset[1] + dy)
             self.drag_start = (event.x, event.y)
             self.user_zoomed = True
@@ -202,9 +248,10 @@ class CallViewCanvas:
 
     def on_release(self, event: Any) -> None:
         self.drag_start = None
-        node = self.node_at(event.x, event.y)
-        if node is not None and node != self.selected:
-            self.select(node)
+        if not self.dragged and getattr(event, "num", 1) == 1:
+            node = self.node_at(event.x, event.y)
+            if node is not None and node != self.selected:
+                self.select(node)
 
     def on_motion(self, event: Any) -> None:
         usr = self.node_at(event.x, event.y)

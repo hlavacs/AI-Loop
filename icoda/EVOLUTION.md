@@ -266,8 +266,11 @@ level and which aspect is shown.
 | Class | members with types and signatures, relations between members | Function |
 | Function | signature, Doxygen text, callers and callees, source | — |
 
-Behaviour common to all views: zoom with the mouse wheel centred on the cursor, pan by dragging; a click expands a node one level in place; a double click opens the source location in the
-developer's editor; hovering shows the Doxygen brief; a right click offers *propose the next step here* (Phase 1),
+Behaviour common to all views: zoom with the mouse wheel centred on the cursor and pan with a left- or middle-button
+drag. Each diagram also exposes the compact analyzer-style controls `−`, `Fit`, `100%`, `+`; `Fit` shows the whole
+diagram and `100%` restores its natural scale. A drag never activates the node under its release point. A click
+expands a node one level in place; a double click opens the source location in the developer's editor; hovering shows
+the Doxygen brief; a right click offers *propose the next step here* (Phase 1),
 *implement this function* (Phase 2) and *run the tests of changed functions*. Filters by cluster, namespace and edge type. A stale model (code changed since
 the last parse) is marked as such in every view. Specification coverage can be switched on: entities without a
 `@satisfies` tag and requirements without any entity are highlighted. In Phase 2 functions are coloured by status

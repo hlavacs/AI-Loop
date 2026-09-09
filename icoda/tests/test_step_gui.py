@@ -49,13 +49,30 @@ def test_panel_shows_proposals_and_requests(tmp_path: Path) -> None:
     assert pressed[-1] == "undo"
 
 
-def test_call_view_canvas_follows_root_selection_and_proposals(tmp_path: Path) -> None:
+def test_call_view_canvas_follows_root_selection_and_proposals(tmp_path: Path, monkeypatch: Any) -> None:
     opened: list[tuple[str, int]] = []
     canvas = call_view.CallViewCanvas(tk.Tk(), lambda file, line: opened.append((file, line)))
     model = model_with_calls()
     canvas.show(model)
     assert canvas.root_usr == "u:main" and canvas.layout is not None and len(canvas.layout.nodes) == 3
     assert canvas.root_var.get() == "main" and canvas.scale > 0
+    fit_scale = canvas.fit_scale
+
+    class Pointer:
+        def __init__(self, x: int, y: int, num: int = 1, delta: int = 0) -> None:
+            self.x, self.y, self.num, self.delta = x, y, num, delta
+
+    before_point = ((300 - canvas.offset[0]) / canvas.scale, (200 - canvas.offset[1]) / canvas.scale)
+    assert canvas.on_wheel(Pointer(300, 200, delta=120)) == "break"
+    after_point = ((300 - canvas.offset[0]) / canvas.scale, (200 - canvas.offset[1]) / canvas.scale)
+    assert abs(before_point[0] - after_point[0]) < 1e-6 and abs(before_point[1] - after_point[1]) < 1e-6
+    assert canvas.scale > fit_scale
+    assert {"zoom-out", "fit", "reset", "zoom-in"} <= set(canvas.toolbar_controls)
+    canvas.reset_zoom()
+    assert abs(canvas.scale - max(canvas.fit_scale, 1.0)) < 1e-6
+    canvas.fit()
+    canvas.zoom(0.8)
+    assert abs(canvas.scale - canvas.fit_scale) < 1e-6
     canvas.set_root("u:a")
     assert set(canvas.layout.nodes) == {"u:a", "u:b"}
     canvas.depth_var.set(1)
@@ -69,6 +86,16 @@ def test_call_view_canvas_follows_root_selection_and_proposals(tmp_path: Path) -
     canvas.controls_changed()
     canvas.select("u:b")
     assert canvas.layout.path == {"u:main", "u:a", "u:b"}
+    monkeypatch.setattr(canvas, "node_at", lambda _x, _y: "u:a")
+    before_offset = canvas.offset
+    canvas.on_press(Pointer(100, 100))
+    canvas.on_drag(Pointer(122, 114))
+    canvas.on_release(Pointer(122, 114))
+    assert canvas.offset == (before_offset[0] + 22, before_offset[1] + 14)
+    assert canvas.dragged and canvas.selected == "u:b"
+    canvas.on_press(Pointer(122, 114, num=2))
+    canvas.on_release(Pointer(122, 114, num=2))
+    assert canvas.selected == "u:b"
 
 
 class FakeRunner:

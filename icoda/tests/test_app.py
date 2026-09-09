@@ -55,9 +55,40 @@ def test_zoom_keeps_the_point_under_the_cursor(app_module, tmp_path: Path) -> No
         x, y, delta, num = 300, 200, 120, 0
 
     before = ((300 - view.offset[0]) / view.scale, (200 - view.offset[1]) / view.scale)
-    view.on_wheel(Wheel())
+    assert view.on_wheel(Wheel()) == "break"
     after = ((300 - view.offset[0]) / view.scale, (200 - view.offset[1]) / view.scale)
     assert abs(before[0] - after[0]) < 1e-6 and abs(before[1] - after[1]) < 1e-6 and view.scale > view.fit_scale
+    assert set(view.zoom_control_widgets) == {"zoom-out", "fit", "reset", "zoom-in"}
+    view.reset_zoom()
+    assert abs(view.scale - max(view.fit_scale, 1.0)) < 1e-6
+    view.fit()
+    view.zoom(0.8)
+    assert abs(view.scale - view.fit_scale) < 1e-6
+
+
+def test_dragging_moves_file_view_without_selecting_a_node(app_module, tmp_path: Path, monkeypatch) -> None:
+    app = app_module.App(app_module.tk.Tk(), config=persistence.UserConfig(), config_path=tmp_path / "c.json")
+    app.show(opened_project(tmp_path))
+    view = app.view
+    selected: list[str] = []
+    monkeypatch.setattr(app, "select_node", selected.append)
+    monkeypatch.setattr(view, "node_at", lambda _x, _y: "src/a.cpp")
+
+    class Pointer:
+        def __init__(self, x: int, y: int, num: int = 1) -> None:
+            self.x, self.y, self.num = x, y, num
+
+    before = view.offset
+    view.on_press(Pointer(100, 100))
+    view.on_drag(Pointer(125, 115))
+    view.on_release(Pointer(125, 115))
+    assert view.offset == (before[0] + 25, before[1] + 15) and view.dragged and selected == []
+    view.on_press(Pointer(125, 115))
+    view.on_release(Pointer(125, 115))
+    assert selected == ["src/a.cpp"]
+    view.on_press(Pointer(125, 115, 2))
+    view.on_release(Pointer(125, 115, 2))
+    assert selected == ["src/a.cpp"]
 
 
 def test_new_project_writes_specification_and_skeleton_on_save(app_module, tmp_path: Path) -> None:

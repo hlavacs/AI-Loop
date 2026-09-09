@@ -5,6 +5,7 @@ from __future__ import annotations
 import os
 import shutil
 import subprocess
+import sys
 from pathlib import Path
 
 import pytest
@@ -59,10 +60,16 @@ def _ensure_built(root: Path) -> Path:
     if analysis.find_compile_commands(root) is None:
         if shutil.which("cmake") is None or shutil.which("ninja") is None:
             pytest.skip("cmake/ninja not available to build the sample project")
-        env = dict(os.environ, CC=os.environ.get("CC", "clang"), CXX=os.environ.get("CXX", "clang++"))
-        for step in (["cmake", "--preset", "debug"], ["cmake", "--build", "--preset", "debug"]):
-            if subprocess.run(step, cwd=root, env=env, capture_output=True, check=False).returncode != 0:
-                pytest.skip("sample project does not build here")
+        env = dict(os.environ)
+        if sys.platform == "darwin":
+            env.pop("CC", None)
+            env.pop("CXX", None)
+        else:
+            env.setdefault("CC", "clang")
+            env.setdefault("CXX", "clang++")
+        if subprocess.run(["bash", "build.sh", "debug"], cwd=root, env=env, capture_output=True,
+                          check=False).returncode != 0:
+            pytest.skip("sample project does not build here")
     commands = analysis.find_compile_commands(root)
     assert commands is not None
     return commands
@@ -74,7 +81,8 @@ def sample() -> DerivedModel:
     _ensure_built(SAMPLE)
     commands = analysis.load_compile_commands(SAMPLE)
     resource = {c.compiler: r for c in commands if (r := toolchain.resource_dir(c.compiler))}
-    return analysis.parse_project(SAMPLE, commands, resource_dirs=resource, libclang_version=loaded.version)
+    return analysis.parse_project(SAMPLE, commands, resource_dirs=resource, libclang_version=loaded.version,
+                                  sysroot=toolchain.default_sysroot(), apple=loaded.apple)
 
 
 def _by_name(model: DerivedModel, qualified: str):
@@ -132,9 +140,11 @@ def test_external_std_node_and_file_relations(sample: DerivedModel) -> None:
 def test_cache_makes_the_second_parse_identical(sample: DerivedModel, tmp_path: Path) -> None:
     commands = analysis.load_compile_commands(SAMPLE)
     resource = {c.compiler: r for c in commands if (r := toolchain.resource_dir(c.compiler))}
-    first = analysis.parse_project(SAMPLE, commands, resource_dirs=resource, cache_dir=tmp_path, libclang_version="v")
+    first = analysis.parse_project(SAMPLE, commands, resource_dirs=resource, cache_dir=tmp_path,
+                                   libclang_version="v", sysroot=toolchain.default_sysroot())
     assert len(list((tmp_path / "units").glob("*.json"))) == len(commands)
-    second = analysis.parse_project(SAMPLE, commands, resource_dirs=resource, cache_dir=tmp_path, libclang_version="v")
+    second = analysis.parse_project(SAMPLE, commands, resource_dirs=resource, cache_dir=tmp_path,
+                                    libclang_version="v", sysroot=toolchain.default_sysroot())
     assert second.to_json() == first.to_json()
 
 
@@ -175,7 +185,7 @@ def test_missing_module_flags_are_recovered_from_pcm_files(sample: DerivedModel)
                                        smoke.compiler, False)
     resource_path = toolchain.resource_dir(smoke.compiler)
     resource = {smoke.compiler: resource_path} if resource_path else {}
-    parser = analysis.Parser(resource)
+    parser = analysis.Parser(resource, sysroot=toolchain.default_sysroot())
     assert any(a.startswith("-fprebuilt-module-path=") for a in parser.arguments(stripped))
     unit, _ = parser.parse(stripped)
     from clang import cindex
