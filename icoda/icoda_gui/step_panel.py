@@ -59,8 +59,14 @@ class StepPanel:
         paned.pack(fill=tk.BOTH, expand=True, padx=4, pady=(2, 4))
         self.rationale = _scrolled_text(paned, wrap="word")
         paned.add(self.rationale.master, weight=3)
-        self.details = _scrolled_text(paned, wrap="none", font=("TkFixedFont", 10))
-        paned.add(self.details.master, weight=2)
+        self.detail_notebook = ttk.Notebook(paned)
+        self.details = _scrolled_text(self.detail_notebook, wrap="none", font=("TkFixedFont", 10))
+        self.source_diff = _scrolled_text(self.detail_notebook, wrap="none", font=("TkFixedFont", 10))
+        self.build_output = _scrolled_text(self.detail_notebook, wrap="none", font=("TkFixedFont", 10))
+        self.detail_notebook.add(self.details.master, text="Delta")
+        self.detail_notebook.add(self.source_diff.master, text="Source diff")
+        self.detail_notebook.add(self.build_output.master, text="Build")
+        paned.add(self.detail_notebook, weight=2)
 
     def _pressed(self, action: str) -> Callable[[], None]:
         return lambda: self.on_action(action)
@@ -78,15 +84,21 @@ class StepPanel:
             self.title_var.set("No proposal")
             _set_text(self.rationale, "")
             _set_text(self.details, "")
+            _set_text(self.source_diff, "")
+            _set_text(self.build_output, "")
         elif proposal.ok and proposal.response is not None and proposal.delta is not None:
             self.title_var.set(f"Step {proposal.number}: {proposal.response.title}  "
                                f"(attempt {proposal.attempts})")
             _set_text(self.rationale, _rationale_text(proposal))
-            _set_text(self.details, proposal.delta.summary() + "\n\nbuild:\n" + proposal.build.output)
+            _set_text(self.details, proposal.delta.summary())
+            _set_text(self.source_diff, proposal.source_diff or "No source changes.")
+            _set_text(self.build_output, proposal.build.output or "Build passed without output.")
         else:
             self.title_var.set(f"Step {proposal.number}: no usable proposal — {proposal.error}")
             _set_text(self.rationale, (proposal.response.rationale if proposal.response else "") or proposal.reply)
-            _set_text(self.details, proposal.build.output or proposal.error)
+            _set_text(self.details, proposal.error)
+            _set_text(self.source_diff, proposal.source_diff or "No source changes.")
+            _set_text(self.build_output, proposal.build.output or "Build did not run.")
         self._update_buttons()
 
     def show_failure(self, text: str) -> None:
@@ -109,12 +121,16 @@ class StepPanel:
 
 
 def _scrolled_text(parent: Any, **options: Any) -> Any:
-    """A read-only Text with a vertical scrollbar; the frame is ``text.master``."""
+    """A read-only Text with scrollbars; the frame is ``text.master``."""
     frame = ttk.Frame(parent)
     text = tk.Text(frame, height=9, state="disabled", **options)
-    bar = ttk.Scrollbar(frame, orient=tk.VERTICAL, command=text.yview)
-    text.configure(yscrollcommand=bar.set)
-    bar.pack(side=tk.RIGHT, fill=tk.Y)
+    vertical = ttk.Scrollbar(frame, orient=tk.VERTICAL, command=text.yview)
+    text.configure(yscrollcommand=vertical.set)
+    vertical.pack(side=tk.RIGHT, fill=tk.Y)
+    if options.get("wrap") == "none":
+        horizontal = ttk.Scrollbar(frame, orient=tk.HORIZONTAL, command=text.xview)
+        text.configure(xscrollcommand=horizontal.set)
+        horizontal.pack(side=tk.BOTTOM, fill=tk.X)
     text.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
     return text
 

@@ -17,7 +17,7 @@ from PIL import ImageGrab, ImageStat
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 
-from icoda_core import persistence
+from icoda_core import persistence, prompt, response, steps
 
 
 def load_application() -> Any:
@@ -134,9 +134,31 @@ def main(argv: list[str] | None = None) -> int:
         app.call_view.toolbar_controls["fit"].invoke()
         if abs(app.call_view.scale - app.call_view.fit_scale) > 0.001:
             raise RuntimeError("Call View Fit control did not fit the diagram")
+        displayed_diff = ("diff --git a/src/app/app.cppm b/src/app/app.cppm\n"
+                          "--- a/src/app/app.cppm\n+++ b/src/app/app.cppm\n"
+                          "@@ -8,3 +8,7 @@ export namespace app {\n"
+                          "+/// @brief Returns the configured answer.\n"
+                          "+int answer() {\n+    return 42;\n+}\n")
+        review = steps.Proposal(
+            1,
+            prompt.StepRequest(prompt.ARCHITECTURE, 1, "add the configured answer"),
+            args.project,
+            attempts=1,
+            response=response.StepResponse("Add configured answer", "The specification requires it.", ()),
+            build=steps.BuildResult(True, "Build and tests passed."),
+            delta=steps.Delta((), (), (), ("src/app/app.cppm",)),
+            source_diff=displayed_diff,
+        )
+        app.panel.show(review)
+        app.panel.detail_notebook.select(app.panel.source_diff.master)
+        root.update()
+        if displayed_diff.strip() not in app.panel.source_diff.get("1.0", "end"):
+            raise RuntimeError("proposal Source diff tab did not show the worktree diff")
+        proposal_diff_metrics = capture(root, args.output / "proposal-source-diff.png")
         state = {"status": app.status.get(), "summary": app.opened.summary,
                  "file_view": file_metrics, "file_view_zoomed": file_zoomed_metrics,
                  "call_view": call_metrics, "call_view_zoomed": call_zoomed_metrics,
+                 "proposal_source_diff": proposal_diff_metrics,
                  "navigation": {"file": {"fit_scale": file_fit_scale, "zoomed_scale": file_zoomed_scale,
                                            "pan": file_pan},
                                 "call": {"fit_scale": call_fit_scale, "zoomed_scale": call_zoomed_scale,

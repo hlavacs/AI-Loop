@@ -97,6 +97,8 @@ def test_step_zero_then_propose_approve_reject_undo(project: Path) -> None:
     assert "# Build files" in proposal.prompt_text and "add_executable" in proposal.prompt_text
     assert proposal.delta is not None and [e.qualified_name for e in proposal.delta.added] == ["app::answer"]
     assert proposal.delta.files == ("src/app/app.cppm",)
+    assert "diff --git a/src/app/app.cppm b/src/app/app.cppm" in proposal.source_diff
+    assert "+int answer()" in proposal.source_diff and "+    return 42;" in proposal.source_diff
     assert (project / "src/app/app.cppm").read_text() != APP_WITH_ANSWER  # only the worktree has it so far
 
     approved = runner.approve(proposal)
@@ -109,6 +111,7 @@ def test_step_zero_then_propose_approve_reject_undo(project: Path) -> None:
     second = runner.propose(prompt.StepRequest(prompt.ARCHITECTURE, 0))
     assert second.ok and second.number == 2 and second.attempts == 3, second.error
     assert "was not usable" in provider.prompts[2] and "did not build" in provider.prompts[3]
+    assert "+    return 41;" in second.source_diff
     rejected = runner.reject(second, "not now")
     assert rejected.decision == "rejected" and runner.log.rejections(2) == ("not now",)
 

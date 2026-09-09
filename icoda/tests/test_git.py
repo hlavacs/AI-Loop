@@ -39,6 +39,19 @@ def test_status_and_clean(repo: Path) -> None:
     assert git.is_clean(repo, ignore_prefixes=("new.txt", "keep.txt", "src/"))
 
 
+def test_working_tree_diff_includes_modified_deleted_and_untracked_files(repo: Path) -> None:
+    (repo / "keep.txt").write_text("changed\n")
+    (repo / "src" / "a.cpp").unlink()
+    (repo / "new.txt").write_text("new line\n")
+    before = git.status_changes(repo)
+    source_diff = git.working_tree_diff(repo)
+    assert "diff --git a/keep.txt b/keep.txt" in source_diff and "+changed" in source_diff
+    assert "diff --git a/src/a.cpp b/src/a.cpp" in source_diff and "+++ /dev/null" in source_diff
+    assert "diff --git a/new.txt b/new.txt" in source_diff and "new file mode 100644" in source_diff
+    assert "--- /dev/null" in source_diff and "+new line" in source_diff
+    assert git.status_changes(repo) == before
+
+
 def test_worktree_promotion_copies_adds_and_deletes(repo: Path, tmp_path: Path) -> None:
     tree = git.create_worktree(repo, tmp_path / "wt", "icoda/step-1")
     (tree / "src" / "a.cpp").write_text("int a() { return 2; }\n")

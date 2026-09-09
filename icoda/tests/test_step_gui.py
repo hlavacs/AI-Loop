@@ -26,7 +26,8 @@ def fake_proposal(tmp_path: Path, ok: bool = True) -> steps.Proposal:
     reply = response.StepResponse("Add b", "Because.", (response.FileChange("m.cpp", "x"),), questions=("Why?",))
     delta = steps.compute_delta(DerivedModel("/p"), model, ["m.cpp"])
     proposal = steps.Proposal(1, prompt.StepRequest(prompt.ARCHITECTURE, 1, "add b"), tmp_path, attempts=2,
-                              response=reply, build=steps.BuildResult(True, "built"), model=model, delta=delta)
+                              response=reply, build=steps.BuildResult(True, "built"), model=model, delta=delta,
+                              source_diff="diff --git a/m.cpp b/m.cpp\n--- a/m.cpp\n+++ b/m.cpp\n@@ -1 +1 @@\n-old\n+new")
     if not ok:
         proposal.build, proposal.error = steps.BuildResult(False, "error: boom"), "the proposal does not build"
     return proposal
@@ -43,8 +44,12 @@ def test_panel_shows_proposals_and_requests(tmp_path: Path) -> None:
     assert panel.title_var.get() == "Step 1: Add b  (attempt 2)"
     assert "Questions:\n- Why?" in panel.rationale.get("1.0", "end")
     assert "3 entities added" in panel.details.get("1.0", "end")
+    assert "diff --git a/m.cpp b/m.cpp" in panel.source_diff.get("1.0", "end")
+    assert "built" in panel.build_output.get("1.0", "end")
     panel.show(fake_proposal(tmp_path, ok=False))
-    assert "no usable proposal" in panel.title_var.get() and "boom" in panel.details.get("1.0", "end")
+    assert "no usable proposal" in panel.title_var.get() and "proposal does not build" in panel.details.get("1.0",
+                                                                                                             "end")
+    assert "boom" in panel.build_output.get("1.0", "end")
     panel._pressed("undo")()
     assert pressed[-1] == "undo"
 

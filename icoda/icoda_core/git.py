@@ -6,6 +6,7 @@ import shutil
 import subprocess
 from collections.abc import Sequence
 from dataclasses import dataclass
+from difflib import unified_diff
 from pathlib import Path
 
 
@@ -79,6 +80,24 @@ def is_clean(repo: Path | str, ignore_prefixes: Sequence[str] = ()) -> bool:
     """True when nothing is changed except paths under ``ignore_prefixes``."""
     return all(change.path.startswith(tuple(ignore_prefixes)) for change in status_changes(repo)
                if ignore_prefixes) if ignore_prefixes else not status_changes(repo)
+
+
+def working_tree_diff(repo: Path | str) -> str:
+    """Return a no-colour source diff against HEAD, including untracked text files."""
+    root = Path(repo)
+    tracked = run_git(["diff", "--no-ext-diff", "--no-color", "HEAD", "--"], root).stdout.rstrip()
+    additions = [_untracked_diff(root, change.path) for change in status_changes(root)
+                 if change.status == "A" and run_git(["cat-file", "-e", f"HEAD:{change.path}"], root,
+                                                      check=False).returncode != 0]
+    return "\n".join(part for part in (tracked, *additions) if part).rstrip()
+
+
+def _untracked_diff(repo: Path, path: str) -> str:
+    """Represent one untracked text file without staging or otherwise changing the worktree."""
+    content = (repo / path).read_text(encoding="utf-8", errors="replace")
+    body = "".join(unified_diff([], content.splitlines(keepends=True), fromfile="/dev/null", tofile=f"b/{path}"))
+    header = f"diff --git a/{path} b/{path}\nnew file mode 100644"
+    return header + ("\n" + body.rstrip() if body else "")
 
 
 def create_worktree(repo: Path | str, path: Path | str, branch: str) -> Path:

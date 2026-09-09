@@ -20,5 +20,5 @@ after every code or GUI change:
 ```
 
 On Windows use `verify.cmd`. Each run retains timestamped command logs, JUnit and coverage reports, environment
-metadata, the ICODA analysis log, and validated File View and Call View screenshots under
-`.icoda-test-artifacts/`; the `LATEST` file names the newest run.
+metadata, the ICODA analysis log, fitted and zoomed File View and Call View screenshots, and a populated proposal
+Source diff screenshot under `.icoda-test-artifacts/`; the `LATEST` file names the newest run.

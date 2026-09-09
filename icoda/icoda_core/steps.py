@@ -106,6 +106,7 @@ class Proposal:
     build: BuildResult = BuildResult(False, "")
     model: DerivedModel | None = None
     delta: Delta | None = None
+    source_diff: str = ""
     prompt_text: str = ""
     reply: str = ""
     error: str = ""
@@ -224,6 +225,7 @@ class StepRunner:
         self._build_and_parse(proposal)
 
     def _build_and_parse(self, proposal: Proposal) -> None:
+        proposal.source_diff = git.working_tree_diff(proposal.worktree)
         self.progress(f"step {proposal.number}: building the proposal")
         proposal.build = self.build(proposal.worktree)
         if not proposal.build.ok:
