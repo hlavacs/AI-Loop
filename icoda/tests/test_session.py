@@ -23,7 +23,7 @@ def test_open_sample_project_produces_layout_and_remembers_it(tmp_path: Path) ->
     assert len(opened.clustering.clusters) >= 5 and opened.layout.nodes
     assert "src/core/shapes.cppm" in opened.layout.nodes and "external:std" in opened.layout.nodes
     assert config.last_project == str(SAMPLE) and (SAMPLE / ".icoda" / "cache" / "model.json").is_file()
-    assert "entities" in opened.summary
+    assert "entities" in opened.summary and "clustering: seeded_label_propagation" in opened.summary
 
 
 def test_open_project_in_child_process(tmp_path: Path) -> None:

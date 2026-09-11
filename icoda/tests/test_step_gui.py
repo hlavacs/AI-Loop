@@ -2,13 +2,27 @@
 
 from __future__ import annotations
 
+import json
 import tkinter as tk
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
-from icoda_core import persistence, prompt, response, steps, views
+import pytest
+
+from icoda_core import (
+    adaptation,
+    grouping,
+    implementation_queue,
+    persistence,
+    prompt,
+    response,
+    specification,
+    steplog,
+    steps,
+    views,
+)
 from icoda_core.model import DerivedModel, Edge, EdgeKind, Entity, FileInfo, Kind
-from icoda_gui import call_view, step_controller, step_panel
+from icoda_gui import call_view, graph_canvas, step_controller, step_panel
 
 
 def model_with_calls() -> DerivedModel:
@@ -23,21 +37,34 @@ def model_with_calls() -> DerivedModel:
 
 def fake_proposal(tmp_path: Path, ok: bool = True) -> steps.Proposal:
     model = model_with_calls()
-    reply = response.StepResponse("Add b", "Because.", (response.FileChange("m.cpp", "x"),), questions=("Why?",))
+    entities = (adaptation.EntitySummary("app::b", "function", "m.cpp", "int b()", ("R-1",)),)
+    reply = response.StepResponse(
+        "Add b", "Because.", (response.FileChange("m.cpp", "x"),), entities=entities, questions=("Why?",))
     delta = steps.compute_delta(DerivedModel("/p"), model, ["m.cpp"])
     proposal = steps.Proposal(1, prompt.StepRequest(prompt.ARCHITECTURE, 1, "add b"), tmp_path, attempts=2,
-                              response=reply, build=steps.BuildResult(True, "built"), model=model, delta=delta,
+                              response=reply, build=steps.BuildResult(True, "built"),
+                              test=steps.TestResult(True, "tested"), model=model, delta=delta,
                               source_diff="diff --git a/m.cpp b/m.cpp\n--- a/m.cpp\n+++ b/m.cpp\n@@ -1 +1 @@\n-old\n+new")
     if not ok:
-        proposal.build, proposal.error = steps.BuildResult(False, "error: boom"), "the proposal does not build"
+        proposal.build, proposal.test = steps.BuildResult(False, "error: boom"), steps.TestResult()
+        proposal.model, proposal.delta, proposal.error = None, None, "the proposal does not build"
     return proposal
+
+
+def fake_approach() -> steps.Approach:
+    return steps.Approach(
+        1, prompt.StepRequest(prompt.IMPLEMENTATION, 1, target="u:b"), "u:b", attempts=1,
+        plan="Use std::ranges::find; approximately 6 lines; no allocations.", entities=("b",),
+        files=("m.cpp", "tests/m_test.cpp"), prompt_text="approach prompt",
+    )
 
 
 def test_panel_shows_proposals_and_requests(tmp_path: Path) -> None:
     pressed: list[str] = []
     panel = step_panel.StepPanel(tk.Tk(), pressed.append)
-    assert panel.title_var.get() == "No proposal" and panel.request().phase == prompt.ARCHITECTURE
-    panel.phase_var.set(prompt.IMPLEMENTATION)
+    assert panel.title_var.get() == "No proposal" and panel.request().phase == "specification"
+    assert "values" not in cast(Any, panel.phase_label).kwargs  # a label, not the old free-choice phase combo
+    panel.set_phase(persistence.ProjectPhase.IMPLEMENTATION)
     panel.request_var.set("  implement a ")
     assert panel.request() == prompt.StepRequest(prompt.IMPLEMENTATION, 0, "implement a", max_entities=5)
     panel.show(fake_proposal(tmp_path))
@@ -47,6 +74,7 @@ def test_panel_shows_proposals_and_requests(tmp_path: Path) -> None:
     assert "Architecture entity budget: 3 / 5" in panel.details.get("1.0", "end")
     assert "diff --git a/m.cpp b/m.cpp" in panel.source_diff.get("1.0", "end")
     assert "built" in panel.build_output.get("1.0", "end")
+    assert panel.build_status_var.get() == "Build: passed" and panel.test_status_var.get() == "Tests: passed"
     panel.show(fake_proposal(tmp_path, ok=False))
     assert "no usable proposal" in panel.title_var.get() and "proposal does not build" in panel.details.get("1.0",
                                                                                                              "end")
@@ -55,9 +83,246 @@ def test_panel_shows_proposals_and_requests(tmp_path: Path) -> None:
     assert pressed[-1] == "undo"
 
 
+def test_panel_distinguishes_build_test_failure_and_not_run(tmp_path: Path) -> None:
+    panel = step_panel.StepPanel(tk.Tk(), lambda action: None)
+    failed = fake_proposal(tmp_path)
+    failed.test, failed.error = steps.TestResult(False, "one test failed"), "the proposal tests fail"
+    panel.show(failed)
+    assert panel.build_status_var.get() == "Build: passed"
+    assert panel.test_status_var.get() == "Tests: failed"
+    assert "Full suite (no targeted tests selected)." in panel.test_output.get("1.0", "end")
+    assert "one test failed" in panel.test_output.get("1.0", "end")
+
+    not_run = steps.Proposal(2, prompt.StepRequest(prompt.ARCHITECTURE, 2), tmp_path)
+    panel.show(not_run)
+    assert panel.build_status_var.get() == "Build: not run"
+    assert panel.test_status_var.get() == "Tests: not run"
+    assert "Tests did not run" in panel.test_output.get("1.0", "end")
+
+
+def test_panel_disables_structured_adapt_without_a_usable_live_summary(tmp_path: Path) -> None:
+    panel = step_panel.StepPanel(tk.Tk(), lambda action: None)
+    assert "adapt" not in panel.enabled_actions
+    assert panel.edited_entity_summary() == adaptation.NO_USABLE_PROPOSAL
+
+    failed = fake_proposal(tmp_path, ok=False)
+    panel.show(failed)
+    assert "adapt" not in panel.enabled_actions
+    assert panel.edited_entity_summary() == adaptation.NO_USABLE_PROPOSAL
+
+    panel.show_step(steplog.StepRecord(4, "architecture", "approved", title="old proposal"))
+    assert "adapt" not in panel.enabled_actions
+    assert panel.edited_entity_summary() == adaptation.HISTORICAL_UNAVAILABLE
+
+
+def test_panel_tests_tab_shows_targeted_tests_and_full_suite_fallback(tmp_path: Path) -> None:
+    panel = step_panel.StepPanel(tk.Tk(), lambda action: None)
+    targeted = fake_proposal(tmp_path)
+    targeted.selected_tests = ("tests/leaf_test.cpp", "app::test_leaf")
+    panel.show(targeted)
+    shown = panel.test_output.get("1.0", "end")
+    assert "Selected tests:\n- tests/leaf_test.cpp\n- app::test_leaf" in shown
+    assert "tested" in shown
+
+    legacy_record = steplog.StepRecord.from_dict(
+        {"number": 1, "phase": "implementation", "decision": "approved"})
+    legacy = fake_proposal(tmp_path)
+    legacy.selected_tests = tuple(legacy_record.selected_tests)
+    panel.show(legacy)
+    assert "Full suite (no targeted tests selected)." in panel.test_output.get("1.0", "end")
+
+
+def test_panel_delta_shows_rename_pairs(tmp_path: Path) -> None:
+    proposal = fake_proposal(tmp_path)
+    before = Entity("u:old", Kind.FUNCTION, "old", "app::old", "m.cpp", 1,
+                    signature="int old()", body_hash="same")
+    after = Entity("u:new", Kind.FUNCTION, "new", "app::new", "m.cpp", 1,
+                   signature="int new()", body_hash="same")
+    proposal.delta = steps.Delta((), (), (), ("m.cpp",), renamed=(steps.RenamePair(before, after),))
+    panel = step_panel.StepPanel(tk.Tk(), lambda action: None)
+    panel.show(proposal)
+    shown = panel.details.get("1.0", "end")
+    assert "1 renamed" in shown and "> function app::old -> app::new int new()" in shown
+
+
+def test_panel_requires_and_records_signature_confirmation_with_exact_actions(tmp_path: Path) -> None:
+    proposal = fake_proposal(tmp_path)
+    before, after = DerivedModel("/p"), DerivedModel("/p")
+    before.add_entity(Entity("u:b", Kind.FUNCTION, "b", "app::b", "m.cpp", 1,
+                             signature="int b()", body_hash="same"))
+    after.add_entity(Entity("u:b", Kind.FUNCTION, "b", "app::b", "m.cpp", 1,
+                            signature="long b(int value)", body_hash="same"))
+    proposal.model = after
+    proposal.delta = steps.compute_delta(before, after, ["m.cpp"])
+    panel = step_panel.StepPanel(tk.Tk(), lambda action: None)
+    panel.set_phase(persistence.ProjectPhase.ARCHITECTURE)
+    panel.show(proposal)
+
+    assert panel.enabled_actions == {
+        "propose", "confirm_signature", "reject", "adapt", "rebuild", "open_worktree", "undo", "commit_manual"}
+    assert "int b()" in panel.signature.get("1.0", "end")
+    assert "long b(int value)" in panel.signature.get("1.0", "end")
+    assert panel.signature_var.get() == "Signature changes: 1 — confirmation required"
+
+    panel.confirm_signature(proposal)
+
+    assert panel.enabled_actions == {
+        "propose", "approve", "reject", "adapt", "rebuild", "open_worktree", "undo", "commit_manual"}
+    assert panel.signature_var.get() == "Signature changes: 1 confirmed"
+
+
+def test_panel_signature_confirmation_does_not_leak_to_different_proposal(tmp_path: Path) -> None:
+    proposal_a = fake_proposal(tmp_path)
+    before_a, after_a = DerivedModel("/p"), DerivedModel("/p")
+    before_a.add_entity(Entity("u:a", Kind.FUNCTION, "a", "app::a", "m.cpp", 1,
+                               signature="int a()", body_hash="same-a"))
+    after_a.add_entity(Entity("u:a", Kind.FUNCTION, "a", "app::a", "m.cpp", 1,
+                              signature="long a(int value)", body_hash="same-a"))
+    proposal_a.model = after_a
+    proposal_a.delta = steps.compute_delta(before_a, after_a, ["m.cpp"])
+    proposal_b = fake_proposal(tmp_path)
+    before_b, after_b = DerivedModel("/p"), DerivedModel("/p")
+    before_b.add_entity(Entity("u:b", Kind.FUNCTION, "b", "app::b", "m.cpp", 2,
+                               signature="int b()", body_hash="same-b"))
+    after_b.add_entity(Entity("u:b", Kind.FUNCTION, "b", "app::b", "m.cpp", 2,
+                              signature="bool b(int value)", body_hash="same-b"))
+    proposal_b.model = after_b
+    proposal_b.delta = steps.compute_delta(before_b, after_b, ["m.cpp"])
+    panel = step_panel.StepPanel(tk.Tk(), lambda action: None)
+    panel.set_phase(persistence.ProjectPhase.ARCHITECTURE)
+
+    panel.show(proposal_a)
+    panel.confirm_signature(proposal_a)
+    assert panel.enabled_actions == {
+        "propose", "approve", "reject", "adapt", "rebuild", "open_worktree", "undo", "commit_manual"}
+
+    panel.show(proposal_b)
+
+    assert panel.enabled_actions == {
+        "propose", "confirm_signature", "reject", "adapt", "rebuild", "open_worktree", "undo", "commit_manual"}
+
+
+def test_panel_shows_multi_target_batch_but_keeps_single_target_proposal_text(tmp_path: Path) -> None:
+    panel = step_panel.StepPanel(tk.Tk(), lambda action: None)
+    single = fake_proposal(tmp_path)
+    single.request = prompt.StepRequest(prompt.IMPLEMENTATION, 1, target="u:b", batch=("u:b",))
+    panel.show(single)
+    assert panel.title_var.get() == "Step 1: Add b  (attempt 2)"
+    assert "Implementation batch" not in panel.details.get("1.0", "end")
+
+    multiple = fake_proposal(tmp_path)
+    multiple.request = prompt.StepRequest(
+        prompt.IMPLEMENTATION, 1, target="u:b", batch=("u:b", "u:a"))
+    panel.show(multiple)
+    assert panel.title_var.get().endswith("— batch: b, a")
+    assert "Implementation batch:\n- b\n- a" in panel.details.get("1.0", "end")
+
+
+def test_panel_shows_the_persisted_queue_target_and_empty_state(tmp_path: Path) -> None:
+    store = persistence.ProjectStore(tmp_path)
+    store.save_state(persistence.ProjectState(persistence.ProjectPhase.IMPLEMENTATION,
+                                              ("u:b", "u:a"), 1))
+    state = store.load_state()
+    model = model_with_calls()
+    target = implementation_queue.target_usr(state)
+    panel = step_panel.StepPanel(tk.Tk(), lambda action: None)
+    panel.set_phase(state.phase)
+    entity = model.entities.get(target) if target is not None else None
+    panel.set_implementation_queue(entity.qualified_name if entity is not None else target,
+                                   implementation_queue.remaining(state))
+    assert panel.queue_var.get() == "Current target: a — 1 remaining"
+
+    panel.set_implementation_queue(None, 0)
+    assert panel.queue_var.get() == "Implementation queue: empty — no unimplemented functions"
+
+
+def test_panel_shows_and_reports_the_developer_batch_size() -> None:
+    actions: list[str] = []
+    panel = step_panel.StepPanel(tk.Tk(), actions.append)
+    panel.set_phase(persistence.ProjectPhase.IMPLEMENTATION)
+    panel.set_implementation_queue("b", 3, batch_size=2, batch=("b", "a"))
+    assert panel.batch_size_var.get() == 2
+    assert panel.queue_var.get() == "Current batch (2): b, a — 3 remaining"
+
+    panel.batch_size_var.set(3)
+    panel._batch_size_changed()
+    assert panel.batch_size_var.get() == 3 and actions[-1] == "batch_size_changed"
+
+
+def test_panel_exposes_and_dispatches_persisted_auto_approve_control() -> None:
+    actions: list[str] = []
+    panel = step_panel.StepPanel(tk.Tk(), actions.append)
+    assert panel.auto_approve_var.get() is False
+    assert panel.auto_approve_check.kwargs["variable"] is panel.auto_approve_var
+
+    panel.set_phase(persistence.ProjectPhase.IMPLEMENTATION)
+    panel.set_implementation_queue("b", 1, auto_approve=True)
+    panel._auto_approve_changed()
+
+    assert panel.auto_approve_var.get() is True
+    assert actions == ["auto_approve_changed"]
+
+
+def test_grouping_selector_renders_and_changes_the_displayed_queue_target(tmp_path: Path) -> None:
+    model = DerivedModel(str(tmp_path))
+    model.add_entity(Entity("class:widget", Kind.CLASS, "Widget", "app::Widget", "widget.py", 1))
+    for usr, name, line in (("method:get", "get_value", 10), ("method:set", "set_value", 14)):
+        model.add_entity(Entity(
+            usr, Kind.METHOD, name, f"app::Widget::{name}", "widget.py", line,
+            end_line=line + 2, parent="class:widget", status="stub",
+        ))
+    store = persistence.ProjectStore(tmp_path)
+    store.save_state(persistence.ProjectState(
+        persistence.ProjectPhase.IMPLEMENTATION, ("method:get", "method:set")))
+    specification.save(store.specification_path, specification.default_specification("Grouping", "Python"))
+    window = Window(tmp_path)
+    window.opened = type("Opened", (), {"model": model})()
+    window.panel.set_phase(persistence.ProjectPhase.IMPLEMENTATION)
+    window.panel.set_implementation_queue("app::Widget::get_value", 2)
+    controller = step_controller.StepController(window)
+    window.panel.on_action = controller.action
+
+    assert window.panel.grouping_combobox.kwargs["values"] == ("One entity", "Few-line group")
+    assert window.panel.queue_var.get() == "Current target: app::Widget::get_value — 2 remaining"
+
+    window.panel.grouping_var.set("Few-line group")
+    window.panel._grouping_changed()
+
+    assert store.load_state().implementation_grouping == grouping.Mode.FEW_LINE_GROUP.value
+    assert window.panel.queue_var.get() == (
+        "Current group (2): app::Widget::get_value, app::Widget::set_value — 2 remaining")
+
+
+def test_panel_shows_approach_and_gates_code_actions() -> None:
+    panel = step_panel.StepPanel(tk.Tk(), lambda action: None)
+    panel.set_phase(persistence.ProjectPhase.IMPLEMENTATION)
+    panel.set_implementation_queue("b", 2)
+    assert "No approach approved" in panel.approach_text.get("1.0", "end")
+    assert "propose_approach" in panel.enabled_actions and "propose" not in panel.enabled_actions
+    assert "approve_approach" not in panel.enabled_actions
+
+    approach = fake_approach()
+    panel.show_approach(approach)
+    shown = panel.approach_text.get("1.0", "end")
+    assert "Awaiting developer approval" in shown and approach.plan in shown
+    assert "Expected entities:\n- b" in shown and "Expected files:\n- m.cpp" in shown
+    assert "approve_approach" in panel.enabled_actions and "propose" not in panel.enabled_actions
+    assert {"reject", "adapt"} <= panel.enabled_actions
+
+    panel.show_approach(approach, approved=True)
+    assert "Approved" in panel.approach_text.get("1.0", "end")
+    assert "propose" in panel.enabled_actions and "approve_approach" not in panel.enabled_actions
+    assert "propose_approach" not in panel.enabled_actions and "reject" not in panel.enabled_actions
+
+    panel.set_implementation_queue("b", 2, approach.plan)
+    assert "Approved approach" in panel.approach_text.get("1.0", "end")
+    assert "propose" in panel.enabled_actions and "propose_approach" not in panel.enabled_actions
+
+
 def test_call_view_canvas_follows_root_selection_and_proposals(tmp_path: Path, monkeypatch: Any) -> None:
     opened: list[tuple[str, int]] = []
     canvas = call_view.CallViewCanvas(tk.Tk(), lambda file, line: opened.append((file, line)))
+    assert isinstance(canvas.action_menu, graph_canvas.NodeActionMenu)
     model = model_with_calls()
     canvas.show(model)
     assert canvas.root_usr == "u:main" and canvas.layout is not None and len(canvas.layout.nodes) == 3
@@ -104,13 +369,35 @@ def test_call_view_canvas_follows_root_selection_and_proposals(tmp_path: Path, m
     assert canvas.selected == "u:b"
 
 
-class FakeRunner:
+def test_call_view_renders_uncertain_call_differently_from_certain_call(monkeypatch: Any) -> None:
+    canvas = call_view.CallViewCanvas(tk.Tk(), lambda file, line: None)
+    model = model_with_calls()
+    model.edges[1] = Edge(EdgeKind.CALLS, "u:a", "u:b", "m.cpp", 3, uncertain=True)
+    lines: list[dict[str, Any]] = []
+    texts: list[str] = []
+    monkeypatch.setattr(canvas.canvas, "create_line", lambda *args, **kwargs: lines.append(kwargs) or len(lines))
+    monkeypatch.setattr(
+        canvas.canvas,
+        "create_text",
+        lambda *args, **kwargs: texts.append(str(kwargs.get("text", ""))) or len(texts),
+    )
+
+    canvas.show(model)
+
+    call_lines = [line for line in lines if line.get("arrow") == tk.LAST]
+    assert len(call_lines) == 2
+    assert sum("dash" in line for line in call_lines) == 1
+    assert any("uncertain dynamic call" in text for text in texts)
+
+
+class FakeRunner(steps.StepRunner):
     def __init__(self, root: Path, config: Any, provider: str, binary: str, model: str, *, progress: Any) -> None:
-        self.root, self.provider_id, self.binary, self.model_id = root, provider, binary, model
-        self.progress = progress
+        super().__init__(root, config, provider, binary, model, progress=progress)
         self.calls: list[str] = []
+        self.requests: list[tuple[str, prompt.StepRequest]] = []
         self.dirty = False
         self.proposal: steps.Proposal | None = None
+        self.approach: steps.Approach | None = None
 
     def prepare(self) -> None:
         self.calls.append("prepare")
@@ -118,10 +405,26 @@ class FakeRunner:
             raise steps.DirtyTree("uncommitted changes in the project")
 
     def propose(self, request: prompt.StepRequest) -> steps.Proposal:
+        self.requests.append(("propose", request))
         self.calls.append(f"propose:{request.request}:{';'.join(request.constraints)}")
         self.progress("working")
         assert self.proposal is not None
         return self.proposal
+
+    def propose_approach(self, request: prompt.StepRequest) -> steps.Approach:
+        self.requests.append(("propose_approach", request))
+        self.calls.append(f"propose_approach:{request.request}:{';'.join(request.constraints)}")
+        assert self.approach is not None
+        return self.approach
+
+    def approve_approach(self, approach: steps.Approach) -> Any:
+        self.calls.append("approve_approach")
+        return steps.StepRecord(approach.number, "implementation", "approved", round="approach",
+                                title="Approach for b", rationale=approach.plan)
+
+    def reject_approach(self, approach: steps.Approach, reason: str) -> Any:
+        self.calls.append(f"reject_approach:{reason}")
+        return steps.StepRecord(approach.number, "implementation", "rejected", round="approach", reason=reason)
 
     def approve(self, proposal: steps.Proposal) -> Any:
         self.calls.append("approve")
@@ -131,6 +434,11 @@ class FakeRunner:
     def reject(self, proposal: steps.Proposal, reason: str) -> Any:
         self.calls.append(f"reject:{reason}")
         return steps.StepRecord(1, "architecture", "rejected", reason=reason)
+
+    def approve_architecture(self) -> Any:
+        self.calls.append("approve_architecture")
+        return steps.StepRecord(1, "implementation", "phase_transition", title="architecture approved",
+                                previous_phase="architecture")
 
 
 class Window:
@@ -144,6 +452,7 @@ class Window:
         self.panel = step_panel.StepPanel(self.root, lambda action: None)
         self.call_view = call_view.CallViewCanvas(self.root, lambda file, line: None)
         self.reloads = 0
+        self.step_models: list[DerivedModel | None] = []
         self.shown_call_view = 0
 
     class _Field:
@@ -167,8 +476,115 @@ class Window:
     def reload(self) -> None:
         self.reloads += 1
 
+    def show_after_step(self, model: DerivedModel | None) -> None:
+        self.step_models.append(model)
+
     def show_call_view(self) -> None:
         self.shown_call_view += 1
+
+
+def signature_gate_controller(tmp_path: Path, monkeypatch: Any) \
+        -> tuple[step_controller.StepController, steps.StepRunner, steps.Proposal]:
+    store = persistence.ProjectStore(tmp_path)
+    before = DerivedModel(str(tmp_path))
+    before.add_entity(Entity("u:b", Kind.FUNCTION, "b", "app::b", "m.cpp", 1,
+                             signature="int b()", status="stub", body_hash="same"))
+    proposed = DerivedModel(str(tmp_path))
+    proposed.add_entity(Entity("u:b", Kind.FUNCTION, "b", "app::b", "m.cpp", 1,
+                               signature="int b(int value)", status="implemented", body_hash="same"))
+    store.save_model(before)
+    store.save_state(persistence.ProjectState(
+        persistence.ProjectPhase.IMPLEMENTATION, ("u:b",), 0, approved_approach="Implement directly."))
+    worktree = tmp_path / "proposal-worktree"
+    worktree.mkdir()
+    (worktree / "m.cpp").write_text("int b(int value) { return value; }\n", encoding="utf-8")
+    proposal = steps.Proposal(
+        1, prompt.StepRequest(prompt.IMPLEMENTATION, 1, target="u:b"), worktree, attempts=1,
+        response=response.StepResponse("Change b", "Needed.", ()), build=steps.BuildResult(True, "built"),
+        test=steps.TestResult(True, "tested"), model=proposed,
+        delta=steps.compute_delta(before, proposed, ["m.cpp"]),
+    )
+    runner = steps.StepRunner(
+        tmp_path, persistence.UserConfig(), build=lambda root: steps.BuildResult(True, "rebuilt"),
+        test=lambda root, command: steps.TestResult(True, "retested"))
+    monkeypatch.setattr(steps.git, "promote_worktree", lambda root, candidate: ["m.cpp"])
+    monkeypatch.setattr(steps.git, "commit_all", lambda *args: "commit")
+    window = Window(tmp_path)
+    window.panel.set_phase(persistence.ProjectPhase.IMPLEMENTATION)
+    window.panel.set_implementation_queue("app::b", 1, approved_approach="Implement directly.")
+    controller = step_controller.StepController(window)
+    controller.runner = runner
+    controller._show_proposal(proposal)
+    return controller, runner, proposal
+
+
+def test_controller_signature_refusal_precedes_all_approval_mutations(
+        tmp_path: Path, monkeypatch: Any) -> None:
+    controller, runner, proposal = signature_gate_controller(tmp_path, monkeypatch)
+    store = persistence.ProjectStore(tmp_path)
+    before_state = store.load_state()
+    before_state_bytes = store.state_path.read_bytes()
+    before_records = runner.log.records()
+    before_worktree = {str(path.relative_to(proposal.worktree)): path.read_bytes()
+                       for path in proposal.worktree.rglob("*") if path.is_file()}
+
+    with pytest.raises(steps.StepError) as refused:
+        controller.approve()
+
+    assert str(refused.value) == step_controller.SIGNATURE_CONFIRMATION_REQUIRED
+    assert store.load_state() == before_state
+    assert store.state_path.read_bytes() == before_state_bytes
+    assert runner.log.records() == before_records
+    assert {str(path.relative_to(proposal.worktree)): path.read_bytes()
+            for path in proposal.worktree.rglob("*") if path.is_file()} == before_worktree
+    assert controller.proposal is proposal and controller.window.panel.proposal is proposal
+
+
+def test_controller_signature_confirmation_allows_the_same_proposal_and_advances_cursor(
+        tmp_path: Path, monkeypatch: Any) -> None:
+    controller, runner, proposal = signature_gate_controller(tmp_path, monkeypatch)
+
+    controller.confirm_signature()
+    assert controller.confirmed_signature_proposal is proposal
+    assert "approve" in controller.window.panel.enabled_actions
+    controller.approve()
+
+    state = persistence.ProjectStore(tmp_path).load_state()
+    assert state.implementation_cursor == 1 and state.approved_approach == ""
+    assert runner.log.records()[0].decision == "approved"
+    assert controller.proposal is None and controller.window.panel.proposal is None
+
+
+def test_controller_signature_confirmation_does_not_authorize_different_proposal(
+        tmp_path: Path, monkeypatch: Any) -> None:
+    controller, runner, proposal_a = signature_gate_controller(tmp_path, monkeypatch)
+    controller.confirm_signature()
+    assert controller.confirmed_signature_proposal is proposal_a
+
+    proposal_b = fake_proposal(tmp_path)
+    before_b, after_b = DerivedModel(str(tmp_path)), DerivedModel(str(tmp_path))
+    before_b.add_entity(Entity("u:b", Kind.FUNCTION, "b", "app::b", "m.cpp", 1,
+                               signature="int b()", status="stub", body_hash="same"))
+    after_b.add_entity(Entity("u:b", Kind.FUNCTION, "b", "app::b", "m.cpp", 1,
+                              signature="long b(int value)", status="implemented", body_hash="same"))
+    proposal_b.number = 2
+    proposal_b.request = prompt.StepRequest(prompt.IMPLEMENTATION, 2, target="u:b")
+    proposal_b.model = after_b
+    proposal_b.delta = steps.compute_delta(before_b, after_b, ["m.cpp"])
+    controller._show_proposal(proposal_b)
+    store = persistence.ProjectStore(tmp_path)
+    before_state = store.load_state()
+    before_state_bytes = store.state_path.read_bytes()
+    before_records = runner.log.records()
+
+    with pytest.raises(steps.StepError) as refused:
+        controller.approve()
+
+    assert str(refused.value) == step_controller.SIGNATURE_CONFIRMATION_REQUIRED
+    assert store.load_state() == before_state
+    assert store.state_path.read_bytes() == before_state_bytes
+    assert runner.log.records() == before_records
+    assert controller.proposal is proposal_b and controller.window.panel.proposal is proposal_b
 
 
 def test_controller_runs_the_protocol_through_the_window(tmp_path: Path, monkeypatch: Any) -> None:
@@ -178,6 +594,7 @@ def test_controller_runs_the_protocol_through_the_window(tmp_path: Path, monkeyp
     def factory(*args: Any, **kwargs: Any) -> FakeRunner:
         runner = FakeRunner(*args, **kwargs)
         runner.proposal = fake_proposal(tmp_path)
+        runner.approach = fake_approach()
         runners.append(runner)
         return runner
 
@@ -189,11 +606,18 @@ def test_controller_runs_the_protocol_through_the_window(tmp_path: Path, monkeyp
     assert window.panel.proposal is runner.proposal and window.shown_call_view == 1
     assert "proposal ready" in window.status.get() and window.call_view.added == {"u:main", "u:a", "u:b"}
 
-    monkeypatch.setattr(step_controller.simpledialog, "askstring", lambda *a, **k: "keep it small; one module")
+    edited = adaptation.render_summary((
+        adaptation.EntitySummary("app::small_b", "function", "m.cpp", "int small_b()", ("R-1",)),))
+    window.panel.entity_summary.delete("1.0", "end")
+    window.panel.entity_summary.insert("1.0", edited)
     controller.action("adapt")
-    assert runner.calls[-1] == "propose:add b:keep it small;one module"
+    assert runner.calls[-1] == (
+        "propose:add b:Correct the proposal's structured entity summary: entity 1 name changed from "
+        '\"app::b\" to \"app::small_b\"; entity 1 signature changed from \"int b()\" to \"int small_b()\".'
+    )
     controller.action("approve")
-    assert runner.calls[-1] == "approve" and window.reloads == 1 and window.panel.proposal is None
+    assert runner.calls[-1] == "approve" and window.reloads == 0 and window.panel.proposal is None
+    assert window.step_models == [cast(steps.Proposal, runner.proposal).model]
     assert "approved and committed: Add b" in window.status.get()
 
     controller.action("propose")
@@ -205,6 +629,409 @@ def test_controller_runs_the_protocol_through_the_window(tmp_path: Path, monkeyp
     controller.action("propose")
     assert "uncommitted changes" in window.status.get() and len(runners) == 1
     assert views.default_root(model_with_calls()) == "u:main"
+
+
+def test_controller_unchanged_structured_summary_falls_back_to_free_text_adaptation(
+        tmp_path: Path, monkeypatch: Any) -> None:
+    window = Window(tmp_path)
+    runner = FakeRunner(tmp_path, window.config, "claude", "claude", "m", progress=lambda message: None)
+    runner.proposal = fake_proposal(tmp_path)
+    controller = step_controller.StepController(window)
+    controller.runner = runner
+    controller._show_proposal(runner.proposal)
+    asked: list[tuple[str, str]] = []
+
+    def free_text(title: str, question: str, **kwargs: Any) -> str:
+        asked.append((title, question))
+        return "keep it small; one module"
+
+    monkeypatch.setattr(step_controller.simpledialog, "askstring", free_text)
+    controller.adapt()
+
+    assert asked == [("Adapt", "Hard constraints for the next attempt, separated by ';'.")]
+    assert runner.calls == ["prepare", "propose::keep it small;one module"]
+
+
+def test_app_adapt_re_requests_through_feedback_and_replaces_proposal(
+        app_module: Any, tmp_path: Path, monkeypatch: Any) -> None:
+    from test_simulation import (
+        ScriptedProvider,
+        _ImmediateThread,
+        _run_immediately,
+        runner_factory,
+        write_simulation_project,
+    )
+
+    project = tmp_path / "structured-adapt"
+    write_simulation_project(project)
+    first_source = "def answer() -> int:\n    return 1\n"
+    second_source = "def answer(limit: int = 2) -> int:\n    return limit\n"
+    original = {
+        "name": "service.answer", "kind": "function", "file": "service.py",
+        "signature": "answer() -> int", "satisfies": ["R-1"],
+    }
+    corrected = dict(original, signature="answer(limit: int = 2) -> int", satisfies=["R-1", "R-2"])
+    provider = ScriptedProvider([
+        json.dumps({"title": "Add fixed answer", "rationale": "First proposal.",
+                    "files": [{"path": "service.py", "content": first_source}], "entities": [original]}),
+        json.dumps({"title": "Add configurable answer", "rationale": "Replacement proposal.",
+                    "files": [{"path": "service.py", "content": second_source}], "entities": [corrected]}),
+    ])
+    monkeypatch.setattr(app_module.threading, "Thread", _ImmediateThread)
+    app = app_module.App(
+        app_module.tk.Tk(), config=persistence.UserConfig(), config_path=tmp_path / "config.json")
+    app.run_async = _run_immediately
+    app.steps = step_controller.StepController(app, runner_factory(provider))
+    app.open_project(project)
+    app._poll()
+    app.edit_specification()
+    assert app.spec_editor is not None and app.spec_editor.save()
+    app._poll()
+    app.steps.action("propose")
+
+    edited = '''[
+  {
+    "name": "service.answer",
+    "kind": "function",
+    "file": "service.py",
+    "signature": "answer(limit: int = 2) -> int",
+    "satisfies": [
+      "R-1",
+      "R-2"
+    ]
+  }
+]
+'''
+    app.panel.entity_summary.delete("1.0", "end")
+    app.panel.entity_summary.insert("1.0", edited)
+    app.steps.action("adapt")
+
+    instruction = (
+        "Correct the proposal's structured entity summary: entity 1 signature changed from "
+        '\"answer() -> int\" to \"answer(limit: int = 2) -> int\"; entity 1 satisfies changed from '
+        '[\"R-1\"] to [\"R-1\", \"R-2\"].'
+    )
+    assert len(provider.prompts) == 2 and ("Hard constraints for this attempt:\n- " + instruction) \
+        in provider.prompts[1]
+    assert app.panel.title_var.get() == "Step 1: Add configurable answer  (attempt 1)"
+    assert app.steps.proposal is not None and app.steps.proposal.response is not None
+    assert app.steps.proposal.response.title == "Add configurable answer"
+
+
+def test_controller_runs_node_tests_through_runner_and_busy_path(tmp_path: Path) -> None:
+    persistence.ProjectStore(tmp_path).save_state(
+        persistence.ProjectState(test_command=("ctest", "--test-dir", "build")))
+    window = Window(tmp_path)
+    test_calls: list[tuple[Path, tuple[str, ...]]] = []
+
+    def factory(*args: Any, **kwargs: Any) -> FakeRunner:
+        runner = FakeRunner(*args, **kwargs)
+
+        def run_tests(root: Path, command: Any) -> steps.TestResult:
+            test_calls.append((root, tuple(command)))
+            return steps.TestResult(True, "focused test passed")
+
+        runner.test = run_tests
+        return runner
+
+    controller = step_controller.StepController(window, factory)
+    controller.action("run_tests", ("tests/leaf_test.cpp", "app::test_leaf"))
+
+    assert test_calls == [(tmp_path, ("ctest", "--test-dir", "build",
+                                     "tests/leaf_test.cpp", "app::test_leaf"))]
+    assert window.panel.busy is False
+    assert window.status.get() == "targeted tests passed: tests/leaf_test.cpp, app::test_leaf"
+
+    controller.action("run_tests", ())
+    assert len(test_calls) == 1
+    window.panel.set_busy(True)
+    controller.action("run_tests", ("tests/leaf_test.cpp",))
+    assert len(test_calls) == 1
+
+
+def test_controller_propose_here_forwards_the_exact_node_usr_as_focus(tmp_path: Path) -> None:
+    window = Window(tmp_path)
+    window.panel.set_phase(persistence.ProjectPhase.ARCHITECTURE)
+    runners: list[FakeRunner] = []
+
+    def factory(*args: Any, **kwargs: Any) -> FakeRunner:
+        runner = FakeRunner(*args, **kwargs)
+        runner.proposal = fake_proposal(tmp_path)
+        runners.append(runner)
+        return runner
+
+    controller = step_controller.StepController(window, factory)
+    controller.action("propose_here", "u:exact-node")
+
+    assert runners[0].requests[0][0] == "propose"
+    assert runners[0].requests[0][1].focus == ("u:exact-node",)
+
+
+def test_controller_implement_here_uses_approach_enabled_by_the_real_panel(tmp_path: Path) -> None:
+    window = Window(tmp_path)
+    window.panel.set_phase(persistence.ProjectPhase.IMPLEMENTATION)
+    window.panel.set_implementation_queue("b", 1)
+    assert isinstance(window.panel, step_panel.StepPanel)
+    assert "propose_approach" in window.panel.enabled_actions and "propose" not in window.panel.enabled_actions
+
+    runner = FakeRunner(tmp_path, window.config, "claude", "claude", "m", progress=lambda _message: None)
+    runner.approach = fake_approach()
+    controller = step_controller.StepController(window, lambda *args, **kwargs: runner)
+    controller.action("implement_here", "u:b")
+
+    assert len(runner.requests) == 1
+    action, request = runner.requests[0]
+    assert action == "propose_approach" and request.focus == ("u:b",)
+
+
+def test_controller_implement_here_uses_propose_enabled_by_the_real_panel(tmp_path: Path) -> None:
+    window = Window(tmp_path)
+    window.panel.set_phase(persistence.ProjectPhase.IMPLEMENTATION)
+    window.panel.set_implementation_queue("b", 1, approved_approach="Use ranges.")
+    assert isinstance(window.panel, step_panel.StepPanel)
+    assert "propose" in window.panel.enabled_actions and "propose_approach" not in window.panel.enabled_actions
+
+    runner = FakeRunner(tmp_path, window.config, "claude", "claude", "m", progress=lambda _message: None)
+    runner.proposal = fake_proposal(tmp_path)
+    controller = step_controller.StepController(window, lambda *args, **kwargs: runner)
+    controller.action("implement_here", "u:b")
+
+    assert len(runner.requests) == 1
+    action, request = runner.requests[0]
+    assert action == "propose" and request.focus == ("u:b",)
+
+
+def test_controller_node_actions_are_inert_without_payload_or_an_enabled_panel_action(tmp_path: Path) -> None:
+    window = Window(tmp_path)
+    controller = step_controller.StepController(window)
+    assert isinstance(window.panel, step_panel.StepPanel)
+    assert not {"propose_approach", "propose"} & window.panel.enabled_actions
+
+    controller.action("implement_here", "u:b")
+    controller.action("implement_here", "")
+    controller.action("propose_here", "")
+
+    assert controller.runner is None
+
+
+def test_controller_existing_panel_buttons_preserve_the_empty_focus_request(tmp_path: Path) -> None:
+    architecture = Window(tmp_path)
+    architecture.panel.set_phase(persistence.ProjectPhase.ARCHITECTURE)
+    architecture.panel.request_var.set("add one concept")
+    architecture_runner = FakeRunner(
+        tmp_path, architecture.config, "claude", "claude", "m", progress=lambda _message: None)
+    architecture_runner.proposal = fake_proposal(tmp_path)
+    expected_proposal_request = architecture.panel.request()
+    step_controller.StepController(
+        architecture, lambda *args, **kwargs: architecture_runner).action("propose")
+    assert architecture_runner.requests == [("propose", expected_proposal_request)]
+    assert expected_proposal_request.focus == ()
+
+    implementation = Window(tmp_path)
+    implementation.panel.set_phase(persistence.ProjectPhase.IMPLEMENTATION)
+    implementation.panel.set_implementation_queue("b", 1)
+    implementation.panel.request_var.set("keep the signature")
+    approach_runner = FakeRunner(
+        tmp_path, implementation.config, "claude", "claude", "m", progress=lambda _message: None)
+    approach_runner.approach = fake_approach()
+    expected_approach_request = implementation.panel.request()
+    step_controller.StepController(
+        implementation, lambda *args, **kwargs: approach_runner).action("propose_approach")
+    assert approach_runner.requests == [("propose_approach", expected_approach_request)]
+    assert expected_approach_request.focus == ()
+
+
+def test_controller_runs_approach_approval_before_code(tmp_path: Path) -> None:
+    window = Window(tmp_path)
+    window.panel.set_phase(persistence.ProjectPhase.IMPLEMENTATION)
+    window.panel.set_implementation_queue("b", 1)
+    runners: list[FakeRunner] = []
+
+    def factory(*args: Any, **kwargs: Any) -> FakeRunner:
+        runner = FakeRunner(*args, **kwargs)
+        runner.approach = fake_approach()
+        runner.proposal = fake_proposal(tmp_path)
+        runners.append(runner)
+        return runner
+
+    controller = step_controller.StepController(window, factory)
+    controller.action("propose_approach")
+    runner = runners[0]
+    assert runner.calls == ["prepare", "propose_approach::"]
+    assert window.panel.approach is runner.approach and "approach ready" in window.status.get()
+    controller.action("approve_approach")
+    assert runner.calls[-1] == "approve_approach"
+    assert window.panel.approach_approved and "code-and-test round" in window.status.get()
+    controller.action("propose")
+    assert runner.calls[-2:] == ["prepare", "propose::"]
+
+
+def test_controller_persists_a_developer_batch_size_change(tmp_path: Path) -> None:
+    store = persistence.ProjectStore(tmp_path)
+    store.save_state(persistence.ProjectState(
+        persistence.ProjectPhase.IMPLEMENTATION, ("u:b", "u:a"), 0,
+        approved_approach="Old single-target approach."))
+    window = Window(tmp_path)
+    window.panel.set_phase(persistence.ProjectPhase.IMPLEMENTATION)
+    window.panel.batch_size_var.set(2)
+    controller = step_controller.StepController(window)
+
+    controller.action("batch_size_changed")
+
+    state = store.load_state()
+    assert state.implementation_batch_size == 2 and state.approved_approach == ""
+    assert window.reloads == 1 and window.status.get() == "implementation batch size set to 2"
+
+
+def test_controller_surfaces_a_test_failure_after_a_successful_build(tmp_path: Path) -> None:
+    window = Window(tmp_path)
+    controller = step_controller.StepController(window)
+    failed = fake_proposal(tmp_path)
+    failed.test, failed.error = steps.TestResult(False, "failed"), "the proposal tests fail"
+
+    controller._show_proposal(failed)
+
+    assert window.status.get() == "step 1: build passed; tests failed"
+    assert window.shown_call_view == 1 and window.panel.proposal is failed
+
+
+def test_controller_auto_approve_off_preserves_the_existing_manual_stop(tmp_path: Path) -> None:
+    store = persistence.ProjectStore(tmp_path)
+    store.save_state(persistence.ProjectState(
+        persistence.ProjectPhase.IMPLEMENTATION, ("u:b",), 0,
+        approved_approach="Implement directly."))
+    before = store.state_path.read_bytes()
+    window = Window(tmp_path)
+    window.panel.set_phase(persistence.ProjectPhase.IMPLEMENTATION)
+    window.panel.set_implementation_queue("b", 1, approved_approach="Implement directly.")
+    runner = FakeRunner(tmp_path, window.config, "claude", "claude", "m", progress=lambda _message: None)
+    runner.proposal = fake_proposal(tmp_path)
+    runner.proposal.request = prompt.StepRequest(prompt.IMPLEMENTATION, 1, target="u:b", batch=("u:b",))
+    controller = step_controller.StepController(window, lambda *args, **kwargs: runner)
+
+    controller._show_proposal(runner.proposal)
+
+    assert window.panel.auto_approve_var.get() is False
+    assert controller.proposal is runner.proposal and window.panel.proposal is runner.proposal
+    assert runner.calls == [] and store.state_path.read_bytes() == before
+    assert window.status.get() == "step 1: proposal ready — approve, reject or adapt"
+
+
+def test_controller_auto_approves_two_green_steps_then_halts_on_failed_test_gate(
+        app_module: Any, tmp_path: Path, monkeypatch: Any) -> None:
+    from test_simulation import (
+        ScriptedProvider,
+        _approach,
+        _ImmediateThread,
+        _reply,
+        _run_immediately,
+        runner_factory,
+        write_simulation_project,
+    )
+
+    stub_source = "def alpha():\n    pass\n\ndef beta():\n    pass\n\ndef gamma():\n    pass\n"
+    alpha_source = stub_source.replace("def alpha():\n    pass", "def alpha():\n    return 'alpha'")
+    beta_source = alpha_source.replace("def beta():\n    pass", "def beta():\n    return 'beta'")
+    gamma_source = beta_source.replace("def gamma():\n    pass", "def gamma():\n    return 'gamma'")
+    project = tmp_path / "auto-approve"
+    write_simulation_project(project)
+    provider = ScriptedProvider([
+        _reply("Add three functions", {"automation.py": stub_source}),
+        _approach("Implement alpha and test it.", "automation.alpha", ("automation.py",)),
+        _reply("Implement alpha", {"automation.py": alpha_source}),
+        _approach("Implement beta and test it.", "automation.beta", ("automation.py",)),
+        _reply("Implement beta", {"automation.py": beta_source}),
+        _approach("Implement gamma and test it.", "automation.gamma", ("automation.py",)),
+        _reply("Implement gamma", {"automation.py": gamma_source}),
+    ])
+    monkeypatch.setattr(app_module.threading, "Thread", _ImmediateThread)
+    monkeypatch.setattr(step_controller.messagebox, "askyesno", lambda *args, **kwargs: True)
+    app = app_module.App(
+        app_module.tk.Tk(), config=persistence.UserConfig(), config_path=tmp_path / "config.json")
+    app.run_async = _run_immediately
+    app.steps = step_controller.StepController(app, runner_factory(provider))
+    app.open_project(project)
+    app._poll()
+    app.edit_specification()
+    assert app.spec_editor is not None and app.spec_editor.save()
+    app._poll()
+    app.steps.action("propose")
+    app.steps.action("approve")
+    app.steps.action("approve_architecture")
+    app._poll()
+
+    gate_calls = 0
+
+    def tests_gate(root: Path, command: Any) -> steps.TestResult:
+        nonlocal gate_calls
+        del root, command
+        gate_calls += 1
+        return steps.TestResult(gate_calls < 5, "passed" if gate_calls < 5 else "deliberate failure")
+
+    assert app.steps.runner is not None
+    app.steps.runner.test = tests_gate
+    store = persistence.ProjectStore(project)
+    original_state = store.load_state()
+    assert len(original_state.implementation_queue) == 3 and original_state.implementation_cursor == 0
+    app.panel.auto_approve_var.set(True)
+    app.steps.action("auto_approve_changed")
+    assert persistence.ProjectStore(project).load_state().auto_approve is True
+    app.panel.auto_approve_var.set(False)
+    app.open_project(project)
+    app._poll()
+    assert app.panel.auto_approve_var.get() is True
+    app.steps.action("propose_approach")
+    app.steps.action("approve_approach")
+    assert store.load_state().implementation_cursor == 1
+    app.steps.action("approve_approach")
+    assert store.load_state().implementation_cursor == 2
+    approved = [record for record in steplog.StepLog(store.steps_path).records()
+                if record.phase == prompt.IMPLEMENTATION and record.decision == "approved"
+                and record.round == "code"]
+    assert [record.title for record in approved] == ["Implement alpha", "Implement beta"]
+
+    records_before_failure = len(steplog.StepLog(store.steps_path).records())
+    code_records_before_failure = len(approved)
+    app.steps.action("approve_approach")
+    stopped = "the proposal test gate is not passing"
+    assert app.status.get() == "auto-approve stopped: " + stopped
+    assert stopped in app.panel.title_var.get() and stopped in app.panel.details.get("1.0", "end")
+    assert store.load_state().implementation_cursor == 2
+    assert len(steplog.StepLog(store.steps_path).records()) == records_before_failure + 1
+    assert len([record for record in steplog.StepLog(store.steps_path).records()
+                if record.phase == prompt.IMPLEMENTATION and record.decision == "approved"
+                and record.round == "code"]) == code_records_before_failure
+    assert app.steps.proposal is not None and app.steps.proposal.test.ok is False
+
+    manual_project = tmp_path / "manual-default"
+    write_simulation_project(manual_project)
+    manual_store = persistence.ProjectStore(manual_project)
+    before = manual_store.state_path.read_bytes()
+    manual_app = app_module.App(
+        app_module.tk.Tk(), config=persistence.UserConfig(), config_path=tmp_path / "manual-config.json")
+    manual_app.run_async = _run_immediately
+    manual_app.open_project(manual_project)
+    manual_app._poll()
+    assert manual_app.panel.auto_approve_var.get() is False
+    assert manual_store.state_path.read_bytes() == before
+
+
+def test_controller_approves_architecture_persists_and_logs_transition(tmp_path: Path, monkeypatch: Any) -> None:
+    store = persistence.ProjectStore(tmp_path)
+    store.save_state(persistence.ProjectState(persistence.ProjectPhase.ARCHITECTURE))
+    window = Window(tmp_path)
+    window.panel.set_phase(store.load_state().phase)
+    monkeypatch.setattr(step_controller.messagebox, "askyesno", lambda *args, **kwargs: True)
+    controller = step_controller.StepController(window)
+
+    controller.action("approve_architecture")
+
+    assert store.load_state().phase == persistence.ProjectPhase.IMPLEMENTATION
+    records = controller.runner.log.records() if controller.runner is not None else []
+    assert len(records) == 1
+    assert (records[0].decision, records[0].previous_phase, records[0].phase, records[0].title) == (
+        "phase_transition", "architecture", "implementation", "architecture approved")
+    assert window.panel.phase_var.get() == "implementation" and window.reloads == 1
 
 
 def test_failures_are_shortened_for_the_dialog_and_shown_in_full_in_the_panel(tmp_path: Path) -> None:

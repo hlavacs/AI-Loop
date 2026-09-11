@@ -26,12 +26,89 @@ def opened_project(tmp_path: Path) -> session.OpenedProject:
 
 def test_show_updates_status_config_and_canvas(app_module, tmp_path: Path) -> None:
     config_path = tmp_path / "config.json"
+    persistence.ProjectStore(tmp_path).save_state(
+        persistence.ProjectState(persistence.ProjectPhase.IMPLEMENTATION))
     app = app_module.App(app_module.tk.Tk(), config=persistence.UserConfig(), config_path=config_path)
     app.show(opened_project(tmp_path))
     assert "2 files" in app.status.get() and "libclang: none found" in app.status.get()
     assert "no libclang found" in app.status.get()
     assert app.view.layout is not None and "src/a.cpp" in app.view.layout.nodes
+    assert app.class_view.layout is not None and set(app.class_view.layout.nodes) == {"u:A"}
+    assert app.mind_map_view.layout is not None
+    assert {item.node.id for item in app.mind_map_view.layout.nodes} == {"cluster:src"}
+    assert app.coverage_view.summary_var.get() == "Test coverage: 0/2 callables covered · 2 uncovered"
+    assert app.issue_view.issues and "issues" in app.issue_view.summary_var.get()
+    assert app.panel.phase_var.get() == "implementation"
+    assert app.panel.queue_var.get() == "Implementation queue: empty — no unimplemented functions"
     assert config_path.is_file()
+
+
+def test_open_project_reports_truncated_state_without_tk_traceback(app_module, tmp_path: Path, monkeypatch) -> None:
+    class ImmediateThread:
+        def __init__(self, target, args, daemon) -> None:
+            del daemon
+            self.target, self.args = target, args
+
+        def start(self) -> None:
+            self.target(*self.args)
+
+    project = tmp_path / "interrupted"
+    store = persistence.ProjectStore(project)
+    store.ensure()
+    truncated_state = store.state_path.read_bytes()[:-7]
+    store.state_path.write_bytes(truncated_state)
+    worktree = store.dir / "worktree"
+    worktree.mkdir()
+    (worktree / "unfinished.py").write_text("proposal = 'not promoted'\n", encoding="utf-8")
+    shown: list[tuple[str, str]] = []
+    monkeypatch.setattr(app_module.dialogs, "show_error", lambda title, text: shown.append((title, text)))
+    monkeypatch.setattr(app_module.threading, "Thread", ImmediateThread)
+    app = app_module.App(
+        app_module.tk.Tk(), config=persistence.UserConfig(), config_path=tmp_path / "config.json")
+
+    app.open_project(project)
+    app._poll()
+
+    message = (f"cannot open project: {store.state_path} contains invalid JSON; refusing to replace the persisted "
+               f"state with defaults; leftover proposal worktree preserved at {worktree}")
+    assert message in app.status.get()
+    assert shown == [("ICODA", f"ProjectStateError('{message}')\n\nDetails: {store.dir / 'icoda.log'}")]
+
+
+def test_open_project_shows_persisted_phase_after_analysis(app_module, tmp_path: Path, monkeypatch) -> None:
+    class ImmediateThread:
+        def __init__(self, target, args, daemon) -> None:
+            del daemon
+            self.target, self.args = target, args
+
+        def start(self) -> None:
+            self.target(*self.args)
+
+    project = tmp_path / "implementation"
+    project.mkdir()
+    persistence.ProjectStore(project).save_state(
+        persistence.ProjectState(persistence.ProjectPhase.IMPLEMENTATION))
+    monkeypatch.setattr(app_module.session, "open_project", lambda root, config: opened_project(root))
+    monkeypatch.setattr(app_module.threading, "Thread", ImmediateThread)
+    app = app_module.App(
+        app_module.tk.Tk(), config=persistence.UserConfig(), config_path=tmp_path / "config.json")
+
+    app.open_project(project)
+    app._poll()
+
+    assert app.panel.phase_var.get() == "implementation"
+
+
+def test_view_notebook_registers_mind_map_beside_existing_m4_tabs(app_module, tmp_path: Path, monkeypatch) -> None:
+    labels: list[str] = []
+
+    def record_add(widget, child, **options):
+        if "text" in options:
+            labels.append(str(options["text"]))
+
+    monkeypatch.setattr(app_module.ttk.Notebook, "add", record_add, raising=False)
+    app_module.App(app_module.tk.Tk(), config=persistence.UserConfig(), config_path=tmp_path / "c.json")
+    assert labels[:6] == ["File View", "Call View", "Class View", "Mind Map", "Coverage", "Issues"]
 
 
 def test_describe_and_select_nodes(app_module, tmp_path: Path) -> None:
@@ -103,10 +180,26 @@ def test_new_project_writes_specification_and_skeleton_on_save(app_module, tmp_p
     assert app.spec_editor.save()
     assert (project / ".icoda" / "specification.json").is_file() and (project / "CMakeLists.txt").is_file()
     assert (project / "src" / "app" / "app.cppm").is_file() and opened == [project]
+    store = persistence.ProjectStore(project)
+    assert store.load_state().phase == persistence.ProjectPhase.ARCHITECTURE
     app.spec_editor.scope.texts["goals"].insert("1.0", "twice\n")
     assert app.spec_editor.save() and opened == [project]  # the skeleton is written once
     app.edit_specification()
     assert app.spec_editor.to_specification()["goals"] == ["twice", "ship it"]
+
+
+def test_save_specification_publishes_architecture_phase_before_reload(app_module, tmp_path: Path) -> None:
+    app = app_module.App(app_module.tk.Tk(), config=persistence.UserConfig(), config_path=tmp_path / "c.json")
+    project = tmp_path / "fresh"
+    app.new_project(project)
+    assert app.spec_editor is not None
+    opened: list[Path] = []
+    app.open_project = opened.append
+
+    app._save_specification(app.spec_editor.to_specification())
+
+    assert app.panel.phase_var.get() == "architecture"
+    assert opened == [project]
 
 
 def test_provider_selection_is_saved_per_project_and_as_default(app_module, tmp_path: Path) -> None:
@@ -124,3 +217,45 @@ def test_provider_selection_is_saved_per_project_and_as_default(app_module, tmp_
     assert again.provider_field.selection().binary == "codex"  # the default: the command, not the path
     again.show(opened_project(tmp_path))
     assert again.provider_field.selection().binary == "/usr/local/bin/codex"
+
+
+def test_libclang_menu_applies_persists_and_displays_chosen_library(app_module, tmp_path: Path, monkeypatch) -> None:
+    entries: list[dict[str, object]] = []
+
+    class RecordingMenu:
+        def __init__(self, *args, **kwargs) -> None:
+            pass
+
+        def add_command(self, **kwargs) -> None:
+            entries.append(kwargs)
+
+        def add_cascade(self, **kwargs) -> None:
+            pass
+
+        def add_separator(self) -> None:
+            pass
+
+        def add_checkbutton(self, **kwargs) -> None:
+            pass
+
+        def delete(self, *args) -> None:
+            pass
+
+    detected = [app_module.toolchain.Candidate("/llvm/one/libclang.so", "linux"),
+                app_module.toolchain.Candidate("/llvm/two/libclang.so", "wheel")]
+    monkeypatch.setattr(app_module.tk, "Menu", RecordingMenu)
+    monkeypatch.setattr(app_module.toolchain, "candidates", lambda: detected)
+    config_path = tmp_path / "config.json"
+    app = app_module.App(app_module.tk.Tk(), config=persistence.UserConfig(), config_path=config_path)
+    menu_entry = next(entry for entry in entries if entry.get("label") == "Choose libclang Library…")
+
+    menu_entry["command"]()
+    assert app.libclang_choice_var.get() == detected[0].path
+    assert "Active: /llvm/one/libclang.so" in app.libclang_result_var.get()
+    app.libclang_choice_var.set(detected[1].path)
+    app.apply_libclang_choice()
+
+    assert app.config.preferred_libclang == detected[1].path
+    assert persistence.UserConfig.load(config_path).preferred_libclang == detected[1].path
+    assert "Active: /llvm/two/libclang.so" in app.libclang_result_var.get()
+    assert "/llvm/two/libclang.so" in app.status.get()

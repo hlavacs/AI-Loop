@@ -130,6 +130,7 @@ All settings are optional unless your environment needs an override.
 | `CODEX_BYPASS_SANDBOX` | Disable the Codex-native sandbox (dangerous unless externally confined) | false everywhere; set `1` only with an equivalent host boundary |
 | `AI_LOOP_CODEX_SYSTEMD_SANDBOX` | Confine AI provider CLIs in a transient user systemd unit; host read-only, explicit task paths writable | false; requires `systemd-run` (workers also require `CODEX_BYPASS_SANDBOX=1`) |
 | `AI_LOOP_AUTO_RECOVER` | Let an unsandboxed repair agent edit AI-Loop itself after an internal crash | false; set `1` to opt in |
+| `AI_LOOP_PROMOTION_RECOVERY_MAX_TASKS` | Extra bounded repair tasks allowed after terminal promotion/validation failure, even when the normal iteration limit is exhausted | `3` |
 | `AI_LOOP_NOTIFY_EMAIL` | Job-email recipient and only authorized reply sender | empty |
 | `AI_LOOP_SMTP_HOST` | SMTP server. Empty disables all email | empty |
 | `AI_LOOP_SMTP_PORT` | SMTP port | 587, or 465 with SSL |
@@ -468,7 +469,7 @@ Verify `REDIS_URL`, run `redis-cli ping`, or use the GUI `Start Redis` button fo
 
 ### Promotion failed
 
-Successful worktree changes are copied back only if the target checkout has no conflicting local edits in those paths. After copying, AI-Loop reruns the concrete job validation command from the target checkout; a failure produces `human_needed` instead of a false `done`. Resolve the reported conflict or validation failure manually, preserve both sides, and resume. AI-Loop never resets or discards the target repository to force promotion.
+Successful worktree changes are copied back only if the target checkout has no conflicting local edits in those paths. After copying, AI-Loop reruns the concrete job validation command from the target checkout. A promotion or target-validation failure is persisted and sent back through a `PROMOTION_RECOVERY` controller cycle; the configured controller is tried first, followed by every other installed controller provider until one offers a safe repair task. If target validation failed, AI-Loop first rolls back only paths it copied itself while preserving pre-existing and concurrently changed target paths. `human_needed` is emitted only when no available LLM offers a safe repair, the iteration limit is exhausted, or the remaining choice genuinely requires human authority. AI-Loop never resets or discards unrelated target-repository work to force promotion.
 
 ### GUI cannot start
 
@@ -485,6 +486,8 @@ use the command-line entry points.
 - Successful promotion refuses paths with local target-checkout conflicts.
 - The worker sandbox is enabled by default. If host policy prevents Codex bubblewrap from starting, combine `CODEX_BYPASS_SANDBOX=1` with `AI_LOOP_CODEX_SYSTEMD_SANDBOX=1`; provider processes then run in transient user systemd units with read-only host access and only explicit task paths writable. The GUI probes this exact boundary before creating or resuming a job. The user-service profile intentionally avoids `PrivateDevices` and `ProtectKernelModules`, which can fail before exec with status `218/CAPABILITIES` on otherwise supported hosts. Never use the bypass alone outside a fully trusted environment.
 - A promoted worktree reaches `done` only after the job validation command passes again in the target checkout.
+- Promotion and target-validation failures automatically enter a multi-provider LLM recovery cycle; failed target validation first rolls back only AI-Loop-owned copies so a repaired worktree can be promoted cleanly.
+- Worker summaries are captured in the database and GUI, not stored as project files. Any `.ai-loop-worker-report*.md` artifact produced despite that rule is moved after the run to `/tmp/ai-loop-worker-reports/<job-id>/` (or the platform-equivalent system temporary directory) and excluded from promotion.
 - Automatic self-recovery (`AI_LOOP_AUTO_RECOVER=1`) lets an unsandboxed agent edit the AI-Loop source itself and is therefore disabled by default.
 - Mail passwords are stripped from the environment of worker/controller CLI subprocesses and of the job test command; only the AI-Loop processes that actually send or read mail keep them.
 - `ai_remove_worktrees.bash` deletes nothing without `--yes`, keeps worktrees that still contain uncommitted work unless `--force` is given, and supports `--dry-run`.

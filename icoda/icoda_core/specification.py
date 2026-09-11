@@ -27,7 +27,32 @@ SECTION_LABELS = {"goals": "Goals", "out_of_scope": "Not in scope", "not_allowed
 Specification = dict[str, Any]
 
 
-def default_code_profile() -> dict[str, Any]:
+def default_code_profile(language: str = "C++") -> dict[str, Any]:
+    if language == "Python":
+        return {
+            "language": "Python",
+            "standard": "3.12",
+            "modules": False,
+            "build": "Python source; no compilation step",
+            "platforms": ["macOS", "Linux", "Windows"],
+            "test_framework": "pytest",
+            "test_runner": "python -m pytest",
+            "test_file_convention": "tests/test_<module>.py",
+            "source_file_extension": ".py",
+            "module_naming": "snake_case",
+            "class_naming": "PascalCase",
+            "function_naming": "snake_case",
+            "library_policy": "PyPI dependencies declared in pyproject.toml",
+            "max_function_lines": 30,
+            "hard_max_function_lines": 50,
+            "max_data_members": 10,
+            "max_methods": 15,
+            "style_notes": [
+                "Use type annotations for public functions and methods.",
+                "Every entity carries a docstring and, where a requirement applies, an @satisfies tag.",
+                "Platform independence: no platform API without a portable wrapper.",
+            ],
+        }
     return {
         "language": "C++",
         "standard": "23",
@@ -48,13 +73,13 @@ def default_code_profile() -> dict[str, Any]:
     }
 
 
-def default_specification(title: str) -> Specification:
+def default_specification(title: str, language: str = "C++") -> Specification:
     spec: Specification = {"schema_version": SCHEMA_VERSION, "title": title, "summary": ""}
     for section in LIST_SECTIONS:
         spec[section] = []
     for section in RECORD_SECTIONS:
         spec[section] = []
-    spec["code_profile"] = default_code_profile()
+    spec["code_profile"] = default_code_profile(language)
     return spec
 
 
@@ -136,6 +161,7 @@ def upgrade(spec: Specification) -> Specification:
     if spec.get("schema_version", SCHEMA_VERSION) >= SCHEMA_VERSION:
         for section in LIST_SECTIONS:
             spec.setdefault(section, [])
+        spec.setdefault("code_profile", default_code_profile())
         return spec
     upgraded = default_specification(str(spec.get("title", "")))
     upgraded["summary"] = str(spec.get("summary", ""))

@@ -16,16 +16,20 @@ import shlex
 import subprocess
 import sys
 from collections.abc import Callable, Iterable, Sequence
-from dataclasses import asdict, dataclass, field
+from dataclasses import asdict, dataclass, field, replace
 from pathlib import Path
 from typing import Any
 
 from clang import cindex
 
+from icoda_core.bodyhash import body_hash
 from icoda_core.model import DerivedModel, Edge, EdgeKind, Entity, External, FileInfo, Kind
 
 MODULE_SUFFIXES = frozenset({".cppm", ".ixx", ".mpp", ".cxxm", ".c++m", ".ccm"})
 HEADER_SUFFIXES = frozenset({".h", ".hh", ".hpp", ".hxx", ".h++", ".inl"})
+CPP_SUFFIXES = MODULE_SUFFIXES | HEADER_SUFFIXES | frozenset({".c", ".cc", ".cpp", ".cxx", ".c++"})
+CPP_LANGUAGE = "C++"
+PYTHON_LANGUAGE = "Python"
 _MODULE_DECL = re.compile(r"^\s*(export\s+)?module\s+([A-Za-z_][\w.:]*)\s*;", re.MULTILINE)
 _NEEDS_SHADOW = re.compile(r"^\s*export\s+module\b", re.MULTILINE)
 
@@ -42,6 +46,7 @@ _TYPE_DECLS = {CK.STRUCT_DECL, CK.CLASS_DECL, CK.CLASS_TEMPLATE, CK.ENUM_DECL, C
                CK.CLASS_TEMPLATE_PARTIAL_SPECIALIZATION}
 _TEMPLATE_PARAMS = {CK.TEMPLATE_TYPE_PARAMETER, CK.TEMPLATE_NON_TYPE_PARAMETER, CK.TEMPLATE_TEMPLATE_PARAMETER}
 _REFERENCE_TYPES = {cindex.TypeKind.POINTER, cindex.TypeKind.LVALUEREFERENCE, cindex.TypeKind.RVALUEREFERENCE}
+CACHE_VERSION = "dynamic-calls-v1"
 
 
 # --------------------------------------------------------------------------- compile commands
@@ -55,6 +60,87 @@ class CompileCommand:
     arguments: tuple[str, ...]
     compiler: str
     module_unit: bool
+
+
+@dataclass(frozen=True)
+class CallDispatch:
+    """Plain facts extracted from one call site; independent of libclang cursor objects."""
+
+    member: bool
+    virtual: bool
+    receiver_indirect: bool
+    final: bool = False
+    fully_qualified: bool = False
+
+
+def is_uncertain_call(dispatch: CallDispatch) -> bool:
+    """Whether a call can dynamically select an override rather than its static target."""
+    return (dispatch.member and dispatch.virtual and dispatch.receiver_indirect
+            and not dispatch.final and not dispatch.fully_qualified)
+
+
+@dataclass(frozen=True)
+class LogicalPairing:
+    """Deterministically merged plain-Python entities and their relations."""
+
+    entities: tuple[Entity, ...]
+    edges: tuple[Edge, ...]
+
+
+def pair_declarations(entities: Sequence[Entity], edges: Sequence[Edge]) -> LogicalPairing:
+    """Pair extracted declarations by USR, with a definition owning body and location facts.
+
+    ``Entity`` carries the already-extracted cursor facts needed here: USR, kind, file,
+    definition flag and enclosing class (``parent``).  Therefore this decision is independent
+    of libclang and the filesystem.  Identical non-empty USRs are one logical entity regardless
+    of file; kind and parent participate only in deterministic ordering because libclang USRs
+    already encode that identity.
+    """
+    groups: dict[str, list[Entity]] = {}
+    for entity in sorted(entities, key=_entity_pairing_order):
+        groups.setdefault(entity.usr, []).append(entity)
+
+    merged: list[Entity] = []
+    paired_sources: set[str] = set()
+    for usr in sorted(groups):
+        candidates = groups[usr]
+        owner = min(candidates, key=_entity_pairing_order)
+        declaration_files = sorted({
+            path
+            for entity in candidates
+            for path in (entity.declaration_file, entity.file if not entity.is_definition else "")
+            if path
+        })
+        merged.append(replace(owner, declaration_file=declaration_files[0] if declaration_files else ""))
+        if len(candidates) > 1:
+            paired_sources.add(usr)
+
+    owners = {entity.usr: entity for entity in merged}
+    unique_edges: dict[tuple[str, str, str, str, bool, str, int], Edge] = {}
+    for edge in sorted(edges, key=_edge_pairing_order):
+        if edge.source in paired_sources and edge.kind != EdgeKind.CALLS:
+            key = (edge.kind.value, edge.source, edge.target, edge.label, edge.uncertain, "", 0)
+        else:
+            key = (edge.kind.value, edge.source, edge.target, edge.label, edge.uncertain,
+                   edge.file, edge.line)
+        current = unique_edges.get(key)
+        owner_file = owners[edge.source].file if edge.source in owners else ""
+        if current is None or _edge_owner_order(edge, owner_file) < _edge_owner_order(current, owner_file):
+            unique_edges[key] = edge
+    return LogicalPairing(tuple(merged), tuple(sorted(unique_edges.values(), key=_edge_pairing_order)))
+
+
+def _entity_pairing_order(entity: Entity) -> tuple[str, bool, str, str, str, int, int]:
+    return (entity.usr, not entity.is_definition, entity.file, entity.kind.value,
+            entity.parent or "", entity.line, entity.end_line)
+
+
+def _edge_pairing_order(edge: Edge) -> tuple[str, str, str, str, int, str, bool]:
+    return (edge.kind.value, edge.source, edge.target, edge.file, edge.line, edge.label, edge.uncertain)
+
+
+def _edge_owner_order(edge: Edge, owner_file: str) -> tuple[bool, str, int]:
+    return (edge.file != owner_file, edge.file, edge.line)
 
 
 def find_compile_commands(root: Path) -> Path | None:
@@ -277,7 +363,10 @@ def libcxx_arguments(compiler: str, arguments: Sequence[str], platform: str = sy
     uses_libcxx = platform == "darwin" or "-stdlib=libc++" in arguments
     if not uses_libcxx or "-nostdinc++" in arguments or "-stdlib=libstdc++" in arguments:
         return []
-    libcxx = Path(compiler).resolve().parent.parent / "include" / "c++" / "v1"
+    resolved_compiler = Path(compiler).resolve()
+    if "clang" not in resolved_compiler.name.lower():
+        return []
+    libcxx = resolved_compiler.parent.parent / "include" / "c++" / "v1"
     if not (libcxx / "__config").is_file():
         return []
     return ["-nostdinc++", "-isystem", str(libcxx)]
@@ -306,7 +395,8 @@ class UnitResult:
     def from_json(cls, data: dict[str, Any]) -> UnitResult:
         return cls(_file_info(data["file"]), list(data["contributing"]),
                    [_entity_from_json(e) for e in data["entities"]],
-                   [Edge(EdgeKind(e["kind"]), e["source"], e["target"], e["file"], e["line"], e["label"])
+                   [Edge(EdgeKind(e["kind"]), e["source"], e["target"], e["file"], e["line"], e["label"],
+                         e.get("uncertain", False))
                     for e in data["edges"]],
                    {k: list(v) for k, v in data["externals"].items()},
                    [_file_info(f) for f in data["extra_files"]])
@@ -322,6 +412,8 @@ def _entity_from_json(data: dict[str, Any]) -> Entity:
     data = dict(data)
     data.update(kind=Kind(data["kind"]), satisfies=tuple(data["satisfies"]),
                 template_params=tuple(data["template_params"]))
+    data.setdefault("body_hash", "")
+    data.setdefault("declaration_file", "")
     return Entity(**data)
 
 
@@ -409,10 +501,14 @@ class Extractor:
     def _entity(self, cursor: Any, parent: str | None, file_name: str) -> Entity:
         kind = _KINDS[cursor.kind]
         brief, satisfies = parse_doc_comment(cursor.raw_comment or "")
+        digest = body_hash(_body_source(cursor, file_name)) if cursor.kind in _CALLABLE else ""
+        is_definition = bool(cursor.is_definition())
+        relative_file = self.relative(Path(file_name))
         return Entity(cursor.get_usr(), kind, cursor.spelling, qualified_name(cursor), self.relative(Path(file_name)),
                       cursor.location.line, cursor.extent.end.line, parent, _signature(cursor, kind), brief, satisfies,
-                      _template_params(cursor), bool(cursor.is_definition()), self._exported(cursor),
-                      _value(cursor, kind))
+                      _template_params(cursor), is_definition, self._exported(cursor),
+                      _value(cursor, kind), body_hash=digest,
+                      declaration_file="" if is_definition else relative_file)
 
     def _exported(self, cursor: Any) -> bool:
         if self._shadow is None:
@@ -456,24 +552,26 @@ class Extractor:
             target = _valid(node.referenced)
             if target is None or (target.kind not in _CALLABLE and target.kind != CK.CONVERSION_FUNCTION):
                 continue
+            uncertain = is_uncertain_call(_call_dispatch(node, target))
             self._reference(EdgeKind.CALLS, source, target, self.relative(self._main), node.location.line,
-                            _call_label(node, target))
+                            _call_label(node, target), uncertain)
 
-    def _reference(self, kind: EdgeKind, source: str, declaration: Any, file: str, line: int, label: str) -> None:
+    def _reference(self, kind: EdgeKind, source: str, declaration: Any, file: str, line: int, label: str,
+                   uncertain: bool = False) -> None:
         if _is_implicit_member(declaration):
             declaration, kind = declaration.semantic_parent, EdgeKind.USES_TYPE
         pattern = template_pattern(declaration)
         target_file = pattern.location.file.name if pattern.location.file else None
         if self.inside(target_file):
             if pattern.get_usr() != source:
-                self._current.edges.append(Edge(kind, source, pattern.get_usr(), file, line, label))
+                self._current.edges.append(Edge(kind, source, pattern.get_usr(), file, line, label, uncertain))
         elif target_file:
             library = library_name(target_file, self.resource_dirs)
             names = self._current.externals.setdefault(library, [])
             display = external_display_name(pattern)
             if display and display not in names:
                 names.append(display)
-            self._current.edges.append(Edge(kind, source, f"external:{library}", file, line, display))
+            self._current.edges.append(Edge(kind, source, f"external:{library}", file, line, display, uncertain))
 
     def _inclusion(self, cursor: Any) -> None:
         included = _included_file(cursor)
@@ -574,6 +672,37 @@ def _call_label(call: Any, target: Any) -> str:
     return ""
 
 
+def _call_dispatch(call: Any, target: Any) -> CallDispatch:
+    """Extract cursor facts and leave the dispatch decision to ``is_uncertain_call``."""
+    member = target.kind == CK.CXX_METHOD
+    member_ref = next((child for child in call.get_children() if child.kind == CK.MEMBER_REF_EXPR), None)
+    parent = _valid(target.semantic_parent)
+    return CallDispatch(
+        member=member,
+        virtual=bool(member and target.is_virtual_method()),
+        receiver_indirect=bool(member_ref is not None and _receiver_is_indirect(member_ref)),
+        final=_has_final_attribute(target) or (parent is not None and _has_final_attribute(parent)),
+        fully_qualified=bool(member_ref is not None and "::" in (token.spelling for token in member_ref.get_tokens())),
+    )
+
+
+def _receiver_is_indirect(member_ref: Any) -> bool:
+    receiver = next((child for child in member_ref.get_children() if child.kind != CK.TYPE_REF), None)
+    if receiver is None:
+        return False
+    for cursor in receiver.walk_preorder():
+        referenced = _valid(cursor.referenced)
+        types = (cursor.type, referenced.type if referenced is not None else None)
+        if any(ctype is not None and ctype.kind in _REFERENCE_TYPES for ctype in types):
+            return True
+    return False
+
+
+def _has_final_attribute(cursor: Any) -> bool:
+    final_attribute = getattr(CK, "CXX_FINAL_ATTR", None)
+    return final_attribute is not None and any(child.kind == final_attribute for child in cursor.get_children())
+
+
 def _signature(cursor: Any, kind: Kind) -> str:
     if kind in (Kind.FUNCTION, Kind.METHOD, Kind.CONSTRUCTOR, Kind.DESTRUCTOR):
         result = cursor.result_type.spelling if cursor.result_type and cursor.result_type.spelling else ""
@@ -592,6 +721,18 @@ def _template_params(cursor: Any) -> tuple[str, ...]:
 
 def _value(cursor: Any, kind: Kind) -> str:
     return str(cursor.enum_value) if kind == Kind.ENUMERATOR else ""
+
+
+def _body_source(cursor: Any, file_name: str) -> str:
+    body = next((child for child in cursor.get_children() if child.kind == CK.COMPOUND_STMT), None)
+    if body is None:
+        return ""
+    try:
+        source = Path(file_name).read_bytes()
+    except OSError:
+        return ""
+    start, end = body.extent.start.offset, body.extent.end.offset
+    return source[start:end].decode("utf-8", errors="replace")
 
 
 def parse_doc_comment(comment: str) -> tuple[str, tuple[str, ...]]:
@@ -625,6 +766,37 @@ def _sha1(data: bytes) -> str:
 
 # --------------------------------------------------------------------------- project
 
+def detect_language(root: Path) -> str:
+    """Detect Python-only projects; C/C++ wins for mixed and source-free projects."""
+    has_python = False
+    try:
+        paths = root.rglob("*")
+        for path in paths:
+            if not path.is_file():
+                continue
+            if path.suffix.lower() in CPP_SUFFIXES:
+                return CPP_LANGUAGE
+            has_python = has_python or path.suffix.lower() == ".py"
+    except OSError:
+        return CPP_LANGUAGE
+    return PYTHON_LANGUAGE if has_python else CPP_LANGUAGE
+
+
+def parse_project_for_root(
+    root: Path, commands: Sequence[CompileCommand], *, resource_dirs: dict[str, str] | None = None,
+    cache_dir: Path | None = None, previous: DerivedModel | None = None,
+    libclang_version: str = "", sysroot: str | None = None, apple: bool = False,
+    notes: list[str] | None = None, progress: Callable[[str], None] | None = None,
+) -> DerivedModel:
+    """Select the Python front end or call the existing C++ parser unchanged."""
+    if detect_language(root) == PYTHON_LANGUAGE:
+        from icoda_core import python_analysis
+
+        return python_analysis.parse_project(root)
+    return parse_project(root, commands, resource_dirs=resource_dirs, cache_dir=cache_dir,
+                         previous=previous, libclang_version=libclang_version, sysroot=sysroot,
+                         apple=apple, notes=notes, progress=progress)
+
 def build_module_map(root: Path, commands: Sequence[CompileCommand]) -> dict[str, str]:
     """Module name -> interface unit path (relative), read from the ``export module`` declarations."""
     module_map: dict[str, str] = {}
@@ -637,7 +809,7 @@ def build_module_map(root: Path, commands: Sequence[CompileCommand]) -> dict[str
 
 
 def unit_cache_key(command: CompileCommand, contributing: Iterable[str], root: Path, libclang_version: str) -> str:
-    digest = hashlib.sha1(f"{libclang_version}\n{' '.join(command.arguments)}\n".encode())
+    digest = hashlib.sha1(f"{CACHE_VERSION}\n{libclang_version}\n{' '.join(command.arguments)}\n".encode())
     for relative in sorted(contributing):
         path = root / relative
         digest.update(relative.encode())
@@ -720,19 +892,22 @@ def _unparsable(command: CompileCommand, root: Path, reason: str) -> UnitResult:
 
 def assemble(root: Path, results: Sequence[UnitResult], libclang_version: str) -> DerivedModel:
     model = DerivedModel(str(root), libclang_version)
+    entities: list[Entity] = []
+    edges: list[Edge] = []
     for result in results:
         model.files[result.file.path] = result.file
         for extra in result.extra_files:
             model.files.setdefault(extra.path, extra)
-        for entity in result.entities:
-            model.add_entity(entity)
+        entities.extend(result.entities)
+        edges.extend(result.edges)
         for library, names in result.externals.items():
             merged = sorted(set(names) | set(model.externals[library].names if library in model.externals else ()))
             model.externals[library] = External(library, tuple(merged))
-    for result in results:
-        for edge in result.edges:
-            if _known(model, edge.source) and _known(model, edge.target):
-                model.add_edge(edge)
+    pairing = pair_declarations(entities, edges)
+    model.entities = {entity.usr: entity for entity in pairing.entities}
+    for edge in pairing.edges:
+        if _known(model, edge.source) and _known(model, edge.target):
+            model.add_edge(edge)
     return model
 
 

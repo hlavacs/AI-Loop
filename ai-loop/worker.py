@@ -1,7 +1,7 @@
 from __future__ import annotations
 
-import re
 import os
+import re
 import shutil
 import subprocess
 import tempfile
@@ -25,8 +25,17 @@ from ai_loop.notifications import delivery_outcome, terminal_email
 from ai_loop.planning import normalize_granularity
 from ai_loop.process_runner import run_bounded_process
 from ai_loop.prompt_profiles import configured_prompt_guidance
-from ai_loop.queues import claim_pending, consumer_name, decode, ensure_group, redis_client, read_group, xadd_json
+from ai_loop.queues import (
+    claim_pending,
+    consumer_name,
+    decode,
+    ensure_group,
+    read_group,
+    redis_client,
+    xadd_json,
+)
 from ai_loop.recovery import attempt_auto_recovery
+from ai_loop.report_artifacts import relocate_worker_reports, worker_report_directory
 from ai_loop.specifications import SpecificationService
 from ai_loop.systemd_sandbox import wrap_with_systemd_sandbox
 from ai_loop.token_wait import replenishment_time, wait_until
@@ -34,7 +43,6 @@ from ai_loop.verification_orchestrator import (
     SubprocessVerificationRunner,
     run_task_verification,
 )
-
 
 GROUP = "codex-workers"
 OUTPUT_LIMIT = 20000
@@ -310,6 +318,7 @@ def codex_prompt(
         scope_rules = """- Implement this medium-sized coherent task completely.
 - Group directly related changes, but do not expand into independent features or broad cleanup.
 - Stop once this task's acceptance criteria are met."""
+    report_directory = worker_report_directory(str(job["id"]))
     prompt = f"""You are {worker_name}, the implementation worker in a controller-managed loop.
 
 Repository: {job["worktree_path"]}
@@ -343,6 +352,8 @@ Rules:
 - If an executable reports a scene or asset load failure such as "scene load failed: error=io_error", compare behavior from the repository/worktree root and from the failing launch directory before assuming the asset is missing. Treat relative working-directory and asset path bugs as fixable code or launch-command issues.
 - Do not commit changes.
 - Do not merge branches.
+- Your final response is captured in AI-Loop's database and shown in the GUI as the worker report. Do not create progress, summary, or worker-report files in the repository.
+- If this task explicitly requires a separate transient report file, write it only below {report_directory}. In particular, never create `.ai-loop-worker-report*.md` inside the repository.
 - If blocked by missing tools, sandboxing, permissions, or unclear requirements, stop and explain the blocker.
 """
     if formal_context is not None:
@@ -606,6 +617,29 @@ def process_task(settings, client, task_id: str) -> None:
                 "tests_done",
                 f"test command finished rc={test_rc}; capturing git diff",
             )
+
+    relocated_reports = relocate_worker_reports(
+        Path(str(worktree_path)), str(job["id"])
+    )
+    moved_reports = list(relocated_reports["moved"])
+    report_failures = list(relocated_reports["failures"])
+    if moved_reports or report_failures:
+        with db.transaction(settings.db_path) as conn:
+            db.add_event(
+                conn,
+                job_id=str(job["id"]),
+                kind="worker_reports_relocated"
+                if not report_failures
+                else "worker_report_relocation_incomplete",
+                payload=relocated_reports,
+            )
+        log_worker_stage(
+            str(job["id"]),
+            task_id,
+            "report_cleanup",
+            f"moved={len(moved_reports)} failures={len(report_failures)} "
+            f"directory={relocated_reports['directory']}",
+        )
 
     snapshot = git_snapshot(worktree_path)
     changed_files = list(snapshot["changed_files"])

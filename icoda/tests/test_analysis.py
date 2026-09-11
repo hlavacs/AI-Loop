@@ -11,7 +11,8 @@ from pathlib import Path
 import pytest
 
 from icoda_core import analysis, toolchain
-from icoda_core.model import DerivedModel, EdgeKind, Kind
+from icoda_core.bodyhash import body_hash
+from icoda_core.model import DerivedModel, Edge, EdgeKind, Entity, Kind
 
 SAMPLE = Path(__file__).resolve().parent / "sample_project"
 
@@ -45,6 +46,118 @@ def test_library_name() -> None:
     assert analysis.library_name("/opt/x/vcpkg_installed/arm64-osx/include/fmt/core.h") == "fmt"
     assert analysis.library_name("/opt/x/vcpkg_installed/arm64-osx/include/doctest.h") == "doctest"
     assert analysis.library_name("/home/u/llvm18/lib/clang/18/include/stddef.h", ["/home/u/llvm18/lib/clang/18"]) == "std"
+
+
+def test_body_hash_ignores_whitespace_and_comments_but_not_statements() -> None:
+    compact = "{ const auto url = R\"(https://example.test/a//b)\"; return value + 1; }"
+    reformatted = """{
+        /* The raw string contains comment markers. */
+        const auto url=R"(https://example.test/a//b)";
+        return value+1; // formatting-only edit
+    }"""
+    changed = reformatted.replace("value+1", "value+2")
+    assert body_hash(compact) == body_hash(reformatted)
+    assert len(body_hash(compact)) == 64 and body_hash(changed) != body_hash(compact)
+    assert body_hash(None) == body_hash("") == body_hash(" { /* no statements */ } ") == ""
+
+
+def test_virtual_member_through_base_pointer_is_uncertain() -> None:
+    dispatch = analysis.CallDispatch(member=True, virtual=True, receiver_indirect=True)
+
+    assert analysis.is_uncertain_call(dispatch)
+
+
+def test_virtual_override_on_concrete_object_is_certain() -> None:
+    dispatch = analysis.CallDispatch(member=True, virtual=True, receiver_indirect=False)
+
+    assert not analysis.is_uncertain_call(dispatch)
+    assert not analysis.is_uncertain_call(analysis.CallDispatch(
+        member=True, virtual=True, receiver_indirect=True, final=True))
+    assert not analysis.is_uncertain_call(analysis.CallDispatch(
+        member=True, virtual=True, receiver_indirect=True, fully_qualified=True))
+
+
+def test_non_virtual_member_call_is_certain() -> None:
+    dispatch = analysis.CallDispatch(member=True, virtual=False, receiver_indirect=True)
+
+    assert not analysis.is_uncertain_call(dispatch)
+
+
+def test_free_function_call_is_certain() -> None:
+    dispatch = analysis.CallDispatch(member=False, virtual=False, receiver_indirect=False)
+
+    assert not analysis.is_uncertain_call(dispatch)
+
+
+def test_pair_declarations_merges_header_declaration_with_source_definition() -> None:
+    declaration = Entity("c:@F@answer#", Kind.FUNCTION, "answer", "answer", "include/answer.hpp", 4,
+                         signature="int answer()", is_definition=False)
+    definition = Entity("c:@F@answer#", Kind.FUNCTION, "answer", "answer", "src/answer.cpp", 9, 11,
+                        signature="int answer()", body_hash="definition-body")
+
+    paired = analysis.pair_declarations([declaration, definition], [])
+
+    assert len(paired.entities) == 1
+    assert paired.entities[0] == Entity(
+        "c:@F@answer#", Kind.FUNCTION, "answer", "answer", "src/answer.cpp", 9, 11,
+        signature="int answer()", body_hash="definition-body", declaration_file="include/answer.hpp")
+
+
+def test_pair_declarations_keeps_header_only_declaration_as_one_entity() -> None:
+    declaration = Entity("c:@F@pending#", Kind.FUNCTION, "pending", "pending", "include/pending.hpp", 7,
+                         signature="void pending()", is_definition=False)
+
+    paired = analysis.pair_declarations([declaration, declaration], [])
+
+    assert len(paired.entities) == 1
+    assert not paired.entities[0].is_definition
+    assert paired.entities[0].file == paired.entities[0].declaration_file == "include/pending.hpp"
+
+
+def test_pair_declarations_keeps_different_usrs_in_one_header_separate() -> None:
+    declarations = [
+        Entity("c:@F@first#", Kind.FUNCTION, "first", "first", "include/api.hpp", 2,
+               is_definition=False),
+        Entity("c:@F@second#", Kind.FUNCTION, "second", "second", "include/api.hpp", 3,
+               is_definition=False),
+    ]
+
+    paired = analysis.pair_declarations(declarations, [])
+
+    assert [entity.usr for entity in paired.entities] == ["c:@F@first#", "c:@F@second#"]
+
+
+def test_pair_declarations_deduplicates_edges_from_both_cursors() -> None:
+    entities = [
+        Entity("c:@F@convert#", Kind.FUNCTION, "convert", "convert", "include/convert.hpp", 4,
+               is_definition=False),
+        Entity("c:@F@convert#", Kind.FUNCTION, "convert", "convert", "src/convert.cpp", 8),
+        Entity("c:@S@Value", Kind.STRUCT, "Value", "Value", "include/value.hpp", 1),
+    ]
+    edges = [
+        Edge(EdgeKind.USES_TYPE, "c:@F@convert#", "c:@S@Value", "include/convert.hpp", 4),
+        Edge(EdgeKind.USES_TYPE, "c:@F@convert#", "c:@S@Value", "src/convert.cpp", 8),
+    ]
+
+    paired = analysis.pair_declarations(entities, edges)
+
+    assert paired.edges == (
+        Edge(EdgeKind.USES_TYPE, "c:@F@convert#", "c:@S@Value", "src/convert.cpp", 8),)
+
+
+def test_unit_result_declaration_file_legacy_default() -> None:
+    unit = analysis.UnitResult(
+        analysis.FileInfo("src/paired.cpp"),
+        ["src/paired.cpp"],
+        [Entity("u:paired", Kind.FUNCTION, "paired", "paired", "src/paired.cpp", 2,
+                declaration_file="include/paired.hpp")],
+    )
+    payload = unit.to_json()
+    payload["entities"][0].pop("declaration_file")
+
+    loaded = analysis.UnitResult.from_json(payload)
+
+    assert loaded.entities[0].declaration_file == ""
 
 
 # --------------------------------------------------------------------------- with libclang
@@ -97,6 +210,64 @@ def test_sample_parses_without_errors(sample: DerivedModel) -> None:
     assert sample.files["src/core/shapes.cppm"].module == "shapes"
     assert sample.files["src/core/shapes.cppm"].unit == "interface"
     assert sample.files["src/third_party/json_lite.h"].unit == "header"
+
+
+def test_analysis_populates_function_body_hash(tmp_path: Path) -> None:
+    loaded = _libclang()
+    source = tmp_path / "body.cpp"
+    source.write_text("int answer() { return 42; }\n", encoding="utf-8")
+    command = analysis.CompileCommand(str(source), str(tmp_path), ("-std=c++20",), "clang++", False)
+    model = analysis.parse_project(tmp_path, [command], libclang_version=loaded.version)
+    answer = _by_name(model, "answer")
+    assert answer.body_hash == body_hash("{ return 42; }")
+
+
+def test_real_parse_marks_only_base_pointer_virtual_call_uncertain(tmp_path: Path) -> None:
+    loaded = _libclang()
+    source = tmp_path / "dispatch.cpp"
+    source.write_text(
+        """struct Base { virtual void run() {} void fixed() {} };
+struct Derived final : Base { void run() override {} };
+void dispatch(Base* base, Derived concrete) {
+  base->run();
+  concrete.run();
+  base->fixed();
+}
+""",
+        encoding="utf-8",
+    )
+    command = analysis.CompileCommand(str(source), str(tmp_path), ("-std=c++20",), "clang++", False)
+
+    model = analysis.parse_project(tmp_path, [command], libclang_version=loaded.version)
+
+    dispatch = _by_name(model, "dispatch")
+    calls = {
+        (model.entities[edge.target].qualified_name, edge.line): edge.uncertain
+        for edge in model.callees(dispatch.usr)
+    }
+    assert calls == {("Base::run", 4): True, ("Derived::run", 5): False, ("Base::fixed", 6): False}
+
+
+def test_real_parse_pairs_header_declaration_and_source_definition(tmp_path: Path) -> None:
+    loaded = _libclang()
+    include = tmp_path / "include"
+    source_dir = tmp_path / "src"
+    include.mkdir()
+    source_dir.mkdir()
+    header = include / "answer.hpp"
+    source = source_dir / "answer.cpp"
+    header.write_text("int answer();\n", encoding="utf-8")
+    source.write_text('#include "answer.hpp"\nint answer() { return 42; }\n', encoding="utf-8")
+    command = analysis.CompileCommand(
+        str(source), str(tmp_path), ("-std=c++20", f"-I{include}"), "clang++", False)
+
+    model = analysis.parse_project(tmp_path, [command], libclang_version=loaded.version)
+
+    answers = [entity for entity in model.entities.values() if entity.qualified_name == "answer"]
+    assert len(answers) == 1
+    assert answers[0].file == "src/answer.cpp"
+    assert answers[0].declaration_file == "include/answer.hpp"
+    assert answers[0].body_hash == body_hash("{ return 42; }")
 
 
 def test_main_calls_into_the_simulation(sample: DerivedModel) -> None:

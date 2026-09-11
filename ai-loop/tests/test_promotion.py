@@ -7,13 +7,15 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
 
-from ai_loop import db
 import controller
+from ai_loop import db
 from controller import (
     PromotionError,
     finish_done_job,
     promote_successful_worktree,
+    promotion_recovery_decision,
     repo_has_local_change,
+    rollback_promoted_checkout,
     status_paths,
     validate_promoted_checkout,
 )
@@ -104,6 +106,20 @@ class RepoHasLocalChangeTests(unittest.TestCase):
 
 
 class PromotionTests(unittest.TestCase):
+    def test_transient_worker_reports_are_never_promoted(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            repo, worktree = make_repo_with_worktree(
+                Path(directory), {"tracked.txt": "base\n"}
+            )
+            report = worktree / ".ai-loop-worker-report-iteration-1.md"
+            report.write_text("transient", encoding="utf-8")
+            (worktree / "tracked.txt").write_text("changed\n", encoding="utf-8")
+
+            result = promote_successful_worktree(job_dict(repo, worktree))
+
+            self.assertEqual(result["files"], ["tracked.txt"])
+            self.assertFalse((repo / report.name).exists())
+
     def test_promotes_modified_and_new_files_including_new_directory(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             repo, worktree = make_repo_with_worktree(Path(directory), {"a.txt": "one\n"})
@@ -120,6 +136,27 @@ class PromotionTests(unittest.TestCase):
             self.assertEqual((repo / "a.txt").read_text(encoding="utf-8"), "modified\n")
             self.assertEqual((repo / "new.txt").read_text(encoding="utf-8"), "brand new\n")
             self.assertEqual((repo / "newdir" / "inner.txt").read_text(encoding="utf-8"), "inner\n")
+
+    def test_subdirectory_selected_job_promotes_relative_to_git_root(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            repo, worktree = make_repo_with_worktree(
+                Path(directory), {"project/a.txt": "base\n"}
+            )
+            (worktree / "project" / "a.txt").write_text(
+                "promoted\n", encoding="utf-8"
+            )
+
+            result = promote_successful_worktree(
+                job_dict(repo / "project", worktree)
+            )
+
+            self.assertTrue(result["promoted"])
+            self.assertEqual(result["files"], ["project/a.txt"])
+            self.assertEqual(
+                (repo / "project" / "a.txt").read_text(encoding="utf-8"),
+                "promoted\n",
+            )
+            self.assertFalse((repo / "project" / "project").exists())
 
     def test_no_changes_means_not_promoted(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -161,6 +198,58 @@ class PromotionTests(unittest.TestCase):
             self.assertEqual(
                 (repo / "shared.txt").read_text(encoding="utf-8"),
                 "same result\n",
+            )
+
+    def test_validation_rollback_reverts_only_paths_copied_by_ai_loop(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            repo, worktree = make_repo_with_worktree(
+                Path(directory),
+                {
+                    "changed.txt": "base\n",
+                    "deleted.txt": "keep until promotion\n",
+                    "preserved.txt": "base\n",
+                },
+            )
+            (worktree / "changed.txt").write_text("candidate\n", encoding="utf-8")
+            (worktree / "deleted.txt").unlink()
+            (worktree / "new.txt").write_text("candidate new\n", encoding="utf-8")
+            (worktree / "preserved.txt").write_text("same local result\n", encoding="utf-8")
+            (repo / "preserved.txt").write_text("same local result\n", encoding="utf-8")
+
+            promotion = promote_successful_worktree(job_dict(repo, worktree))
+            rollback = rollback_promoted_checkout(job_dict(repo, worktree), promotion)
+
+            self.assertTrue(rollback["passed"])
+            self.assertEqual(
+                (repo / "changed.txt").read_text(encoding="utf-8"), "base\n"
+            )
+            self.assertEqual(
+                (repo / "deleted.txt").read_text(encoding="utf-8"),
+                "keep until promotion\n",
+            )
+            self.assertFalse((repo / "new.txt").exists())
+            self.assertEqual(
+                (repo / "preserved.txt").read_text(encoding="utf-8"),
+                "same local result\n",
+            )
+            self.assertEqual(rollback["preserved_already_present"], ["preserved.txt"])
+
+    def test_validation_rollback_preserves_a_concurrent_target_edit(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            repo, worktree = make_repo_with_worktree(
+                Path(directory), {"changed.txt": "base\n"}
+            )
+            (worktree / "changed.txt").write_text("candidate\n", encoding="utf-8")
+            promotion = promote_successful_worktree(job_dict(repo, worktree))
+            (repo / "changed.txt").write_text("concurrent user edit\n", encoding="utf-8")
+
+            rollback = rollback_promoted_checkout(job_dict(repo, worktree), promotion)
+
+            self.assertFalse(rollback["passed"])
+            self.assertEqual(rollback["failures"], ["changed.txt"])
+            self.assertEqual(
+                (repo / "changed.txt").read_text(encoding="utf-8"),
+                "concurrent user edit\n",
             )
 
     def test_identical_untracked_file_and_deletion_are_already_promoted(self) -> None:
@@ -326,6 +415,29 @@ class PromotionValidationTests(unittest.TestCase):
             self.assertTrue(validation["passed"])
             self.assertEqual(validation["cwd"], str(repo.resolve()))
 
+    def test_subdirectory_selected_job_validates_from_matching_git_root(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            repo, worktree = make_repo_with_worktree(
+                Path(directory), {"project/a.txt": "one\n"}
+            )
+            (worktree / "project" / "promoted.txt").write_text(
+                "ready\n", encoding="utf-8"
+            )
+            job = {
+                **job_dict(repo / "project", worktree),
+                "test_cmd": (
+                    "test -f project/promoted.txt "
+                    "&& test ! -e project/project/promoted.txt"
+                ),
+            }
+            promotion = promote_successful_worktree(job)
+
+            validation = validate_promoted_checkout(job, promotion)
+
+            self.assertTrue(validation["performed"])
+            self.assertTrue(validation["passed"])
+            self.assertEqual(validation["cwd"], str(repo.resolve()))
+
     def test_promoted_checkout_validation_reports_failure(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             repo, worktree = make_repo_with_worktree(
@@ -344,7 +456,7 @@ class PromotionValidationTests(unittest.TestCase):
             self.assertFalse(validation["passed"])
             self.assertNotEqual(validation["returncode"], 0)
 
-    def test_failed_target_validation_prevents_done_status(self) -> None:
+    def test_failed_target_validation_requests_llm_recovery(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             database = root / "loop.sqlite3"
@@ -384,9 +496,20 @@ class PromotionValidationTests(unittest.TestCase):
                 controller,
                 "validate_promoted_checkout",
                 return_value=validation,
+            ), patch.object(
+                controller,
+                "rollback_promoted_checkout",
+                return_value={
+                    "performed": True,
+                    "passed": True,
+                    "reason": "rolled back",
+                    "restored": ["a.txt"],
+                    "removed": [],
+                    "failures": [],
+                },
             ), patch.object(controller, "notify_terminal"), patch.object(
                 controller, "xadd_json"
-            ):
+            ) as publish:
                 finish_done_job(
                     settings,
                     object(),
@@ -407,9 +530,257 @@ class PromotionValidationTests(unittest.TestCase):
                         ("J-promotion-validation",),
                     ).fetchall()
                 ]
-            self.assertEqual(stored["status"], "human_needed")
+            self.assertEqual(stored["status"], "planning")
             self.assertIn("promotion_validation_failed", kinds)
+            self.assertIn("promotion_rollback_completed", kinds)
+            self.assertIn("promotion_recovery_requested", kinds)
+            self.assertNotIn("human_needed", kinds)
             self.assertNotIn("done", kinds)
+            request = publish.call_args.args[3]
+            self.assertEqual(request["type"], "PROMOTION_RECOVERY")
+            self.assertEqual(request["failure"]["stage"], "target_validation")
+
+    def test_copy_failure_requests_llm_recovery_instead_of_human(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            database = root / "loop.sqlite3"
+            db.init_db(database)
+            with db.transaction(database) as conn:
+                db.create_job(
+                    conn,
+                    job_id="J-promotion-copy",
+                    repo_path=str(root / "repo"),
+                    worktree_path=str(root / "worktree"),
+                    branch="ai/J-promotion-copy",
+                    base_ref="HEAD",
+                    goal="Promote safely",
+                    constraints=[],
+                    acceptance=[],
+                    test_cmd="true",
+                    max_iterations=2,
+                    use_worktree=True,
+                    worker="codex",
+                    controller="claude",
+                )
+                job = db.get_job(conn, "J-promotion-copy")
+            settings = SimpleNamespace(db_path=database)
+
+            with patch.object(
+                controller,
+                "promote_successful_worktree",
+                side_effect=PromotionError("path mapping failed"),
+            ), patch.object(controller, "xadd_json") as publish:
+                finish_done_job(
+                    settings,
+                    object(),
+                    job,
+                    {
+                        "action": "DONE",
+                        "reason": "worktree passed",
+                        "history_summary": "implementation complete",
+                    },
+                )
+
+            with db.transaction(database) as conn:
+                stored = db.get_job(conn, "J-promotion-copy")
+                kinds = [
+                    row["kind"]
+                    for row in conn.execute(
+                        "SELECT kind FROM events WHERE job_id = ? ORDER BY id",
+                        ("J-promotion-copy",),
+                    ).fetchall()
+                ]
+            self.assertEqual(stored["status"], "planning")
+            self.assertIn("promotion_failed", kinds)
+            self.assertIn("promotion_recovery_requested", kinds)
+            self.assertNotIn("human_needed", kinds)
+            request = publish.call_args.args[3]
+            self.assertEqual(request["type"], "PROMOTION_RECOVERY")
+            self.assertEqual(request["failure"]["stage"], "promotion")
+
+
+class PromotionRecoveryDecisionTests(unittest.TestCase):
+    def test_tries_other_available_llms_until_one_offers_repair(self) -> None:
+        settings = SimpleNamespace(
+            controller_default="claude",
+            claude_bin="claude",
+            codex_bin="codex",
+            gemini_bin="gemini",
+        )
+        job = {"controller": "claude", "worktree_path": "/tmp/worktree"}
+        declined = {
+            "action": "HUMAN_NEEDED",
+            "reason": "I cannot solve this",
+            "history_summary": "blocked",
+        }
+        repair = {
+            "action": "CONTINUE",
+            "reason": "Codex found a safe repair",
+            "history_summary": "repair queued",
+            "progress": {
+                "completed_work_units": 1,
+                "remaining_work_units": 1,
+                "remaining_minutes": 5,
+            },
+            "next_task": {
+                "goal": "Repair promotion path mapping",
+                "constraints": ["Preserve local target changes"],
+                "acceptance": ["Promotion succeeds without a conflict"],
+                "test_cmd": "pytest -q tests/test_promotion.py",
+            },
+        }
+
+        with patch.object(controller.shutil, "which", return_value="/usr/bin/fake"), patch.object(
+            controller, "controller_decision", side_effect=[declined, repair]
+        ) as decide:
+            result = promotion_recovery_decision(settings, job, "diagnostics")
+
+        self.assertEqual(result["action"], "REPAIR")
+        self.assertEqual(result["recovery_provider"], "codex")
+        self.assertEqual(decide.call_count, 2)
+        self.assertEqual(decide.call_args_list[0].args[1]["controller"], "claude")
+        self.assertEqual(decide.call_args_list[1].args[1]["controller"], "codex")
+        self.assertFalse(decide.call_args_list[0].kwargs["wait_for_tokens"])
+        self.assertFalse(decide.call_args_list[1].kwargs["wait_for_tokens"])
+
+    def test_recovery_request_creates_a_normal_repair_task(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            database = root / "loop.sqlite3"
+            db.init_db(database)
+            with db.transaction(database) as conn:
+                db.create_job(
+                    conn,
+                    job_id="J-recovery-route",
+                    repo_path=str(root / "repo"),
+                    worktree_path=str(root / "worktree"),
+                    branch="ai/J-recovery-route",
+                    base_ref="HEAD",
+                    goal="Recover promotion",
+                    constraints=[],
+                    acceptance=[],
+                    test_cmd="true",
+                    max_iterations=0,
+                    use_worktree=True,
+                    worker="codex",
+                    controller="claude",
+                )
+            decision = {
+                "action": "REPAIR",
+                "reason": "repair is safe",
+                "history_summary": "recovering promotion",
+                "progress": {
+                    "completed_work_units": 1,
+                    "remaining_work_units": 1,
+                    "remaining_minutes": 5,
+                },
+                "next_task": {
+                    "goal": "Repair target-relative promotion paths",
+                    "constraints": ["Preserve unrelated local edits"],
+                    "acceptance": ["The job test command passes: true"],
+                    "test_cmd": "true",
+                },
+                "recovery_provider": "codex",
+            }
+
+            with patch.object(
+                controller, "promotion_recovery_decision", return_value=decision
+            ), patch.object(controller, "publish_worker_task") as publish, patch.object(
+                controller, "timestamp_id", return_value="T-recovery-route"
+            ):
+                controller.handle_request(
+                    SimpleNamespace(db_path=database),
+                    object(),
+                    {
+                        "type": "PROMOTION_RECOVERY",
+                        "job_id": "J-recovery-route",
+                        "scope": "job",
+                        "failure": {"stage": "promotion", "error": "wrong path"},
+                    },
+                )
+
+            with db.transaction(database) as conn:
+                job = db.get_job(conn, "J-recovery-route")
+                task = db.get_task(conn, "T-recovery-route")
+            self.assertEqual(job["status"], "queued")
+            self.assertEqual(task["created_by"], "codex:promotion_recovery")
+            self.assertEqual(task["goal"], "Repair target-relative promotion paths")
+            publish.assert_called_once()
+
+    def test_recovery_task_allowance_has_a_hard_cap(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            database = root / "loop.sqlite3"
+            db.init_db(database)
+            with db.transaction(database) as conn:
+                db.create_job(
+                    conn,
+                    job_id="J-recovery-cap",
+                    repo_path=str(root / "repo"),
+                    worktree_path=str(root / "worktree"),
+                    branch="ai/J-recovery-cap",
+                    base_ref="HEAD",
+                    goal="Recover promotion",
+                    constraints=[],
+                    acceptance=[],
+                    test_cmd="true",
+                    max_iterations=100,
+                    use_worktree=True,
+                    worker="codex",
+                    controller="claude",
+                )
+                for iteration in range(controller.PROMOTION_RECOVERY_MAX_TASKS):
+                    db.create_task(
+                        conn,
+                        task_id=f"T-recovery-cap-{iteration}",
+                        job_id="J-recovery-cap",
+                        iteration=iteration,
+                        goal="Previous promotion repair",
+                        constraints=[],
+                        acceptance=[],
+                        test_cmd="true",
+                        created_by="codex:promotion_recovery",
+                    )
+            decision = {
+                "action": "REPAIR",
+                "reason": "another possible repair",
+                "history_summary": "still recovering",
+                "progress": {
+                    "completed_work_units": 1,
+                    "remaining_work_units": 1,
+                    "remaining_minutes": 5,
+                },
+                "next_task": {
+                    "goal": "Try another repair",
+                    "constraints": [],
+                    "acceptance": [],
+                    "test_cmd": "true",
+                },
+                "recovery_provider": "codex",
+            }
+
+            with patch.object(
+                controller, "promotion_recovery_decision", return_value=decision
+            ), patch.object(controller, "finish_job") as finish, patch.object(
+                controller, "publish_worker_task"
+            ) as publish:
+                controller.handle_request(
+                    SimpleNamespace(db_path=database),
+                    object(),
+                    {
+                        "type": "PROMOTION_RECOVERY",
+                        "job_id": "J-recovery-cap",
+                        "scope": "job",
+                        "failure": {"stage": "promotion", "error": "still failing"},
+                    },
+                )
+
+            self.assertEqual(finish.call_args.args[4], "human_needed")
+            self.assertEqual(
+                finish.call_args.args[5]["reason"],
+                "promotion recovery task limit reached",
+            )
+            publish.assert_not_called()
 
 
 class PromotionRollbackTests(unittest.TestCase):

@@ -159,7 +159,8 @@ def propose_and_approve(runner: steps.StepRunner, evidence: Evidence, report: di
     started = monotonic()
     approved = runner.approve(proposal)
     report["approve_seconds"] = round(monotonic() - started, 3)
-    require(bool(approved.commit and approved.tests_passed), "approval did not commit a passing build")
+    require(bool(approved.commit and approved.build_ok and approved.test_ok),
+            "approval did not commit a passing build and test run")
     require(git.is_clean(runner.root), "approval left the project dirty")
     evidence.write("step-log.after-approve.jsonl", runner.log.path.read_text(encoding="utf-8"))
     return approved
@@ -174,7 +175,7 @@ def undo_and_verify(runner: steps.StepRunner, baseline: str, evidence: Evidence,
     require(source == baseline, "undo did not restore the original source exactly")
     build = steps.build_project(runner.root)
     evidence.write("post-undo-build.log", build.output)
-    require(build.ok, "the project did not build and test after undo")
+    require(build.ok is True, "the project did not build and test after undo")
     restored = steps.analyse_tree(runner.root)
     require(all(entity.qualified_name != "app::answer" for entity in restored.entities.values()),
             "app::answer remained in the derived model after undo and re-analysis")

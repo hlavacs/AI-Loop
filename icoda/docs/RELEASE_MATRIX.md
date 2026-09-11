@@ -1,0 +1,80 @@
+# ICODA platform/release qualification matrix
+
+Release record: ICODA 0.1.0, iteration 53, 2026-09-11.
+
+This matrix records executed evidence only. Linux is the **ONLY qualified platform**. Windows and macOS are
+**UNQUALIFIED / UNMEASURED** because no such host exists in this environment. No result is inferred, predicted, or
+claimed for an operating system that was not executed.
+
+| Platform | Qualification | Executed evidence | Limitation |
+|---|---|---|---|
+| Linux | **QUALIFIED** | Iteration 53: `DISPLAY=:99 bash icoda/verify.bash` produced `Required test coverage of 85% reached. Total coverage: 90.22%`, `317 passed, 3 skipped`, and `VERIFY_EXIT_STATUS=0`; the worktree-root suite produced `824 passed, 4 skipped`; `gui_acceptance.py` produced exactly 32 PNGs and `simulation_acceptance.py` produced ten PNGs plus `simulation-state.json` under persistent `Xephyr :99`; large summed stage latency remains `4.389153 s`. | Qualification applies only to the Linux host on which this evidence was executed. |
+| Windows | **UNQUALIFIED / UNMEASURED** | None. | No Windows host exists in this environment, so Windows launchers, process trees, compiler discovery, native paths, and real GUI/build/verification behavior were not executed. |
+| macOS | **UNQUALIFIED / UNMEASURED** | None. | No macOS host exists in this environment, so macOS launchers, SDK/Homebrew discovery, native paths, and real GUI/build/verification behavior were not executed. |
+
+## Platform-seam inventory
+
+The required worktree-root inventory command produced this verbatim output before the iteration-51 tests were
+written:
+
+```text
+$ rg -n 'sys\.platform|os\.name|platform\.system|shutil\.which|os\.get_exec_path|\.exe' icoda/icoda.py icoda/icoda_core icoda/icoda_gui icoda/tests/verify.py
+icoda/tests/verify.py:37:    shown = subprocess.list2cmdline(command) if os.name == "nt" else shlex.join(command)
+icoda/tests/verify.py:72:        "executable": sys.executable,
+icoda/tests/verify.py:83:    command = [sys.executable, str(ROOT / "tests" / "gui_acceptance.py"),
+icoda/tests/verify.py:85:    if sys.platform.startswith("linux") and not os.environ.get("DISPLAY") and shutil.which("xvfb-run"):
+icoda/tests/verify.py:91:    python = sys.executable
+icoda/tests/verify.py:96:    build_script = SAMPLE / ("build.cmd" if os.name == "nt" else "build.sh")
+icoda/tests/verify.py:97:    build = ["cmd", "/c", str(build_script), "debug"] if os.name == "nt" \
+icoda/icoda_gui/provider_field.py:34:    for suffix in (".exe", ".cmd", ".bat"):
+icoda/icoda_core/process.py:63:        if sys.platform == "win32":
+icoda/icoda_core/process.py:89:        start_new_session=sys.platform != "win32",
+icoda/icoda_core/persistence.py:222:def config_path(platform: str = sys.platform, environ: Mapping[str, str] | None = None,
+icoda/icoda_core/analysis.py:275:def libcxx_arguments(compiler: str, arguments: Sequence[str], platform: str = sys.platform) -> list[str]:
+icoda/icoda_core/toolchain.py:100:def candidates(platform: str = sys.platform, environ: Mapping[str, str] | None = None,
+icoda/icoda_core/toolchain.py:168:def default_sysroot(platform: str = sys.platform) -> str | None:
+icoda/icoda_core/steps.py:89:        return GateCommands([[sys.executable, "-m", "compileall", "-q", "src"]],
+icoda/icoda_core/steps.py:122:    if sys.platform == "darwin" and not os.environ.get("CXX") and shutil.which("brew"):
+icoda/icoda_core/steps.py:127:    elif sys.platform.startswith("linux") and not os.environ.get("CXX"):
+icoda/icoda_core/steps.py:129:        for directory in os.get_exec_path():
+icoda/icoda_core/steps.py:151:    elif sys.platform == "win32" and not os.environ.get("CXX"):
+icoda/icoda_core/steps.py:152:        found = shutil.which("clang-cl")
+icoda/icoda_core/agent.py:103:    return Path(candidate).is_file() or shutil.which(candidate) is not None
+icoda/icoda_core/agent.py:110:    finder: Callable[[str], str | None] = shutil.which,
+icoda/icoda_core/agent.py:135:    finder: Callable[[str], str | None] = shutil.which,
+icoda/icoda_core/session.py:153:    command = [sys.executable, "-m", "icoda_core.session", str(root)]
+icoda/icoda_core/session.py:217:    if shutil.which("code"):
+icoda/icoda_core/session.py:219:    if sys.platform == "darwin":
+icoda/icoda_core/session.py:221:    if sys.platform == "win32":
+```
+
+The genuine platform-dependent behavior is command rendering, GUI display wrapping, sample-build command selection,
+Windows/POSIX process handling, configuration paths, libc++ arguments, libclang candidates/sysroot, compiler
+discovery, and OS editor selection. The `sys.executable` occurrences merely reuse the running interpreter; the
+provider suffix loop is platform-compatible filename probing without a host branch; and the general `agent.py`
+`shutil.which` occurrences are executable-availability checks rather than platform selection.
+
+The new host-independent tests
+`test_build_environment_macos_without_homebrew_uses_inherited_environment` and
+`test_build_environment_windows_without_clang_cl_uses_inherited_environment` monkeypatch `sys.platform`,
+`shutil.which`, and `os.get_exec_path`. They prove that both non-Linux branches bypass Linux executable-path
+scanning and return `None`, preserving the inherited environment, when their native compiler-discovery prerequisite
+is absent. They do not qualify either operating system.
+
+Other seams have the following evidence boundary:
+
+- `persistence.config_path`, `analysis.libcxx_arguments`, and `toolchain.candidates` already have injected-platform
+  unit tests, but real Windows/macOS filesystem, compiler, SDK, and library behavior cannot be proven without those
+  hosts.
+- `tests/verify.py` command rendering, GUI wrapping, and sample-build selection cannot be qualified without running
+  the complete harness on a real Windows or macOS host.
+- `process.kill_tree` and `process.run_bounded` cannot prove Windows `taskkill` and process-tree semantics without a
+  real Windows host.
+- Successful `steps.build_environment` construction from Windows `clang-cl` or macOS Homebrew LLVM cannot be proven
+  without the corresponding real host; the new tests cover only the explicit missing-tool fallbacks.
+- `toolchain.default_sysroot`, the successful Homebrew compiler path, and native macOS SDK behavior cannot be proven
+  without a real macOS host.
+- `session.editor_command` cannot prove the native `open` or `cmd /c start` launch behavior without the corresponding
+  real host.
+- The provider `.exe`/`.cmd`/`.bat` filename probes and executable availability checks cannot prove real Windows PATH
+  and executable semantics without a real Windows host.

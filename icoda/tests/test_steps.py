@@ -178,7 +178,7 @@ def test_delta_and_log_helpers(tmp_path: Path) -> None:
 
     log = steplog.StepLog(tmp_path / "steps.jsonl")
     log.append(steplog.StepRecord(0, "architecture", "approved", entities_added=["u:a"]))
-    log.append(steplog.StepRecord(1, "implementation", "approved", entities_changed=["u:a"], tests_passed=True))
+    log.append(steplog.StepRecord(1, "implementation", "approved", entities_changed=["u:a"], test_ok=True))
     log.append(steplog.StepRecord(2, "architecture", "rejected", reason="no"))
     assert log.next_number() == 2 and log.rejections(2) == ("no",)
     steplog.apply_statuses(after, log)

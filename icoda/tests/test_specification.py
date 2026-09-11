@@ -14,6 +14,19 @@ def test_defaults_are_valid_and_round_trip(tmp_path: Path) -> None:
     assert spec_module.load(tmp_path / ".icoda" / "specification.json") == spec
 
 
+def test_pre_profile_specification_loads_with_the_unchanged_cpp_default(tmp_path: Path) -> None:
+    path = tmp_path / "specification.json"
+    (tmp_path / "app.py").write_text("pass\n", encoding="utf-8")
+    path.write_text(
+        '{"schema_version": 2, "title": "Legacy", "summary": "", "goals": [], '
+        '"out_of_scope": [], "not_allowed": [], "done_when": [], "use_cases": [], '
+        '"requirements": [], "decisions": []}',
+        encoding="utf-8",
+    )
+    loaded = spec_module.load(path)
+    assert loaded["code_profile"] == spec_module.default_code_profile()
+
+
 def test_ids_and_cross_references() -> None:
     spec = spec_module.default_specification("Demo")
     assert spec_module.next_id(spec, "requirements") == "R-1"

@@ -9,9 +9,10 @@ import subprocess
 import tempfile
 import time
 import uuid
+from collections.abc import Callable, Mapping, Sequence
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Callable, Mapping, Sequence
+from typing import Any
 
 from redis.exceptions import ConnectionError, TimeoutError
 
@@ -26,16 +27,6 @@ from ai_loop.config import (
     sanitized_child_env,
 )
 from ai_loop.job_status import active_job_status
-from ai_loop.queues import (
-    claim_pending,
-    consumer_name,
-    decode,
-    ensure_group,
-    publish_worker_task,
-    redis_client,
-    read_group,
-    xadd_json,
-)
 from ai_loop.notifications import delivery_outcome, terminal_email
 from ai_loop.planning import normalize_granularity
 from ai_loop.process_runner import (
@@ -45,12 +36,22 @@ from ai_loop.process_runner import (
     run_bounded_process,
 )
 from ai_loop.prompt_profiles import configured_prompt_guidance
+from ai_loop.queues import (
+    claim_pending,
+    consumer_name,
+    decode,
+    ensure_group,
+    publish_worker_task,
+    read_group,
+    redis_client,
+    xadd_json,
+)
 from ai_loop.recovery import attempt_auto_recovery
+from ai_loop.report_artifacts import is_worker_report_path
 from ai_loop.specifications import SpecificationService
 from ai_loop.systemd_sandbox import wrap_with_systemd_sandbox
 from ai_loop.token_wait import is_token_limit, replenishment_time, wait_until
 from ai_loop.verification_orchestrator import evaluate_completion_gate
-
 
 GROUP = "claude-controllers"
 ACTIONS = {"CONTINUE", "REPAIR", "DONE", "HUMAN_NEEDED"}
@@ -66,6 +67,10 @@ CLAUDE_TRANSIENT_RETRY_MAX_BACKOFF_SECONDS = float(
 PROMPT_ARG_LIMIT = 100000
 PROMOTION_VALIDATION_TIMEOUT_SECONDS = 7200
 PROMOTION_VALIDATION_OUTPUT_BYTES = 20000
+PROMOTION_RECOVERY_REQUEST = "PROMOTION_RECOVERY"
+PROMOTION_RECOVERY_MAX_TASKS = max(
+    1, int(os.getenv("AI_LOOP_PROMOTION_RECOVERY_MAX_TASKS", "3"))
+)
 
 CLAUDE_TRANSIENT_FAILURE_PATTERNS = (
     "api error",
@@ -1033,6 +1038,8 @@ def controller_decision(
     traceability_manifest: Any | None = None,
     realization_summary: Sequence[Mapping[str, Any]] | None = None,
     worker_run_id: str | None = None,
+    *,
+    wait_for_tokens: bool = True,
 ) -> dict[str, Any]:
     while True:
         controller = job_controller(settings, job)
@@ -1100,7 +1107,11 @@ def controller_decision(
 
         reason = str(decision.get("reason") or "")
         retry_at = replenishment_time(reason)
-        if decision.get("action") != "HUMAN_NEEDED" or retry_at is None:
+        if (
+            decision.get("action") != "HUMAN_NEEDED"
+            or retry_at is None
+            or not wait_for_tokens
+        ):
             return decision
 
         waiting_until = retry_at.isoformat(timespec="seconds")
@@ -1182,6 +1193,7 @@ Rules:
 %s- progress is required for every action. Estimate logical work units already completed, units still remaining, and remaining wall-clock minutes. Keep the work-unit scale consistent with earlier decisions so the estimate remains comparable. Use null only when time cannot yet be estimated.
 - You are controller/planner/reviewer only, never a code editor.
 """ % (task_fields, formal_rules) + sizing_rules(sizing) + """
+- Do not request ad-hoc progress, summary, or worker-report files in the repository. The worker's final response is already captured in the database and GUI; any explicitly required transient report belongs under its provided system-temp report directory.
 - Write next_task.goal as a specific imperative, not a project summary. Name the exact directory, file, symbol, or test target when known.
 - Project instruction files such as AGENTS.md are optional. If they exist and are relevant, require the worker to follow them; if they are absent, continue using the job goal, constraints, local code patterns, and tests.
 - File-like paths mentioned in the original job description, job constraints, or job acceptance criteria may be live guidance files. The prompt includes a refreshed snapshot of those files when they exist. Treat that snapshot as current guidance and prefer it over earlier summaries if it changed.
@@ -1355,6 +1367,123 @@ An escalated case has exhausted a hard bound. Never emit another retry; the trus
     return prompt + configured_prompt_guidance("review", job, task)
 
 
+def promotion_recovery_prompt(job: dict[str, Any], failure: Mapping[str, Any]) -> str:
+    """Ask a controller for one safe task that recovers terminal promotion."""
+
+    sizing = job_sizing(job)
+    return f"""You are the controller/reviewer recovering a completed job whose changes could not safely reach a validated target checkout.
+
+Analyze the exact promotion diagnostics and create one focused automated repair task whenever any safe diagnostic or fix path exists.
+
+{schema_text(sizing)}
+
+Job state:
+{json.dumps(prompt_safe_job(job), indent=2)}
+
+Promotion failure diagnostics:
+{json.dumps(dict(failure), indent=2)}
+
+Recovery-specific rules:
+- Return REPAIR when an LLM worker can diagnose, reconcile, or fix the failure without discarding user work.
+- Never return DONE: promotion and target-checkout validation must be retried after the repair task.
+- Do not ask a human merely because promotion or target validation failed. First use the diagnostic output, repository state, and tests to propose a bounded repair.
+- Preserve unrelated target-checkout changes. Never reset, overwrite, or delete a conflicting local edit whose ownership is uncertain.
+- A validation rollback described in the diagnostics reverted only paths copied by AI-Loop; it did not discard pre-existing target changes.
+- Return HUMAN_NEEDED only when every safe automated path is ruled out or the remaining action requires credentials, external authority, or a destructive choice.
+- This is orchestration recovery rather than specification work. Keep requirement_ids and verification_ids empty if they are present in next_task.
+- Return JSON only. Do not use Markdown.
+""" + configured_prompt_guidance("review", job)
+
+
+def _controller_provider_family(controller_name: str) -> str:
+    return "claude" if controller_name in {"claude", "fable", "opus"} else controller_name
+
+
+def _controller_binary(settings: Any, provider_family: str) -> str:
+    return str(getattr(settings, f"{provider_family}_bin", provider_family))
+
+
+def promotion_recovery_decision(
+    settings: Any,
+    job: dict[str, Any],
+    prompt: str,
+    traceability_manifest: Any | None = None,
+    realization_summary: Sequence[Mapping[str, Any]] | None = None,
+    worker_run_id: str | None = None,
+    *,
+    allow_done: bool = False,
+) -> dict[str, Any]:
+    """Try every installed controller family until one offers a repair."""
+
+    configured = job_controller(settings, job)
+    candidates = [configured, "codex", "claude", "gemini"]
+    tried_families: set[str] = set()
+    attempts: list[dict[str, str]] = []
+
+    for candidate in candidates:
+        family = _controller_provider_family(candidate)
+        if family in tried_families:
+            continue
+        tried_families.add(family)
+        binary = _controller_binary(settings, family)
+        if shutil.which(binary) is None:
+            attempts.append(
+                {"provider": candidate, "outcome": "unavailable", "reason": f"missing binary: {binary}"}
+            )
+            continue
+
+        candidate_job = {**job, "controller": candidate}
+        try:
+            decision = controller_decision(
+                settings,
+                candidate_job,
+                prompt,
+                traceability_manifest,
+                realization_summary,
+                worker_run_id,
+                wait_for_tokens=False,
+            )
+            validate_decision(decision)
+        except Exception as exc:  # noqa: BLE001 - one failed provider must not block the others
+            attempts.append(
+                {"provider": candidate, "outcome": "failed", "reason": repr(exc)[-2000:]}
+            )
+            continue
+
+        action = str(decision["action"])
+        if action == "DONE" and allow_done:
+            decision["recovery_provider"] = candidate
+            decision["recovery_attempts"] = attempts
+            return decision
+        if action in {"CONTINUE", "REPAIR"}:
+            decision["action"] = "REPAIR"
+            decision["recovery_provider"] = candidate
+            decision["recovery_attempts"] = attempts
+            return decision
+        attempts.append(
+            {
+                "provider": candidate,
+                "outcome": "declined" if action == "HUMAN_NEEDED" else "invalid_terminal_action",
+                "reason": str(decision.get("reason") or "")[-2000:],
+            }
+        )
+
+    detail = "; ".join(
+        f"{item['provider']}: {item['outcome']} ({item['reason']})" for item in attempts
+    ) or "no configured provider candidates"
+    return {
+        "action": "HUMAN_NEEDED",
+        "reason": "no available controller LLM offered a safe promotion recovery task: " + detail,
+        "history_summary": str(job.get("history_summary") or ""),
+        "progress": {
+            "completed_work_units": 0,
+            "remaining_work_units": 1,
+            "remaining_minutes": None,
+        },
+        "recovery_attempts": attempts,
+    }
+
+
 def next_iteration(conn, job_id: str) -> int:
     task = db.latest_task(conn, job_id)
     return 0 if task is None else int(task["iteration"]) + 1
@@ -1377,6 +1506,16 @@ def run_git(args: list[str], cwd: Path) -> subprocess.CompletedProcess[str]:
         capture_output=True,
         timeout=300,
     )
+
+
+def git_repository_root(path: Path) -> Path:
+    """Resolve the checkout root so subdirectory-selected jobs keep their paths."""
+
+    proc = run_git(["rev-parse", "--show-toplevel"], path)
+    if proc.returncode != 0 or not proc.stdout.strip():
+        detail = proc.stderr.strip() or f"no Git repository contains {path}"
+        raise PromotionError(f"could not resolve target repository root: {detail}")
+    return Path(proc.stdout.strip()).resolve()
 
 
 def status_paths(worktree: Path) -> list[tuple[str, str | None]]:
@@ -1449,12 +1588,18 @@ def promote_successful_worktree(
     job: dict[str, Any],
     on_before_copy: Callable[[list[str]], None] | None = None,
 ) -> dict[str, Any]:
-    repo = Path(str(job["repo_path"]))
-    worktree = Path(str(job["worktree_path"]))
-    if not bool(job["use_worktree"]) or repo.resolve() == worktree.resolve():
+    repo_path = Path(str(job["repo_path"])).resolve()
+    worktree_path = Path(str(job["worktree_path"])).resolve()
+    if not bool(job["use_worktree"]) or repo_path == worktree_path:
         return {"promoted": False, "reason": "job already ran in the target repository", "files": []}
+    repo = git_repository_root(repo_path)
+    worktree = git_repository_root(worktree_path)
 
-    changes = status_paths(worktree)
+    changes = [
+        (code, path)
+        for code, path in status_paths(worktree)
+        if path is None or not is_worker_report_path(path)
+    ]
     changed_paths = sorted({path for _code, path in changes if path})
     if not changed_paths:
         return {"promoted": False, "reason": "job worktree had no changed files", "files": []}
@@ -1560,6 +1705,69 @@ def promote_successful_worktree(
     }
 
 
+def rollback_promoted_checkout(
+    job: Mapping[str, Any], promotion: Mapping[str, Any]
+) -> dict[str, Any]:
+    """Undo only paths that the just-finished promotion changed itself."""
+
+    if not bool(promotion.get("promoted")):
+        return {
+            "performed": False,
+            "passed": True,
+            "reason": "promotion copied no paths",
+            "restored": [],
+            "removed": [],
+            "failures": [],
+        }
+
+    repo = git_repository_root(Path(str(job["repo_path"])))
+    worktree = git_repository_root(Path(str(job["worktree_path"])))
+    copied = [str(path) for path in promotion.get("copied", [])]
+    removed_by_promotion = [str(path) for path in promotion.get("removed", [])]
+    restored: list[str] = []
+    removed: list[str] = []
+    failures: list[str] = []
+
+    for relative_path in [*copied, *removed_by_promotion]:
+        # Do not undo a path if somebody changed it after AI-Loop copied it.
+        # Such a race is retained for the recovery controller to reconcile.
+        if not promotion_path_matches(repo, worktree, relative_path):
+            failures.append(relative_path)
+            continue
+        checkout = run_git(["checkout", "--", relative_path], repo)
+        if checkout.returncode == 0:
+            restored.append(relative_path)
+            continue
+        if relative_path not in copied:
+            failures.append(relative_path)
+            continue
+        target = repo / relative_path
+        try:
+            if target.is_dir() and not target.is_symlink():
+                shutil.rmtree(target)
+            elif target.exists() or target.is_symlink():
+                target.unlink()
+            removed.append(relative_path)
+        except OSError:
+            failures.append(relative_path)
+
+    return {
+        "performed": True,
+        "passed": not failures,
+        "reason": (
+            "reverted paths copied by the failed promotion"
+            if not failures
+            else "could not revert every path copied by the failed promotion"
+        ),
+        "restored": sorted(restored),
+        "removed": sorted(removed),
+        "failures": sorted(failures),
+        "preserved_already_present": sorted(
+            str(path) for path in promotion.get("already_present", [])
+        ),
+    }
+
+
 def validate_promoted_checkout(
     job: Mapping[str, Any], promotion: Mapping[str, Any]
 ) -> dict[str, Any]:
@@ -1584,7 +1792,15 @@ def validate_promoted_checkout(
             "command": command,
             "reason": "promoted checkout has no concrete validation command",
         }
-    repo = Path(str(job["repo_path"])).resolve()
+    try:
+        repo = git_repository_root(Path(str(job["repo_path"])))
+    except PromotionError as exc:
+        return {
+            "performed": True,
+            "passed": False,
+            "command": command,
+            "reason": str(exc),
+        }
     try:
         result = run_bounded_process(
             ["bash", "-lc", command],
@@ -1703,6 +1919,34 @@ def finish_job(settings, client, job_id: str, stream: str, status: str, decision
     notify_terminal(settings, job_id, status, str(decision["reason"]))
 
 
+def request_promotion_recovery(
+    settings: Any,
+    client: Any,
+    job: Mapping[str, Any],
+    decision: Mapping[str, Any],
+    failure: Mapping[str, Any],
+) -> None:
+    """Persist and enqueue a non-terminal LLM recovery request."""
+
+    payload = {
+        "type": PROMOTION_RECOVERY_REQUEST,
+        "job_id": str(job["id"]),
+        "scope": "job",
+        "failure": dict(failure),
+    }
+    xadd_json(client, CLAUDE_REQUEST_STREAM, "request", payload)
+    summary = str(decision.get("history_summary") or "")
+    with db.transaction(settings.db_path) as conn:
+        db.update_job_status(conn, str(job["id"]), "planning", summary)
+        db.add_event(
+            conn,
+            job_id=str(job["id"]),
+            kind="promotion_recovery_requested",
+            payload=dict(failure),
+        )
+    print(f"job {job['id']}: promotion recovery requested from available LLM controllers")
+
+
 def notify_terminal(settings, job_id: str, status: str, reason: str) -> None:
     with db.transaction(settings.db_path) as conn:
         job = db.get_job(conn, job_id)
@@ -1734,30 +1978,41 @@ def finish_done_job(settings, client, job: dict[str, Any], decision: dict[str, A
     try:
         promotion = promote_successful_worktree(job, on_before_copy=record_promotion_started)
     except PromotionError as exc:
-        human_decision = {
-            "action": "HUMAN_NEEDED",
-            "reason": f"job completed, but promotion to target repository failed: {exc}",
-            "history_summary": decision.get("history_summary", ""),
+        failure = {
+            "stage": "promotion",
+            "error": str(exc),
+            "target_repo_path": str(job["repo_path"]),
+            "worktree_path": str(job["worktree_path"]),
         }
         with db.transaction(settings.db_path) as conn:
             db.add_event(
                 conn,
                 job_id=job["id"],
                 kind="promotion_failed",
-                payload={"job_id": job["id"], "error": str(exc)},
+                payload=failure,
             )
-        finish_job(settings, client, job["id"], HUMAN_STREAM, "human_needed", human_decision)
+        request_promotion_recovery(settings, client, job, decision, failure)
         return
 
     validation = validate_promoted_checkout(job, promotion)
     if not validation["passed"]:
-        human_decision = {
-            "action": "HUMAN_NEEDED",
-            "reason": (
-                "job changes were promoted, but validation in the target repository failed: "
-                f"{validation.get('reason', 'unknown validation error')}"
-            ),
-            "history_summary": decision.get("history_summary", ""),
+        try:
+            rollback = rollback_promoted_checkout(job, promotion)
+        except (OSError, PromotionError, subprocess.SubprocessError) as exc:
+            rollback = {
+                "performed": True,
+                "passed": False,
+                "reason": f"could not start promotion rollback: {exc}",
+                "failures": list(promotion.get("copied", []))
+                + list(promotion.get("removed", [])),
+            }
+        failure = {
+            "stage": "target_validation",
+            "promotion": dict(promotion),
+            "validation": dict(validation),
+            "rollback": rollback,
+            "target_repo_path": str(job["repo_path"]),
+            "worktree_path": str(job["worktree_path"]),
         }
         with db.transaction(settings.db_path) as conn:
             db.add_event(
@@ -1772,14 +2027,15 @@ def finish_done_job(settings, client, job: dict[str, Any], decision: dict[str, A
                 kind="promotion_validation_failed",
                 payload=validation,
             )
-        finish_job(
-            settings,
-            client,
-            job["id"],
-            HUMAN_STREAM,
-            "human_needed",
-            human_decision,
-        )
+            db.add_event(
+                conn,
+                job_id=job["id"],
+                kind="promotion_rollback_completed"
+                if rollback["passed"]
+                else "promotion_rollback_failed",
+                payload=rollback,
+            )
+        request_promotion_recovery(settings, client, job, decision, failure)
         return
 
     done_payload = {
@@ -1812,6 +2068,11 @@ def handle_request(settings, client, request: dict[str, Any]) -> None:
         job = db.get_job(conn, job_id)
         task = db.get_task(conn, request["task_id"]) if request_type == "REVIEW" else None
         run = db.get_run(conn, request["run_id"]) if request_type == "REVIEW" else None
+    recovery_review = bool(
+        request_type == "REVIEW"
+        and task is not None
+        and str(task.get("created_by") or "").endswith(":promotion_recovery")
+    )
     worker_run_id = None if run is None else str(run["id"])
     formal_context = SpecificationService(settings.db_path).load_job_prompt_context(
         job_id,
@@ -1824,7 +2085,7 @@ def handle_request(settings, client, request: dict[str, Any]) -> None:
         None if formal_context is None else formal_context.runtime_verification_summary
     )
 
-    print(f"Claude request: {request_type} job={job_id}")
+    print(f"Controller request: {request_type} job={job_id}")
 
     if request_type == "PLAN":
         prompt = (
@@ -1854,22 +2115,47 @@ def handle_request(settings, client, request: dict[str, Any]) -> None:
             if formal_context is None
             else review_prompt(job, task, run, formal_context)
         )
-        decision = (
-            controller_decision(settings, job, prompt)
-            if traceability_manifest is None
-            else controller_decision(
+        if recovery_review:
+            decision = promotion_recovery_decision(
                 settings,
                 job,
                 prompt,
                 traceability_manifest,
                 realization_summary,
                 worker_run_id,
+                allow_done=True,
             )
-        )
+        else:
+            decision = (
+                controller_decision(settings, job, prompt)
+                if traceability_manifest is None
+                else controller_decision(
+                    settings,
+                    job,
+                    prompt,
+                    traceability_manifest,
+                    realization_summary,
+                    worker_run_id,
+                )
+            )
         task_id = task["id"]
         run_id = run["id"]
+    elif request_type == PROMOTION_RECOVERY_REQUEST:
+        failure = request.get("failure")
+        if not isinstance(failure, dict):
+            raise ValueError("PROMOTION_RECOVERY requires failure diagnostics")
+        prompt = promotion_recovery_prompt(job, failure)
+        decision = promotion_recovery_decision(settings, job, prompt)
+        task_id = None
+        run_id = None
+        # Promotion recovery is orchestration work outside an immutable
+        # product specification. The following worker REVIEW will load the
+        # formal context again and produce fresh evidence as usual.
+        traceability_manifest = None
+        realization_summary = None
+        worker_run_id = None
     else:
-        raise ValueError(f"unknown Claude request type: {request_type}")
+        raise ValueError(f"unknown controller request type: {request_type}")
 
     validate_decision(decision)
     validate_decision_traceability(decision, traceability_manifest)
@@ -1898,7 +2184,12 @@ def handle_request(settings, client, request: dict[str, Any]) -> None:
             conn,
             job_id=job_id,
             kind="claude_decision",
-            payload={"request_type": request_type, "action": decision["action"], "reason": decision["reason"]},
+            payload={
+                "request_type": request_type,
+                "action": decision["action"],
+                "reason": decision["reason"],
+                "recovery_provider": decision.get("recovery_provider"),
+            },
         )
         progress = decision["progress"]
         remaining_minutes = progress.get("remaining_minutes")
@@ -1914,15 +2205,47 @@ def handle_request(settings, client, request: dict[str, Any]) -> None:
     if action in {"CONTINUE", "REPAIR"}:
         with db.transaction(settings.db_path) as conn:
             fresh_job = db.get_job(conn, job_id)
-            if next_iteration(conn, job_id) >= int(fresh_job["max_iterations"]):
+            recovery_lineage = (
+                request_type == PROMOTION_RECOVERY_REQUEST or recovery_review
+            )
+            recovery_task_count = int(
+                conn.execute(
+                    """
+                    SELECT COUNT(*)
+                    FROM tasks
+                    WHERE job_id = ? AND created_by LIKE '%:promotion_recovery'
+                    """,
+                    (job_id,),
+                ).fetchone()[0]
+            )
+            normal_limit_reached = next_iteration(conn, job_id) >= int(
+                fresh_job["max_iterations"]
+            )
+            recovery_limit_reached = (
+                recovery_lineage
+                and recovery_task_count >= PROMOTION_RECOVERY_MAX_TASKS
+            )
+            if recovery_limit_reached or (
+                normal_limit_reached and not recovery_lineage
+            ):
                 human_decision = {
                     "action": "HUMAN_NEEDED",
-                    "reason": "maximum iteration count reached",
+                    "reason": (
+                        "promotion recovery task limit reached"
+                        if recovery_lineage
+                        else "maximum iteration count reached"
+                    ),
                     "history_summary": decision["history_summary"],
                 }
                 finish_job(settings, client, job_id, HUMAN_STREAM, "human_needed", human_decision)
                 return
-        task_creator = "claude:repair" if action == "REPAIR" else f"claude:{request_type.lower()}"
+        if recovery_lineage:
+            provider = str(decision.get("recovery_provider") or "controller")
+            task_creator = f"{provider}:promotion_recovery"
+        else:
+            task_creator = (
+                "claude:repair" if action == "REPAIR" else f"claude:{request_type.lower()}"
+            )
         create_next_task(settings, client, fresh_job, decision, task_creator)
     elif action == "DONE":
         finish_done_job(settings, client, job, decision)
