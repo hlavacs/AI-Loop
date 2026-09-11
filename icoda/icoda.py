@@ -13,13 +13,44 @@ import threading
 import tkinter as tk
 import traceback
 from pathlib import Path
-from tkinter import filedialog, messagebox, ttk
+from tkinter import filedialog, messagebox, simpledialog, ttk
 from typing import Any
 
+<<<<<<< HEAD
 from icoda_core import __version__, agent, generator, persistence, session, specification, steplog, views
+=======
+from icoda_core import (
+    __version__,
+    agent,
+    analysis,
+    clusters,
+    coverage_index,
+    expansion,
+    generator,
+    graph_filter,
+    grouping,
+    implementation_queue,
+    node_status,
+    persistence,
+    phases,
+    session,
+    source_watch,
+    specification,
+    steplog,
+    test_selection,
+    toolchain,
+    views,
+)
+from icoda_core.model import CALLABLE_KINDS, DerivedModel
+>>>>>>> main
 from icoda_gui import (
     call_view,
+    class_view,
+    coverage_view,
     dialogs,
+    graph_canvas,
+    issue_view,
+    mind_map_view,
     provider_field,
     screen,
     spec_editor,
@@ -33,11 +64,11 @@ from icoda_gui import (
 NODE_RADIUS = 6
 CLUSTER_LEVEL_BELOW = 1.6  # file-level arrows appear once zoomed in this far beyond the fit
 
-
-class FileViewCanvas:
+class FileViewCanvas(graph_canvas.NodeAppearanceCanvas):
     """Draws a :class:`views.FileViewLayout` on a Tk canvas with zoom, pan, hover, click and double click."""
 
     def __init__(self, canvas: Any, app: App) -> None:
+        super().__init__()
         self.canvas = canvas
         self.app = app
         self.layout: views.FileViewLayout | None = None
@@ -58,6 +89,8 @@ class FileViewCanvas:
                                ("<Double-Button-1>", self.on_double_click), ("<Motion>", self.on_motion),
                                ("<Configure>", self.on_resize)):
             canvas.bind(event, handler)
+        self.action_menu = graph_canvas.NodeActionMenu(
+            canvas, self.node_at, app.graph_actions, app.dispatch_graph_action)
 
     def build_zoom_controls(self, parent: Any) -> Any:
         controls, self.zoom_control_widgets = zoom_controls.build(
@@ -89,15 +122,19 @@ class FileViewCanvas:
             return
         width = max(int(self.canvas.winfo_width() or 0), 200)
         height = max(int(self.canvas.winfo_height() or 0), 200)
-        for _ in range(2):  # label sizes depend on the scale, so measure, fit, and measure once more
-            self.redraw()
-            bounds = self.canvas.bbox("all") or (0, 0, width, height)
-            left, top, right, bottom = (float(v) for v in bounds)
-            drawn_width, drawn_height = max(right - left, 1.0), max(bottom - top, 1.0)
-            factor = min((width - 24) / drawn_width, (height - 24) / drawn_height)
-            self.scale *= factor
-            self.offset = (self.offset[0] * factor + (width - drawn_width * factor) / 2 - left * factor,
-                           self.offset[1] * factor + (height - drawn_height * factor) / 2 - top * factor)
+        self.expansion_layer_enabled = False
+        try:
+            for _ in range(2):  # label sizes depend on the scale, so measure, fit, and measure once more
+                self.redraw()
+                bounds = self.canvas.bbox("all") or (0, 0, width, height)
+                left, top, right, bottom = (float(v) for v in bounds)
+                drawn_width, drawn_height = max(right - left, 1.0), max(bottom - top, 1.0)
+                factor = min((width - 24) / drawn_width, (height - 24) / drawn_height)
+                self.scale *= factor
+                self.offset = (self.offset[0] * factor + (width - drawn_width * factor) / 2 - left * factor,
+                               self.offset[1] * factor + (height - drawn_height * factor) / 2 - top * factor)
+        finally:
+            self.expansion_layer_enabled = True
         self.fit_scale = self.scale
         self.redraw()
 
@@ -114,32 +151,37 @@ class FileViewCanvas:
             return
         self._draw_circles()
         self._draw_arrows()
-        self._draw_nodes()
-        if self.app.opened is not None and self.app.opened.model.stale:
-            self.canvas.create_text(12, 12, anchor="nw", fill="#c00000", font=("TkDefaultFont", 11, "bold"),
-                                    text=f"STALE — {self.app.opened.model.stale_reason}")
+        visible_count = self._draw_nodes()
+        self.draw_filter_empty(visible_count)
+        self.draw_appearance_key()
+        self.draw_expansion_layer()
 
     def _draw_circles(self) -> None:
         """The circles themselves are never drawn; a multi-file cluster shows its name in the empty centre."""
         assert self.layout is not None
         for circle in self.layout.circles:
-            if len(circle.files) < 2:
+            if len(circle.files) < 2 or not any(self.node_visible(file) for file in circle.files):
                 continue
             cx, cy = self.to_screen(circle.cx, circle.cy)
-            self.canvas.create_text(cx, cy, text=circle.name, fill="#9a9a9a",
-                                    font=("TkDefaultFont", max(8, int(12 * self.scale)), "bold"))
+            label = self.canvas.create_text(cx, cy, text=circle.name, fill="#9a9a9a",
+                                            font=("TkDefaultFont", max(8, int(12 * self.scale)), "bold"))
+            self.item_nodes[label] = f"cluster:{circle.id}"
 
     def _draw_arrows(self) -> None:
         assert self.layout is not None
         cluster_level = self.scale < self.fit_scale * CLUSTER_LEVEL_BELOW
         clustering = self.app.opened.clustering if self.app.opened else None
         for arrow in self.layout.file_arrows:
+            if not self.edge_visible(arrow.source, arrow.target):
+                continue
             same_cluster = clustering is not None and clustering.index_of(arrow.source) == clustering.index_of(arrow.target)
             if cluster_level and not same_cluster and not arrow.target.startswith("external:"):
                 continue
             self._draw_arrow(self.layout.nodes[arrow.source], self.layout.nodes[arrow.target], arrow, 1.0)
         if cluster_level:
             for arrow in self.layout.cluster_arrows:
+                if not self.edge_visible(arrow.source, arrow.target):
+                    continue
                 self._draw_arrow(self._cluster_anchor(arrow.source), self._cluster_anchor(arrow.target), arrow, 2.0)
 
     def _cluster_anchor(self, endpoint: str) -> views.Node:
@@ -156,9 +198,10 @@ class FileViewCanvas:
         sx0, sy0 = self.to_screen(x0, y0)
         sx1, sy1 = self.to_screen(x1, y1)
         if b.kind == "external":
-            self.canvas.create_line(sx0, sy0, sx1, sy1, fill="#c0c0c0", width=1, arrow="last", dash=(2, 4))
+            colour = self.edge_colour(a.id, b.id, "#c0c0c0")
+            self.canvas.create_line(sx0, sy0, sx1, sy1, fill=colour, width=1, arrow="last", dash=(2, 4))
             return
-        colour = views.ARROW_COLOURS[arrow.dominant]
+        colour = self.edge_colour(a.id, b.id, views.ARROW_COLOURS[arrow.dominant])
         width = min(4.0, base_width + math.log2(arrow.weight) * 0.5)
         self.canvas.create_line(sx0, sy0, sx1, sy1, fill=colour, width=width, arrow="last")
         self.canvas.create_text((sx0 + sx1) / 2, (sy0 + sy1) / 2 - 6, text=arrow.badge, fill=colour,
@@ -174,19 +217,29 @@ class FileViewCanvas:
         assert self.layout is not None
         return max(next((c.radius for c in self.layout.circles if c.id == node.id), 30.0), 12.0)
 
-    def _draw_nodes(self) -> None:
+    def _draw_nodes(self) -> int:
         assert self.layout is not None
+        count = 0
         for node in self.layout.nodes.values():
+            if not self.node_visible(node.id):
+                continue
+            count += 1
             x, y = self.to_screen(node.x, node.y)
             if node.kind == "external":
-                item = self.canvas.create_rectangle(x - 34, y - 12, x + 34, y + 12, fill="#f0f0f0", outline="#8a8a8a")
-                self.canvas.create_text(x, y, text=node.label, fill="#505050")
+                item = self.canvas.create_rectangle(
+                    x - 34, y - 12, x + 34, y + 12, fill=self.node_fill(node.id, "#f0f0f0"),
+                    outline=self.node_outline(node.id, "#8a8a8a"))
+                self.canvas.create_text(x, y, text=node.label,
+                                        fill=self.node_text_colour(node.id, "#505050"))
             else:
-                fill = "#d62728" if self._has_errors(node.id) else "#4c78a8"
+                fallback = "#d62728" if self._has_errors(node.id) else "#4c78a8"
+                fill = self.node_fill(node.id, fallback)
                 item = self.canvas.create_oval(x - NODE_RADIUS, y - NODE_RADIUS, x + NODE_RADIUS, y + NODE_RADIUS,
                                                fill=fill, outline="")
                 self._draw_label(node, x, y)
+                self.draw_stale_marker(node.id, x + NODE_RADIUS, y - NODE_RADIUS)
             self.item_nodes[item] = node.id
+        return count
 
     def _draw_label(self, node: views.Node, x: float, y: float) -> None:
         assert self.layout is not None
@@ -195,6 +248,7 @@ class FileViewCanvas:
         length = math.hypot(dx, dy) or 1.0
         anchor = "w" if dx >= 0 else "e"
         self.canvas.create_text(x + dx / length * 10, y + dy / length * 10, text=node.label, anchor=anchor,
+                                fill=self.node_text_colour(node.id),
                                 font=("TkDefaultFont", max(7, int(9 * self.scale))))
 
     def _has_errors(self, file: str) -> bool:
@@ -244,6 +298,9 @@ class FileViewCanvas:
         self.redraw()
 
     def on_release(self, event: Any) -> None:
+        if not self.dragged and getattr(event, "num", 1) == 1 and self.toggle_expansion_at(event.x, event.y):
+            self.drag_start = None
+            return
         if not self.dragged and getattr(event, "num", 1) == 1:
             node = self.node_at(event.x, event.y)
             if node is not None:
@@ -281,6 +338,18 @@ class App:
         self.config_path = config_path or persistence.config_path()
         self.config = config or persistence.UserConfig.load(self.config_path)
         self.status = tk.StringVar(value="No project open")
+        self.language_var = tk.StringVar(value="Language: —")
+        self.coverage_mode_var = tk.BooleanVar(value=False)
+        self.graph_filter_var = tk.StringVar(value="")
+        self.neighborhood_depth_var = tk.IntVar(value=0)
+        self.libclang_choice_var = tk.StringVar(value="")
+        self.libclang_result_var = tk.StringVar(value="No libclang selection evaluated")
+        self.libclang_window: tk.Toplevel | None = None
+        self.expansion_state: frozenset[str] = frozenset()
+        self._expansion_initialized = False
+        self._expansion_auto_expand = True
+        self.graph_focus_usr: str | None = None
+        self._source_snapshot: source_watch.Snapshot | None = None
         self.results: queue.Queue[session.OpenedProject | Exception] = queue.Queue()
         self.providers = agent.load_providers()
         self.tasks = tasks.UiTasks(root, on_failure=lambda trace: session.log_event("background task failed:\n"
@@ -291,7 +360,10 @@ class App:
         self._build_menu()
         self._build_statusbar()  # packed first so that it is never squeezed out
         self._build_panel()
+        self.graph_filter_var.trace_add("write", self.apply_graph_filter)
+        self.neighborhood_depth_var.trace_add("write", self.apply_graph_filter)
         self.steps = step_controller.StepController(self)
+        root.bind("<FocusIn>", self._refresh_external_edits)
         if project is not None:
             self.open_project(project)
 
@@ -310,8 +382,12 @@ class App:
         menubar.add_cascade(label="File", menu=file_menu)
         project_menu = tk.Menu(menubar, tearoff=0)
         project_menu.add_command(label="Specification…", command=self.edit_specification)
+        project_menu.add_command(label="Choose libclang Library…", command=self.choose_libclang_library)
         project_menu.add_separator()
+        project_menu.add_command(label="Propose Approach", command=lambda: self.steps.action("propose_approach"))
         project_menu.add_command(label="Propose Next Step", command=lambda: self.steps.action("propose"))
+        project_menu.add_command(label="Approve Architecture", command=lambda: self.steps.action(
+            "approve_architecture"))
         project_menu.add_command(label="Undo Last Step", command=lambda: self.steps.action("undo"))
         project_menu.add_command(label="Commit Manual Edits", command=lambda: self.steps.action("commit_manual"))
         menubar.add_cascade(label="Project", menu=project_menu)
@@ -319,18 +395,130 @@ class App:
         view_menu.add_command(label="Fit to Window", command=self.fit_view)
         view_menu.add_command(label="File View", command=lambda: self.views.select(0))
         view_menu.add_command(label="Call View", command=self.show_call_view)
+        view_menu.add_command(label="Class View", command=self.show_class_view)
+        view_menu.add_command(label="Mind Map", command=self.show_mind_map_view)
+        view_menu.add_command(label="Coverage Overview", command=self.show_coverage_view)
+        view_menu.add_command(label="Rule Issues", command=self.show_issue_view)
+        view_menu.add_separator()
+        view_menu.add_checkbutton(label="Coverage colours", variable=self.coverage_mode_var,
+                                  command=self.toggle_coverage_mode)
         menubar.add_cascade(label="View", menu=view_menu)
         self.root.config(menu=menubar)
         self._fill_recent_menu()
+
+    def choose_libclang_library(self) -> None:
+        """Show the detected libraries as a deterministic chooser, with the active choice marked."""
+        selection = toolchain.select_candidate(toolchain.candidates(), self.config.preferred_libclang)
+        self.libclang_choice_var.set(selection.active.path if selection.active is not None else "")
+        self._show_libclang_selection(selection)
+        window = tk.Toplevel(self.root)
+        self.libclang_window = window
+        window.title("Choose libclang Library")
+        window.geometry("900x540")
+        window.minsize(800, 500)
+        window.transient(self.root)
+        window.columnconfigure(0, weight=1)
+        ttk.Label(window, text="Detected libclang libraries", font=("TkDefaultFont", 12, "bold")).grid(
+            row=0, column=0, sticky="w", padx=16, pady=(16, 8))
+        ttk.Radiobutton(window, text="Automatic detection", variable=self.libclang_choice_var, value="").grid(
+            row=1, column=0, sticky="w", padx=16, pady=3)
+        row = 2
+        for candidate in selection.candidates:
+            marker = " [active]" if candidate == selection.active else ""
+            ttk.Radiobutton(
+                window, text=f"{candidate.path} ({candidate.source}){marker}",
+                variable=self.libclang_choice_var, value=candidate.path,
+            ).grid(row=row, column=0, sticky="w", padx=16, pady=3)
+            row += 1
+        ttk.Label(window, textvariable=self.libclang_result_var, justify="left", wraplength=820).grid(
+            row=row, column=0, sticky="ew", padx=16, pady=(10, 8))
+        buttons = ttk.Frame(window)
+        buttons.grid(row=row + 1, column=0, sticky="e", padx=16, pady=(0, 16))
+        ttk.Button(buttons, text="Apply", command=self.apply_libclang_choice).pack(side="left", padx=4)
+        ttk.Button(buttons, text="Close", command=window.destroy).pack(side="left", padx=4)
+
+    def apply_libclang_choice(self) -> None:
+        """Persist the listed choice and display what is selected versus already loaded."""
+        detected = toolchain.candidates()
+        requested = self.libclang_choice_var.get() or None
+        if requested is not None and requested not in {candidate.path for candidate in detected}:
+            requested = None
+        self.config.preferred_libclang = requested
+        self.config.save(self.config_path)
+        selection = toolchain.select_candidate(detected, requested)
+        self._show_libclang_selection(selection)
+        active = selection.active.path if selection.active is not None else "none"
+        self.status.set(f"Libclang choice saved. Active selection: {active}. Restart ICODA to load it.")
+
+    def _show_libclang_selection(self, selection: toolchain.Selection) -> None:
+        active = selection.active.path if selection.active is not None else "none"
+        loaded = self.opened.libclang if self.opened is not None and self.opened.libclang else "none"
+        self.libclang_result_var.set(f"Active: {active}\nCurrently loaded: {loaded}\n{selection.reason}")
 
     def fit_view(self) -> None:
         self.view.user_zoomed = False
         self.view.fit()
         self.call_view.user_zoomed = False
         self.call_view.fit()
+        self.class_view.user_zoomed = False
+        self.class_view.fit()
+        self.mind_map_view.user_zoomed = False
+        self.mind_map_view.fit()
 
     def show_call_view(self) -> None:
         self.views.select(1)
+
+    def show_class_view(self) -> None:
+        self.views.select(2)
+
+    def show_coverage_view(self) -> None:
+        self.views.select(4)
+
+    def show_issue_view(self) -> None:
+        self.views.select(5)
+
+    def show_mind_map_view(self) -> None:
+        self.views.select(3)
+
+    def toggle_coverage_mode(self) -> None:
+        """Switch every diagram together; it is deliberately safe before a project is open."""
+        enabled = bool(self.coverage_mode_var.get())
+        for canvas in self._diagram_canvases():
+            canvas.set_coverage_mode(enabled)
+
+    def apply_graph_filter(self, *_trace_args: str) -> None:
+        """Apply or clear the one filter/depth setting without loading a project."""
+        self.refresh_graph_appearances()
+
+    def clear_graph_filter(self) -> None:
+        """Clear an active or already-empty filter safely."""
+        self.graph_filter_var.set("")
+
+    def focus_graph_node(self, usr: str | None) -> None:
+        """Use the currently selected entity as the shared neighbourhood focus."""
+        self.graph_focus_usr = usr
+        self.refresh_graph_appearances()
+
+    def toggle_graph_expansion(self, key: str) -> None:
+        """Toggle one core-approved container key in every reusable diagram."""
+        if self.opened is None:
+            return
+        decision = self.view.expansion_decision(key)
+        if decision is None or not decision.expandable:
+            return
+        self._expansion_initialized = True
+        self._expansion_auto_expand = False
+        self.expansion_state = self.expansion_state ^ {decision.key}
+        self.refresh_graph_appearances()
+
+    def collapse_all(self) -> None:
+        """Reset all reusable diagrams together; safe before a project is open."""
+        if self.opened is None:
+            return
+        self._expansion_initialized = True
+        self._expansion_auto_expand = False
+        self.expansion_state = frozenset()
+        self.refresh_graph_appearances()
 
     def _fill_recent_menu(self) -> None:
         self.recent_menu.delete(0, tk.END)
@@ -345,7 +533,12 @@ class App:
         vertical.pack(fill=tk.BOTH, expand=True)
         paned = ttk.PanedWindow(vertical, orient=tk.HORIZONTAL)
         vertical.add(paned, weight=4)
-        self.views = ttk.Notebook(paned)
+        view_host = ttk.Frame(paned)
+        diagram_toolbar = ttk.Frame(view_host)
+        diagram_toolbar.pack(fill=tk.X, padx=4, pady=2)
+        self._build_graph_controls(diagram_toolbar)
+        self.views = ttk.Notebook(view_host)
+        self.views.pack(fill=tk.BOTH, expand=True)
         file_view = ttk.Frame(self.views)
         file_toolbar = ttk.Frame(file_view)
         file_toolbar.pack(fill=tk.X, padx=4, pady=2)
@@ -353,9 +546,23 @@ class App:
                                 height=620)
         self.canvas.pack(fill=tk.BOTH, expand=True)
         self.views.add(file_view, text="File View")
-        self.call_view = call_view.CallViewCanvas(self.views, self.open_editor)
+        self.call_view = call_view.CallViewCanvas(
+            self.views, self.open_editor, self.graph_actions, self.dispatch_graph_action,
+            self.focus_graph_node)
         self.views.add(self.call_view.frame, text="Call View")
-        paned.add(self.views, weight=4)
+        self.class_view = class_view.ClassViewCanvas(
+            self.views, self.open_editor, self.graph_actions, self.dispatch_graph_action,
+            self.focus_graph_node)
+        self.views.add(self.class_view.frame, text="Class View")
+        self.mind_map_view = mind_map_view.MindMapCanvas(
+            self.views, self.select_step, self.graph_actions, self.dispatch_graph_action,
+            self.focus_graph_node)
+        self.views.add(self.mind_map_view.frame, text="Mind Map")
+        self.coverage_view = coverage_view.CoverageOverview(self.views, self.open_editor)
+        self.views.add(self.coverage_view.frame, text="Coverage")
+        self.issue_view = issue_view.IssueOverview(self.views, self.open_editor)
+        self.views.add(self.issue_view.frame, text="Issues")
+        paned.add(view_host, weight=4)
         side = ttk.Frame(paned, width=320)
         paned.add(side, weight=0)
         llm = ttk.LabelFrame(side, text="LLM")
@@ -379,9 +586,30 @@ class App:
         self.panel = step_panel.StepPanel(vertical, lambda action: self.steps.action(action))
         vertical.add(self.panel.frame, weight=1)
 
+    def _build_graph_controls(self, parent: Any) -> None:
+        ttk.Label(parent, text="Filter:").pack(side=tk.LEFT)
+        self.graph_filter_entry = ttk.Entry(parent, textvariable=self.graph_filter_var, width=20)
+        self.graph_filter_entry.pack(side=tk.LEFT, padx=(2, 8))
+        self.graph_filter_tooltip = tooltip.attach(
+            self.graph_filter_entry,
+            "Space-separated filters: name:, kind:, status:, covered:, stale:, cluster:, namespace:, edge:. "
+            "Plain text filters by name; clear the entry to show all nodes.")
+        ttk.Label(parent, text="Neighborhood:").pack(side=tk.LEFT)
+        self.neighborhood_spinbox = ttk.Spinbox(
+            parent, from_=0, to=12, width=3, textvariable=self.neighborhood_depth_var,
+            command=self.apply_graph_filter)
+        self.neighborhood_spinbox.pack(side=tk.LEFT, padx=(2, 4))
+        ttk.Label(parent, text="0=off").pack(side=tk.LEFT)
+        self.neighborhood_tooltip = tooltip.attach(
+            self.neighborhood_spinbox,
+            "Dim nodes beyond this many graph edges from the currently selected entity; 0 disables dimming.")
+        self.collapse_all_button = ttk.Button(parent, text="Collapse all", command=self.collapse_all)
+        self.collapse_all_button.pack(side=tk.RIGHT, padx=(8, 0))
+
     def _build_statusbar(self) -> None:
         bar = ttk.Frame(self.root)
         bar.pack(fill=tk.X, side=tk.BOTTOM)
+        ttk.Label(bar, textvariable=self.language_var, anchor="e").pack(side=tk.RIGHT, padx=6, pady=2)
         ttk.Label(bar, textvariable=self.status, anchor="w").pack(fill=tk.X, padx=6, pady=2)
 
     # -- projects ---------------------------------------------------------------------------
@@ -392,7 +620,16 @@ class App:
             self.open_project(Path(chosen))
 
     def open_project(self, path: Path) -> None:
-        self.project = Path(path).expanduser().resolve()
+        resolved = Path(path).expanduser().resolve()
+        if self.project != resolved:
+            self.expansion_state = frozenset()
+            self._expansion_initialized = False
+            self._expansion_auto_expand = True
+            self.graph_focus_usr = None
+            self._source_snapshot = None
+            self.panel.show(None)
+        self.project = resolved
+        self.language_var.set(f"Language: {analysis.detect_language(self.project)}")
         self.root.title(f"ICODA — {self.project.name}")
         self.status.set(f"Analysing {self.project} …")
         threading.Thread(target=self._analyse, args=(self.project,), daemon=True).start()
@@ -406,8 +643,10 @@ class App:
     def new_project(self, path: Path) -> None:
         """Phase 0: create ``.icoda/`` and open the specification editor; saving it writes the step 0 skeleton."""
         self.project = Path(path).expanduser().resolve()
+        self._source_snapshot = None
         self.project.mkdir(parents=True, exist_ok=True)
         persistence.ProjectStore(self.project).ensure()
+        self.panel.set_phase(persistence.ProjectPhase.SPECIFICATION)
         self.root.title(f"ICODA — {self.project.name}")
         self.status.set(f"New project {self.project}: write the specification and save it")
         self.edit_specification()
@@ -420,7 +659,7 @@ class App:
         if store.specification_path.is_file():
             spec = specification.load(store.specification_path)
         else:
-            spec = specification.default_specification(self.project.name)
+            spec = specification.default_specification(self.project.name, analysis.detect_language(self.project))
         self.spec_editor = spec_editor.SpecificationEditor(self.root, spec, self._save_specification,
                                                            title=f"Specification — {self.project.name}")
 
@@ -431,10 +670,12 @@ class App:
         store.ensure()
         specification.save(store.specification_path, spec)
         session.log_event("specification saved", self.project)
-        if (self.project / "CMakeLists.txt").exists():
-            self.status.set("specification saved")
+        if (self.project / "CMakeLists.txt").exists() or self._is_existing_specification_edit():
+            self._reload_after_specification_save()
             return
-        written = generator.write_skeleton(self.project, self.project.name)
+        written = generator.write_skeleton(self.project, self.project.name, spec["code_profile"])
+        phases.transition(store, persistence.ProjectPhase.ARCHITECTURE)
+        self.panel.set_phase(persistence.ProjectPhase.ARCHITECTURE)
         session.log_event(f"skeleton written: {written}", self.project)
         messagebox.showinfo("ICODA", f"Specification saved and the project skeleton written ({len(written)} files)."
                             f"\n\nRun build.sh in {self.project}, then File → Reload to analyse it.")
@@ -443,6 +684,16 @@ class App:
     def reload(self) -> None:
         if self.project is not None:
             self.open_project(self.project)
+
+    def _refresh_external_edits(self, _event: Any) -> None:
+        """Re-analyse externally edited source when the application regains focus."""
+        if self.project is None or self.opened is None or self._source_snapshot is None:
+            return
+        current = source_watch.snapshot_files(self.project, self.opened.model.files)
+        if not source_watch.changed_files(self._source_snapshot, current):
+            return
+        self._source_snapshot = current
+        self.reload()
 
     def _analyse(self, root: Path) -> None:
         try:
@@ -468,6 +719,34 @@ class App:
         """Present an opened project: canvas, status bar, recent list, configuration."""
         self.opened = opened
         self.project = opened.root
+        self.language_var.set(f"Language: {analysis.detect_language(opened.root)}")
+        store = persistence.ProjectStore(opened.root)
+        state = implementation_queue.ensure_state(store, opened.model)
+        self.panel.set_phase(state.phase)
+        target = implementation_queue.target_usr(state)
+        grouping_refusal = ""
+        if state.implementation_grouping == grouping.Mode.FEW_LINE_GROUP.value:
+            profile = specification.load(store.specification_path).get("code_profile", {}) \
+                if store.specification_path.is_file() \
+                else specification.default_code_profile(analysis.detect_language(opened.root))
+            decision = grouping.derive(
+                implementation_queue.scope_targets(opened.model, state), opened.model, profile)
+            batch = tuple(item.usr for item in decision.entities)
+            grouping_refusal = decision.refusal_reason
+        else:
+            batch = tuple(implementation_queue.next_batch(
+                opened.model, state, state.implementation_batch_size))
+        display_target = batch[0] if batch else target
+        entity = opened.model.entities.get(display_target) if display_target is not None else None
+        batch_names = tuple(opened.model.entities[usr].qualified_name if usr in opened.model.entities else usr
+                            for usr in batch)
+        self.panel.set_implementation_queue(entity.qualified_name if entity is not None else display_target,
+                                            implementation_queue.remaining(state), state.approved_approach,
+                                            state.implementation_batch_size, batch_names,
+                                            state.implementation_scope,
+                                            target is not None and target == state.implementation_override,
+                                            state.auto_approve, state.implementation_grouping,
+                                            grouping_refusal)
         try:
             self.view.show(opened.layout)
         except Exception:  # noqa: BLE001  (a drawing problem must not hide the rest of the window)
@@ -487,6 +766,91 @@ class App:
         self._restore_provider(opened.root)
         self.panel.phase_var.set(steplog.StepLog(persistence.ProjectStore(opened.root).steps_path).current_phase())
         self.call_view.show(opened.model)
+        self.class_view.show(opened.model)
+        log = steplog.StepLog(store.steps_path)
+        self.mind_map_view.show(opened.model, log, store, opened.clustering)
+        records = log.records()
+        coverage = coverage_index.build_index(opened.model, records)
+        self.refresh_graph_appearances(opened.model, state, records, coverage)
+        spec = specification.load(store.specification_path) if store.specification_path.is_file() else {}
+        self.coverage_view.show(opened.model, records, coverage, spec)
+        self.issue_view.show(opened.model, log)
+        self._source_snapshot = source_watch.snapshot_files(opened.root, opened.model.files)
+
+    def _reload_after_specification_save(self) -> None:
+        """Publish an edited truth through the ordinary asynchronous analysis/show path."""
+        self.status.set("specification saved")
+        if self.opened is not None and self.opened.root == self.project:
+            self.open_project(self.project)
+
+    def _is_existing_specification_edit(self) -> bool:
+        return (
+            self.opened is not None
+            and self.opened.root == self.project
+            and self.panel.phase_var.get() != persistence.ProjectPhase.SPECIFICATION.value
+        )
+
+    def refresh_graph_appearances(
+        self, model: DerivedModel | None = None, state: persistence.ProjectState | None = None,
+        records: list[steplog.StepRecord] | None = None,
+        coverage: coverage_index.CoverageIndex | None = None,
+    ) -> None:
+        """Re-derive once and publish the same frozen mapping to all four diagrams."""
+        if model is None:
+            model = self.opened.model if self.opened is not None else None
+        if model is None or self.project is None:
+            return
+        store = persistence.ProjectStore(self.project)
+        state = state or store.load_state()
+        records = records if records is not None else steplog.StepLog(store.steps_path).records()
+        coverage = coverage or coverage_index.build_index(model, records)
+        appearances = node_status.derive(model, state, records, coverage)
+        clustering = self.opened.clustering if self.opened is not None else clusters.cluster_files(model)
+        cluster_by_file = {file: cluster.id for cluster in clustering.clusters for file in cluster.files}
+        cluster_names = {cluster.id: cluster.name for cluster in clustering.clusters}
+        graph = graph_filter.project_graph(model, cluster_by_file, cluster_names)
+        criteria = graph_filter.parse(str(self.graph_filter_var.get() or ""))
+        try:
+            depth = max(0, int(self.neighborhood_depth_var.get() or 0))
+        except (TypeError, ValueError):
+            depth = 0
+        decisions = graph_filter.derive(
+            model, graph, appearances, criteria,
+            focus_usr=self.graph_focus_usr, neighborhood_depth=depth)
+        expanded = expansion.derive(model, graph, decisions, appearances, self.expansion_state)
+        if not self._expansion_initialized or self._expansion_auto_expand:
+            self.expansion_state = frozenset(
+                key for key, decision in expanded.decisions.items() if decision.expandable)
+            expanded = expansion.derive(model, graph, decisions, appearances, self.expansion_state)
+            self._expansion_initialized = True
+        else:
+            self.expansion_state = expanded.expanded
+        for canvas in self._diagram_canvases():
+            canvas.set_node_appearances(
+                appearances, coverage_mode=bool(self.coverage_mode_var.get()),
+                globally_stale=model.stale, stale_reason=model.stale_reason)
+            canvas.set_graph_filter(decisions, filter_active=criteria.active,
+                                    neighborhood_depth=depth)
+        for canvas in self._expansion_canvases():
+            canvas.set_expansion(expanded, self.toggle_graph_expansion)
+
+    def _diagram_canvases(self) -> tuple[Any, ...]:
+        return self.view, self.call_view, self.class_view, self.mind_map_view
+
+    def _expansion_canvases(self) -> tuple[Any, ...]:
+        return self.view, self.call_view, self.class_view
+
+    def show_after_step(self, model: DerivedModel | None) -> None:
+        """Present an approved proposal's parsed model without starting a project analysis reload."""
+        if model is None or self.opened is None:
+            self.reload()
+            return
+        store = persistence.ProjectStore(self.opened.root)
+        steplog.apply_statuses(model, steplog.StepLog(store.steps_path))
+        clustering = clusters.cluster_files(model, store.load_layout())
+        layout = views.layout_file_view(model, clustering)
+        self.show(session.OpenedProject(
+            self.opened.root, model, clustering, layout, self.opened.libclang, self.opened.messages))
 
     # -- provider ---------------------------------------------------------------------------
 
@@ -515,6 +879,80 @@ class App:
 
     # -- nodes ------------------------------------------------------------------------------
 
+    def graph_actions(self, node_id: str) -> graph_canvas.NodeActionContext | None:
+        """Return core-derived history/test data and current controller enablement for a diagram node."""
+        if self.opened is None or self.project is None or self.mind_map_view.tree is None:
+            return None
+        model, tree = self.opened.model, self.mind_map_view.tree
+        key = node_id if node_id.startswith(("entity:", "file:", "cluster:")) else \
+            f"entity:{node_id}" if node_id in model.entities else f"file:{node_id}"
+        node = tree.node_map().get(key)
+        if node is None:
+            return graph_canvas.NodeActionContext(node_id)
+        store = persistence.ProjectStore(self.project)
+        state = store.load_state()
+        target = node.usr if node.usr in model.entities else ""
+        tests = test_selection.select_tests(model, steplog.StepLog(store.steps_path), target) if target else ()
+        callable_target = target in model.entities and model.entities[target].kind in CALLABLE_KINDS
+        cluster_id = key.removeprefix("cluster:") if key.startswith("cluster:") else ""
+        file_path = key.removeprefix("file:") if key.startswith("file:") else ""
+        cluster = next((item for item in self.opened.clustering.clusters if item.id == cluster_id), None)
+        layout = store.load_layout()
+        enabled = self.panel.enabled_actions
+        return graph_canvas.NodeActionContext(
+            node_id, node.introduced_iteration, tests, node.usr or node.file or node.id,
+            target, "propose" in enabled and state.phase == persistence.ProjectPhase.ARCHITECTURE,
+            callable_target and implementation_queue.can_override(model, state, target)
+            and bool({"propose_approach", "propose"} & enabled),
+            not self.panel.busy,
+            cluster_id,
+            clusters.cluster_is_pinned(layout, self.opened.clustering, cluster_id) if cluster_id else False,
+            cluster.name if cluster is not None else "",
+            file_path,
+            tuple(sorted(item.id for item in self.opened.clustering.clusters)) if file_path else (),
+        )
+
+    def dispatch_graph_action(self, action: str, context: graph_canvas.NodeActionContext) -> None:
+        """Route the shared graph menu through step history or the existing step controller."""
+        if self.project is None or self.opened is None:
+            return
+        if action == graph_canvas.SHOW_STEP and context.introducing_iteration is not None:
+            self.select_step(context.introducing_iteration)
+        elif action == graph_canvas.PROPOSE_HERE:
+            self.steps.action("propose_here", context.focus)
+        elif action == graph_canvas.IMPLEMENT_HERE:
+            self.steps.action("implement_here", context.target_usr)
+        elif action == graph_canvas.RUN_TESTS:
+            self.steps.action("run_tests", context.tests)
+        elif action == graph_canvas.PIN_CLUSTER:
+            self._apply_cluster_layout(clusters.pin_cluster(
+                persistence.ProjectStore(self.project).load_layout(), self.opened.clustering, context.cluster_id))
+        elif action == graph_canvas.UNPIN_CLUSTER:
+            self._apply_cluster_layout(clusters.unpin_cluster(
+                persistence.ProjectStore(self.project).load_layout(), context.cluster_id))
+        elif action == graph_canvas.RENAME_CLUSTER:
+            name = simpledialog.askstring(
+                "Rename cluster", "Cluster name:", initialvalue=context.cluster_name, parent=self.root)
+            if name is not None:
+                self._apply_cluster_layout(clusters.rename_cluster(
+                    persistence.ProjectStore(self.project).load_layout(), context.cluster_id, name))
+        elif action == graph_canvas.PIN_FILE_TO_CLUSTER:
+            self._apply_cluster_layout(clusters.pin_file(
+                persistence.ProjectStore(self.project).load_layout(), self.opened.clustering,
+                context.file_path, context.target_cluster_id))
+
+    def _apply_cluster_layout(self, decision: clusters.LayoutDecision) -> None:
+        """Persist a core-derived cluster edit and repaint every view without re-analysing source."""
+        if not decision.changed or self.project is None or self.opened is None:
+            return
+        layout = decision.to_layout()
+        persistence.ProjectStore(self.project).save_layout(layout)
+        clustering = clusters.cluster_files(self.opened.model, layout)
+        self.show(session.OpenedProject(
+            self.opened.root, self.opened.model, clustering,
+            views.layout_file_view(self.opened.model, clustering), self.opened.libclang,
+            self.opened.messages))
+
     def describe_node(self, node_id: str) -> str:
         if self.opened is None:
             return node_id
@@ -534,6 +972,7 @@ class App:
         """A click on a file lists its entities in the side panel (the Class View arrives in M4)."""
         if self.opened is None or node_id.startswith("external:"):
             return
+        self.focus_graph_node(None)
         self.side_title.set(node_id)
         self.tree.delete(*self.tree.get_children())
         entities = sorted(self.opened.model.entities_in(node_id), key=lambda e: e.line)
@@ -551,6 +990,7 @@ class App:
         for usr in self.tree.selection():
             if usr in self.opened.model.entities:
                 self.call_view.set_root(usr)
+                self.focus_graph_node(usr)
 
     def on_tree_double_click(self, _event: Any) -> None:
         if self.opened is None:
@@ -565,6 +1005,17 @@ class App:
             return
         if not session.open_in_editor(self.project / file, line, self.config.editor):
             self.status.set(f"could not open an editor for {file}")
+
+    def select_step(self, iteration: int) -> None:
+        """Show the effective recorded step selected in the mind map."""
+        if self.project is None:
+            return
+        records = steplog.StepLog(persistence.ProjectStore(self.project).steps_path).records()
+        matching = [record for record in records if record.number == iteration
+                    and record.round != steplog.APPROACH_ROUND
+                    and record.decision in ("approved", "manual")]
+        if matching:
+            self.panel.show_step(matching[-1])
 
 
 def parse_args(argv: list[str]) -> Path | None:

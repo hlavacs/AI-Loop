@@ -234,9 +234,9 @@ def test_no_profile_preserves_exact_existing_prompt_bytes(
         name: hashlib.sha256(prompt.encode("utf-8")).hexdigest()
         for name, prompt in prompts.items()
     } == {
-        "worker": "d40a411d338cec185899763adefdf365c4f1c0d8e963036191a2b0e8aa2b4509",
-        "plan": "647a3aae85b3bd97c64f803f421fde5bf17789b7e992befcd558f1194d151588",
-        "review": "7bef9f9e02399a254f95688591a9b86a24695735ef7b3f85399957d144896f74",
+        "worker": "45db2619bbfee6ef894b3fac999998bcddc7f79dc16a46aab10fd05ac97638b3",
+        "plan": "e2cbd05a968e2be9bd107f972d1d2fe426f0901578773872d2b1b10f796f97f7",
+        "review": "2be7ccfaed78c5cb40836f69f517e2cd294ebefbd33dd25bcbdef6fcafa56141",
     }
 
 

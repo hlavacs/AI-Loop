@@ -26,6 +26,16 @@ class Candidate:
 
 
 @dataclass(frozen=True)
+class Selection:
+    """The deterministic active candidate and the developer-visible reason for it."""
+
+    candidates: tuple[Candidate, ...]
+    active: Candidate | None
+    preferred_path: str | None
+    reason: str
+
+
+@dataclass(frozen=True)
 class Loaded:
     """The libclang in use, once loaded and self-tested."""
 
@@ -118,6 +128,30 @@ def candidates(platform: str = sys.platform, environ: Mapping[str, str] | None =
     if wheel is not None:
         found.append(wheel)
     return [c for c in found if exists(c.path)]
+
+
+def select_candidate(detected: Iterable[Candidate], preferred_path: str | None) -> Selection:
+    """Choose the persisted preference when detected, otherwise the first detected candidate."""
+    unique: dict[str, Candidate] = {}
+    for candidate in detected:
+        unique.setdefault(candidate.path, candidate)
+    choices = tuple(unique.values())
+    preferred = next((candidate for candidate in choices if candidate.path == preferred_path), None)
+    if preferred is not None:
+        return Selection(choices, preferred, preferred_path, "Using the developer-selected libclang library.")
+    active = choices[0] if choices else None
+    if preferred_path is not None:
+        if active is None:
+            reason = (f"The preferred libclang library {preferred_path} is no longer detected; "
+                      "no libclang libraries were detected.")
+        else:
+            reason = (f"The preferred libclang library {preferred_path} is no longer detected; "
+                      f"automatically selected {active.path}.")
+    elif active is None:
+        reason = "No libclang libraries were detected."
+    else:
+        reason = "Automatically selected the first detected libclang library."
+    return Selection(choices, active, preferred_path, reason)
 
 
 def parse_version(text: str) -> tuple[str, int, bool]:

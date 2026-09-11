@@ -22,7 +22,7 @@ if [ "$(uname -s)" = "Darwin" ] && [ -z "${CXX:-}" ]; then
     echo "build.sh: Apple's clang cannot build C++20 modules with CMake; install LLVM with 'brew install llvm'" >&2
   fi
 fi
-cmake --preset "$preset" ${extra[@]+"${extra[@]}"}
+cmake --fresh --preset "$preset" ${extra[@]+"${extra[@]}"}
 cmake --build --preset "$preset"
 if [ "$mode" != "build-only" ]; then
   ctest --preset "$preset"

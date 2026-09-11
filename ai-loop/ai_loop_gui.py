@@ -10,6 +10,7 @@ import os
 import argparse
 import json
 import platform
+import re
 import shlex
 import shutil
 import signal
@@ -4141,11 +4142,26 @@ class AiLoopGui(tk.Tk):
             return None
         task = self.current_task(details)
         goal = str(task.get("goal") if task else "").lower()
-        if any(word in goal for word in ("inspect", "investigate", "audit", "analyze", "analyse", "discover")):
+        def has_keyword(keyword: str) -> bool:
+            return re.search(
+                rf"(?<![a-z0-9_]){re.escape(keyword)}(?![a-z0-9_])",
+                goal,
+            ) is not None
+
+        if any(
+            has_keyword(word)
+            for word in ("inspect", "investigate", "audit", "analyze", "analyse", "discover")
+        ):
             return 0
-        if any(word in goal for word in ("test", "validate", "verify", "pytest", "ctest", "cmake")):
+        if any(
+            has_keyword(word)
+            for word in ("test", "validate", "verify", "pytest", "ctest", "cmake")
+        ):
             return 2
-        if any(word in goal for word in ("final review", "acceptance", "finish", "release readiness")):
+        if any(
+            has_keyword(word)
+            for word in ("final review", "acceptance", "finish", "release readiness")
+        ):
             return 3
         percent = int(details.get("percent", 0))
         if percent < 15:

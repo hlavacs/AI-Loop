@@ -63,11 +63,13 @@ class Entity:
     body_hash: str = ""
     test_files: tuple[str, ...] = ()
     status: str = "implemented"
+    body_hash: str = ""
+    declaration_file: str = ""
 
 
 @dataclass(frozen=True)
 class Edge:
-    """A relation between two entities or files; ``label`` carries e.g. the template arguments of a call."""
+    """A relation; call ``label`` carries template arguments and ``uncertain`` marks dynamic dispatch."""
 
     kind: EdgeKind
     source: str
@@ -75,6 +77,7 @@ class Edge:
     file: str = ""
     line: int = 0
     label: str = ""
+    uncertain: bool = False
 
 
 @dataclass
@@ -176,7 +179,8 @@ class DerivedModel:
         model.files = {f["path"]: FileInfo(f["path"], f["module"], f["unit"], f["content_hash"], tuple(f["errors"]))
                        for f in data["files"]}
         model.entities = {e["usr"]: _entity_from(e) for e in data["entities"]}
-        model.edges = [Edge(EdgeKind(e["kind"]), e["source"], e["target"], e["file"], e["line"], e["label"])
+        model.edges = [Edge(EdgeKind(e["kind"]), e["source"], e["target"], e["file"], e["line"], e["label"],
+                            e.get("uncertain", False))
                        for e in data["edges"]]
         model.externals = {x["library"]: External(x["library"], tuple(x["names"])) for x in data["externals"]}
         return model
@@ -204,8 +208,13 @@ def _entity_from(data: dict[str, Any]) -> Entity:
     data["kind"] = Kind(data["kind"])
     data["satisfies"] = tuple(data["satisfies"])
     data["template_params"] = tuple(data["template_params"])
+<<<<<<< HEAD
     data["body_hash"] = str(data.get("body_hash", ""))
     data["test_files"] = tuple(data.get("test_files", ()))
+=======
+    data.setdefault("body_hash", "")
+    data.setdefault("declaration_file", "")
+>>>>>>> main
     return Entity(**data)
 
 

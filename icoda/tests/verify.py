@@ -16,6 +16,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
+from icoda_core import steps
+
 ROOT = Path(__file__).resolve().parent.parent
 SAMPLE = ROOT / "tests" / "sample_project"
 
@@ -94,6 +96,9 @@ def commands(artifact: Path) -> list[tuple[str, list[str], dict[str, str] | None
     build_script = SAMPLE / ("build.cmd" if os.name == "nt" else "build.sh")
     build = ["cmd", "/c", str(build_script), "debug"] if os.name == "nt" \
         else ["bash", str(build_script), "debug"]
+    build_env = steps.build_environment(SAMPLE)
+    if build_env is not None and build_env.get("CXX") != os.environ.get("CXX"):
+        print(f"sample-build: selected module-capable compiler {build_env['CXX']}")
     return [
         ("diff-check", ["git", "diff", "--check"], None),
         ("ruff", [python, "-m", "ruff", "check", "."], None),
@@ -102,8 +107,8 @@ def commands(artifact: Path) -> list[tuple[str, list[str], dict[str, str] | None
         ("compileall", [python, "-m", "compileall", "-q", "icoda.py", "icoda_core", "icoda_gui", "tests"], None),
         ("providers", [python, "-m", "icoda_core.provider_check", "--output",
                        str(artifact / "provider-qualification.json"), "--cwd", str(ROOT)], None),
+        ("sample-build", build, build_env),
         ("pytest", coverage, test_env),
-        ("sample-build", build, None),
         ("analysis", [python, "-m", "icoda_core.session", str(SAMPLE)], None),
         ("gui", gui_command(artifact), dict(os.environ, ICODA_TK_STUB="0")),
     ]

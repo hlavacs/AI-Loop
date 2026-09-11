@@ -116,6 +116,22 @@ def test_profile_fields_convert_numbers_and_lists() -> None:
     assert editor.validate() == ["Code profile: standard is missing"] and editor.current_page == "code_profile"
 
 
+def test_python_profile_fields_are_present_and_persisted() -> None:
+    spec = specification.default_specification("Python demo", "Python")
+    editor, saved = editor_with(spec)
+    for key, value in {
+        "test_runner": "python -m pytest",
+        "test_file_convention": "tests/test_<module>.py",
+        "source_file_extension": ".py",
+        "module_naming": "snake_case",
+        "class_naming": "PascalCase",
+        "function_naming": "snake_case",
+    }.items():
+        assert editor.profile.vars[key].get() == value
+    assert editor.to_specification() == spec
+    assert editor.save() and saved == [spec]
+
+
 def test_version_1_specification_opens_in_the_editor() -> None:
     old = {"schema_version": 1, "title": "Old", "summary": "", "objectives": ["ship"], "in_scope": [],
            "out_of_scope": [], "stakeholders": [], "assumptions": [], "constraints": [], "dependencies": [],

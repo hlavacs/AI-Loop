@@ -13,8 +13,9 @@ import math
 from collections import defaultdict
 from dataclasses import dataclass, field
 
+from icoda_core import class_view, mind_map
 from icoda_core.clusters import Clustering
-from icoda_core.model import CALLABLE_KINDS, DerivedModel, EdgeKind
+from icoda_core.model import CALLABLE_KINDS, DerivedModel, EdgeKind, Entity
 
 ARROW_COLOURS = {EdgeKind.INCLUDES: "#8a8a8a", EdgeKind.IMPORTS: "#8a8a8a", EdgeKind.CALLS: "#1f77b4",
                  EdgeKind.INHERITS: "#2ca02c", EdgeKind.USES_TYPE: "#ff7f0e"}
@@ -185,6 +186,15 @@ def layout_file_view(model: DerivedModel, clustering: Clustering, width: float =
     return FileViewLayout(circles, nodes, arrows, aggregate_to_clusters(arrows, clustering), width, height)
 
 
+def entity_location_label(entity: Entity) -> str:
+    """Compact declaration/definition locations for existing view detail lines."""
+    if entity.declaration_file and entity.declaration_file != entity.file:
+        return f"declaration {entity.declaration_file} · definition {entity.file}"
+    if not entity.is_definition:
+        return f"declaration {entity.declaration_file or entity.file} · no definition"
+    return f"definition {entity.file}"
+
+
 def arrow_endpoints(a: Node, b: Node, margin: float = 12.0) -> tuple[float, float, float, float]:
     """Start and end of a straight arrow between two nodes, shortened so it does not cover the node markers."""
     dx, dy = b.x - a.x, b.y - a.y
@@ -193,13 +203,132 @@ def arrow_endpoints(a: Node, b: Node, margin: float = 12.0) -> tuple[float, floa
     return (a.x + ux * margin, a.y + uy * margin, b.x - ux * margin, b.y - uy * margin)
 
 
+# --------------------------------------------------------------------------- Class View
+
+CLASS_PANEL_WIDTH = 320.0
+CLASS_HEADER_HEIGHT = 48.0
+CLASS_MEMBER_HEIGHT = 25.0
+CLASS_PANEL_GAP = 80.0
+
+
+@dataclass
+class ClassNodeLayout:
+    node: class_view.ClassNode
+    x: float
+    y: float
+    width: float
+    height: float
+
+
+@dataclass
+class ClassViewLayout:
+    graph: class_view.ClassGraph
+    nodes: dict[str, ClassNodeLayout]
+    edges: tuple[class_view.ClassEdge, ...]
+    width: float
+    height: float
+
+
+def layout_class_view(graph: class_view.ClassGraph) -> ClassViewLayout:
+    """Place expanded class panels on a stable grid, leaving room for relation drawings."""
+    if not graph.nodes:
+        return ClassViewLayout(graph, {}, graph.edges, 1.0, 1.0)
+    columns = max(1, math.ceil(math.sqrt(len(graph.nodes))))
+    rows = math.ceil(len(graph.nodes) / columns)
+    panel_height = max(_class_panel_height(node) for node in graph.nodes)
+    width = columns * CLASS_PANEL_WIDTH + (columns + 1) * CLASS_PANEL_GAP
+    height = rows * panel_height + (rows + 1) * CLASS_PANEL_GAP
+    nodes: dict[str, ClassNodeLayout] = {}
+    for index, node in enumerate(graph.nodes):
+        row, column = divmod(index, columns)
+        x = CLASS_PANEL_GAP + CLASS_PANEL_WIDTH / 2 + column * (CLASS_PANEL_WIDTH + CLASS_PANEL_GAP)
+        y = CLASS_PANEL_GAP + panel_height / 2 + row * (panel_height + CLASS_PANEL_GAP)
+        nodes[node.usr] = ClassNodeLayout(node, x, y, CLASS_PANEL_WIDTH, _class_panel_height(node))
+    return ClassViewLayout(graph, nodes, graph.edges, width, height)
+
+
+def _class_panel_height(node: class_view.ClassNode) -> float:
+    return CLASS_HEADER_HEIGHT + max(len(node.members), 1) * CLASS_MEMBER_HEIGHT + 8.0
+
+
+# --------------------------------------------------------------------------- Mind map
+
+MIND_MAP_NODE_WIDTH = 260.0
+MIND_MAP_NODE_HEIGHT = 36.0
+MIND_MAP_COLUMN_GAP = 54.0
+MIND_MAP_ROW_GAP = 14.0
+MIND_MAP_MARGIN = 30.0
+
+
+@dataclass(frozen=True)
+class MindMapNodeLayout:
+    node: mind_map.MindMapNode
+    x: float
+    y: float
+    width: float
+    height: float
+    depth: int
+
+
+@dataclass(frozen=True)
+class MindMapEdgeLayout:
+    source: str
+    target: str
+
+
+@dataclass(frozen=True)
+class MindMapLayout:
+    mind_map: mind_map.MindMap
+    nodes: tuple[MindMapNodeLayout, ...]
+    edges: tuple[MindMapEdgeLayout, ...]
+    width: float
+    height: float
+
+    def node_map(self) -> dict[str, MindMapNodeLayout]:
+        return {item.node.id: item for item in self.nodes}
+
+
+def layout_mind_map(tree: mind_map.MindMap,
+                    state: mind_map.MindMapViewState | None = None) -> MindMapLayout:
+    """Lay out the visible pre-order tree; omitted expanded ids mean fully collapsed."""
+    state = state or mind_map.MindMapViewState()
+    visible = _visible_mind_map_nodes(tree, frozenset(state.expanded))
+    nodes = tuple(_mind_map_node_layout(node, depth, row) for row, (node, depth, _parent) in enumerate(visible))
+    edges = tuple(MindMapEdgeLayout(parent, node.id) for node, _depth, parent in visible if parent is not None)
+    if not nodes:
+        return MindMapLayout(tree, (), (), 1.0, 1.0)
+    width = max(node.x + node.width / 2 for node in nodes) + MIND_MAP_MARGIN
+    height = nodes[-1].y + MIND_MAP_NODE_HEIGHT / 2 + MIND_MAP_MARGIN
+    return MindMapLayout(tree, nodes, edges, width, height)
+
+
+def _visible_mind_map_nodes(tree: mind_map.MindMap, expanded: frozenset[str]
+                            ) -> tuple[tuple[mind_map.MindMapNode, int, str | None], ...]:
+    visible: list[tuple[mind_map.MindMapNode, int, str | None]] = []
+    for root in tree.clusters:
+        _append_visible(root, 0, None, expanded, visible)
+    return tuple(visible)
+
+
+def _append_visible(node: mind_map.MindMapNode, depth: int, parent: str | None,
+                    expanded: frozenset[str], visible: list[tuple[mind_map.MindMapNode, int, str | None]]) -> None:
+    visible.append((node, depth, parent))
+    if node.id not in expanded:
+        return
+    for child in node.children:
+        _append_visible(child, depth + 1, node.id, expanded, visible)
+
+
+def _mind_map_node_layout(node: mind_map.MindMapNode, depth: int, row: int) -> MindMapNodeLayout:
+    x = MIND_MAP_MARGIN + MIND_MAP_NODE_WIDTH / 2 + depth * (MIND_MAP_NODE_WIDTH + MIND_MAP_COLUMN_GAP)
+    y = MIND_MAP_MARGIN + MIND_MAP_NODE_HEIGHT / 2 + row * (MIND_MAP_NODE_HEIGHT + MIND_MAP_ROW_GAP)
+    return MindMapNodeLayout(node, x, y, MIND_MAP_NODE_WIDTH, MIND_MAP_NODE_HEIGHT, depth)
+
+
 # --------------------------------------------------------------------------- Call View
 
 COLUMN_WIDTH = 260.0
 ROW_HEIGHT = 44.0
-STATUS_COLOURS = {"stub": "#d9d9d9", "implemented": "#aec7e8", "tested": "#98df8a"}
-
-
 @dataclass
 class CallNode:
     usr: str
@@ -219,6 +348,7 @@ class CallEdge:
     target: str
     label: str = ""
     loop: bool = False  # recursion or a call back towards the root
+    uncertain: bool = False
 
 
 @dataclass
@@ -284,16 +414,18 @@ def _call_nodes(model: DerivedModel, levels: dict[str, int]) -> dict[str, CallNo
 
 def _call_edges(model: DerivedModel, levels: dict[str, int], callers: bool) -> list[CallEdge]:
     edges: list[CallEdge] = []
-    seen: set[tuple[str, str, str]] = set()
+    seen: dict[tuple[str, str, str], CallEdge] = {}
     for edge in model.edges_of(EdgeKind.CALLS):
         if edge.source not in levels or edge.target not in levels:
             continue
         key = (edge.source, edge.target, edge.label)
         if key in seen:
+            seen[key].uncertain = seen[key].uncertain or edge.uncertain
             continue
-        seen.add(key)
         forward = levels[edge.target] > levels[edge.source] if not callers else levels[edge.source] > levels[edge.target]
-        edges.append(CallEdge(edge.source, edge.target, edge.label, loop=not forward))
+        call_edge = CallEdge(edge.source, edge.target, edge.label, loop=not forward, uncertain=edge.uncertain)
+        seen[key] = call_edge
+        edges.append(call_edge)
     return edges
 
 

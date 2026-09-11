@@ -450,6 +450,32 @@ class ExclusiveConflictTests(unittest.TestCase):
         self.assertEqual(gui._exclusive_conflict("Auth Recovery"), "Full Reset")
 
 
+@unittest.skipUnless(ai_loop_gui is not None, "ai_loop_gui (tkinter) not importable")
+class PlanHighlightTests(unittest.TestCase):
+    def _details(self, goal: str, percent: int = 90) -> dict:
+        return {
+            "job": {"status": "implementing"},
+            "tasks": [{"status": "running", "iteration": 38, "goal": goal}],
+            "percent": percent,
+        }
+
+    def test_discoverable_does_not_select_repository_discovery(self) -> None:
+        gui = ai_loop_gui.AiLoopGui.__new__(ai_loop_gui.AiLoopGui)
+        details = self._details(
+            "Replace the fallback that credits all currently discoverable model tests."
+        )
+
+        self.assertEqual(gui.current_plan_index(details), 2)
+
+    def test_discover_as_a_whole_word_selects_repository_discovery(self) -> None:
+        gui = ai_loop_gui.AiLoopGui.__new__(ai_loop_gui.AiLoopGui)
+
+        self.assertEqual(
+            gui.current_plan_index(self._details("Discover the current architecture.")),
+            0,
+        )
+
+
 class ClaimPendingTombstoneTests(unittest.TestCase):
     def test_xack_failure_on_tombstone_keeps_real_claimed_messages(self) -> None:
         from redis.exceptions import ConnectionError as RedisConnectionError

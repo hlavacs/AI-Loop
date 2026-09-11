@@ -87,13 +87,20 @@ RECORD_FIELDS: dict[str, tuple[FieldSpec, ...]] = {
 }
 RECORD_DEFAULTS: dict[str, dict[str, Any]] = {"requirements": {"priority": "must"}}
 PROFILE_FIELDS = (
-    FieldSpec("language", "Language", "choice", ("C++", "Python"), hint="C++ now; Python arrives in M5."),
+    FieldSpec("language", "Language", "choice", ("C++", "Python"), hint="The project's source language."),
     FieldSpec("standard", "Standard", hint="The language standard the code is written in.\nExample: 23"),
     FieldSpec("modules", "C++20 modules", "flag", hint="Generate C++20 modules instead of header files."),
     FieldSpec("platforms", "Platforms", "multi", ("macOS", "Linux", "Windows"),
               hint="Where the program must build and run."),
     FieldSpec("test_framework", "Test framework", hint="The unit test framework the agent writes tests for.\n"
                                                        "Example: doctest"),
+    FieldSpec("test_runner", "Test runner", hint="The command used to run tests.\nExample: python -m pytest"),
+    FieldSpec("test_file_convention", "Test files", hint="Where test files live and how they are named.\n"
+                                                             "Example: tests/test_<module>.py"),
+    FieldSpec("source_file_extension", "Source extension", hint="The extension for source files.\nExample: .py"),
+    FieldSpec("module_naming", "Module naming", hint="The naming style for modules.\nExample: snake_case"),
+    FieldSpec("class_naming", "Class naming", hint="The naming style for classes.\nExample: PascalCase"),
+    FieldSpec("function_naming", "Function naming", hint="The naming style for functions.\nExample: snake_case"),
     FieldSpec("library_policy", "Libraries", hint="How third-party libraries are added.\nExample: vcpkg "
                                                   "manifest; single-header libraries vendored under third_party/"),
     FieldSpec("max_function_lines", "Max function lines", "int",

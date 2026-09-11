@@ -53,3 +53,45 @@ def test_load_and_self_test() -> None:
     loaded = toolchain.load(chosen.path)
     assert loaded.llvm_major >= 16 and loaded.version.count(".") == 2
     assert "libclang:" in loaded.describe()
+
+
+def test_select_candidate_reports_when_no_candidates_exist() -> None:
+    selection = toolchain.select_candidate([], None)
+
+    assert selection.active is None
+    assert selection.candidates == ()
+    assert selection.reason == "No libclang libraries were detected."
+
+
+def test_select_candidate_uses_valid_persisted_preference() -> None:
+    detected = [toolchain.Candidate("/llvm/one/libclang.so", "one"),
+                toolchain.Candidate("/llvm/two/libclang.so", "two")]
+
+    selection = toolchain.select_candidate(detected, "/llvm/two/libclang.so")
+
+    assert selection.active == detected[1]
+    assert selection.preferred_path == detected[1].path
+    assert selection.reason == "Using the developer-selected libclang library."
+
+
+def test_select_candidate_stale_preference_degrades_to_automatic_detection() -> None:
+    detected = [toolchain.Candidate("/llvm/current/libclang.so", "linux")]
+
+    selection = toolchain.select_candidate(detected, "/llvm/gone/libclang.so")
+
+    assert selection.active == detected[0]
+    assert selection.preferred_path == "/llvm/gone/libclang.so"
+    assert selection.reason == (
+        "The preferred libclang library /llvm/gone/libclang.so is no longer detected; "
+        "automatically selected /llvm/current/libclang.so."
+    )
+
+
+def test_select_candidate_automatic_fallback_uses_first_detected_candidate() -> None:
+    detected = [toolchain.Candidate("/llvm/new/libclang.so", "linux"),
+                toolchain.Candidate("/llvm/old/libclang.so", "wheel")]
+
+    selection = toolchain.select_candidate(detected, None)
+
+    assert selection.active == detected[0]
+    assert selection.reason == "Automatically selected the first detected libclang library."

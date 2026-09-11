@@ -36,7 +36,8 @@ class OpenedProject:
     @property
     def summary(self) -> str:
         parts = [f"{len(self.model.files)} files", f"{len(self.model.entities)} entities",
-                 f"{len(self.model.edges)} relations", f"{len(self.clustering.clusters)} clusters"]
+                 f"{len(self.model.edges)} relations", f"{len(self.clustering.clusters)} clusters",
+                 f"clustering: {self.clustering.algorithm}"]
         if self.model.stale:
             parts.append(f"STALE: {self.model.stale_reason}")
         return ", ".join(parts)
@@ -66,10 +67,16 @@ def log_event(message: str, root: Path | None = None) -> None:
 
 def choose_libclang(config: persistence.UserConfig, compilers: list[str] | None = None) -> toolchain.Loaded | None:
     """The library beside the project's compiler, else the configured one, else the first candidate."""
-    paths = [p for c in compilers or [] if (p := toolchain.library_beside(c))]
-    if config.libclang and Path(config.libclang).exists() and config.libclang not in paths:
-        paths.append(config.libclang)
-    paths += [c.path for c in toolchain.candidates() if c.path not in paths]
+    detected = [toolchain.Candidate(p, "compiler") for c in compilers or []
+                if (p := toolchain.library_beside(c))]
+    if config.libclang and Path(config.libclang).exists():
+        detected.append(toolchain.Candidate(config.libclang, "configured"))
+    detected.extend(toolchain.candidates())
+    selection = toolchain.select_candidate(detected, config.preferred_libclang)
+    paths = [candidate.path for candidate in selection.candidates]
+    if selection.active is not None:
+        paths.remove(selection.active.path)
+        paths.insert(0, selection.active.path)
     for path in paths:
         try:
             return toolchain.load(path)
@@ -86,12 +93,14 @@ def analyse(root: Path, config: persistence.UserConfig) -> AnalysisResult:
     store.ensure()
     commands = analysis.load_compile_commands(root)
     compilers = sorted({c.compiler for c in commands})
-    loaded = choose_libclang(config, compilers)
-    log_event(f"analysing with {loaded.describe() if loaded else 'no libclang'}; compilers {compilers}", root)
+    python = analysis.detect_language(root) == analysis.PYTHON_LANGUAGE
+    loaded = None if python else choose_libclang(config, compilers)
+    frontend = "Python ast" if python else loaded.describe() if loaded else "no libclang"
+    log_event(f"analysing with {frontend}; compilers {compilers}", root)
     messages: list[str] = []
     model = _derive_model(root, store, loaded, commands, messages)
     store.save_model(model)
-    return AnalysisResult(loaded.describe() if loaded else None, loaded.path if loaded else None, messages)
+    return AnalysisResult(frontend if python or loaded else None, loaded.path if loaded else None, messages)
 
 
 def _derive_model(root: Path, store: persistence.ProjectStore, loaded: toolchain.Loaded | None,
@@ -99,6 +108,13 @@ def _derive_model(root: Path, store: persistence.ProjectStore, loaded: toolchain
     previous = store.load_model()
     if previous is not None:
         previous.stale = False
+    if analysis.detect_language(root) == analysis.PYTHON_LANGUAGE:
+        model = analysis.parse_project_for_root(root, commands)
+        broken = [info for info in model.files.values() if info.errors]
+        if broken:
+            messages.append(f"{len(broken)} files with parse errors, first: "
+                            f"{broken[0].path}: {broken[0].errors[0]}")
+        return model
     if loaded is None:
         messages.append("no libclang found: showing the last derived model" if previous else "no libclang found")
         return previous or DerivedModel(str(root))
@@ -107,10 +123,11 @@ def _derive_model(root: Path, store: persistence.ProjectStore, loaded: toolchain
         return previous or DerivedModel(str(root), loaded.version)
     resource = {c.compiler: r for c in commands if (r := toolchain.resource_dir(c.compiler))}
     version = f"{loaded.version}|{toolchain.default_sysroot() or ''}"
-    model = analysis.parse_project(root, commands, resource_dirs=resource, cache_dir=store.cache_dir,
-                                   previous=previous, libclang_version=version, sysroot=toolchain.default_sysroot(),
-                                   apple=loaded.apple, notes=messages,
-                                   progress=lambda unit: log_event(f"parsing {unit}", root))
+    model = analysis.parse_project_for_root(
+        root, commands, resource_dirs=resource, cache_dir=store.cache_dir,
+        previous=previous, libclang_version=version, sysroot=toolchain.default_sysroot(),
+        apple=loaded.apple, notes=messages,
+        progress=lambda unit: log_event(f"parsing {unit}", root))
     _report_errors(model, messages, root, loaded, resource)
     return model
 
@@ -175,6 +192,14 @@ def open_project(root: Path, config: persistence.UserConfig, width: float = 1600
     root = root.resolve()
     store = persistence.ProjectStore(root)
     store.ensure()
+    worktree = store.dir / "worktree"
+    try:
+        store.load_state()
+    except persistence.ProjectStateError as exc:
+        if worktree.is_dir():
+            raise persistence.ProjectStateError(
+                f"{exc}; leftover proposal worktree preserved at {worktree}") from exc
+        raise
     config.remember_project(root)
     result = analyse(root, config) if in_process else analyse_in_child(root)
     if result.libclang_path:
@@ -183,7 +208,10 @@ def open_project(root: Path, config: persistence.UserConfig, width: float = 1600
     steplog.apply_statuses(model, steplog.StepLog(store.steps_path))
     clustering = clusters.cluster_files(model, store.load_layout())
     layout = views.layout_file_view(model, clustering, width, height)
-    return OpenedProject(root, model, clustering, layout, result.libclang, result.messages)
+    messages = list(result.messages)
+    if worktree.is_dir():
+        messages.append(f"leftover proposal worktree preserved at {worktree}")
+    return OpenedProject(root, model, clustering, layout, result.libclang, messages)
 
 
 # --------------------------------------------------------------------------- editor
