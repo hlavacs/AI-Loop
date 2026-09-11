@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from icoda_core import implementation, persistence, prompt, steplog, steps
+from icoda_core import implementation, implementation_queue, persistence, prompt, steplog, steps
 from icoda_core.model import DerivedModel, Edge, EdgeKind, Entity, Kind
 
 
@@ -52,21 +52,22 @@ def test_test_callables_and_non_stubs_are_not_candidates() -> None:
     assert implementation.next_target(model) is None
 
 
-def test_runner_persists_phase_and_fills_an_empty_implementation_request(tmp_path: Path) -> None:
+def test_runner_persists_phase_and_targets_the_next_implementation(tmp_path: Path) -> None:
     model = _model("root", "leaf")
     _call(model, "root", "leaf")
     runner = steps.StepRunner(tmp_path, persistence.UserConfig())
     runner.store.ensure()
     runner.store.save_model(model)
+    runner.store.save_state(persistence.ProjectState(persistence.ProjectPhase.ARCHITECTURE))
     runner.log.append(steplog.StepRecord(0, prompt.ARCHITECTURE, "approved",
                                         entities_added=list(model.entities)))
-    assert runner.log.current_phase() == prompt.ARCHITECTURE
-    transition = runner.transition_phase(prompt.IMPLEMENTATION)
-    assert transition is not None and transition.decision == "phase"
-    assert runner.log.current_phase() == prompt.IMPLEMENTATION
-    assert runner.transition_phase(prompt.IMPLEMENTATION) is None
-    request = runner._implementation_request(prompt.StepRequest(prompt.IMPLEMENTATION, 0))
-    assert request.focus == ("u:leaf",) and request.request == "Implement leaf."
+    transition = runner.transition_phase(persistence.ProjectPhase.IMPLEMENTATION)
+    assert transition.decision == "phase_transition"
+    assert runner.current_phase() is persistence.ProjectPhase.IMPLEMENTATION
+    state = implementation_queue.ensure_state(runner.store, runner.current_model())
+    request, _state = runner._targeted_request(prompt.StepRequest(prompt.IMPLEMENTATION, 0), 1)
+    assert state.implementation_queue[0] == "u:leaf"
+    assert request.target == "u:leaf" and request.focus == ("u:leaf",)
 
 
 def test_manual_status_record_downgrades_a_tested_function(tmp_path: Path) -> None:

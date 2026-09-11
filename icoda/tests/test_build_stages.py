@@ -1,4 +1,4 @@
-"""Build and CTest are separate stages with independently trustworthy outcomes."""
+"""Build and test gates have independently trustworthy outcomes."""
 
 from __future__ import annotations
 
@@ -13,22 +13,21 @@ def _result(command: list[str], returncode: int, stdout: str) -> ProcessResult:
     return ProcessResult(command, returncode, stdout, "")
 
 
-def test_build_failure_skips_tests(tmp_path: Path) -> None:
-    (tmp_path / "build.sh").write_text("", encoding="utf-8")
+def test_build_failure_stops_the_build_gate(tmp_path: Path, monkeypatch: Any) -> None:
     commands: list[list[str]] = []
 
     def run(command: list[str], **_kwargs: Any) -> ProcessResult:
         commands.append(command)
         return _result(command, 1, "compiler error")
 
-    result = steps.build_project(tmp_path, runner=run)
-    assert commands == [["bash", "build.sh", "debug", "build-only"]]
-    assert not result.build_passed and result.tests_passed is None
-    assert result.build_output == "compiler error" and result.test_output == ""
+    monkeypatch.setattr(steps, "run_bounded", run)
+    monkeypatch.setattr(steps, "build_environment", lambda _root: None)
+    result = steps.build_project(tmp_path, code_profile={"language": "C++"})
+    assert commands == [["cmake", "--preset", "debug"]]
+    assert result.ok is False and result.output == "compiler error"
 
 
-def test_test_failure_is_distinct_from_a_successful_build(tmp_path: Path) -> None:
-    (tmp_path / "build.sh").write_text("", encoding="utf-8")
+def test_test_failure_is_distinct_from_a_successful_build(tmp_path: Path, monkeypatch: Any) -> None:
     commands: list[list[str]] = []
 
     def run(command: list[str], **_kwargs: Any) -> ProcessResult:
@@ -36,20 +35,27 @@ def test_test_failure_is_distinct_from_a_successful_build(tmp_path: Path) -> Non
         return _result(command, 1 if command[0] == "ctest" else 0,
                        "assertion failed" if command[0] == "ctest" else "linked")
 
-    result = steps.build_project(tmp_path, runner=run)
+    monkeypatch.setattr(steps, "run_bounded", run)
+    monkeypatch.setattr(steps, "build_environment", lambda _root: None)
+    build = steps.build_project(tmp_path, code_profile={"language": "C++"})
+    test = steps.test_project(tmp_path, ["ctest", "--preset", "debug"])
     assert commands[-1] == ["ctest", "--preset", "debug"]
-    assert result.build_passed and result.tests_passed is False and not result.ok
-    assert result.build_output == "linked" and result.test_output == "assertion failed"
+    assert build.ok is True and build.output == "linkedlinked"
+    assert test.ok is False and test.output == "assertion failed"
 
 
-def test_build_and_tests_must_both_pass() -> None:
+def test_build_and_test_gates_can_both_pass(tmp_path: Path, monkeypatch: Any) -> None:
     calls: list[list[str]] = []
 
     def run(command: list[str], **_kwargs: Any) -> ProcessResult:
         calls.append(command)
         return _result(command, 0, "ok")
 
-    result = steps.build_project(Path("/project"), runner=run)
+    monkeypatch.setattr(steps, "run_bounded", run)
+    monkeypatch.setattr(steps, "build_environment", lambda _root: None)
+    build = steps.build_project(tmp_path, code_profile={"language": "C++"})
+    test = steps.test_project(tmp_path, ["ctest", "--preset", "debug"])
     assert calls == [["cmake", "--preset", "debug"], ["cmake", "--build", "--preset", "debug"],
                      ["ctest", "--preset", "debug"]]
-    assert result.ok and result.build_output == "okok" and result.test_output == "ok"
+    assert build.ok is True and build.output == "okok"
+    assert test.ok is True and test.output == "ok"

@@ -63,7 +63,6 @@ class Entity:
     body_hash: str = ""
     test_files: tuple[str, ...] = ()
     status: str = "implemented"
-    body_hash: str = ""
     declaration_file: str = ""
 
 
@@ -208,13 +207,9 @@ def _entity_from(data: dict[str, Any]) -> Entity:
     data["kind"] = Kind(data["kind"])
     data["satisfies"] = tuple(data["satisfies"])
     data["template_params"] = tuple(data["template_params"])
-<<<<<<< HEAD
     data["body_hash"] = str(data.get("body_hash", ""))
     data["test_files"] = tuple(data.get("test_files", ()))
-=======
-    data.setdefault("body_hash", "")
     data.setdefault("declaration_file", "")
->>>>>>> main
     return Entity(**data)
 
 

@@ -48,7 +48,6 @@ def test_library_name() -> None:
     assert analysis.library_name("/home/u/llvm18/lib/clang/18/include/stddef.h", ["/home/u/llvm18/lib/clang/18"]) == "std"
 
 
-<<<<<<< HEAD
 def test_unit_cache_key_changes_with_the_extractor_schema(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     source = tmp_path / "a.cpp"
     source.write_text("int a() { return 1; }\n")
@@ -56,7 +55,8 @@ def test_unit_cache_key_changes_with_the_extractor_schema(tmp_path: Path, monkey
     before = analysis.unit_cache_key(command, ["a.cpp"], tmp_path, "clang 22")
     monkeypatch.setattr(analysis, "UNIT_CACHE_VERSION", analysis.UNIT_CACHE_VERSION + 1)
     assert analysis.unit_cache_key(command, ["a.cpp"], tmp_path, "clang 22") != before
-=======
+
+
 def test_body_hash_ignores_whitespace_and_comments_but_not_statements() -> None:
     compact = "{ const auto url = R\"(https://example.test/a//b)\"; return value + 1; }"
     reformatted = """{
@@ -167,7 +167,6 @@ def test_unit_result_declaration_file_legacy_default() -> None:
     loaded = analysis.UnitResult.from_json(payload)
 
     assert loaded.entities[0].declaration_file == ""
->>>>>>> main
 
 
 # --------------------------------------------------------------------------- with libclang

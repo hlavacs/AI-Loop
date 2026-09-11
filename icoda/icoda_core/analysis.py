@@ -22,9 +22,8 @@ from typing import Any
 
 from clang import cindex
 
-<<<<<<< HEAD
+from icoda_core.bodyhash import body_hash
 from icoda_core.model import (
-    CALLABLE_KINDS,
     DerivedModel,
     Edge,
     EdgeKind,
@@ -38,16 +37,9 @@ from icoda_core.model import (
 MODULE_SUFFIXES = frozenset({".cppm", ".ixx", ".mpp", ".cxxm", ".c++m", ".ccm"})
 HEADER_SUFFIXES = frozenset({".h", ".hh", ".hpp", ".hxx", ".h++", ".inl"})
 UNIT_CACHE_VERSION = 2
-=======
-from icoda_core.bodyhash import body_hash
-from icoda_core.model import DerivedModel, Edge, EdgeKind, Entity, External, FileInfo, Kind
-
-MODULE_SUFFIXES = frozenset({".cppm", ".ixx", ".mpp", ".cxxm", ".c++m", ".ccm"})
-HEADER_SUFFIXES = frozenset({".h", ".hh", ".hpp", ".hxx", ".h++", ".inl"})
 CPP_SUFFIXES = MODULE_SUFFIXES | HEADER_SUFFIXES | frozenset({".c", ".cc", ".cpp", ".cxx", ".c++"})
 CPP_LANGUAGE = "C++"
 PYTHON_LANGUAGE = "Python"
->>>>>>> main
 _MODULE_DECL = re.compile(r"^\s*(export\s+)?module\s+([A-Za-z_][\w.:]*)\s*;", re.MULTILINE)
 _NEEDS_SHADOW = re.compile(r"^\s*export\s+module\b", re.MULTILINE)
 
@@ -430,14 +422,10 @@ def _entity_json(entity: Entity) -> dict[str, Any]:
 def _entity_from_json(data: dict[str, Any]) -> Entity:
     data = dict(data)
     data.update(kind=Kind(data["kind"]), satisfies=tuple(data["satisfies"]),
-<<<<<<< HEAD
-                template_params=tuple(data["template_params"]), body_hash=str(data.get("body_hash", "")),
-                test_files=tuple(data.get("test_files", ())))
-=======
                 template_params=tuple(data["template_params"]))
     data.setdefault("body_hash", "")
     data.setdefault("declaration_file", "")
->>>>>>> main
+    data["test_files"] = tuple(data.get("test_files", ()))
     return Entity(**data)
 
 
@@ -453,7 +441,6 @@ class Extractor:
         self.module_map = module_map
         self.resource_dirs = tuple(resource_dirs)
         self.compiled_files: set[str] = set()
-        self._sources: dict[Path, bytes] = {}
 
     # -- entry point ------------------------------------------------------------------------
 
@@ -531,26 +518,9 @@ class Extractor:
         relative_file = self.relative(Path(file_name))
         return Entity(cursor.get_usr(), kind, cursor.spelling, qualified_name(cursor), self.relative(Path(file_name)),
                       cursor.location.line, cursor.extent.end.line, parent, _signature(cursor, kind), brief, satisfies,
-<<<<<<< HEAD
-                      _template_params(cursor), bool(cursor.is_definition()), self._exported(cursor),
-                      _value(cursor, kind), self._body_hash(cursor, file_name) if kind in CALLABLE_KINDS else "")
-
-    def _body_hash(self, cursor: Any, file_name: str) -> str:
-        """SHA-256 of the exact compound statement; empty for declarations and defaulted functions."""
-        body = next((node for node in cursor.walk_preorder() if node.kind == CK.COMPOUND_STMT), None)
-        if body is None:
-            return ""
-        path = Path(file_name).resolve()
-        source = self._sources.get(path)
-        if source is None:
-            source = self._sources[path] = path.read_bytes()
-        fragment = source[body.extent.start.offset:body.extent.end.offset]
-        return hashlib.sha256(fragment).hexdigest()
-=======
                       _template_params(cursor), is_definition, self._exported(cursor),
                       _value(cursor, kind), body_hash=digest,
                       declaration_file="" if is_definition else relative_file)
->>>>>>> main
 
     def _exported(self, cursor: Any) -> bool:
         if self._shadow is None:
@@ -851,11 +821,9 @@ def build_module_map(root: Path, commands: Sequence[CompileCommand]) -> dict[str
 
 
 def unit_cache_key(command: CompileCommand, contributing: Iterable[str], root: Path, libclang_version: str) -> str:
-<<<<<<< HEAD
-    digest = hashlib.sha1(f"schema={UNIT_CACHE_VERSION}\n{libclang_version}\n{' '.join(command.arguments)}\n".encode())
-=======
-    digest = hashlib.sha1(f"{CACHE_VERSION}\n{libclang_version}\n{' '.join(command.arguments)}\n".encode())
->>>>>>> main
+    digest = hashlib.sha1(
+        f"schema={UNIT_CACHE_VERSION}\n{CACHE_VERSION}\n{libclang_version}\n{' '.join(command.arguments)}\n".encode()
+    )
     for relative in sorted(contributing):
         path = root / relative
         digest.update(relative.encode())
@@ -949,19 +917,12 @@ def assemble(root: Path, results: Sequence[UnitResult], libclang_version: str) -
         for library, names in result.externals.items():
             merged = sorted(set(names) | set(model.externals[library].names if library in model.externals else ()))
             model.externals[library] = External(library, tuple(merged))
-<<<<<<< HEAD
-    for result in results:
-        for edge in result.edges:
-            if _known(model, edge.source) and _known(model, edge.target):
-                model.add_edge(edge)
-    associate_test_files(model)
-=======
     pairing = pair_declarations(entities, edges)
     model.entities = {entity.usr: entity for entity in pairing.entities}
     for edge in pairing.edges:
         if _known(model, edge.source) and _known(model, edge.target):
             model.add_edge(edge)
->>>>>>> main
+    associate_test_files(model)
     return model
 
 

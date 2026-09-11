@@ -18,26 +18,12 @@ from dataclasses import dataclass, replace
 from pathlib import Path
 
 from icoda_core import (
-<<<<<<< HEAD
-    agent,
-    analysis,
-    git,
-    implementation,
-    persistence,
-    prompt,
-    response,
-    session,
-    specification,
-)
-from icoda_core.model import CALLABLE_KINDS, TYPE_KINDS, DerivedModel, Entity, Kind
-from icoda_core.process import ProcessResult, run_bounded
-from icoda_core.steplog import StepLog, StepRecord, apply_statuses
-=======
     adaptation,
     agent,
     analysis,
     git,
     grouping,
+    implementation,
     implementation_queue,
     persistence,
     phases,
@@ -51,7 +37,6 @@ from icoda_core.steplog import StepLog, StepRecord, apply_statuses
 from icoda_core.model import CALLABLE_KINDS, TYPE_KINDS, DerivedModel, Entity, Kind
 from icoda_core.process import run_bounded
 from icoda_core.steplog import APPROACH_ROUND, StepLog, StepRecord, apply_statuses
->>>>>>> main
 
 WORKTREE_DIR = "worktree"
 LOG_PATH = ".icoda/steps.jsonl"
@@ -78,31 +63,6 @@ class DirtyTree(StepError):
 
 @dataclass(frozen=True)
 class BuildResult:
-<<<<<<< HEAD
-    build_passed: bool
-    tests_passed: bool | None
-    build_output: str = ""
-    test_output: str = ""
-
-    @property
-    def ok(self) -> bool:
-        return self.build_passed and self.tests_passed is True
-
-    @property
-    def output(self) -> str:
-        parts = ["Build:\n" + self.build_output] if self.build_output else []
-        if self.test_output:
-            parts.append("Tests:\n" + self.test_output)
-        return "\n\n".join(parts)
-
-
-def build_project(root: Path, timeout: float = BUILD_TIMEOUT,
-                  runner: Callable[..., ProcessResult] = run_bounded) -> BuildResult:
-    """Configure/build first, then run CTest separately so their outcomes cannot be confused."""
-    output = ""
-    for command in _build_commands(root):
-        result = runner(command, cwd=root, timeout=timeout)
-=======
     ok: bool | None = None
     output: str = ""
 
@@ -152,13 +112,10 @@ def build_project(root: Path, timeout: float = BUILD_TIMEOUT,
     output = ""
     for command in commands:
         result = run_bounded(command, cwd=root, timeout=timeout, env=environment)
->>>>>>> main
         output += result.stdout + result.stderr
         if not result.ok:
-            return BuildResult(False, None, _tail(output))
-    result = runner(["ctest", "--preset", "debug"], cwd=root, timeout=timeout)
-    test_output = result.stdout + result.stderr
-    return BuildResult(True, result.ok, _tail(output), _tail(test_output))
+            return BuildResult(False, _tail(output))
+    return BuildResult(True, _tail(output))
 
 
 def _build_commands(root: Path) -> list[list[str]]:
@@ -286,13 +243,8 @@ class Delta:
 
 
 def compute_delta(before: DerivedModel, after: DerivedModel, files: Sequence[str]) -> Delta:
-<<<<<<< HEAD
     def shape(entity: Entity) -> tuple[str, str, str, str | None, str, tuple[str, ...]]:
         return (entity.kind.value, entity.signature, entity.file, entity.parent, entity.body_hash, entity.test_files)
-=======
-    def shape(entity: Entity) -> tuple[str, str, str, str | None, str]:
-        return (entity.kind.value, entity.signature, entity.file, entity.parent, entity.body_hash)
->>>>>>> main
 
     added = [e for usr, e in after.entities.items() if usr not in before.entities]
     removed = [e for usr, e in before.entities.items() if usr not in after.entities]
@@ -510,14 +462,10 @@ class Proposal:
     worktree: Path
     attempts: int = 0
     response: response.StepResponse | None = None
-<<<<<<< HEAD
-    build: BuildResult = BuildResult(False, None)
-=======
     entities: tuple[adaptation.EntitySummary, ...] = ()
     build: BuildResult = BuildResult()
     test: TestResult = TestResult()
     selected_tests: tuple[str, ...] = ()
->>>>>>> main
     model: DerivedModel | None = None
     delta: Delta | None = None
     source_diff: str = ""
@@ -654,15 +602,6 @@ class StepRunner:
         apply_statuses(model, self.log)
         return model
 
-<<<<<<< HEAD
-    def transition_phase(self, phase: str) -> StepRecord | None:
-        """Persist a phase change in the pending step log; the next approved step commits it."""
-        if phase not in (prompt.ARCHITECTURE, prompt.IMPLEMENTATION):
-            raise StepError(f"unknown phase {phase!r}")
-        if self.log.current_phase() == phase:
-            return None
-        return self.log.append(StepRecord(self.log.next_number(), phase, "phase", title=f"enter {phase} phase"))
-=======
     def current_phase(self) -> persistence.ProjectPhase:
         """The persisted project phase that gates every request."""
         return self.store.load_state().phase
@@ -677,7 +616,6 @@ class StepRunner:
         record = self.transition_phase(persistence.ProjectPhase.IMPLEMENTATION)
         implementation_queue.ensure_state(self.store, self.current_model())
         return record
->>>>>>> main
 
     # -- proposing ------------------------------------------------------------------------
 
@@ -709,12 +647,7 @@ class StepRunner:
 
     def propose(self, request: prompt.StepRequest) -> Proposal:
         """Ask the provider, apply, build and parse in the worktree; up to ``attempts`` tries with feedback."""
-<<<<<<< HEAD
-        self.transition_phase(request.phase)
-        request = self._implementation_request(request)
-=======
         phase = self.current_phase()
->>>>>>> main
         number = self.log.next_number()
         request = replace(request, phase=phase.value, number=number,
                           rejections=request.rejections or self.log.rejections(number))
@@ -737,7 +670,7 @@ class StepRunner:
             proposal.response, proposal.error = parsed, ""
             proposal.entities = parsed.entities
             self._apply_and_check(proposal)
-            if proposal.build.ok is True and proposal.delta is not None:
+            if proposal.ok:
                 return proposal
             request = self._retry_request(request, proposal)
         proposal.error = proposal.error or f"no usable proposal after {self.attempts} attempts"
@@ -788,12 +721,8 @@ class StepRunner:
     def _apply_and_check(self, proposal: Proposal) -> None:
         assert proposal.response is not None
         self._reset_worktree(proposal.worktree)
-<<<<<<< HEAD
-        proposal.build, proposal.model, proposal.delta = BuildResult(False, None), None, None
-=======
         proposal.build, proposal.test = BuildResult(), TestResult()
         proposal.selected_tests, proposal.model, proposal.delta = (), None, None
->>>>>>> main
         proposal.source_diff = ""
         try:
             _apply_candidate_files(proposal.worktree, proposal.response.files)
@@ -806,11 +735,7 @@ class StepRunner:
         proposal.source_diff = git.working_tree_diff(proposal.worktree)
         self.progress(f"step {proposal.number}: building the proposal")
         proposal.build = self.build(proposal.worktree)
-<<<<<<< HEAD
-        if not proposal.build.build_passed:
-=======
         if proposal.build.ok is not True:
->>>>>>> main
             proposal.error = "the proposal does not build"
             return
         self.progress(f"step {proposal.number}: testing the proposal")
@@ -821,10 +746,6 @@ class StepRunner:
         proposal.model = self.analyse(proposal.worktree)
         files = [c.path for c in git.status_changes(proposal.worktree)]
         proposal.delta = compute_delta(self.current_model(), proposal.model, files)
-<<<<<<< HEAD
-        proposal.error = "the proposal's tests fail" if proposal.build.tests_passed is False \
-            else _delta_error(proposal.request, proposal.delta)
-=======
         proposal.error = _delta_error(proposal.request, proposal.delta)
         if not proposal.error:
             proposal.error = self._grouping_refusal(proposal)
@@ -836,7 +757,6 @@ class StepRunner:
             proposal.error = coverage.refusal_reason
         if not proposal.error and proposal.test.ok is not True:
             proposal.error = "the proposal tests fail" if proposal.test.ok is False else "the proposal tests did not run"
->>>>>>> main
 
     @staticmethod
     def _retry_request(request: prompt.StepRequest, proposal: Proposal) -> prompt.StepRequest:
@@ -941,20 +861,6 @@ class StepRunner:
                 raise StepError("the implementation queue batch changed after this proposal; propose again")
         self.progress(f"step {proposal.number}: promoting and rebuilding")
         files = git.promote_worktree(self.root, proposal.worktree)
-<<<<<<< HEAD
-        verification = self.build(self.root)
-        if not verification.ok:
-            raise StepError("the promoted project does not pass verification:\n" + verification.output)
-        record = self._record(proposal, "approved")
-        record.files = files
-        record.build_passed = verification.build_passed
-        record.tests_passed = verification.tests_passed is True
-        record.entities_added = [e.usr for e in proposal.delta.added]
-        record.entities_changed = [e.usr for e in proposal.delta.changed]
-        affected = (*proposal.delta.added, *proposal.delta.changed)
-        record.body_hashes = {entity.usr: entity.body_hash for entity in affected if entity.body_hash}
-        record.test_files = {entity.usr: list(entity.test_files) for entity in affected if entity.test_files}
-=======
         build = self.build(self.root)
         if build.ok is not True:
             raise StepError("the promoted project does not build:\n" + build.output)
@@ -974,7 +880,6 @@ class StepRunner:
         touched = (*record.entities_added, *record.entities_changed,
                    *(current for _previous, current in record.entities_renamed))
         record.entity_body_hashes = _entity_body_hashes(proposal.model, touched)
->>>>>>> main
         self.log.append(record)
         if queue_state is not None:
             approved_batch = self._request_batch(proposal.request)

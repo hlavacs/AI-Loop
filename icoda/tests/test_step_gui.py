@@ -42,21 +42,12 @@ def fake_proposal(tmp_path: Path, ok: bool = True) -> steps.Proposal:
         "Add b", "Because.", (response.FileChange("m.cpp", "x"),), entities=entities, questions=("Why?",))
     delta = steps.compute_delta(DerivedModel("/p"), model, ["m.cpp"])
     proposal = steps.Proposal(1, prompt.StepRequest(prompt.ARCHITECTURE, 1, "add b"), tmp_path, attempts=2,
-<<<<<<< HEAD
-                              response=reply, build=steps.BuildResult(True, True, "built", "3 tests passed"),
-                              model=model, delta=delta,
-                              source_diff="diff --git a/m.cpp b/m.cpp\n--- a/m.cpp\n+++ b/m.cpp\n@@ -1 +1 @@\n-old\n+new")
-    if not ok:
-        proposal.build = steps.BuildResult(False, None, "error: boom")
-        proposal.error = "the proposal does not build"
-=======
                               response=reply, build=steps.BuildResult(True, "built"),
                               test=steps.TestResult(True, "tested"), model=model, delta=delta,
                               source_diff="diff --git a/m.cpp b/m.cpp\n--- a/m.cpp\n+++ b/m.cpp\n@@ -1 +1 @@\n-old\n+new")
     if not ok:
         proposal.build, proposal.test = steps.BuildResult(False, "error: boom"), steps.TestResult()
         proposal.model, proposal.delta, proposal.error = None, None, "the proposal does not build"
->>>>>>> main
     return proposal
 
 
@@ -83,16 +74,12 @@ def test_panel_shows_proposals_and_requests(tmp_path: Path) -> None:
     assert "Architecture entity budget: 3 / 5" in panel.details.get("1.0", "end")
     assert "diff --git a/m.cpp b/m.cpp" in panel.source_diff.get("1.0", "end")
     assert "built" in panel.build_output.get("1.0", "end")
-<<<<<<< HEAD
-    assert "3 tests passed" in panel.test_output.get("1.0", "end")
-=======
     assert panel.build_status_var.get() == "Build: passed" and panel.test_status_var.get() == "Tests: passed"
->>>>>>> main
     panel.show(fake_proposal(tmp_path, ok=False))
     assert "no usable proposal" in panel.title_var.get() and "proposal does not build" in panel.details.get("1.0",
                                                                                                              "end")
     assert "boom" in panel.build_output.get("1.0", "end")
-    assert "did not run because the build failed" in panel.test_output.get("1.0", "end")
+    assert "Tests did not run" in panel.test_output.get("1.0", "end")
     panel._pressed("undo")()
     assert pressed[-1] == "undo"
 

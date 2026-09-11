@@ -16,9 +16,6 @@ from pathlib import Path
 from tkinter import filedialog, messagebox, simpledialog, ttk
 from typing import Any
 
-<<<<<<< HEAD
-from icoda_core import __version__, agent, generator, persistence, session, specification, steplog, views
-=======
 from icoda_core import (
     __version__,
     agent,
@@ -42,7 +39,6 @@ from icoda_core import (
     views,
 )
 from icoda_core.model import CALLABLE_KINDS, DerivedModel
->>>>>>> main
 from icoda_gui import (
     call_view,
     class_view,
@@ -764,7 +760,6 @@ class App:
         self.side_title.set("Entities")
         self.tree.delete(*self.tree.get_children())
         self._restore_provider(opened.root)
-        self.panel.phase_var.set(steplog.StepLog(persistence.ProjectStore(opened.root).steps_path).current_phase())
         self.call_view.show(opened.model)
         self.class_view.show(opened.model)
         log = steplog.StepLog(store.steps_path)

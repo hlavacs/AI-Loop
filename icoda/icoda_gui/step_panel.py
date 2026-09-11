@@ -1,9 +1,4 @@
-<<<<<<< HEAD
-"""The step panel: what the next step should do, rationale, delta, build and test output, and the
-decision buttons (Propose, Approve, Reject, Adapt, Rebuild, Undo)."""
-=======
 """The step panel: implementation approach, code proposal, verification output, and developer decisions."""
->>>>>>> main
 
 from __future__ import annotations
 
@@ -118,10 +113,7 @@ class StepPanel:
         self.source_diff = _scrolled_text(self.detail_notebook, wrap="none", font=("TkFixedFont", 10))
         self.build_output = _scrolled_text(self.detail_notebook, wrap="none", font=("TkFixedFont", 10))
         self.test_output = _scrolled_text(self.detail_notebook, wrap="none", font=("TkFixedFont", 10))
-<<<<<<< HEAD
-=======
         self.detail_notebook.add(self.approach_text.master, text="Approach")
->>>>>>> main
         self.detail_notebook.add(self.details.master, text="Delta")
         self.detail_notebook.add(self.signature.master, text="Signature changes")
         self.detail_notebook.add(self.entity_summary.master, text="Entity summary")
@@ -263,30 +255,19 @@ class StepPanel:
             _set_text(self.source_diff, "")
             _set_text(self.build_output, "")
             _set_text(self.test_output, "")
-<<<<<<< HEAD
-        elif proposal.ok and proposal.response is not None and proposal.delta is not None:
-            self.title_var.set(f"Step {proposal.number}: {proposal.response.title}  "
-                               f"(attempt {proposal.attempts})")
-=======
         elif proposal.response is not None and proposal.delta is not None:
             title = f"Step {proposal.number}: {proposal.response.title}  (attempt {proposal.attempts})"
             batch_names = _proposal_batch_names(proposal)
             if len(batch_names) > 1:
                 title += f" — batch: {', '.join(batch_names)}"
             self.title_var.set(title + (f" — {proposal.error}" if proposal.error else ""))
->>>>>>> main
             _set_text(self.rationale, _rationale_text(proposal))
             _set_text(self.details, _delta_text(proposal))
             _set_text(self.signature, proposal.delta.signature_summary())
             self._show_entity_summary(proposal)
             _set_text(self.source_diff, proposal.source_diff or "No source changes.")
-<<<<<<< HEAD
-            _set_text(self.build_output, proposal.build.build_output or "Build passed without output.")
-            _set_text(self.test_output, proposal.build.test_output or "Tests passed without output.")
-=======
             _set_text(self.build_output, proposal.build.output or "Build passed without output.")
             _set_text(self.test_output, _test_text(proposal))
->>>>>>> main
         else:
             self.title_var.set(f"Step {proposal.number}: no usable proposal — {proposal.error}")
             _set_text(self.rationale, (proposal.response.rationale if proposal.response else "") or proposal.reply)
@@ -294,10 +275,6 @@ class StepPanel:
             _set_text(self.signature, proposal.delta.signature_summary() if proposal.delta else "No signature changes.")
             _set_editable_text(self.entity_summary, adaptation.NO_USABLE_PROPOSAL)
             _set_text(self.source_diff, proposal.source_diff or "No source changes.")
-<<<<<<< HEAD
-            _set_text(self.build_output, _build_text(proposal.build))
-            _set_text(self.test_output, _test_text(proposal.build))
-=======
             _set_text(self.build_output, proposal.build.output or "Build did not run.")
             _set_text(self.test_output, _test_text(proposal))
         self._update_signature_status()
@@ -349,7 +326,6 @@ class StepPanel:
         _set_text(self.test_output, record.test_output or _empty_result_text("Tests", record.test_ok))
         self._update_signature_status()
         self.detail_notebook.select(self.details.master)
->>>>>>> main
         self._update_buttons()
 
     def show_failure(self, text: str) -> None:
@@ -441,27 +417,12 @@ def _delta_text(proposal: steps.Proposal) -> str:
     return text
 
 
-<<<<<<< HEAD
-def _build_text(result: steps.BuildResult) -> str:
-    if result.build_output:
-        return result.build_output
-    return "Build passed without output." if result.build_passed else "Build did not run."
-
-
-def _test_text(result: steps.BuildResult) -> str:
-    if result.test_output:
-        return result.test_output
-    if result.tests_passed is None:
-        return "Tests did not run because the build failed."
-    return "Tests passed without output." if result.tests_passed else "Tests failed without output."
-=======
 def _proposal_batch_names(proposal: steps.Proposal) -> tuple[str, ...]:
     if len(proposal.request.batch) <= 1:
         return proposal.request.batch
     model = proposal.model
     return tuple(model.entities[usr].qualified_name if model is not None and usr in model.entities else usr
                  for usr in proposal.request.batch)
->>>>>>> main
 
 
 def _set_text(widget: Any, text: str) -> None:

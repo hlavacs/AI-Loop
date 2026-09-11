@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from icoda_core import clusters, persistence, session, steplog, views
+from icoda_core import clusters, persistence, session, views
 from icoda_core.model import DerivedModel, Edge, EdgeKind, Entity, FileInfo, Kind, merge_external_names
 
 
@@ -43,17 +43,6 @@ def test_show_updates_status_config_and_canvas(app_module, tmp_path: Path) -> No
     assert config_path.is_file()
 
 
-<<<<<<< HEAD
-def test_show_restores_the_persisted_phase(app_module, tmp_path: Path) -> None:
-    store = persistence.ProjectStore(tmp_path)
-    store.ensure()
-    steplog.StepLog(store.steps_path).append(steplog.StepRecord(1, "implementation", "phase"))
-    app = app_module.App(app_module.tk.Tk(), config=persistence.UserConfig(), config_path=tmp_path / "c.json")
-    app.show(opened_project(tmp_path))
-    assert app.panel.phase_var.get() == "implementation"
-
-
-=======
 def test_open_project_reports_truncated_state_without_tk_traceback(app_module, tmp_path: Path, monkeypatch) -> None:
     class ImmediateThread:
         def __init__(self, target, args, daemon) -> None:
@@ -122,7 +111,6 @@ def test_view_notebook_registers_mind_map_beside_existing_m4_tabs(app_module, tm
     assert labels[:6] == ["File View", "Call View", "Class View", "Mind Map", "Coverage", "Issues"]
 
 
->>>>>>> main
 def test_describe_and_select_nodes(app_module, tmp_path: Path) -> None:
     app = app_module.App(app_module.tk.Tk(), config=persistence.UserConfig(), config_path=tmp_path / "c.json")
     app.show(opened_project(tmp_path))

@@ -658,16 +658,11 @@ def main(argv: list[str] | None = None) -> int:
             prompt.StepRequest(prompt.ARCHITECTURE, 1, "add the configured answer"),
             args.project,
             attempts=1,
-<<<<<<< HEAD
-            response=response.StepResponse("Add configured answer", "The specification requires it.", ()),
-            build=steps.BuildResult(True, True, "Build completed successfully.", "All 8 tests passed."),
-=======
             response=response.StepResponse(
                 "Add configured answer", "The specification requires it.", (),
                 entities=(adaptation.EntitySummary(
                     "app::answer", "function", "src/app/app.cppm", "int answer()", ("R-1",)),)),
             build=steps.BuildResult(True, "Build passed."), test=steps.TestResult(True, "Tests passed."),
->>>>>>> main
             delta=steps.Delta(review_entities, (), (), ("src/app/app.cppm",)),
             source_diff=displayed_diff,
         )
@@ -700,18 +695,6 @@ def main(argv: list[str] | None = None) -> int:
         if displayed_diff.strip() not in app.panel.source_diff.get("1.0", "end"):
             raise RuntimeError("proposal Source diff tab did not show the worktree diff")
         proposal_diff_metrics = capture(root, args.output / "proposal-source-diff.png")
-<<<<<<< HEAD
-        app.panel.detail_notebook.select(app.panel.build_output.master)
-        root.update()
-        if "Build completed successfully." not in app.panel.build_output.get("1.0", "end"):
-            raise RuntimeError("proposal Build tab did not show the separate compiler output")
-        proposal_build_metrics = capture(root, args.output / "proposal-build.png")
-        app.panel.detail_notebook.select(app.panel.test_output.master)
-        root.update()
-        if "All 8 tests passed." not in app.panel.test_output.get("1.0", "end"):
-            raise RuntimeError("proposal Tests tab did not show the separate CTest output")
-        proposal_tests_metrics = capture(root, args.output / "proposal-tests.png")
-=======
         signature_target = next(entity for entity in app.opened.model.entities.values()
                                 if entity.kind in CALLABLE_KINDS and entity.signature)
         signature_model = DerivedModel.from_json(app.opened.model.to_json())
@@ -867,7 +850,6 @@ def main(argv: list[str] | None = None) -> int:
         app.views.select(0)
         root.update()
         focus_refresh_metrics = capture(root, args.output / "external-edit-focus-refresh.png")
->>>>>>> main
         state = {"status": app.status.get(), "summary": app.opened.summary,
                  "libclang_chooser": libclang_chooser_metrics,
                  "file_view": file_metrics, "file_view_zoomed": file_zoomed_metrics,
@@ -893,9 +875,6 @@ def main(argv: list[str] | None = None) -> int:
                  "implementation_approach": approach_metrics,
                  "structured_adaptation": structured_adaptation_metrics,
                  "proposal_delta": proposal_delta_metrics, "proposal_source_diff": proposal_diff_metrics,
-<<<<<<< HEAD
-                 "proposal_build": proposal_build_metrics, "proposal_tests": proposal_tests_metrics,
-=======
                  "signature_confirmation": signature_confirmation_metrics,
                  "proposal_test_failed": proposal_test_metrics, "proposal_batch": proposal_batch_metrics,
                  "few_line_grouping": grouping_metrics,
@@ -905,7 +884,6 @@ def main(argv: list[str] | None = None) -> int:
                  "python_call_view": {**python_call_metrics, "labelled_nodes": python_call_labels},
                  "python_code_profile": python_profile_metrics,
                  "external_edit_focus_refresh": focus_refresh_metrics,
->>>>>>> main
                  "navigation": {"file": {"fit_scale": file_fit_scale, "zoomed_scale": file_zoomed_scale,
                                            "pan": file_pan},
                                 "call": {"fit_scale": call_fit_scale, "zoomed_scale": call_zoomed_scale,

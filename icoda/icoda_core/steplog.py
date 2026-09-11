@@ -12,23 +12,15 @@ from dataclasses import asdict, dataclass, field, fields
 from datetime import datetime, timezone
 from pathlib import Path
 
-<<<<<<< HEAD
-from icoda_core.model import CALLABLE_KINDS, DerivedModel, Entity
-=======
 from icoda_core import bodyhash
 from icoda_core.model import CALLABLE_KINDS, DerivedModel
->>>>>>> main
 
 ARCHITECTURE = "architecture"
 IMPLEMENTATION = "implementation"
 PHASES = (ARCHITECTURE, IMPLEMENTATION)
 STATUS_BY_PHASE = {ARCHITECTURE: "stub", IMPLEMENTATION: "implemented"}
-<<<<<<< HEAD
-
-=======
 CODE_ROUND = "code"
 APPROACH_ROUND = "approach"
->>>>>>> main
 
 @dataclass
 class StepRecord:
@@ -36,12 +28,8 @@ class StepRecord:
 
     number: int
     phase: str
-<<<<<<< HEAD
-    decision: str  # approved | rejected | failed | undone | manual | phase
-=======
     decision: str  # approved | rejected | failed | undone | manual | phase_transition
     round: str = CODE_ROUND
->>>>>>> main
     title: str = ""
     request: str = ""
     rationale: str = ""
@@ -54,23 +42,21 @@ class StepRecord:
     files: list[str] = field(default_factory=list)
     entities_added: list[str] = field(default_factory=list)
     entities_changed: list[str] = field(default_factory=list)
-<<<<<<< HEAD
-    body_hashes: dict[str, str] = field(default_factory=dict)
-    test_files: dict[str, list[str]] = field(default_factory=dict)
-    build_passed: bool = False
-=======
     entities_renamed: list[tuple[str, str]] = field(default_factory=list)
     entity_body_hashes: dict[str, str] = field(default_factory=dict)
+    # Compatibility with the short-lived M3 log schema merged into this branch.
+    body_hashes: dict[str, str] = field(default_factory=dict)
+    test_files: dict[str, list[str]] = field(default_factory=dict)
     expected_entities: list[str] = field(default_factory=list)
     expected_files: list[str] = field(default_factory=list)
     build_ok: bool | None = None
+    build_passed: bool = False
     build_output: str = ""
     test_ok: bool | None = None
     test_output: str = ""
     selected_tests: list[str] = field(default_factory=list)
     batch: list[str] = field(default_factory=list)
     # Kept only so logs written before build/test results were split still load.
->>>>>>> main
     tests_passed: bool = False
     undoes: int | None = None
     previous_phase: str = ""
@@ -85,6 +71,7 @@ class StepRecord:
         values = {k: v for k, v in data.items() if k in known}
         values["entities_renamed"] = _rename_pairs(data.get("entities_renamed"))
         values["entity_body_hashes"] = _hashes(data.get("entity_body_hashes"))
+        values["body_hashes"] = _hashes(data.get("body_hashes"))
         values["selected_tests"] = _strings(data.get("selected_tests"))
         values["batch"] = _strings(data.get("batch"))
         return cls(**values)  # type: ignore[arg-type]
@@ -137,21 +124,17 @@ class StepLog:
         return [r for r in self.records()
                 if r.round != APPROACH_ROUND and r.decision == "approved" and r.number not in undone]
 
-<<<<<<< HEAD
     def status_records(self) -> list[StepRecord]:
         """Code-changing records still in effect; manual edits participate but cannot become ``tested``."""
         records = self.records()
         undone = {record.undoes for record in records if record.decision == "undone"}
         return [record for record in records
-                if record.decision == "manual" or (record.decision == "approved" and record.number not in undone)]
+                if record.round != APPROACH_ROUND and
+                (record.decision == "manual" or (record.decision == "approved" and record.number not in undone))]
 
-    def rejections(self, number: int) -> tuple[str, ...]:
-        return tuple(r.reason for r in self.records() if r.decision == "rejected" and r.number == number and r.reason)
-=======
     def rejections(self, number: int, round: str = CODE_ROUND) -> tuple[str, ...]:
         return tuple(r.reason for r in self.records()
                      if r.round == round and r.decision == "rejected" and r.number == number and r.reason)
->>>>>>> main
 
     def current_phase(self) -> str:
         """The latest explicit or step-implied phase; old logs naturally start in architecture."""
@@ -160,45 +143,38 @@ class StepLog:
 
 
 def apply_statuses(model: DerivedModel, log: StepLog) -> None:
-<<<<<<< HEAD
-    """Function statuses from the log: stub after an architecture step, implemented or tested after implementation."""
-    for entity in model.entities.values():
-        if entity.kind in CALLABLE_KINDS:
-            entity.status = "implemented"
+    """Apply effective status history and demote tested callables when their evidence is stale."""
+    statuses: dict[str, tuple[str, str, tuple[str, ...]]] = {}
     for record in log.status_records():
-        for usr in (*record.entities_added, *record.entities_changed):
-            affected = model.entities.get(usr)
-            if affected is not None and affected.kind in CALLABLE_KINDS:
-                affected.status = _status(record, affected)
-
-
-def _status(record: StepRecord, entity: Entity) -> str:
-    status = STATUS_BY_PHASE.get(record.phase, "implemented")
-    if status != "implemented":
-        return status
-    same_body = bool(entity.body_hash and record.body_hashes.get(entity.usr) == entity.body_hash)
-    has_test = bool(set(record.test_files.get(entity.usr, ())) & set(entity.test_files))
-    return "tested" if record.build_passed and record.tests_passed and same_body and has_test else status
-=======
-    """Apply persisted status history, demoting tested callables whose bodies changed."""
-    statuses: dict[str, tuple[str, str]] = {}
-    for record in log.approved():
-        status = STATUS_BY_PHASE.get(record.phase, "implemented")
-        if status == "implemented" and record.test_ok is True:
-            status = "tested"
+        status = "implemented" if record.decision == "manual" else STATUS_BY_PHASE.get(
+            record.phase, "implemented")
         for previous, current in record.entities_renamed:
             if previous in statuses:
-                previous_status, previous_hash = statuses[previous]
-                digest = record.entity_body_hashes.get(current, "") if previous_status == "tested" else ""
-                statuses[current] = (previous_status, digest or previous_hash)
+                previous_status, previous_hash, previous_tests = statuses[previous]
+                digest = _record_hash(record, current) if previous_status == "tested" else ""
+                statuses[current] = (previous_status, digest or previous_hash, previous_tests)
         for usr in (*record.entities_added, *record.entities_changed):
-            digest = record.entity_body_hashes.get(usr, "") if status == "tested" else ""
-            statuses[usr] = (status, digest)
-    for usr, (status, tested_hash) in statuses.items():
+            entity = model.entities.get(usr)
+            legacy_tests = tuple(record.test_files.get(usr, ()))
+            tested = status == "implemented" and (
+                record.test_ok is True
+                or (record.build_passed and record.tests_passed and entity is not None
+                    and bool(set(legacy_tests) & set(entity.test_files)))
+            )
+            effective_status = "tested" if tested else status
+            digest = _record_hash(record, usr) if effective_status == "tested" else ""
+            statuses[usr] = (effective_status, digest, legacy_tests)
+    for usr, (status, tested_hash, required_tests) in statuses.items():
         entity = model.entities.get(usr)
         if entity is not None and entity.kind in CALLABLE_KINDS:
-            entity.status = "implemented" if status == "tested" and bodyhash.changed(
-                tested_hash, entity.body_hash) else status
+            stale_body = status == "tested" and bodyhash.changed(tested_hash, entity.body_hash)
+            missing_legacy_test = status == "tested" and bool(required_tests) and not (
+                set(required_tests) & set(entity.test_files))
+            entity.status = "implemented" if stale_body or missing_legacy_test else status
+
+
+def _record_hash(record: StepRecord, usr: str) -> str:
+    return record.entity_body_hashes.get(usr, "") or record.body_hashes.get(usr, "")
 
 
 def last_entity_body_hashes(records: list[StepRecord]) -> dict[str, str]:
@@ -215,7 +191,6 @@ def last_entity_body_hashes(records: list[StepRecord]) -> dict[str, str]:
         touched = (*record.entities_added, *record.entities_changed,
                    *(current for _previous, current in record.entities_renamed))
         for usr in touched:
-            if digest := record.entity_body_hashes.get(usr, ""):
+            if digest := _record_hash(record, usr):
                 hashes[usr] = digest
     return hashes
->>>>>>> main
