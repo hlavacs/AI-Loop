@@ -1,7 +1,9 @@
 # ICODA — Interactive Code Development and Analysis
 
 Step-by-step, developer-in-the-loop code development with a live architecture view. The design is in
-`EVOLUTION.md`, the build plan in `ICODA_PLAN.md`.
+`EVOLUTION.md`, the build plan in `ICODA_PLAN.md`, and the complete user and maintainer guide in the
+[illustrated PDF handbook](output/pdf/ICODA-Handbook.pdf), including 32 screenshots. The editable source is
+[`HANDBOOK.md`](HANDBOOK.md).
 
 Run it with `./icoda.bash [project-directory]` on macOS and Linux, or `icoda.cmd [project-directory]` on Windows.
 The launcher picks a Python 3.10+ with Tkinter, creates the virtual environment `.icoda-venv`, installs the
