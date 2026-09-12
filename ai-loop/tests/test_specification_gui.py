@@ -7,15 +7,25 @@ from types import SimpleNamespace
 import pytest
 
 from ai_loop.specification_gui import (
+    ADDITIONAL_STAGE_FIELD_KEYS,
+    DECISION_FIELDS,
     FieldSemanticFeedback,
     MetricAssertionParseError,
+    PRIMARY_RECORD_FIELD_KEYS,
     PROCESS_OVERVIEW_TEXT,
+    SPECIFICATION_FIELD_HELP,
+    SPECIFICATION_FIELD_LABELS,
     SPECIFICATION_FIELD_EXAMPLES,
     SPECIFICATION_FIELD_GUIDANCE,
+    SPECIFICATION_VISIBLE_FIELD_KEYS,
     SPECIFICATION_SAVEFILE_SCHEMA,
     SPECIFICATION_SAVEFILE_VERSION,
+    REQUIREMENT_FIELDS,
+    RISK_FIELDS,
     SpecificationSavefileError,
     SpecificationSuggestion,
+    USE_CASE_FIELDS,
+    VERIFICATION_FIELDS,
     _verification_for_dialog,
     _verification_from_dialog,
     analyze_specification,
@@ -470,6 +480,78 @@ def test_onboarding_copy_covers_process_and_every_specification_input() -> None:
     assert "verification fixtures" in SPECIFICATION_FIELD_GUIDANCE["assumptions"]
 
 
+def test_simplified_editor_labels_and_help_are_complete() -> None:
+    import ai_loop.specification_gui as specification_gui
+
+    assert set(SPECIFICATION_FIELD_LABELS) == SPECIFICATION_VISIBLE_FIELD_KEYS
+    assert set(SPECIFICATION_FIELD_HELP) == SPECIFICATION_VISIBLE_FIELD_KEYS
+    assert all(
+        label.strip() == label
+        and "\n" not in label
+        and ":" not in label
+        and len(label) <= 28
+        for label in SPECIFICATION_FIELD_LABELS.values()
+    )
+    assert all(
+        help_text.strip() and "Example:" in help_text
+        for help_text in SPECIFICATION_FIELD_HELP.values()
+    )
+
+    field_groups = {
+        "use_cases": specification_gui.USE_CASE_FIELDS,
+        "requirements": specification_gui.REQUIREMENT_FIELDS,
+        "risks": specification_gui.RISK_FIELDS,
+        "decisions": specification_gui.DECISION_FIELDS,
+        "verification": specification_gui.VERIFICATION_FIELDS,
+    }
+    for group, fields in field_groups.items():
+        all_keys = {field.key for field in fields}
+        assert PRIMARY_RECORD_FIELD_KEYS[group] < all_keys
+        assert {
+            f"{group}.{field_key}" for field_key in all_keys
+        } <= SPECIFICATION_VISIBLE_FIELD_KEYS
+
+    assert ADDITIONAL_STAGE_FIELD_KEYS == {
+        "Overview": ("stakeholders",),
+        "Scope": ("assumptions", "dependencies"),
+    }
+
+
+def test_fields_hidden_by_default_round_trip_without_data_loss(tmp_path: Path) -> None:
+    record = document_to_record(worked_example_document(worktree=tmp_path))
+    hidden_top_level = {
+        key
+        for keys in ADDITIONAL_STAGE_FIELD_KEYS.values()
+        for key in keys
+    }
+    hidden_record_fields = {
+        group: {field.key for field in fields} - PRIMARY_RECORD_FIELD_KEYS[group]
+        for group, fields in {
+            "use_cases": USE_CASE_FIELDS,
+            "requirements": REQUIREMENT_FIELDS,
+            "risks": RISK_FIELDS,
+            "decisions": DECISION_FIELDS,
+            "verification": VERIFICATION_FIELDS,
+        }.items()
+    }
+
+    restored = savefile_to_record(specification_to_savefile_bytes(record))
+
+    assert all(restored[key] == record[key] for key in hidden_top_level)
+    for group, hidden_keys in hidden_record_fields.items():
+        for key in hidden_keys:
+            if group == "verification" and key in record[group][0]["validation_loop"]:
+                assert (
+                    restored[group][0]["validation_loop"][key]
+                    == record[group][0]["validation_loop"][key]
+                )
+            else:
+                assert restored[group][0][key] == record[group][0][key]
+    assert record_to_document(restored, worktree=tmp_path) == worked_example_document(
+        worktree=tmp_path
+    )
+
+
 def test_worked_example_populates_every_field_and_round_trips(tmp_path: Path) -> None:
     document = worked_example_document(worktree=tmp_path)
     record = document_to_record(document)
@@ -630,7 +712,9 @@ def test_editor_can_embed_in_specification_tab_with_json_controls(
 
 
 @pytest.mark.skipif(not os.environ.get("DISPLAY"), reason="requires a Tk display")
-def test_editor_live_feedback_reacts_to_field_edits(tmp_path: Path) -> None:
+def test_editor_field_help_includes_current_feedback(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     try:
         import tkinter as tk
     except ImportError:
@@ -641,28 +725,42 @@ def test_editor_live_feedback_reacts_to_field_edits(tmp_path: Path) -> None:
         pytest.skip("Tk cannot connect to a display")
     root.withdraw()
 
+    shown: list[str] = []
+    import ai_loop.specification_gui as specification_gui
+
+    monkeypatch.setattr(
+        specification_gui.messagebox,
+        "showinfo",
+        lambda _title, text, **_kwargs: shown.append(text),
+    )
+
     try:
         editor = open_specification_editor(
             root,
             service=SpecificationService(tmp_path / "loop.sqlite3", tmp_path / "artifacts"),
             repository_path=tmp_path,
         )
-        assert "Empty" in editor.guidance_labels["title"].cget("text")
+        editor.help_buttons["title"].invoke()
+        assert "Empty" in shown[-1]
 
         editor.title_var.set("TBD")
         editor._finish_scheduled_assessment()
-        assert "replace placeholder" in editor.guidance_labels["title"].cget("text")
+        editor.help_buttons["title"].invoke()
+        assert "replace placeholder" in shown[-1]
 
         editor.title_var.set("Appointment reminder delivery")
         editor._finish_scheduled_assessment()
-        assert "Looks good" in editor.guidance_labels["title"].cget("text")
+        editor.help_buttons["title"].invoke()
+        assert "Looks good" in shown[-1]
         editor.window.destroy()
     finally:
         root.destroy()
 
 
 @pytest.mark.skipif(not os.environ.get("DISPLAY"), reason="requires a Tk display")
-def test_editor_renders_guidance_and_load_example_control(tmp_path: Path) -> None:
+def test_editor_renders_on_demand_help_and_load_example_control(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     try:
         import tkinter as tk
         from tkinter import ttk
@@ -675,6 +773,13 @@ def test_editor_renders_guidance_and_load_example_control(tmp_path: Path) -> Non
     root.withdraw()
 
     import ai_loop.specification_gui as specification_gui
+
+    shown: list[tuple[str, str]] = []
+    monkeypatch.setattr(
+        specification_gui.messagebox,
+        "showinfo",
+        lambda title, text, **_kwargs: shown.append((title, text)),
+    )
 
     def immediate_runner(work, done, **_kwargs):
         try:
@@ -694,13 +799,10 @@ def test_editor_renders_guidance_and_load_example_control(tmp_path: Path) -> Non
             repository_path=tmp_path,
             run_background=immediate_runner,
         )
-        assert editor.process_overview_label.winfo_manager() == "grid"
-        assert editor.process_overview_label.cget("text") == PROCESS_OVERVIEW_TEXT
-        assert all(
-            label.winfo_manager()
-            and "Example:" in str(label.cget("text"))
-            for label in editor.guidance_labels.values()
-        )
+        assert editor.process_help_button.winfo_manager() == "grid"
+        assert editor.process_help_button.cget("text") == "How this works"
+        editor.process_help_button.invoke()
+        assert shown[-1][1] == PROCESS_OVERVIEW_TEXT
         assert {
             "title",
             "summary",
@@ -717,7 +819,25 @@ def test_editor_renders_guidance_and_load_example_control(tmp_path: Path) -> Non
             "verification",
             "decisions",
             "open_questions",
-        } <= set(editor.guidance_labels)
+        } <= set(editor.help_buttons)
+        assert all(
+            label.cget("text") == SPECIFICATION_FIELD_LABELS[key]
+            for key, label in editor.field_labels.items()
+        )
+        assert all(
+            button.cget("text") == "?"
+            for button in editor.help_buttons.values()
+        )
+        assert all(
+            widget.winfo_manager() == ""
+            for widgets in editor.additional_field_widgets.values()
+            for widget in widgets
+        )
+        editor.additional_fields_buttons["Overview"].invoke()
+        assert all(
+            widget.winfo_manager() == "grid"
+            for widget in editor.additional_field_widgets["Overview"]
+        )
 
         load_buttons = [
             widget
@@ -725,6 +845,7 @@ def test_editor_renders_guidance_and_load_example_control(tmp_path: Path) -> Non
             if isinstance(widget, ttk.Button) and widget.cget("text") == "Load example"
         ]
         assert load_buttons == [editor.load_example_button]
+        editor.load_example_button.invoke()
 
         field_groups = {
             "use_cases": specification_gui.USE_CASE_FIELDS,
@@ -734,21 +855,45 @@ def test_editor_renders_guidance_and_load_example_control(tmp_path: Path) -> Non
             "verification": specification_gui.VERIFICATION_FIELDS,
         }
         for key, fields in field_groups.items():
+            initial = editor.record[key][0]
+            dialog_initial = (
+                specification_gui._verification_for_dialog(initial)
+                if key == "verification"
+                else initial
+            )
             dialog = specification_gui._RecordDialog(
                 editor.window,
-                f"Guidance for {key}",
+                f"Help for {key}",
                 fields,
+                dialog_initial,
                 field_path_prefix=key,
             )
-            assert set(dialog.guidance_labels) == {field.key for field in fields}
+            assert set(dialog.help_buttons) == {field.key for field in fields}
             assert all(
-                label.winfo_manager()
-                and "Example:" in str(label.cget("text"))
-                for label in dialog.guidance_labels.values()
+                label.cget("text") == SPECIFICATION_FIELD_LABELS[f"{key}.{field_key}"]
+                for field_key, label in dialog.field_labels.items()
             )
+            assert all(
+                button.cget("text") == "?"
+                for button in dialog.help_buttons.values()
+            )
+            assert dialog.more_fields_button is not None
+            assert dialog._additional_rows
+            assert all(row.winfo_manager() == "" for row in dialog._additional_rows)
+            collected, errors = dialog._collect_values()
+            assert not errors
+            assert (
+                specification_gui._verification_from_dialog(collected)
+                if key == "verification"
+                else collected
+            ) == initial
+            first_field = fields[0]
+            dialog.help_buttons[first_field.key].invoke()
+            assert "Example:" in shown[-1][1]
+            dialog.more_fields_button.invoke()
+            assert all(row.winfo_manager() == "grid" for row in dialog._additional_rows)
             dialog.window.destroy()
 
-        editor.load_example_button.invoke()
         assert editor.snapshot is None
         assert editor.selector_var.get() == "New specification"
         assert "not submitted or approved" in editor.status_var.get()

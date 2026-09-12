@@ -85,6 +85,104 @@ from ai_loop.specification_gui_support import (
 )
 
 
+_RECORD_FIELD_GROUPS = {
+    "use_cases": USE_CASE_FIELDS,
+    "requirements": REQUIREMENT_FIELDS,
+    "risks": RISK_FIELDS,
+    "decisions": DECISION_FIELDS,
+    "verification": VERIFICATION_FIELDS,
+}
+
+SPECIFICATION_FIELD_LABELS = {
+    "title": "Title",
+    "summary": "Summary",
+    "objectives": "Objectives",
+    "stakeholders": "Stakeholders",
+    "in_scope": "In scope",
+    "out_of_scope": "Out of scope",
+    "assumptions": "Assumptions",
+    "constraints": "Constraints",
+    "dependencies": "Dependencies",
+    "use_cases": "Use cases",
+    "requirements": "Requirements",
+    "risks": "Risks",
+    "verification": "Verification",
+    "decisions": "Decisions",
+    "open_questions": "Open questions",
+    "choice.selected_option": "Selected option",
+    "choice.rationale": "Rationale",
+    "choice.deferred": "Defer",
+    **{
+        f"{group}.{field.key}": field.label
+        for group, fields in _RECORD_FIELD_GROUPS.items()
+        for field in fields
+    },
+    "verification.metric_assertions": "Metric assertions",
+    "verification.coverage_targets": "Coverage targets",
+    "verification.required_evidence": "Required evidence",
+    "verification.blocking": "Blocking",
+    "requirements.acceptance_criteria": "Acceptance criteria",
+}
+
+# The single reusable source of on-demand field help for the editor. Keeping
+# examples with explanations also makes this useful to later documentation.
+SPECIFICATION_FIELD_HELP = {
+    **{
+        key: _field_guidance(key)
+        for key in SPECIFICATION_FIELD_LABELS
+        if not key.startswith("choice.")
+    },
+    "choice.selected_option": (
+        "Choose the option that should constrain the specification.\n"
+        "Example: Fixed retry limit"
+    ),
+    "choice.rationale": (
+        "Explain why this option fits the goals, constraints, and risks.\n"
+        "Example: A fixed limit is predictable and testable"
+    ),
+    "choice.deferred": (
+        "Select this only when the choice may remain unresolved without blocking approval.\n"
+        "Example: Leave a cosmetic preference for implementation"
+    ),
+}
+
+SPECIFICATION_VISIBLE_FIELD_KEYS = frozenset(SPECIFICATION_FIELD_LABELS)
+
+ADDITIONAL_STAGE_FIELD_KEYS = {
+    "Overview": ("stakeholders",),
+    "Scope": ("assumptions", "dependencies"),
+}
+
+PRIMARY_RECORD_FIELD_KEYS = {
+    "use_cases": frozenset(("id", "title", "actors", "main_flow", "requirement_ids")),
+    "requirements": frozenset(
+        ("id", "category", "priority", "title", "statement", "acceptance_criteria")
+    ),
+    "risks": frozenset(
+        ("id", "title", "description", "severity", "mitigations", "verification_ids")
+    ),
+    "decisions": frozenset(("topic", "selected_decision", "rationale")),
+    "verification": frozenset(
+        (
+            "id",
+            "title",
+            "requirement_ids",
+            "test_level",
+            "method",
+            "oracle",
+            "procedure",
+            "pass_criteria",
+            "automation",
+            "blocking",
+        )
+    ),
+}
+
+
+def _field_label(path: str, fallback: str) -> str:
+    return SPECIFICATION_FIELD_LABELS.get(path, fallback)
+
+
 def _verification_for_dialog(record: Mapping[str, Any] | None) -> dict[str, Any]:
     result = copy.deepcopy(dict(record or {}))
     loop = result.pop("validation_loop", {})
@@ -158,45 +256,63 @@ class _RecordDialog:
         canvas.grid(row=0, column=0, sticky="nsew")
         scrollbar.grid(row=0, column=1, sticky="ns")
         body = ttk.Frame(canvas, padding=(0, 0, 8, 8))
-        body.columnconfigure(1, weight=1)
+        body.columnconfigure(0, weight=1)
         body_id = canvas.create_window((0, 0), window=body, anchor="nw")
         body.bind("<Configure>", lambda _event: canvas.configure(scrollregion=canvas.bbox("all")))
         canvas.bind("<Configure>", lambda event: canvas.itemconfigure(body_id, width=event.width))
 
         initial_values = dict(initial or {})
         self._controls: dict[str, tuple[_Field, Any]] = {}
-        self.guidance_labels: dict[str, Any] = {}
-        self._guidance_text: dict[str, str] = {}
+        self.help_buttons: dict[str, Any] = {}
+        self.field_labels: dict[str, Any] = {}
+        self._feedback_messages: dict[str, str] = {}
+        self._additional_rows: list[Any] = []
         row = 0
-        current_group = ""
+        primary_keys = PRIMARY_RECORD_FIELD_KEYS.get(field_path_prefix or "")
+        additional_count = (
+            sum(field.key not in primary_keys for field in fields)
+            if primary_keys is not None
+            else 0
+        )
+        self.more_fields_button: Any | None = None
+        if additional_count:
+            self.more_fields_button = ttk.Button(
+                body,
+                text=f"More fields ({additional_count})",
+                command=self._toggle_additional_fields,
+            )
+            self.more_fields_button.grid(row=row, column=0, sticky="w", pady=(0, 5))
+            row += 1
         for field in fields:
-            if field.group != current_group:
-                ttk.Separator(body).grid(row=row, column=0, columnspan=2, sticky="ew", pady=(8, 5))
-                row += 1
-                ttk.Label(body, text=field.group).grid(row=row, column=0, columnspan=2, sticky="w")
-                row += 1
-                current_group = field.group
-            label_frame = ttk.Frame(body)
-            label_frame.grid(row=row, column=0, sticky="new", padx=(0, 12), pady=4)
-            ttk.Label(label_frame, text=field.label).pack(anchor="w")
+            field_row = ttk.Frame(body)
+            field_row.grid(row=row, column=0, sticky="ew", pady=4)
+            field_row.columnconfigure(1, weight=1)
             guidance_key = (
                 f"{field_path_prefix}.{field.key}" if field_path_prefix else ""
             )
-            guidance = _field_guidance(guidance_key) if guidance_key else ""
-            if guidance:
-                guidance_label = ttk.Label(
+            label = _field_label(guidance_key, field.label)
+            label_frame = ttk.Frame(field_row)
+            label_frame.grid(row=0, column=0, sticky="nw", padx=(0, 12))
+            field_label = ttk.Label(label_frame, text=label)
+            field_label.pack(side="left", anchor="w")
+            self.field_labels[field.key] = field_label
+            if guidance_key:
+                help_button = ttk.Button(
                     label_frame,
-                    text=guidance,
-                    wraplength=245,
-                    justify="left",
+                    text="?",
+                    width=3,
+                    command=lambda key=field.key, path=guidance_key, title=label: self._show_field_help(
+                        key, path, title
+                    ),
                 )
-                guidance_label.pack(anchor="w", pady=(2, 0))
-                self.guidance_labels[field.key] = guidance_label
-                self._guidance_text[field.key] = guidance
+                help_button.pack(side="left", padx=(5, 0))
+                self.help_buttons[field.key] = help_button
             value = initial_values.get(field.key, field.default)
             control: Any
             if field.kind in {"text", "list", "metrics", "records"}:
-                control = tk.Text(body, height=4 if field.kind == "text" else 5, wrap="word")
+                control = tk.Text(
+                    field_row, height=4 if field.kind == "text" else 5, wrap="word"
+                )
                 if isinstance(value, str):
                     rendered = value
                 elif field.kind == "metrics":
@@ -209,19 +325,29 @@ class _RecordDialog:
             elif field.kind == "enum":
                 variable = tk.StringVar(value=str(value or field.default))
                 control = ttk.Combobox(
-                    body, textvariable=variable, values=field.values, state="readonly"
+                    field_row,
+                    textvariable=variable,
+                    values=field.values,
+                    state="readonly",
                 )
             elif field.kind == "bool":
                 variable = tk.BooleanVar(value=bool(value))
-                control = ttk.Checkbutton(body, variable=variable)
+                control = ttk.Checkbutton(field_row, variable=variable)
             elif field.kind == "positive_int":
                 variable = tk.IntVar(value=int(value or field.default))
-                control = ttk.Spinbox(body, from_=1, to=1_000_000, textvariable=variable)
+                control = ttk.Spinbox(
+                    field_row, from_=1, to=1_000_000, textvariable=variable
+                )
             else:
                 variable = tk.StringVar(value="" if value is None else str(value))
-                control = ttk.Entry(body, textvariable=variable)
-            control.grid(row=row, column=1, sticky="ew", pady=4)
+                control = ttk.Entry(field_row, textvariable=variable)
+            if field.kind not in {"text", "list", "metrics", "records"}:
+                control._specification_variable = variable
+            control.grid(row=0, column=1, sticky="ew")
             self._controls[field.key] = (field, control)
+            if primary_keys is not None and field.key not in primary_keys:
+                field_row.grid_remove()
+                self._additional_rows.append(field_row)
             row += 1
 
         if self._feedback_provider is not None:
@@ -239,6 +365,31 @@ class _RecordDialog:
         ttk.Button(actions, text="Apply", command=self._accept).pack(side="right", padx=(0, 8))
         self.window.protocol("WM_DELETE_WINDOW", self.window.destroy)
         self._refresh_feedback()
+
+    def _toggle_additional_fields(self) -> None:
+        if self.more_fields_button is None:
+            return
+        showing = self.more_fields_button.cget("text").startswith("Fewer")
+        for row in self._additional_rows:
+            if showing:
+                row.grid_remove()
+            else:
+                row.grid()
+        self.more_fields_button.configure(
+            text=(
+                f"More fields ({len(self._additional_rows)})"
+                if showing
+                else "Fewer fields"
+            )
+        )
+
+    def _show_field_help(self, key: str, path: str, title: str) -> None:
+        assert messagebox is not None
+        text = SPECIFICATION_FIELD_HELP[path]
+        feedback = self._feedback_messages.get(key)
+        if feedback:
+            text += f"\n\nCurrent feedback: {feedback}"
+        messagebox.showinfo(f"{title} help", text, parent=self.window)
 
     def _collect_values(self) -> tuple[dict[str, Any], dict[str, str]]:
         result: dict[str, Any] = {}
@@ -291,14 +442,14 @@ class _RecordDialog:
             return
         values, errors = self._collect_values()
         feedback = self._feedback_provider(values) if not errors else {}
-        for key, label in self.guidance_labels.items():
+        for key in self.help_buttons:
             if key in errors:
                 message = f"Needs attention — {errors[key]}"
             elif key in feedback:
                 message = feedback[key].message
             else:
                 message = "Waiting for the other record fields to become valid."
-            label.configure(text=f"{self._guidance_text[key]}\n\nLive feedback: {message}")
+            self._feedback_messages[key] = message
 
     def _accept(self) -> None:
         result, errors = self._collect_values()
@@ -1037,8 +1188,12 @@ class SpecificationEditor:
         self._implementation_job_id: str | None = None
         self._implementation_start_in_flight = False
         self._selector_rows: dict[str, dict[str, Any]] = {}
-        self.guidance_labels: dict[str, Any] = {}
-        self._guidance_text: dict[str, str] = {}
+        self.help_buttons: dict[str, Any] = {}
+        self.field_labels: dict[str, Any] = {}
+        self._field_row_widgets: dict[str, list[Any]] = {}
+        self.additional_fields_buttons: dict[str, Any] = {}
+        self.additional_field_widgets: dict[str, list[Any]] = {}
+        self.additional_field_rows: dict[str, list[tuple[Any, int]]] = {}
 
         self.window = parent if embedded else tk.Toplevel(parent)
         if not embedded:
@@ -1119,23 +1274,23 @@ class SpecificationEditor:
             justify="left",
         )
         self.status_label.grid(
-            row=2, column=0, columnspan=3, sticky="w", pady=(7, 0)
+            row=2, column=0, columnspan=2, sticky="w", pady=(7, 0)
         )
         self._bind_responsive_wrap(self.status_label, header, margin=20)
-        process_frame = ttk.LabelFrame(header, text="From specification to DONE", padding=7)
-        process_frame.grid(
-            row=3, column=0, columnspan=3, sticky="ew", pady=(8, 0)
+        self.process_help_button = ttk.Button(
+            header,
+            text="How this works",
+            command=self._show_process_help,
         )
-        process_frame.columnconfigure(0, weight=1)
-        self.process_overview_label = ttk.Label(
-            process_frame,
-            text=PROCESS_OVERVIEW_TEXT,
-            wraplength=1040,
-            justify="left",
+        self.process_help_button.grid(
+            row=2, column=2, sticky="e", padx=(8, 0), pady=(7, 0)
         )
-        self.process_overview_label.grid(row=0, column=0, sticky="ew")
-        self._bind_responsive_wrap(
-            self.process_overview_label, process_frame, margin=20
+
+    def _show_process_help(self) -> None:
+        messagebox.showinfo(
+            "How the specification works",
+            PROCESS_OVERVIEW_TEXT,
+            parent=self.window,
         )
 
     def _build_tabs(self) -> None:
@@ -1216,33 +1371,42 @@ class SpecificationEditor:
         self._stage_scroll_canvases[stage] = canvas
         return body
 
-    def _field_label(self, parent: Any, row: int, key: str, label: str) -> None:
+    def _field_label(self, parent: Any, row: int, key: str) -> None:
         label_frame = ttk.Frame(parent)
         label_frame.grid(row=row, column=0, sticky="new", padx=(0, 12), pady=4)
-        ttk.Label(label_frame, text=label).pack(anchor="w")
-        guidance = ttk.Label(
+        field_label = ttk.Label(label_frame, text=SPECIFICATION_FIELD_LABELS[key])
+        field_label.pack(side="left", anchor="w")
+        help_button = ttk.Button(
             label_frame,
-            text=_field_guidance(key),
-            wraplength=260,
-            justify="left",
+            text="?",
+            width=3,
+            command=lambda: self._show_field_help(key),
         )
-        guidance.pack(anchor="w", pady=(2, 0))
-        self._bind_responsive_wrap(
-            guidance, label_frame, margin=4, maximum=260
+        help_button.pack(side="left", padx=(5, 0))
+        self.field_labels[key] = field_label
+        self.help_buttons[key] = help_button
+        self._field_row_widgets[key] = [label_frame]
+
+    def _show_field_help(self, key: str, title: str | None = None) -> None:
+        text = SPECIFICATION_FIELD_HELP[key]
+        feedback = getattr(self, "field_feedback", {}).get(key)
+        if feedback is not None:
+            text += f"\n\nCurrent feedback: {feedback.message}"
+        messagebox.showinfo(
+            f"{title or SPECIFICATION_FIELD_LABELS[key]} help",
+            text,
+            parent=self.window,
         )
-        self.guidance_labels[key] = guidance
-        self._guidance_text[key] = _field_guidance(key)
 
     def _labeled_text(
         self,
         parent: Any,
         row: int,
         key: str,
-        label: str,
         *,
         height: int = 4,
     ) -> Any:
-        self._field_label(parent, row, key, label)
+        self._field_label(parent, row, key)
         holder = ttk.Frame(parent)
         holder.grid(row=row, column=1, sticky="nsew", pady=4)
         holder.columnconfigure(0, weight=1)
@@ -1252,39 +1416,74 @@ class SpecificationEditor:
         widget.configure(yscrollcommand=vertical.set)
         widget.grid(row=0, column=0, sticky="nsew")
         vertical.grid(row=0, column=1, sticky="ns")
+        self._field_row_widgets[key].append(holder)
         parent.rowconfigure(row, weight=1)
         return widget
+
+    def _hide_additional_stage_fields(self, parent: Any, stage: str, row: int) -> None:
+        widgets = [
+            widget
+            for key in ADDITIONAL_STAGE_FIELD_KEYS[stage]
+            for widget in self._field_row_widgets[key]
+        ]
+        rows = [
+            (parent, int(self._field_row_widgets[key][0].grid_info()["row"]))
+            for key in ADDITIONAL_STAGE_FIELD_KEYS[stage]
+        ]
+        for widget in widgets:
+            widget.grid_remove()
+        for container, row_number in rows:
+            container.rowconfigure(row_number, weight=0)
+        self.additional_field_widgets[stage] = widgets
+        self.additional_field_rows[stage] = rows
+        button = ttk.Button(
+            parent,
+            text=f"More fields ({len(ADDITIONAL_STAGE_FIELD_KEYS[stage])})",
+            command=lambda: self._toggle_stage_fields(stage),
+        )
+        button.grid(row=row, column=0, columnspan=2, sticky="w", pady=(7, 0))
+        self.additional_fields_buttons[stage] = button
+
+    def _toggle_stage_fields(self, stage: str) -> None:
+        button = self.additional_fields_buttons[stage]
+        showing = button.cget("text").startswith("Fewer")
+        for widget in self.additional_field_widgets[stage]:
+            if showing:
+                widget.grid_remove()
+            else:
+                widget.grid()
+        for container, row_number in self.additional_field_rows[stage]:
+            container.rowconfigure(row_number, weight=0 if showing else 1)
+        button.configure(
+            text=(
+                f"More fields ({len(ADDITIONAL_STAGE_FIELD_KEYS[stage])})"
+                if showing
+                else "Fewer fields"
+            )
+        )
 
     def _build_overview_tab(self) -> None:
         tab = self._scrollable_stage_body("Overview")
         tab.columnconfigure(1, weight=1)
-        self._field_label(tab, 0, "title", "Title")
+        self._field_label(tab, 0, "title")
         self.title_var = tk.StringVar()
-        ttk.Entry(tab, textvariable=self.title_var).grid(row=0, column=1, sticky="ew", pady=4)
-        self.summary_text = self._labeled_text(tab, 1, "summary", "Summary", height=7)
-        self.objectives_text = self._labeled_text(
-            tab, 2, "objectives", "Objectives (one per line)"
-        )
-        self.stakeholders_text = self._labeled_text(
-            tab, 3, "stakeholders", "Stakeholders (one per line)"
-        )
+        self.title_entry = ttk.Entry(tab, textvariable=self.title_var)
+        self.title_entry.grid(row=0, column=1, sticky="ew", pady=4)
+        self._field_row_widgets["title"].append(self.title_entry)
+        self.summary_text = self._labeled_text(tab, 1, "summary", height=7)
+        self.objectives_text = self._labeled_text(tab, 2, "objectives")
+        self.stakeholders_text = self._labeled_text(tab, 3, "stakeholders")
+        self._hide_additional_stage_fields(tab, "Overview", 4)
 
     def _build_scope_tab(self) -> None:
         tab = self._scrollable_stage_body("Scope")
         tab.columnconfigure(1, weight=1)
         self.scope_widgets: dict[str, Any] = {}
-        for row, (key, label) in enumerate(
-            (
-                ("in_scope", "Included scope"),
-                ("out_of_scope", "Excluded scope"),
-                ("assumptions", "Assumptions"),
-                ("constraints", "Constraints"),
-                ("dependencies", "Dependencies"),
-            )
+        for row, key in enumerate(
+            ("in_scope", "out_of_scope", "assumptions", "constraints", "dependencies")
         ):
-            self.scope_widgets[key] = self._labeled_text(
-                tab, row, key, f"{label} (one per line)"
-            )
+            self.scope_widgets[key] = self._labeled_text(tab, row, key)
+        self._hide_additional_stage_fields(tab, "Scope", 5)
 
     def _build_collection_tab(
         self,
@@ -1296,16 +1495,19 @@ class SpecificationEditor:
         tab = self.tabs[stage]
         tab.rowconfigure(0, weight=0)
         tab.rowconfigure(1, weight=1)
-        guidance = ttk.Label(
-            tab,
-            text=_field_guidance(key),
-            wraplength=1000,
-            justify="left",
+        intro = ttk.Frame(tab)
+        intro.grid(row=0, column=0, sticky="ew", pady=(0, 8))
+        field_label = ttk.Label(intro, text=SPECIFICATION_FIELD_LABELS[key])
+        field_label.pack(side="left")
+        help_button = ttk.Button(
+            intro,
+            text="?",
+            width=3,
+            command=lambda: self._show_field_help(key),
         )
-        guidance.grid(row=0, column=0, sticky="ew", pady=(0, 8))
-        self._bind_responsive_wrap(guidance, tab, margin=20)
-        self.guidance_labels[key] = guidance
-        self._guidance_text[key] = _field_guidance(key)
+        help_button.pack(side="left", padx=(5, 0))
+        self.field_labels[key] = field_label
+        self.help_buttons[key] = help_button
         table_frame = ttk.Frame(tab)
         table_frame.grid(row=1, column=0, sticky="nsew")
         table_frame.columnconfigure(0, weight=1)
@@ -1337,22 +1539,22 @@ class SpecificationEditor:
         tab.rowconfigure(0, weight=0)
         tab.rowconfigure(1, weight=2)
         tab.rowconfigure(2, weight=1)
-        choices_guidance = ttk.Label(
-            tab,
-            text=(
-                _field_guidance("decisions")
-                + "  "
-                + _field_guidance("open_questions")
-            ),
-            wraplength=1000,
-            justify="left",
-        )
-        choices_guidance.grid(row=0, column=0, sticky="ew", pady=(0, 8))
-        self._bind_responsive_wrap(choices_guidance, tab, margin=20)
-        self.guidance_labels["decisions"] = choices_guidance
-        self.guidance_labels["open_questions"] = choices_guidance
-        self._guidance_text["decisions"] = _field_guidance("decisions")
-        self._guidance_text["open_questions"] = _field_guidance("open_questions")
+        choices_intro = ttk.Frame(tab)
+        choices_intro.grid(row=0, column=0, sticky="ew", pady=(0, 8))
+        for key in ("decisions", "open_questions"):
+            field = ttk.Frame(choices_intro)
+            field.pack(side="left", padx=(0, 12))
+            field_label = ttk.Label(field, text=SPECIFICATION_FIELD_LABELS[key])
+            field_label.pack(side="left")
+            help_button = ttk.Button(
+                field,
+                text="?",
+                width=3,
+                command=lambda field_key=key: self._show_field_help(field_key),
+            )
+            help_button.pack(side="left", padx=(5, 0))
+            self.field_labels[key] = field_label
+            self.help_buttons[key] = help_button
         materialized = ttk.LabelFrame(tab, text="User-resolved specification decisions", padding=6)
         materialized.grid(row=1, column=0, sticky="nsew")
         materialized.columnconfigure(0, weight=1)
@@ -1374,7 +1576,7 @@ class SpecificationEditor:
 
         lower = ttk.PanedWindow(tab, orient="horizontal")
         lower.grid(row=2, column=0, sticky="nsew", pady=(8, 0))
-        questions = ttk.LabelFrame(lower, text="Open questions (one per line)", padding=6)
+        questions = ttk.LabelFrame(lower, text="Open questions", padding=6)
         suggested = ttk.LabelFrame(lower, text="Suggested choices", padding=6)
         lower.add(questions, weight=1)
         lower.add(suggested, weight=2)
@@ -1410,7 +1612,7 @@ class SpecificationEditor:
         self.resolve_button.grid(row=1, column=0, sticky="w", pady=(6, 0))
         suggested_help = ttk.Label(
             suggested,
-            text="Analyze a clean stored draft to discover additional unresolved choices.",
+            text="Run Analyze to suggest choices.",
             justify="left",
         )
         suggested_help.grid(row=2, column=0, sticky="ew", pady=(5, 0))
@@ -1420,18 +1622,9 @@ class SpecificationEditor:
         tab = self.tabs["Review"]
         tab.rowconfigure(0, weight=0)
         tab.rowconfigure(1, weight=1)
-        review_guidance = ttk.Label(
-            tab,
-            text=(
-                "Review lists structural and approval issues by owning stage. Resolve each issue, "
-                "save the draft, submit it for review, and approve only when the completion contract "
-                "is accurate. Approval itself does not start implementation."
-            ),
-            wraplength=1000,
-            justify="left",
+        ttk.Label(tab, text="Resolve listed issues before approval.").grid(
+            row=0, column=0, sticky="w", pady=(0, 8)
         )
-        review_guidance.grid(row=0, column=0, sticky="ew", pady=(0, 8))
-        self._bind_responsive_wrap(review_guidance, tab, margin=20)
         self.review_tree = ttk.Treeview(
             tab,
             columns=("owning_stage", "path", "severity", "message"),
@@ -1455,10 +1648,7 @@ class SpecificationEditor:
         footer.grid(row=2, column=0, sticky="ew")
         footer.columnconfigure(0, weight=1)
         self.deferred_var = tk.StringVar(
-            value=(
-                "Approve the specification to enable implementation. Starting compiles and "
-                "pins this exact version before the controller plans any work."
-            )
+            value="Approve the specification to enable implementation."
         )
         deferred_label = ttk.Label(
             footer,
@@ -1638,7 +1828,6 @@ class SpecificationEditor:
             worktree=self.repository_path,
             assessment=assessment,
         )
-        self._render_field_feedback()
         feedback_keys_by_stage = {
             "Overview": ("title", "summary", "objectives", "stakeholders"),
             "Scope": ("in_scope", "out_of_scope", "assumptions", "constraints", "dependencies"),
@@ -1665,29 +1854,6 @@ class SpecificationEditor:
                 values=(issue.owning_stage, issue.path, issue.severity, issue.message),
             )
         self._update_actions()
-
-    def _render_field_feedback(self) -> None:
-        rendered_widgets: set[str] = set()
-        for key, label in self.guidance_labels.items():
-            widget_name = str(label)
-            if widget_name in rendered_widgets:
-                continue
-            rendered_widgets.add(widget_name)
-            related_keys = tuple(
-                candidate
-                for candidate, candidate_label in self.guidance_labels.items()
-                if candidate_label is label
-            )
-            guidance = "  ".join(self._guidance_text[candidate] for candidate in related_keys)
-            messages = [
-                self.field_feedback[candidate].message
-                for candidate in related_keys
-                if candidate in self.field_feedback
-            ]
-            feedback_text = "  ".join(messages)
-            label.configure(
-                text=f"{guidance}\n\nLive feedback: {feedback_text}" if feedback_text else guidance
-            )
 
     def _collection_record_feedback(
         self,
@@ -2290,7 +2456,12 @@ class SpecificationEditor:
             _Field("rationale", "Rationale", "text"),
             _Field("deferred", "Defer as non-blocking", "bool", default=False),
         )
-        result = _RecordDialog(self.window, f"Resolve: {decision['topic']}", fields).show()
+        result = _RecordDialog(
+            self.window,
+            f"Resolve: {decision['topic']}",
+            fields,
+            field_path_prefix="choice",
+        ).show()
         if result is None:
             return
 
@@ -2367,13 +2538,18 @@ def open_specification_editor(
 
 
 __all__ = [
+    "ADDITIONAL_STAGE_FIELD_KEYS",
     "FieldSemanticFeedback",
     "MetricAssertionParseError",
+    "PRIMARY_RECORD_FIELD_KEYS",
     "PROCESS_OVERVIEW_TEXT",
     "SPECIFICATION_FIELD_EXAMPLES",
     "SPECIFICATION_FIELD_GUIDANCE",
+    "SPECIFICATION_FIELD_HELP",
+    "SPECIFICATION_FIELD_LABELS",
     "SPECIFICATION_SAVEFILE_SCHEMA",
     "SPECIFICATION_SAVEFILE_VERSION",
+    "SPECIFICATION_VISIBLE_FIELD_KEYS",
     "SpecificationSavefileError",
     "SpecificationEditor",
     "SpecificationSuggestion",
