@@ -1,123 +1,197 @@
-# AI-Loop introduction video shot list
+# AI-Loop introduction video shot list, version 2
 
-This shot list follows the numbered sections and measured narration timings in
-`docs/video/audio/durations.json`. Every named asset is generated at 1920×1080 by the deterministic Pillow renderer:
+This list maps one simple 1920 by 1080 slide to every narration segment in `docs/video/SCRIPT.md`. The common layout reserves the upper-right corner for the University of Vienna logo and keeps headlines, bullets, and images clear of that space. Generated diagrams are purpose-built graphics, not screenshots. New captures must use sanitized demo data and hide private paths, accounts, tokens, and messages.
 
-```bash
-python3 docs/video/build_visuals.py
-```
+## s01 — `s01_title`
 
-All assets are still frames. During video assembly they can be held, dissolved, or animated with editor-side pans
-and zooms synchronized to the final narration.
+- Visual type: Generated diagram.
+- Background: White.
+- Branding: University of Vienna logo in the upper right corner.
+- Content: AI-Loop headline; `Helmut Hlavacs`; `University of Vienna`; a small plan, implement, validate, continue loop.
+- Simplicity: One diagram, one headline, and no more than three short supporting lines.
 
-## 1. Introduction and about Helmut — 0:00.00 to 0:40.49
+## s02 — `s02_presenter`
 
-- `assets/s01_title.png` — opening AI-Loop title card.
-- `assets/s01_presenter.png` — Helmut Hlavacs presenter card with `University of Vienna and Robimo GmbH, Vienna,
-  Austria`, `https://robimo.at/`, `helmut.hlavacs@gmail.com`, and the confirmed repository URL.
-- `assets/s01_repository.png` — sanitized static browser mockup of the confirmed repository URL.
-- Substitution: the planned browser recording is represented by `assets/s01_repository.png`; it contains no live or
-  private browser data.
+- Visual type: Generated diagram.
+- Background: White.
+- Branding: University of Vienna logo in the upper right corner.
+- Content: Presenter card with the University website, university email, and GitHub repository URL exactly as written in the script.
+- Simplicity: One contact-card diagram, one headline, and four short contact lines.
 
-## 2. What AI-Loop is for — 0:40.49 to 1:30.88
+## s03 — `s03_purpose`
 
-- `assets/s02_mental_model.png` — a single-chat dead end contrasted with the persistent loop, durable plan, tasks,
-  decisions, results, progress, terminal state, and pause/resume center.
-- The still supplies the complete motion-graphic layout; editor-side highlights can follow its loop without needing
-  any additional source image.
+- Visual type: Generated diagram.
+- Background: White.
+- Branding: University of Vienna logo in the upper right corner.
+- Content: A single chat ending early on the left and a persistent multi-call job reaching checked completion on the right.
+- Simplicity: One comparison diagram, one headline, and three short labels.
 
-## 3. How the controller and worker loop works — 1:30.88 to 2:22.29
+## s04 — `s04_basic_idea`
 
-- `assets/s03_architecture.png` — controller/task/worker/worktree loop, return result, SQLite, Redis Streams, and
-  watcher architecture.
-- `assets/s03_promotion.png` — worktree validation, conflict gate, promotion, target-checkout validation, and durable
-  done state.
+- Visual type: Generated diagram.
+- Background: White.
+- Branding: University of Vienna logo in the upper right corner.
+- Content: Repository, outcome, and validation flowing into a controller, worker, evidence loop with three exit states.
+- Simplicity: One loop diagram, one headline, and only short node labels.
 
-## 4. Email feedback — 2:22.29 to 2:57.48
+## s05 — `s05_mental_model`
 
-- `assets/s04_email_thread.png` — sanitized four-beat thread for job start, twelve-hour status, attention request,
-  and a fictional reply command that resumes the same job.
-- All job IDs, mailbox addresses, status, and command text in the mockup are fictional; no mailbox was accessed.
+- Visual type: Generated diagram.
+- Background: White.
+- Branding: University of Vienna logo in the upper right corner.
+- Content: Controller, worker, worktree, and tests surrounding a shared durable notebook; pause and resume arrows.
+- Simplicity: One mental-model diagram, one headline, and no paragraph text.
 
-## 5. The GUI — 2:57.48 to 3:47.94
+## s06 — `s06_actors`
 
-- `assets/s05_gui_overview.png` — full `docs/images/ai-loop-gui.png` overview on a 16:9 canvas.
-- `assets/s05_gui_create_jobs.png` — legible left-side Create Job and Jobs crop.
-- `assets/s05_gui_tabs_toolbar.png` — toolbar crop followed by the right-side inspection tabs crop.
-- Substitution: this three-frame crop sequence replaces the planned live pan. It is derived only from the existing
-  repository screenshot and requires no new GUI capture.
+- Visual type: Generated diagram.
+- Background: White.
+- Branding: University of Vienna logo in the upper right corner.
+- Content: Controller, worker, and watcher around the durable job record, with small SQLite, Redis Streams, and worktree labels.
+- Simplicity: One architecture diagram, one headline, and compact labels only.
 
-## 6. A simple quick job — 3:47.94 to 4:37.68
+## s07 — `s07_lifecycle`
 
-- `assets/s06_quick_job_setup.png` — Create Job crop plus the overlaid sanitized example goal and settings.
-- `assets/s06_quick_job_progress.png` — fictional Plan, Task, Worker, and Logs states.
-- `assets/s06_quick_job_complete.png` — promotion and target-validation completion state.
-- Substitution: these three static frames replace the planned disposable-repository screen recording. No live GUI,
-  real repository path, or private process output is used.
+- Visual type: Generated diagram.
+- Background: White.
+- Branding: University of Vienna logo in the upper right corner.
+- Content: Planning, queued, implementing, promotion, validation, and done on one path; small waiting and human-input branches.
+- Simplicity: One lifecycle diagram, one headline, and no descriptive paragraphs.
 
-## 7. Specification details — 4:37.68 to 5:21.65
+## s08 — `s08_email`
 
-- `assets/s07_spec_overview.png` — eight-tab opening and compact common-path overview, derived from
-  `specification-empty-new.png` and `specification-overview-more-fields.png`.
-- `assets/s07_spec_guidance.png` — Overview fields with the `specification-field-help.png` dialog.
-- `assets/s07_spec_scope.png` — outcome and boundaries, derived from `specification-overview.png` and
-  `specification-scope.png`.
-- `assets/s07_spec_requirements.png` — stable requirements and acceptance-detail views, derived from
-  `specification-requirements.png` and `specification-requirement-dialog.png`.
-- `assets/s07_spec_choices_review.png` — Analyze/choices and completion checklist, derived from
-  `specification-choices.png` and `specification-review.png`.
-- `assets/s07_spec_workflow.png` — authoring-to-completion path, derived from
-  `specification-process-help.png` with an adjacent seven-step diagram.
-- The six-frame montage uses every existing `docs/images/specification-*.png` screenshot; no additional capture is
-  required.
+- Visual type: Generated diagram.
+- Background: White.
+- Branding: University of Vienna logo in the upper right corner.
+- Content: Sanitized email thread showing start, twelve-hour status, attention, completion, and a reply becoming a constraint.
+- Simplicity: One email-thread diagram, one headline, and five short message labels.
 
-## 8. Code analysis — 5:21.65 to 5:59.52
+## s09 — `s09_gui_overview`
 
-- `assets/s08_code_analysis.png` — sanitized repository tree, failing test output, successful worker report, and a
-  crop of the GUI's Controller, Worker, Details, and Logs region.
-- The fictional `demo-project` content is an overlay; the GUI portion is derived from
-  `docs/images/ai-loop-gui.png`.
+- Visual type: Screenshot.
+- Background: White.
+- Branding: University of Vienna logo in the upper right corner.
+- Screenshot status: Existing source file `docs/images/ai-loop-gui.png`; use the full application view and sanitize its title-bar byline and local repository path during visual production.
+- Reserved image area: Left 100, top 220, right 1820, bottom 980 on the 1920 by 1080 slide; contain the full screenshot proportionally inside this 1720 by 760 area with padding, without cropping or overflow.
+- Content: One headline above the screenshot and three short callouts inside the surrounding white margin.
 
-## 9. Direct LLM use and external repair help — 5:59.52 to 6:44.98
+## s10 — `s10_gui_create`
 
-- `assets/s09_comparison.png` — direct-model versus persistent AI-Loop split-screen comparison.
-- `assets/s09_repair_resume.png` — five-step provider repair and same-job resume sequence over a sanitized GUI crop.
-- `assets/s09_feedback.png` — closing feedback card with `helmut.hlavacs@gmail.com`.
-- Substitution: `assets/s09_repair_resume.png` replaces the planned live Fix binary / Fix It recording. The source GUI
-  crop comes from `docs/images/ai-loop-gui.png`; the repair sequence is synthetic and sanitized.
+- Visual type: Screenshot.
+- Background: White.
+- Branding: University of Vienna logo in the upper right corner.
+- Screenshot status: Existing source file `docs/images/ai-loop-gui.png`; use a proportional crop of the left-side Create Job view and sanitize the local repository path during visual production.
+- Reserved image area: Left 180, top 210, right 1740, bottom 990 on the 1920 by 1080 slide; fit the crop proportionally inside this 1560 by 780 area with padding, without clipping controls, cropping content, or overflow.
+- Content: One headline and four short callouts for goal, validation, roles, and isolation.
 
-## Source and metadata record
+## s11 — `s11_gui_jobs`
 
-- Confirmed repository URL: `https://github.com/hlavacs/AI-Loop.git`, from `git remote -v` and
-  `git config --get remote.origin.url`.
-- Affiliation: `University of Vienna and Robimo GmbH, Vienna, Austria`, from the application window title in
-  `ai_loop_gui.py`.
-- Website: `https://robimo.at/`, from the application window title in `ai_loop_gui.py`.
-- Screenshot sources: `docs/images/ai-loop-gui.png` and all ten existing
-  `docs/images/specification-*.png` files.
-- The renderer does not access the network, record the desktop, generate audio, or generate video.
+- Visual type: Screenshot.
+- Background: White.
+- Branding: University of Vienna logo in the upper right corner.
+- Screenshot status: New GUI capture required; capture the main window with a sanitized job selected in the Jobs list and the Status tab open.
+- Reserved image area: Left 120, top 210, right 1800, bottom 990 on the 1920 by 1080 slide; contain the complete capture proportionally inside this 1680 by 780 area with padding, without cropping or overflow.
+- Content: One headline and three short callouts for the selected job, state, and progress summary.
 
-## Toolchain
+## s12 — `s12_gui_plan`
 
-Verified from the worktree on 12 September 2026:
+- Visual type: Screenshot.
+- Background: White.
+- Branding: University of Vienna logo in the upper right corner.
+- Screenshot status: New GUI capture required; capture a sanitized completed or active job with the Plan tab open and the full plan readable.
+- Reserved image area: Left 140, top 210, right 1780, bottom 990 on the 1920 by 1080 slide; contain the complete capture proportionally inside this 1640 by 780 area with padding, without cropping or overflow.
+- Content: One headline and three short callouts for outcome, stages, and acceptance.
 
-```text
-ffmpeg version 6.1.1-3ubuntu5 Copyright (c) 2000-2023 the FFmpeg developers
-ffprobe version 6.1.1-3ubuntu5 Copyright (c) 2007-2023 the FFmpeg developers
-```
+## s13 — `s13_gui_task_controller`
 
-Both executables are on `PATH`. The narration audio durations are recorded in
-`docs/video/audio/durations.json` and drive the final assembly below.
+- Visual type: Screenshot.
+- Background: White.
+- Branding: University of Vienna logo in the upper right corner.
+- Screenshot status: New GUI capture required; capture a sanitized active job with the Task tab open and the adjacent Controller tab visible in the tab bar.
+- Reserved image area: Left 140, top 210, right 1780, bottom 990 on the 1920 by 1080 slide; contain the complete capture proportionally inside this 1640 by 780 area with padding, without cropping or overflow.
+- Content: One headline and three short callouts for current assignment, acceptance, and next decision.
 
-## Final export
+## s14 — `s14_gui_worker`
 
-Built from the worktree root with the deterministic assembler:
+- Visual type: Screenshot.
+- Background: White.
+- Branding: University of Vienna logo in the upper right corner.
+- Screenshot status: New GUI capture required; capture a sanitized job with the Worker tab open, a report visible, and the adjacent Details tab visible in the tab bar.
+- Reserved image area: Left 140, top 210, right 1780, bottom 990 on the 1920 by 1080 slide; contain the complete capture proportionally inside this 1640 by 780 area with padding, without cropping or overflow.
+- Content: One headline and three short callouts for result, changed files, and validation evidence.
 
-```bash
-python3 docs/video/build_video.py
-```
+## s15 — `s15_gui_logs`
 
-- Container duration: 405.000000 seconds (6:45.00).
-- Stream layout: one H.264 video stream and one AAC audio stream.
-- Video: 1920×1080, `yuv420p`, 30 fps (`r_frame_rate=30/1`, `avg_frame_rate=30/1`).
-- Output: `docs/video/ai-loop-introduction.mp4`, with `+faststart` enabled by the build command.
+- Visual type: Screenshot.
+- Background: White.
+- Branding: University of Vienna logo in the upper right corner.
+- Screenshot status: New GUI capture required; capture a sanitized active or completed job with the Logs tab open and the refresh, stop, resume, Finish Soon, and Finish Early toolbar controls visible.
+- Reserved image area: Left 140, top 210, right 1780, bottom 990 on the 1920 by 1080 slide; contain the complete capture proportionally inside this 1640 by 780 area with padding, without cropping or overflow.
+- Content: One headline and four short callouts for logs, resume, Finish Soon, and Finish Early.
+
+## s16 — `s16_gui_repair`
+
+- Visual type: Screenshot.
+- Background: White.
+- Branding: University of Vienna logo in the upper right corner.
+- Screenshot status: New GUI capture required; capture the provider authentication or repair dialog that offers Sign In, Fix binary, or Fix It, using sanitized provider and job data.
+- Reserved image area: Left 300, top 210, right 1620, bottom 970 on the 1920 by 1080 slide; contain the entire dialog proportionally inside this 1320 by 760 area with padding, without cropping or overflow.
+- Content: One headline and three short callouts for the detected problem, assisted action, and same-job resume.
+
+## s17 — `s17_quick_job`
+
+- Visual type: Screenshot.
+- Background: White.
+- Branding: University of Vienna logo in the upper right corner.
+- Screenshot status: New GUI capture required; capture the Create Job view filled with a sanitized demo repository, the one-failing-test goal, its test command, normal granularity, and worktree isolation.
+- Reserved image area: Left 220, top 210, right 1700, bottom 990 on the 1920 by 1080 slide; contain the complete form proportionally inside this 1480 by 780 area with padding, without clipping controls, cropping, or overflow.
+- Content: One headline and three short callouts for narrow goal, test command, and normal granularity.
+
+## s18 — `s18_quick_progress`
+
+- Visual type: Screenshot.
+- Background: White.
+- Branding: University of Vienna logo in the upper right corner.
+- Screenshot status: New GUI capture required; capture the same sanitized quick job after completion, with its latest worker result and successful target-checkout validation visible.
+- Reserved image area: Left 140, top 210, right 1780, bottom 990 on the 1920 by 1080 slide; contain the complete capture proportionally inside this 1640 by 780 area with padding, without cropping or overflow.
+- Content: One headline and three short callouts for current task, worker result, and final validation.
+
+## s19 — `s19_spec_overview`
+
+- Visual type: Screenshot.
+- Background: White.
+- Branding: University of Vienna logo in the upper right corner.
+- Screenshot status: Existing source file `docs/images/specification-overview.png`; show this one screenshot without combining it with other specification captures.
+- Reserved image area: Left 140, top 210, right 1780, bottom 990 on the 1920 by 1080 slide; contain the full screenshot proportionally inside this 1640 by 780 area with padding, without cropping or overflow.
+- Content: One headline and three short labels for outcome, boundaries, and assumptions.
+
+## s20 — `s20_spec_requirements`
+
+- Visual type: Screenshot.
+- Background: White.
+- Branding: University of Vienna logo in the upper right corner.
+- Screenshot status: Existing source file `docs/images/specification-requirements.png`; show this one screenshot without combining it with the requirement-dialog capture.
+- Reserved image area: Left 140, top 210, right 1780, bottom 990 on the 1920 by 1080 slide; contain the full screenshot proportionally inside this 1640 by 780 area with padding, without cropping or overflow.
+- Content: One headline and three short callouts for identifier, acceptance criterion, and linked verification.
+
+## s21 — `s21_code_analysis`
+
+- Visual type: Generated diagram.
+- Background: White.
+- Branding: University of Vienna logo in the upper right corner.
+- Content: Repository flowing through diagnosis and focused change to a passing test, with three small example outcome labels.
+- Simplicity: One process diagram, one headline, and no code listing or terminal wall.
+
+## s22 — `s22_closing`
+
+- Visual type: Generated diagram.
+- Background: White.
+- Branding: University of Vienna logo in the upper right corner.
+- Content: Three simple paths labeled direct LLM, AI-Loop, and external LLM repair, followed by university email, GitHub repository, and `Robimo.at` as the closing line.
+- Simplicity: One three-path diagram, one headline, and three short contact lines.
+
+## Screenshot inventory
+
+- Existing today: `docs/images/ai-loop-gui.png`, `docs/images/specification-choices.png`, `docs/images/specification-empty-new.png`, `docs/images/specification-field-help.png`, `docs/images/specification-overview-more-fields.png`, `docs/images/specification-overview.png`, `docs/images/specification-process-help.png`, `docs/images/specification-requirement-dialog.png`, `docs/images/specification-requirements.png`, `docs/images/specification-review.png`, and `docs/images/specification-scope.png`.
+- New captures still required: Jobs list with Status; Plan; Task with Controller tab visible; Worker with Details tab visible; Logs with supervision toolbar; provider authentication or repair dialog; filled quick-job form; completed quick-job result with target validation.
+- GUI-tour screenshot slides: s09 through s16, for a total of eight.

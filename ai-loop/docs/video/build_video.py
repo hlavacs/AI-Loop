@@ -5,75 +5,48 @@ Run from ``ai-loop``::
 
     python3 docs/video/build_video.py
 
-The assembler reads the measured narration timings and shot mapping from the
-repository.  It does not access a network, capture a desktop, generate speech,
+The assembler reads the measured narration timings and the numbered slide and
+audio files from the repository. It does not access a network, generate speech,
 or render source stills.
 """
 
 from __future__ import annotations
 
 import json
-import re
 import subprocess
 import tempfile
-from dataclasses import dataclass
-from fractions import Fraction
 from pathlib import Path
 from typing import Any
 
 VIDEO_DIR = Path(__file__).resolve().parent
 AUDIO_DIR = VIDEO_DIR / "audio"
 ASSET_DIR = VIDEO_DIR / "assets"
-SHOTLIST = VIDEO_DIR / "SHOTLIST.md"
 DURATIONS = AUDIO_DIR / "durations.json"
 OUTPUT = VIDEO_DIR / "ai-loop-introduction.mp4"
 
-SECTION_COUNT = 9
+SEGMENT_COUNT = 22
 WIDTH = 1920
 HEIGHT = 1080
-FRAME_RATE = Fraction(30, 1)
-FRAME_RATE_RATIO = f"{FRAME_RATE.numerator}/{FRAME_RATE.denominator}"
-
-SECTION_HEADING = re.compile(r"^## ([1-9])\. ")
-ASSET_REFERENCE = re.compile(r"^- `assets/([^`]+\.png)`")
-
-
-@dataclass(frozen=True)
-class Section:
-    """One measured narration section and its ordered still-image sequence."""
-
-    number: int
-    duration: float
-    assets: tuple[Path, ...]
-
-
-@dataclass(frozen=True)
-class TimelineEntry:
-    """One still's half-open interval on the assembled video timeline."""
-
-    section: int
-    asset: Path
-    start: float
-    end: float
+FRAME_RATE = "30/1"
 
 
 def require_file(path: Path) -> None:
-    """Fail with a useful error when an authoritative input is unavailable."""
+    """Fail with a useful error when a required input is unavailable."""
     if not path.is_file():
         raise RuntimeError(f"required input is missing: {path}")
 
 
 def read_durations() -> tuple[dict[int, float], float]:
-    """Read and strictly validate the authoritative section durations."""
+    """Read and strictly validate the measured per-segment durations."""
     require_file(DURATIONS)
     with DURATIONS.open(encoding="utf-8") as handle:
         raw = json.load(handle)
     if not isinstance(raw, dict):
         raise TypeError(f"expected a JSON object in {DURATIONS}")
 
-    expected_keys = {f"s{number:02d}.mp3" for number in range(1, SECTION_COUNT + 1)} | {
-        "total"
-    }
+    expected_keys = {
+        f"s{number:02d}.mp3" for number in range(1, SEGMENT_COUNT + 1)
+    } | {"total"}
     if set(raw) != expected_keys:
         raise RuntimeError(
             f"unexpected duration keys in {DURATIONS}: "
@@ -81,7 +54,7 @@ def read_durations() -> tuple[dict[int, float], float]:
         )
 
     durations: dict[int, float] = {}
-    for number in range(1, SECTION_COUNT + 1):
+    for number in range(1, SEGMENT_COUNT + 1):
         key = f"s{number:02d}.mp3"
         value = raw[key]
         if not isinstance(value, (int, float)) or isinstance(value, bool) or value <= 0:
@@ -98,105 +71,36 @@ def read_durations() -> tuple[dict[int, float], float]:
     total = float(total_value)
     if abs(sum(durations.values()) - total) > 0.000_001:
         raise RuntimeError(
-            f"section durations sum to {sum(durations.values()):.6f}, "
+            f"segment durations sum to {sum(durations.values()):.6f}, "
             f"but {DURATIONS} records {total:.6f}"
         )
     return durations, total
 
 
-def read_shot_mapping() -> dict[int, tuple[Path, ...]]:
-    """Parse the ordered per-section PNG mapping from the authoritative shot list."""
-    require_file(SHOTLIST)
-    mapping: dict[int, list[Path]] = {}
-    current_section: int | None = None
-    for line in SHOTLIST.read_text(encoding="utf-8").splitlines():
-        heading = SECTION_HEADING.match(line)
-        if heading:
-            current_section = int(heading.group(1))
-            if current_section in mapping:
-                raise RuntimeError(f"duplicate section {current_section} in {SHOTLIST}")
-            mapping[current_section] = []
-            continue
-        if line.startswith("## "):
-            current_section = None
-            continue
-        asset = ASSET_REFERENCE.match(line)
-        if asset and current_section is not None:
-            relative = Path(asset.group(1))
-            if relative.name != str(relative) or relative.suffix.lower() != ".png":
-                raise RuntimeError(
-                    f"invalid asset reference in {SHOTLIST}: {asset.group(1)!r}"
-                )
-            mapping[current_section].append(ASSET_DIR / relative)
-
-    expected_sections = set(range(1, SECTION_COUNT + 1))
-    if set(mapping) != expected_sections:
-        raise RuntimeError(
-            f"shot-list sections must be 1 through {SECTION_COUNT}; got {sorted(mapping)}"
-        )
-    for number, assets in mapping.items():
-        if not assets:
-            raise RuntimeError(f"section {number} has no assets in {SHOTLIST}")
-        for asset in assets:
-            require_file(asset)
-
-    mapped_assets = [asset.resolve() for assets in mapping.values() for asset in assets]
-    if len(mapped_assets) != len(set(mapped_assets)):
-        raise RuntimeError(f"an asset is mapped more than once in {SHOTLIST}")
-    available_assets = {
-        path.resolve() for path in ASSET_DIR.glob("*.png") if path.is_file()
-    }
-    if set(mapped_assets) != available_assets:
-        missing = sorted(path.name for path in available_assets - set(mapped_assets))
-        unknown = sorted(path.name for path in set(mapped_assets) - available_assets)
-        raise RuntimeError(
-            f"SHOTLIST/assets mismatch; unmapped assets={missing}, missing assets={unknown}"
-        )
-    return {number: tuple(assets) for number, assets in mapping.items()}
-
-
-def build_timeline(sections: tuple[Section, ...]) -> tuple[TimelineEntry, ...]:
-    """Split each section evenly among its assets without gaps or overlaps."""
-    entries: list[TimelineEntry] = []
-    section_start = 0.0
-    for section in sections:
-        asset_duration = section.duration / len(section.assets)
-        section_end = section_start + section.duration
-        for index, asset in enumerate(section.assets):
-            asset_start = section_start + index * asset_duration
-            asset_end = (
-                section_end
-                if index == len(section.assets) - 1
-                else section_start + (index + 1) * asset_duration
+def find_inputs() -> tuple[dict[int, Path], dict[int, Path]]:
+    """Pair each numeric segment ID with exactly one slide and one MP3."""
+    slides: dict[int, Path] = {}
+    audio: dict[int, Path] = {}
+    for number in range(1, SEGMENT_COUNT + 1):
+        segment = f"s{number:02d}"
+        matches = sorted(ASSET_DIR.glob(f"{segment}_*.png"))
+        if len(matches) != 1:
+            names = [path.name for path in matches]
+            raise RuntimeError(
+                f"expected exactly one slide matching {segment}_*.png in "
+                f"{ASSET_DIR}, found {len(matches)}: {names}"
             )
-            entries.append(TimelineEntry(section.number, asset, asset_start, asset_end))
-        section_start = section_end
-    return tuple(entries)
+        slides[number] = matches[0]
+
+        audio_path = AUDIO_DIR / f"{segment}.mp3"
+        require_file(audio_path)
+        audio[number] = audio_path
+    return slides, audio
 
 
 def ffconcat_path(path: Path) -> str:
     """Quote an absolute path for FFmpeg's concat-demuxer syntax."""
     return "'" + path.resolve().as_posix().replace("'", "'\\''") + "'"
-
-
-def write_audio_manifest(path: Path) -> None:
-    """Write the narration inputs in strict numeric order."""
-    lines = ["ffconcat version 1.0"]
-    for number in range(1, SECTION_COUNT + 1):
-        audio = AUDIO_DIR / f"s{number:02d}.mp3"
-        require_file(audio)
-        lines.append(f"file {ffconcat_path(audio)}")
-    path.write_text("\n".join(lines) + "\n", encoding="utf-8")
-
-
-def write_video_manifest(path: Path, timeline: tuple[TimelineEntry, ...]) -> None:
-    """Write exact still durations, repeating the last file to retain its duration."""
-    lines = ["ffconcat version 1.0"]
-    for entry in timeline:
-        lines.append(f"file {ffconcat_path(entry.asset)}")
-        lines.append(f"duration {entry.end - entry.start:.9f}")
-    lines.append(f"file {ffconcat_path(timeline[-1].asset)}")
-    path.write_text("\n".join(lines) + "\n", encoding="utf-8")
 
 
 def run(command: list[str]) -> None:
@@ -239,8 +143,7 @@ def validate_export(description: dict[str, Any], expected_duration: float) -> fl
         or video_stream.get("width") != WIDTH
         or video_stream.get("height") != HEIGHT
         or video_stream.get("pix_fmt") != "yuv420p"
-        or video_stream.get("r_frame_rate") != FRAME_RATE_RATIO
-        or video_stream.get("avg_frame_rate") != FRAME_RATE_RATIO
+        or video_stream.get("r_frame_rate") != FRAME_RATE
     ):
         raise RuntimeError(f"unexpected video stream: {video_stream!r}")
     if audio[0].get("codec_name") != "aac":
@@ -254,60 +157,64 @@ def validate_export(description: dict[str, Any], expected_duration: float) -> fl
     return duration
 
 
-def print_timeline(timeline: tuple[TimelineEntry, ...], total: float) -> None:
-    """Print the exact mapping used so a build is straightforward to audit."""
-    print("Timeline (half-open intervals, seconds):")
-    current_section = 0
-    for entry in timeline:
-        if entry.section != current_section:
-            current_section = entry.section
-            print(f"  Section {entry.section}: starts {entry.start:.6f}")
-        print(f"    {entry.asset.name}: {entry.start:.6f} -> {entry.end:.6f}")
-    print(f"  End: {total:.6f}")
-
-
 def main() -> None:
-    """Build the narration, video timeline, final mux, and validate the result."""
+    """Build the 22-segment video and validate the finished export."""
     durations, total = read_durations()
-    shot_mapping = read_shot_mapping()
-    sections = tuple(
-        Section(number, durations[number], shot_mapping[number])
-        for number in range(1, SECTION_COUNT + 1)
-    )
-    timeline = build_timeline(sections)
-    if abs(timeline[-1].end - total) > 0.000_001:
-        raise RuntimeError(
-            f"timeline ends at {timeline[-1].end:.6f}, expected {total:.6f}"
-        )
+    slides, audio = find_inputs()
 
     with tempfile.TemporaryDirectory(prefix="ai-loop-video-") as temporary:
         temporary_dir = Path(temporary)
-        audio_manifest = temporary_dir / "audio.ffconcat"
-        video_manifest = temporary_dir / "video.ffconcat"
-        narration = temporary_dir / "narration.mp3"
         candidate = temporary_dir / OUTPUT.name
-        write_audio_manifest(audio_manifest)
-        write_video_manifest(video_manifest, timeline)
+        parts: list[Path] = []
+        for number in range(1, SEGMENT_COUNT + 1):
+            part = temporary_dir / f"part_{number:02d}.mp4"
+            run(
+                [
+                    "ffmpeg",
+                    "-hide_banner",
+                    "-loglevel",
+                    "warning",
+                    "-y",
+                    "-loop",
+                    "1",
+                    "-i",
+                    str(slides[number]),
+                    "-i",
+                    str(audio[number]),
+                    "-t",
+                    f"{durations[number]:.9f}",
+                    "-threads",
+                    "1",
+                    "-c:v",
+                    "libx264",
+                    "-preset",
+                    "veryfast",
+                    "-tune",
+                    "stillimage",
+                    "-crf",
+                    "20",
+                    "-pix_fmt",
+                    "yuv420p",
+                    "-r",
+                    FRAME_RATE,
+                    "-c:a",
+                    "aac",
+                    "-b:a",
+                    "192k",
+                    "-shortest",
+                    str(part),
+                ]
+            )
+            parts.append(part)
 
-        run(
-            [
-                "ffmpeg",
-                "-hide_banner",
-                "-loglevel",
-                "warning",
-                "-y",
-                "-f",
-                "concat",
-                "-safe",
-                "0",
-                "-i",
-                str(audio_manifest),
-                "-map",
-                "0:a:0",
-                "-c:a",
-                "copy",
-                str(narration),
-            ]
+        parts_manifest = temporary_dir / "parts.ffconcat"
+        parts_manifest.write_text(
+            "\n".join(
+                ["ffconcat version 1.0"]
+                + [f"file {ffconcat_path(part)}" for part in parts]
+            )
+            + "\n",
+            encoding="utf-8",
         )
         run(
             [
@@ -316,30 +223,16 @@ def main() -> None:
                 "-loglevel",
                 "warning",
                 "-y",
+                "-threads",
+                "1",
                 "-f",
                 "concat",
                 "-safe",
                 "0",
                 "-i",
-                str(video_manifest),
-                "-i",
-                str(narration),
-                "-map",
-                "0:v:0",
-                "-map",
-                "1:a:0",
-                "-vf",
-                f"fps={FRAME_RATE},format=yuv420p",
-                "-c:v",
-                "libx264",
-                "-preset",
-                "medium",
-                "-crf",
-                "18",
-                "-c:a",
-                "aac",
-                "-b:a",
-                "192k",
+                str(parts_manifest),
+                "-c",
+                "copy",
                 "-movflags",
                 "+faststart",
                 str(candidate),
@@ -349,7 +242,15 @@ def main() -> None:
         measured_duration = validate_export(description, total)
         candidate.replace(OUTPUT)
 
-    print_timeline(timeline, total)
+    elapsed = 0.0
+    print("Timeline (half-open intervals, seconds):")
+    for number in range(1, SEGMENT_COUNT + 1):
+        end = elapsed + durations[number]
+        print(
+            f"  s{number:02d}: {elapsed:.6f} -> {end:.6f} "
+            f"({slides[number].name})"
+        )
+        elapsed = end
     print(f"Exported: {OUTPUT}")
     print(f"Measured container duration: {measured_duration:.6f} seconds")
     print(json.dumps(description, indent=2, sort_keys=True))
