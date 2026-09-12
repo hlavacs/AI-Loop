@@ -1,12 +1,11 @@
-For ai-loop create an introduction video for youtube.
+For icoda create an introduction video for youtube.
 Length 10-12 minutes
-White background, logo of the university of Vienna on every slide in the right upper corner: https://www.univie.ac.at/en/about-us/organisation-and-structure/corporate-communications/downloads
+White background, logo of the university of Vienna on every slide in the right upper corner : https://www.univie.ac.at/en/about-us/organisation-and-structure/corporate-communications/downloads
 Keep the slides simple, and graphical. Do not put too much visual styles in a slide.
 You pronounce my family name "Lawatsch"
-Introduction, something about me, university affiliation, university Web site, university email, GitHub repo. Mention my company Robimo.at at the end of the presentation as a service provider for AI tools. Do not speak GmBH, you have it wrong.
-Put my name and university affiliation also onto the title slide also https://entertain.univie.ac.at/~hlavacs/
+Introduction, something about me, university affiliation, university Web site, university email, GitHub repo. Mention my company Robimo.at at the end of the presentation as service provider specialized in AI tooling. Do not speak GmBH, you have it wrong.
+Put my name and university affiliation also onto the title slide, and my web page at the end : https://entertain.univie.ac.at/~hlavacs/
 What it is for, basic idea, mental model, how it works
-Email feedback that ai-loop provides.
 Introduce GUI with screenshots, many screenshots. Explain what you can see on a screenshot, not too much detail though.
 Make sure that each screenshot fits into the slide area it is supposed to go.
 Simple example with quick job
