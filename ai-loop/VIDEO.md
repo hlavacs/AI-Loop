@@ -1,9 +1,14 @@
 For ai-loop create an introduction video for youtube.
-Length 5-7 minutes
-Introduction, about me, affiliation, Web site, email, GitHub repo
+Length 10-12 minutes
+White background, logo of the university of Vienna on every slide in the right upper corner
+Keep the slides simple, and graphical. Do not put too much visual styles in a slide.
+You pronounce my family name "Lawatsch"
+Introduction, something about me, university affiliation, university Web site, university email, GitHub repo. Mention Robimo.at at the end of the presentation. Do not speak GmBH, you have it wrong.
+Put my name and university affiliation also onto the title slide.
 What it is for, basic idea, mental model, how it works
-Email feedback
-Introduce GUI
+Email feedback that ai-loop provides.
+Introduce GUI with screenshots, many screenshots. Explain what you can see on a screenshot, not too much detail though.
+Make sure that each screenshot fits into the slide area it is supposed to go.
 Simple example with quick job
 Details about specification
 Code analysis
