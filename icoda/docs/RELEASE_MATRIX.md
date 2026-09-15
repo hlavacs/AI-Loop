@@ -10,7 +10,7 @@ claimed for an operating system that was not executed.
 |---|---|---|---|
 | Linux | **QUALIFIED** | Iteration 53: `DISPLAY=:99 bash icoda/verify.bash` produced `Required test coverage of 85% reached. Total coverage: 90.22%`, `317 passed, 3 skipped`, and `VERIFY_EXIT_STATUS=0`; the worktree-root suite produced `824 passed, 4 skipped`; `gui_acceptance.py` produced exactly 32 PNGs and `simulation_acceptance.py` produced ten PNGs plus `simulation-state.json` under persistent `Xephyr :99`; large summed stage latency remains `4.389153 s`. | Qualification applies only to the Linux host on which this evidence was executed. |
 | Windows | **UNQUALIFIED / UNMEASURED** | None. | No Windows host exists in this environment, so Windows launchers, process trees, compiler discovery, native paths, and real GUI/build/verification behavior were not executed. |
-| macOS | **UNQUALIFIED / UNMEASURED** | None. | No macOS host exists in this environment, so macOS launchers, SDK/Homebrew discovery, native paths, and real GUI/build/verification behavior were not executed. |
+| macOS | **UNQUALIFIED — hands-on record only** | Interactive use on the author's macOS machine, 2026-09-08 to 2026-09-15 (see below). The verification gate has not been run on macOS. | The macOS record is manual observation, not gate output: launchers, Homebrew LLVM discovery and the real GUI were exercised by hand; coverage, the sample build under `verify.bash` and the acceptance screenshots were not measured on macOS. |
 
 ## Platform-seam inventory
 
@@ -78,3 +78,31 @@ Other seams have the following evidence boundary:
   real host.
 - The provider `.exe`/`.cmd`/`.bat` filename probes and executable availability checks cannot prove real Windows PATH
   and executable semantics without a real Windows host.
+
+## macOS hands-on record (not gate evidence)
+
+Between 2026-09-08 and 2026-09-15 ICODA was used interactively on the author's macOS machine through `icoda.bash`
+(the launcher created `.icoda-venv` and installed the dependencies). What was observed and fixed there, in order:
+
+- The main window, the specification editor and the libclang chooser open and are sized to the screen; an
+  earlier version of the specification editor was taller than the screen, which led to `screen.fit_to_screen`
+  and to packing every button bar first.
+- **New Project** writes the C++ skeleton; the C++ module build needs Homebrew LLVM (`brew install llvm`), which
+  the generated `build.sh` and `steps.build_environment` select automatically.
+- The Claude Code CLI is invoked with the prompt on standard input (`prompt_mode: stdin`), because a prompt passed
+  as an argument after `--disallowedTools` was swallowed on macOS as on Linux.
+- A project directory inside another Git repository receives its own repository (`git.is_own_repository`), so
+  that step 0 is committed into the project and not into the enclosing checkout.
+- Error dialogs are shortened to ten lines (`dialogs.shorten`).
+- The user reported that reopening the demo project sometimes leaves the window unresponsive. The log showed only
+  normal opens; ICODA now shows a moving bar while analysing and a watchdog writes every thread's stack to the
+  log when the Tk thread stops answering for five seconds, so the next occurrence is diagnosable.
+
+To turn this record into qualification, run on a macOS host from `icoda/`:
+
+```bash
+.icoda-venv/bin/python -m pip install -e '.[dev]'
+./verify.bash
+```
+
+and add the produced `summary.txt` figures (coverage, pytest counts, GUI screenshots) to the table above.

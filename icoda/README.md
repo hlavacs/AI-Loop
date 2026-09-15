@@ -7,13 +7,17 @@ functions while inspecting the source structure, proposed changes, and test evid
 You decide what to build, approve implementation approaches, and review code before it is committed. ICODA
 derives its architecture views from the source code and verifies proposals in an isolated Git worktree.
 
-[Quick Start](#quick-start) | [Workflow](#development-workflow) |
-[Illustrated PDF Handbook](output/pdf/ICODA-Handbook.pdf) | [Development](#development)
+**Users** start with [Getting started](docs/GETTING_STARTED.md) (two pages: install, first project, first step),
+then the [Tutorial](docs/TUTORIAL.md) (one small program from specification to tested code) and
+[Troubleshooting](docs/TROUBLESHOOTING.md). The [Handbook](HANDBOOK.md) is the complete reference. Inside ICODA,
+the **Help** menu opens the same pages, and the sentence above the buttons in the lower panel says what to do next.
+
+**Maintainers** read [Development](#development) below and the handbook's
+[maintainer guide](HANDBOOK.md#12-maintainer-guide).
 
 ![ICODA showing a source hierarchy, an implementation target, and a proposed approach](docs/images/handbook/implementation-approach.png)
 
-*The implementation workspace combines the project structure, next target, and approach awaiting approval.
-The [handbook](output/pdf/ICODA-Handbook.pdf) explains the complete interface with 32 screenshots.*
+*The implementation workspace combines the project structure, next target, and approach awaiting approval.*
 
 ## What ICODA Does
 
@@ -34,6 +38,8 @@ ICODA is independent of [AI-Loop](../ai-loop/README.md), the unattended job runn
 It does not require AI-Loop or Redis.
 
 ## Quick Start
+
+The short version; [Getting started](docs/GETTING_STARTED.md) has the walkthrough.
 
 ### Prerequisites
 
@@ -84,8 +90,8 @@ manager. Windows reports missing prerequisites for you to install.
 
 For a new project, choose **File > New Project...**, select an empty directory, and complete the Specification
 editor. Select the language in **Code Profile**, validate the specification, and save. ICODA creates missing
-skeleton files and moves into the architecture phase. Follow the build instructions, then choose
-**File > Reload**.
+skeleton files, moves into the architecture phase, and offers to build the skeleton; **Project > Build** does the
+same at any later time and reloads the analysis when the build passes.
 
 For an existing project, start from a committed working tree and choose **File > Open Project...**. Python source
 is analysed without importing or executing it. C++ analysis needs the compiler settings in `compile_commands.json`.
@@ -98,7 +104,7 @@ cmake --build --preset debug
 
 ICODA looks for the newest compile database at the project root, in `build/`, or one directory below `build/`,
 such as `build/debug/`. Reload after generating it. Use **Project > Choose libclang Library...** if library
-discovery needs adjustment.
+discovery needs adjustment; applying a choice reloads the open project with that library.
 
 Existing CMake projects without ICODA state start in the implementation phase. Existing Python projects without
 ICODA state start in the specification phase; saving their first specification may add missing skeleton files.
@@ -151,8 +157,8 @@ interrupted proposals.
 ## Status and Limitations
 
 ICODA is currently version **0.1.0**. C++ and Python workflows are implemented, with native launchers for Linux,
-macOS, and Windows. The committed [release matrix](docs/RELEASE_MATRIX.md) qualifies Linux; it does not yet record
-full macOS or Windows qualification.
+macOS, and Windows. The committed [release matrix](docs/RELEASE_MATRIX.md) qualifies Linux with the full
+verification gate; macOS has a hands-on usage record but no gate run yet, and Windows is unmeasured.
 
 The specification editor validates structure and references, but does not yet run an AI-guided requirements
 interview. Many Code Profile rules are advisory. Test coverage in the GUI represents recorded test provenance and
@@ -161,16 +167,27 @@ and test presets. Known scaling issues and feature gaps are tracked in the [gap 
 
 ## Documentation
 
+For users:
+
 | Guide | Contents |
 |---|---|
-| [Illustrated PDF handbook](output/pdf/ICODA-Handbook.pdf) | Full user and maintainer guide with 32 screenshots |
-| [Handbook source](HANDBOOK.md) | Searchable Markdown edition and editable source |
+| [Getting started](docs/GETTING_STARTED.md) | Install, the first project, the first step — two pages |
+| [Tutorial](docs/TUTORIAL.md) | One small program from specification to tested code, step by step |
+| [Troubleshooting](docs/TROUBLESHOOTING.md) | The problems people meet, their fixes, and where the log is |
+| [Handbook](HANDBOOK.md) | Every view, control and file; the reference |
+| [Illustrated PDF handbook](output/pdf/ICODA-Handbook.pdf) | The handbook with 32 screenshots (edition of 2026-09-11; the Markdown is newer) |
+
+For maintainers:
+
+| Guide | Contents |
+|---|---|
 | [Design](EVOLUTION.md) | Architecture, concepts, and intended behavior |
 | [Implementation plan](ICODA_PLAN.md) | Development milestones and their history |
 | [Lifecycle simulation](docs/SIMULATION.md) | A complete developer-controlled workflow and its evidence |
 | [Gap analysis](docs/GAP_ANALYSIS.md) | Implemented capabilities, remaining gaps, and performance findings |
 | [Release matrix](docs/RELEASE_MATRIX.md) | Platform qualification and its limits |
 | [Verification log](docs/VERIFY_LOG.md) | Detailed verification history |
+| [Usability review](docs/USABILITY_REVIEW.md) | The 2026-09-15 review of usability and documentation, and what was done about it |
 
 ## Development
 

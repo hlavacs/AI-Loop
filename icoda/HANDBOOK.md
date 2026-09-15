@@ -7,6 +7,9 @@ providers, isolated Git worktrees, build and test gates, and an explicit develop
 This handbook describes the behavior implemented in ICODA 0.1.0. `EVOLUTION.md` and `ICODA_PLAN.md` describe the
 design and its history; this file is the practical guide for using and maintaining the current application.
 
+New users should start with the two-page `docs/GETTING_STARTED.md`, then `docs/TUTORIAL.md`; `docs/TROUBLESHOOTING.md`
+collects the usual problems and their fixes. The **Help** menu in ICODA opens all of them.
+
 The screenshots are real Tk captures produced from deterministic acceptance fixtures. They show both C++ and
 Python projects so that the workflow is not mistaken for a language-specific design.
 
@@ -100,12 +103,14 @@ Provider availability and invocation compatibility can be checked without consum
 
 ### Create a new project
 
-1. Choose **File > New Project...**.
+1. Choose **File > New Project...** (Ctrl+N; ⌘N on macOS).
 2. Select an empty directory.
 3. Complete the Specification window.
-4. Press **Validate**, resolve any reported problems, and press **Save**.
-5. Build the generated skeleton as instructed by the confirmation dialog.
-6. Return to ICODA and choose **File > Reload**.
+4. Press **Validate**, resolve any reported problems, and press **Save** (Ctrl+S / ⌘S).
+5. Answer **Yes** when ICODA offers to build the skeleton. The build runs in the background and the project is
+   analysed when it passes. **Project > Build** (Ctrl+B / ⌘B) repeats this at any time.
+
+At every point the sentence above the buttons in the lower panel names the next action.
 
 Saving the first specification creates only files that do not already exist. It generates either a C++ CMake
 skeleton or a Python skeleton according to the Code Profile, then moves the project into the `architecture` phase.
@@ -253,16 +258,17 @@ The Code Profile constrains generated code and supplies build/test conventions. 
 - test-file and source-file conventions;
 - module, class, and function naming;
 - library policy;
-- function-size limits;
+- function-size limits (the soft limit that asks for a split, and the hard limit that refuses);
+- class-size limits (methods and data members);
 - project-specific style rules.
 
 ![C++ code profile with build, test, naming, library, and style conventions](docs/images/handbook/specification-code-profile.png)
 
 *The Code Profile turns project conventions into explicit generation and verification constraints.*
 
-Some profile fields, including the hard function limit and class-size limits, are retained in the JSON but are not
-currently exposed by the editor. Advanced changes can be made in `.icoda/specification.json` while ICODA is closed,
-then checked by reopening the editor and pressing **Validate**.
+Every limit the rule checks use is editable on this page. Only the generated build settings (`build`) are kept in
+the JSON without an editor field; they can be changed in `.icoda/specification.json` while ICODA is closed, then
+checked by reopening the editor and pressing **Validate**.
 
 ### A quality checklist
 
@@ -310,9 +316,34 @@ after code has been tagged.
 
 ### Menus
 
-**File** creates, opens, reloads, and remembers projects. **Project** opens the specification and libclang chooser,
-starts proposals, approves the architecture, undoes the last approved step, or commits manual edits. **View** opens
-the analysis surfaces, fits diagrams, and toggles coverage colours.
+**File** creates, opens, reloads, and remembers projects. **Project** opens the specification, builds the project,
+sets the test command, opens the libclang chooser, starts proposals, approves the architecture, undoes the last
+approved step, or commits manual edits. **View** opens the analysis surfaces, fits diagrams, and toggles coverage
+colours. **Help** opens Getting started, the Tutorial, this handbook and Troubleshooting, opens the current log
+file, and shows the version and file locations.
+
+Keyboard shortcuts (Command on macOS, Control elsewhere): N new project, O open project, R reload, E specification,
+B build, Return propose the next step, Q quit; in the specification editor S saves and W closes.
+
+### The step panel
+
+The lower panel is driven by the project's phase. One sentence above the buttons says what to do next; it changes
+with every event (analysis running, proposal ready, signature confirmation needed, approach approved, queue empty,
+automatic approval paused). Only the buttons that belong to the phase are shown: none in `specification`;
+**Propose**, **Approve**, **Reject...**, **Adapt...**, **Approve architecture** and **Undo last step** in
+`architecture`; **Propose approach**, **Approve approach**, **Propose**, **Approve**, **Reject...**, **Adapt...** and
+**Undo last step** in `implementation`. **Confirm signatures** appears only when a proposal changes signatures.
+**More...** holds the rare actions **Rebuild**, **Open worktree** and **Commit manual edits**. A grey button is still
+explained: its tooltip says what it does, when it is available, and why it is grey now.
+
+While a step runs, the buttons are replaced by a moving bar, the current activity (`asking the agent for the next step
+(attempt 1 of 3)`, `building the proposal`, ...) and, for agent calls, builds and tests, a **Cancel** button. Cancel
+kills the running process; the step ends with `cancelled — nothing was recorded` and the panel keeps its previous
+content. Approving, undoing and committing cannot be cancelled because they change the project.
+
+The detail tabs are **Approach**, **Delta**, **Signatures**, **Summary**, **Diff**, **Build**,
+**Tests**, **Prompt** and **Reply**. The last two show exactly what was sent to the agent for the displayed item and
+what came back, so that a puzzling proposal can be traced to its cause.
 
 ### Shared graph controls
 
@@ -486,9 +517,9 @@ The lower panel contains:
 
 - the provider rationale and questions;
 - **Delta**: added, removed, changed, and renamed entities;
-- **Signature changes**: previous and proposed declarations;
-- **Entity summary**: editable structured intent for adaptation;
-- **Source diff**: the exact candidate patch;
+- **Signatures**: previous and proposed declarations;
+- **Summary**: editable structured intent for adaptation;
+- **Diff**: the exact candidate patch;
 - **Build** and **Tests**: captured gate output.
 
 Review the source diff and the resulting diagrams, not only the rationale. Build and test success prove the configured
@@ -498,23 +529,23 @@ checks passed; they do not prove the change meets the specification.
 
 *Delta summarizes the model-level effect rather than forcing reviewers to infer it from text.*
 
-![Editable structured Entity summary used for adaptation](docs/images/handbook/structured-adaptation.png)
+![Editable structured Summary tab used for adaptation](docs/images/handbook/structured-adaptation.png)
 
-*Entity summary provides structured intent that can be edited and returned as hard adaptation constraints.*
+*The Summary tab provides structured intent that can be edited and returned as hard adaptation constraints.*
 
-![Proposal Source diff tab with the exact candidate patch](docs/images/handbook/proposal-source-diff.png)
+![Proposal Diff tab with the exact candidate patch](docs/images/handbook/proposal-source-diff.png)
 
-*Source diff remains the authoritative view of what the proposal would actually change.*
+*The Diff tab remains the authoritative view of what the proposal would actually change.*
 
 ### Decide
 
 - **Approve** promotes the worktree changes, rebuilds and retests the real project, appends the step record, and
   creates one Git commit.
 - **Reject...** records a reason. The next proposal receives that reason as feedback.
-- **Adapt...** uses edits made in the Entity summary as hard constraints. If the summary is unchanged, ICODA asks
+- **Adapt...** uses edits made in the Summary tab as hard constraints. If the summary is unchanged, ICODA asks
   for a semicolon-separated free-text instruction.
-- **Open worktree** opens the proposal checkout for manual inspection or editing.
-- **Rebuild** reruns build, tests, parsing, and delta computation after a manual worktree edit.
+- **More... > Open worktree** opens the proposal checkout for manual inspection or editing.
+- **More... > Rebuild** reruns build, tests, parsing, and delta computation after a manual worktree edit.
 
 ![Rejected architecture proposal retained with its reason and review evidence](docs/images/handbook/sim-03-architecture-reject.png)
 
@@ -622,7 +653,8 @@ proposal whose build and tests pass. It never automatically approves:
 
 After automatically approving code, ICODA proposes the next approach and stops for the developer's decision. If
 that approach is approved while auto-approve remains enabled, ICODA starts the code round and can approve the green
-result. Any refusal is shown in the review panel and status bar.
+result. When automatic approval cannot continue, the proposal stays as it is and the hint line above the buttons
+says `Auto-approve paused: <reason>. Decide yourself.`; the status bar repeats the reason.
 
 ![Automatic approval enabled but stopped outside a live green code proposal](docs/images/handbook/auto-approve.png)
 
@@ -687,9 +719,10 @@ dirty tree, the GUI offers this path directly.
 
 ### Undo
 
-**Undo last step** creates a Git revert commit for the most recent approved ICODA step. It works only when the
-working tree is clean and `HEAD` is still that step's commit. ICODA will not rewrite unrelated later history; use
-Git manually when those conditions no longer hold.
+**Undo last step** creates a Git revert commit for the most recent approved ICODA step. The confirmation names the
+step that goes and says what happens: the files return to the state before that step, nothing is deleted from the
+Git history or the step log. It works only when the working tree is clean and `HEAD` is still that step's commit.
+ICODA will not rewrite unrelated later history; use Git manually when those conditions no longer hold.
 
 ### Interrupted proposals
 
@@ -718,17 +751,17 @@ The `editor` value may be a command template containing `{file}` and `{line}`. W
 
 ### The model is empty or stale
 
-For C++, build the project and confirm a current `compile_commands.json` exists. Open **Project > Choose libclang
-Library...**, select a detected candidate, press **Apply**, and restart ICODA so the library can be loaded in a fresh
-analysis process. The chooser distinguishes the saved active choice from the library already loaded by the current
-process.
+For C++, build the project (**Project > Build**) and confirm a current `compile_commands.json` exists. Open
+**Project > Choose libclang Library...**, select a detected candidate and press **Apply**: the choice is saved and
+the open project is reloaded, and because every analysis runs in a fresh child process the new library is used at
+once. The chooser distinguishes the saved active choice from the library the last analysis actually loaded.
 
 If libclang is unavailable or parsing crashes, ICODA keeps the last derived model and marks it stale. Details and
 the last parsed unit are in `.icoda/icoda.log`.
 
 ![Libclang chooser distinguishing the active and currently loaded libraries](docs/images/handbook/libclang-chooser.png)
 
-*The chooser makes toolchain discovery explicit and separates the next-start selection from the loaded process.*
+*The chooser makes toolchain discovery explicit and separates the saved selection from the library last loaded.*
 
 For Python, syntax-invalid files remain visible with parse errors but contribute no entities or call relations until
 fixed.
@@ -747,7 +780,9 @@ Generated build scripts detect a mismatched `CMAKE_HOME_DIRECTORY` and replace t
 
 ### A proposal action is disabled
 
-- In `specification`, save a valid specification first.
+Rest the pointer on the grey button: its tooltip ends with `Grey now: <reason>`. The reasons are:
+
+- In `specification`, save a valid specification first (no step buttons are shown).
 - In `architecture`, **Propose** is available; approach and queue controls are not.
 - **Approve architecture** requires no live proposal.
 - In `implementation`, approve an approach before requesting code.
@@ -755,6 +790,13 @@ Generated build scripts detect a mismatched `CMAKE_HOME_DIRECTORY` and replace t
 - Signature changes require **Confirm signatures**.
 - **Adapt** requires a usable live structured proposal or an unapproved approach.
 - Historical records are review-only.
+- While a step runs, every button waits; **Cancel** stops the cancellable parts.
+
+### The window does not answer
+
+Slow work runs in the background and shows a moving bar with the activity. If the window itself stops answering for
+more than five seconds, a watchdog thread writes every thread's stack to `.icoda/icoda.log` (lines starting with
+`watchdog:`); that block identifies the blocked call. `docs/TROUBLESHOOTING.md` explains what to send.
 
 ### Provider invocation fails
 
@@ -902,13 +944,17 @@ The current implementation has the following important boundaries:
 - Most Code Profile and rule-check findings are advisory rather than approval-blocking.
 - C++ proposal gates assume the `debug` CMake build and test presets.
 - Only Claude Code and Codex CLI are enabled in the shipped provider registry. Other provider templates are present
-  but intentionally unqualified.
-- The release matrix currently qualifies Linux only. Windows and macOS launcher and platform paths exist, but the
-  repository's current release evidence marks them unqualified and unmeasured.
+  but intentionally unqualified; the Binary field's tooltip names them.
+- The release matrix qualifies Linux with the full verification gate. macOS has a hands-on usage record without a
+  gate run; Windows launcher and platform paths exist but are unmeasured.
 - Retained large-project measurements name non-blocking scaling defects in Python parsing, File View layout, and
   expansion derivation. Consult `docs/GAP_ANALYSIS.md` before making performance claims.
 
 ## 14. Command reference
+
+The **Project > Build** menu entry runs the same build gate as a proposal (`cmake --preset debug` and `cmake --build
+--preset debug` for C++, `python -m compileall -q src` for Python) and reloads the analysis when it passes.
+**Project > Test Command...** edits the test command kept in `.icoda/state.json` (default `ctest --preset debug`).
 
 ```bash
 # Start the GUI
