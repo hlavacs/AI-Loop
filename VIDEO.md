@@ -2,9 +2,9 @@ Create an introduction video for youtube.
 Length 10-12 minutes
 White background, logo of the university of Vienna on every slide in the right upper corner (large enough to read easily, not too large) : https://www.univie.ac.at/en/about-us/organisation-and-structure/corporate-communications/downloads
 Keep the slides simple, and graphical. Do not put too much visual styles in a slide.
-You pronounce my family name "Lawatsch". Just say my name, do not stress the point that this is how it is pronounced.
+You pronounce my family name starting with an "L", the ending is like the one from "couch" or the starting from "cheese". Just say my name, do not stress the point that this is how it is pronounced.
 Introduction, something about me, university affiliation, university Web site, university email, GitHub repo. Mention my company Robimo.at at the end of the presentation as service provider specialized in AI tooling. Do not speak GmBH, you have it wrong.
-Put my name and university affiliation also onto the title slide, and my web page : "https://entertain.univie.ac.at/~hlavacs/"
+Put my name and university affiliation also onto the title slide, use my web page : "https://entertain.univie.ac.at/~hlavacs/" , not the university page. Do not spell out the URLs.
 In the video discuss what it is for, basic idea, mental model, how it works
 Introduce GUI with screenshots, many screenshots. Explain what you can see on a screenshot.
 Make sure that each screenshot fits into the slide area it is supposed to go.
