@@ -1,0 +1,179 @@
+{
+  "fps": 30,
+  "frame_size": [
+    1920,
+    1080
+  ],
+  "pad_seconds": 0.5,
+  "total_seconds": 714.6155130000002,
+  "slides": [
+    {
+      "slide": 1,
+      "start_seconds": 0.0,
+      "audio_duration_seconds": 24.42449,
+      "pad_seconds": 0.5,
+      "slide_duration_seconds": 24.92449
+    },
+    {
+      "slide": 2,
+      "start_seconds": 24.92449,
+      "audio_duration_seconds": 29.361633,
+      "pad_seconds": 0.5,
+      "slide_duration_seconds": 29.861633
+    },
+    {
+      "slide": 3,
+      "start_seconds": 54.786123,
+      "audio_duration_seconds": 26.174694,
+      "pad_seconds": 0.5,
+      "slide_duration_seconds": 26.674694
+    },
+    {
+      "slide": 4,
+      "start_seconds": 81.460817,
+      "audio_duration_seconds": 26.592653,
+      "pad_seconds": 0.5,
+      "slide_duration_seconds": 27.092653
+    },
+    {
+      "slide": 5,
+      "start_seconds": 108.55347,
+      "audio_duration_seconds": 27.977143,
+      "pad_seconds": 0.5,
+      "slide_duration_seconds": 28.477143
+    },
+    {
+      "slide": 6,
+      "start_seconds": 137.03061300000002,
+      "audio_duration_seconds": 31.686531,
+      "pad_seconds": 0.5,
+      "slide_duration_seconds": 32.186531
+    },
+    {
+      "slide": 7,
+      "start_seconds": 169.21714400000002,
+      "audio_duration_seconds": 32.757551,
+      "pad_seconds": 0.5,
+      "slide_duration_seconds": 33.257551
+    },
+    {
+      "slide": 8,
+      "start_seconds": 202.47469500000003,
+      "audio_duration_seconds": 30.249796,
+      "pad_seconds": 0.5,
+      "slide_duration_seconds": 30.749796
+    },
+    {
+      "slide": 9,
+      "start_seconds": 233.22449100000003,
+      "audio_duration_seconds": 31.973878,
+      "pad_seconds": 0.5,
+      "slide_duration_seconds": 32.473878
+    },
+    {
+      "slide": 10,
+      "start_seconds": 265.698369,
+      "audio_duration_seconds": 30.145306,
+      "pad_seconds": 0.5,
+      "slide_duration_seconds": 30.645306
+    },
+    {
+      "slide": 11,
+      "start_seconds": 296.343675,
+      "audio_duration_seconds": 27.376327,
+      "pad_seconds": 0.5,
+      "slide_duration_seconds": 27.876327
+    },
+    {
+      "slide": 12,
+      "start_seconds": 324.220002,
+      "audio_duration_seconds": 26.618776,
+      "pad_seconds": 0.5,
+      "slide_duration_seconds": 27.118776
+    },
+    {
+      "slide": 13,
+      "start_seconds": 351.33877800000005,
+      "audio_duration_seconds": 30.641633,
+      "pad_seconds": 0.5,
+      "slide_duration_seconds": 31.141633
+    },
+    {
+      "slide": 14,
+      "start_seconds": 382.48041100000006,
+      "audio_duration_seconds": 30.641633,
+      "pad_seconds": 0.5,
+      "slide_duration_seconds": 31.141633
+    },
+    {
+      "slide": 15,
+      "start_seconds": 413.6220440000001,
+      "audio_duration_seconds": 30.145306,
+      "pad_seconds": 0.5,
+      "slide_duration_seconds": 30.645306
+    },
+    {
+      "slide": 16,
+      "start_seconds": 444.2673500000001,
+      "audio_duration_seconds": 29.622857,
+      "pad_seconds": 0.5,
+      "slide_duration_seconds": 30.122857
+    },
+    {
+      "slide": 17,
+      "start_seconds": 474.3902070000001,
+      "audio_duration_seconds": 25.835102,
+      "pad_seconds": 0.5,
+      "slide_duration_seconds": 26.335102
+    },
+    {
+      "slide": 18,
+      "start_seconds": 500.7253090000001,
+      "audio_duration_seconds": 36.362449,
+      "pad_seconds": 0.5,
+      "slide_duration_seconds": 36.862449
+    },
+    {
+      "slide": 19,
+      "start_seconds": 537.5877580000001,
+      "audio_duration_seconds": 25.547755,
+      "pad_seconds": 0.5,
+      "slide_duration_seconds": 26.047755
+    },
+    {
+      "slide": 20,
+      "start_seconds": 563.6355130000002,
+      "audio_duration_seconds": 28.36898,
+      "pad_seconds": 0.5,
+      "slide_duration_seconds": 28.86898
+    },
+    {
+      "slide": 21,
+      "start_seconds": 592.5044930000001,
+      "audio_duration_seconds": 31.320816,
+      "pad_seconds": 0.5,
+      "slide_duration_seconds": 31.820816
+    },
+    {
+      "slide": 22,
+      "start_seconds": 624.3253090000002,
+      "audio_duration_seconds": 31.346939,
+      "pad_seconds": 0.5,
+      "slide_duration_seconds": 31.846939
+    },
+    {
+      "slide": 23,
+      "start_seconds": 656.1722480000002,
+      "audio_duration_seconds": 25.6,
+      "pad_seconds": 0.5,
+      "slide_duration_seconds": 26.1
+    },
+    {
+      "slide": 24,
+      "start_seconds": 682.2722480000002,
+      "audio_duration_seconds": 31.843265,
+      "pad_seconds": 0.5,
+      "slide_duration_seconds": 32.343265
+    }
+  ]
+}

@@ -1,0 +1,32 @@
+{
+  "frame": {
+    "width": 1920,
+    "height": 1080,
+    "background": "#FFFFFF",
+    "fps": 30
+  },
+  "logo": {
+    "path": "assets/university-of-vienna-logo.png",
+    "source_page": "https://www.univie.ac.at/en/about-us/organisation-and-structure/corporate-communications/downloads",
+    "source_url": "https://www.univie.ac.at/fileadmin/user_upload/univie/Logos/Logos_Universitaet_Wien/Uni_Logo.png",
+    "source_dimensions": [2000, 1000],
+    "file_size_bytes": 102332,
+    "sha256": "09373739cb54146839230ce9efb25a9d7b9f6873c32cdce02e4741dbe3f915aa",
+    "slide_box": [1600, 38, 1840, 138],
+    "rendered_dimensions": [200, 100]
+  },
+  "slide_renderer": {
+    "approach": "Python/Pillow",
+    "dependency": "Pillow 10.2.0",
+    "dependency_check_exit_status": 0
+  },
+  "narration": {
+    "provider": "ElevenLabs MCP OAuth connector",
+    "voice_name": "Helmut Lecture 2",
+    "voice_id": "T22wMY2gj3hkNGpCJOwd",
+    "confirmed_by": "creative_list_voices",
+    "confirmed_on": "2026-09-15",
+    "audio_generated": false
+  }
+}
+
