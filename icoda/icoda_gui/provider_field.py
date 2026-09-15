@@ -14,6 +14,7 @@ from tkinter import ttk
 from typing import Any
 
 from icoda_core.agent import Provider
+from icoda_gui import tooltip
 
 
 @dataclass(frozen=True)
@@ -26,6 +27,18 @@ class ProviderSelection:
 
     def to_dict(self) -> dict[str, str]:
         return {"provider": self.provider_id or "", "binary": self.binary, "model": self.model}
+
+
+def describe_providers(providers: Sequence[Provider]) -> str:
+    """The tooltip of the Binary box: which agents can be chosen, and which are known but not enabled yet."""
+    enabled = [f"{p.command} — {p.label}" for p in providers if p.enabled]
+    disabled = [f"{p.command} — {p.label}" for p in providers if not p.enabled]
+    text = "Choose the coding agent's command, or type the full path of its executable.\n"
+    text += "Enabled: " + (", ".join(enabled) if enabled else "none")
+    if disabled:
+        text += ("\nKnown but not enabled yet (not verified with this version of ICODA; see providers.json): "
+                 + ", ".join(disabled))
+    return text
 
 
 def resolve_provider(providers: Sequence[Provider], binary: str) -> Provider | None:
@@ -54,9 +67,13 @@ class ProviderField:
         self.binary_box = ttk.Combobox(self.frame, textvariable=self.binary_var, width=18,
                                        values=[p.command for p in self.providers if p.enabled])
         self.binary_box.grid(row=0, column=1, sticky="ew", padx=(0, 10))
+        self.binary_tooltip = tooltip.attach(self.binary_box, describe_providers(self.providers))
         ttk.Label(self.frame, text="Model").grid(row=0, column=2, sticky="w", padx=(0, 4))
         self.model_box = ttk.Combobox(self.frame, textvariable=self.model_var, width=26)
         self.model_box.grid(row=0, column=3, sticky="ew")
+        self.model_tooltip = tooltip.attach(
+            self.model_box, "The model the agent should use. Pick one of the listed ones or type another id the "
+            "agent accepts; the choice is remembered per agent and per project.")
         ttk.Label(self.frame, textvariable=self.hint_var, foreground="#666666").grid(row=1, column=0, columnspan=4,
                                                                                    sticky="w", pady=(2, 0))
         self.frame.columnconfigure(3, weight=1)
@@ -119,7 +136,8 @@ class ProviderField:
             return
         self.model_box.configure(values=[m.id for m in provider.models])
         self.model_var.set(self.remembered.get(provider.id, provider.default_model))
-        self.hint_var.set(provider.label + ("" if provider.enabled else " — not verified yet"))
+        self.hint_var.set(provider.label + ("" if provider.enabled
+                                            else " — not enabled yet: not verified with this version of ICODA"))
 
     def _changed(self) -> None:
         if self.on_change is not None:

@@ -173,9 +173,12 @@ class MindMapCanvas(graph_canvas.GraphCanvas):
 
 
 def _metadata(node: mind_map.MindMapNode) -> str:
+    """Status, requirements and (when the history knows it) the step that introduced the node."""
     requirements = ", ".join(node.satisfied_requirement_ids) or "no requirements"
-    step = f"step #{node.introduced_iteration}" if node.introduced_iteration is not None else "step unknown"
-    return f"{node.status} · {requirements} · {step}"
+    parts = [node.status, requirements]
+    if node.introduced_iteration is not None:
+        parts.append(f"step #{node.introduced_iteration}")
+    return " · ".join(parts)
 
 
 def _shorten(text: str, limit: int) -> str:

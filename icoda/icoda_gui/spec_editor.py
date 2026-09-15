@@ -8,6 +8,7 @@ and tested without a display.
 from __future__ import annotations
 
 import copy
+import sys
 import tkinter as tk
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
@@ -105,10 +106,17 @@ PROFILE_FIELDS = (
                                                   "manifest; single-header libraries vendored under third_party/"),
     FieldSpec("max_function_lines", "Max function lines", "int",
               hint="Functions longer than this are split into smaller ones.\nExample: 30"),
+    FieldSpec("hard_max_function_lines", "Hard max function lines", "int",
+              hint="A function longer than this is refused outright, not only reported.\nExample: 60"),
+    FieldSpec("max_methods", "Max methods per class", "int",
+              hint="A class with more methods than this is flagged as too large.\nExample: 15"),
+    FieldSpec("max_data_members", "Max data members", "int",
+              hint="A class with more data members than this is flagged as too large.\nExample: 8"),
     FieldSpec("style_notes", "Style rules", "lines", height=6,
               hint="One rule per line that the agent must follow.\nExample: Prefer STL algorithms to loops"),
 )
-HIDDEN_PROFILE_KEYS = ("build", "hard_max_function_lines", "max_data_members", "max_methods")
+HIDDEN_PROFILE_KEYS = ("build",)
+SAVE_HINT = "Check the specification and write it to the project (Ctrl+S, ⌘S on macOS)."
 
 
 class FieldSet:
@@ -378,6 +386,9 @@ class SpecificationEditor:
         }
         self.profile = FieldSet(self._page("Code profile", "code_profile"), PROFILE_FIELDS)
         self.window.protocol("WM_DELETE_WINDOW", self.close)
+        modifier = "Command" if sys.platform == "darwin" else "Control"
+        self.window.bind(f"<{modifier}-s>", lambda _event: self.save())
+        self.window.bind(f"<{modifier}-w>", lambda _event: self.close())
         self.load(spec)
 
     def _build_bar(self) -> None:
@@ -387,7 +398,7 @@ class SpecificationEditor:
         ttk.Label(bar, textvariable=self.problems, foreground="#c00000", anchor="w",
                   wraplength=700).pack(side=tk.LEFT, fill=tk.X, expand=True)
         for text, command, hint in (("Close", self.close, "Close the editor; unsaved changes are asked about."),
-                                    ("Save", self.save, "Check the specification and write it to the project."),
+                                    ("Save", self.save, SAVE_HINT),
                                     ("Validate", self.validate, "Check the specification without saving.")):
             button = ttk.Button(bar, text=text, command=command)
             button.pack(side=tk.RIGHT, padx=(4, 0))

@@ -1,4 +1,9 @@
-"""The step panel: implementation approach, code proposal, verification output, and developer decisions."""
+"""The step panel: implementation approach, code proposal, verification output, and developer decisions.
+
+Only the buttons that belong to the project's phase are shown; a sentence above them says what to do next, and
+every button explains itself (and why it is grey) in a tooltip. While a step runs, a moving bar and the current
+activity replace the buttons, with Cancel for the parts that can be stopped.
+"""
 
 from __future__ import annotations
 
@@ -7,7 +12,17 @@ from collections.abc import Callable
 from tkinter import ttk
 from typing import Any
 
-from icoda_core import adaptation, grouping, implementation_queue, persistence, prompt, steplog, steps
+from icoda_core import (
+    adaptation,
+    grouping,
+    guidance,
+    implementation_queue,
+    persistence,
+    prompt,
+    steplog,
+    steps,
+)
+from icoda_gui import tooltip
 
 ACTIONS = ("propose_approach", "approve_approach", "propose", "approve_architecture", "approve",
            "confirm_signature", "reject", "adapt", "rebuild", "open_worktree", "undo", "commit_manual")
@@ -16,6 +31,46 @@ LABELS = {"propose_approach": "Propose approach", "approve_approach": "Approve a
           "rebuild": "Rebuild", "open_worktree": "Open worktree", "undo": "Undo last step",
           "commit_manual": "Commit manual edits", "approve_architecture": "Approve architecture",
           "confirm_signature": "Confirm signatures"}
+MORE_ACTIONS = ("rebuild", "open_worktree", "commit_manual")  # rarely needed: behind the More… button
+PHASE_ACTIONS: dict[str, tuple[str, ...]] = {
+    prompt.ARCHITECTURE: ("propose", "approve", "confirm_signature", "reject", "adapt", "approve_architecture",
+                          "undo"),
+    prompt.IMPLEMENTATION: ("propose_approach", "approve_approach", "propose", "approve", "confirm_signature",
+                            "reject", "adapt", "undo"),
+}
+HELP = {
+    "propose_approach": ("Ask the agent how the current target should be implemented (prose only, no code).",
+                         "needs an unimplemented target and no approach waiting for a decision"),
+    "approve_approach": ("Accept the approach; the next Propose asks for the code and its tests.",
+                         "needs an approach that is waiting for a decision"),
+    "propose": ("Ask the agent for the next step. It is built and tested in a separate worktree first.",
+                "in the implementation phase it needs an approved approach"),
+    "approve": ("Take the proposal into the project: promote, rebuild, log and commit it.",
+                "needs a proposal that builds and passes its tests (and confirmed signatures)"),
+    "confirm_signature": ("Confirm that the changed function signatures are intended.",
+                          "only shown when a proposal changes signatures"),
+    "reject": ("Discard the proposal or approach; the reason goes into the next prompt.",
+               "needs a proposal or an approach"),
+    "adapt": ("Ask again with constraints, or with the edits you made in the Summary tab.",
+              "needs a usable proposal or a pending approach"),
+    "approve_architecture": ("Close the architecture phase and start implementing function by function.",
+                             "decide on the current proposal first"),
+    "undo": ("Revert the last approved step with a commit of its own.", "not while a step is running"),
+    "rebuild": ("Build, test and parse the worktree again after editing it by hand.", "needs a proposal"),
+    "open_worktree": ("Open the proposal's worktree in the editor.", "needs a proposal"),
+    "commit_manual": ("Commit your own edits as a manual step so the next proposal starts from a clean tree.",
+                      "not while a step is running"),
+}
+CONTROL_HELP = {
+    "request": "What the next step should do. Leave it empty and the agent chooses the most useful step.",
+    "max_entities": "How many classes and functions one architecture step may add at most.",
+    "batch_size": "How many functions one implementation step may implement together.",
+    "scope": "Where the implementation queue takes its next targets from.",
+    "grouping": "One function per step, or a validated group of short functions.",
+    "auto_approve": "Approve every step automatically while build and tests pass; stops at the first failure.",
+    "cancel": "Stop the running agent call, build or test. Nothing is recorded.",
+    "more": "Rarely needed actions: Rebuild, Open worktree, Commit manual edits.",
+}
 
 
 class StepPanel:
@@ -31,6 +86,8 @@ class StepPanel:
         self.has_implementation_target = False
         self.busy = False
         self.selected_iteration: int | None = None
+        self.target_name = ""
+        self.remaining = 0
         self.phase_var = tk.StringVar(value=persistence.ProjectPhase.SPECIFICATION.value)
         self.queue_var = tk.StringVar(value="Implementation queue: inactive")
         self.request_var = tk.StringVar(value="")
@@ -42,8 +99,18 @@ class StepPanel:
         self.build_status_var = tk.StringVar(value="Build: not run")
         self.test_status_var = tk.StringVar(value="Tests: not run")
         self.signature_var = tk.StringVar(value="Signature changes: none")
+        self.hint_var = tk.StringVar(value="")
+        self.activity_var = tk.StringVar(value="")
         self.buttons: dict[str, Any] = {}
         self.enabled_actions: set[str] = set()
+        self.visible_actions: tuple[str, ...] = ()
+        self.disabled_reasons: dict[str, str] = {}
+        self.cancellable = False
+        self.project_open = False
+        self.has_model = True
+        self.provider_ready = True
+        self.auto_approve_note = ""
+        self.tooltips: dict[str, tooltip.Tooltip] = {}
         self._build_request_row()
         self._build_texts()
         self.show(None)
@@ -54,12 +121,15 @@ class StepPanel:
         ttk.Label(request_row, text="Phase").pack(side=tk.LEFT)
         self.phase_label = ttk.Label(request_row, textvariable=self.phase_var, width=14)
         self.phase_label.pack(side=tk.LEFT, padx=(2, 10))
-        ttk.Label(request_row, text="Request (empty: the agent chooses)").pack(side=tk.LEFT)
-        ttk.Entry(request_row, textvariable=self.request_var).pack(side=tk.LEFT, fill=tk.X, expand=True,
-                                                                   padx=(2, 10))
+        ttk.Label(request_row, text="Request").pack(side=tk.LEFT)
+        self.request_entry = ttk.Entry(request_row, textvariable=self.request_var)
+        self.request_entry.pack(side=tk.LEFT, fill=tk.X, expand=True, padx=(2, 10))
+        self.tooltips["request"] = tooltip.attach(self.request_entry, CONTROL_HELP["request"])
         ttk.Label(request_row, text="Max entities").pack(side=tk.LEFT)
-        ttk.Spinbox(request_row, from_=1, to=20, width=3, textvariable=self.max_entities_var).pack(side=tk.LEFT,
-                                                                                                  padx=(2, 10))
+        self.max_entities_spinbox = ttk.Spinbox(request_row, from_=1, to=20, width=3,
+                                                textvariable=self.max_entities_var)
+        self.max_entities_spinbox.pack(side=tk.LEFT, padx=(2, 10))
+        self.tooltips["max_entities"] = tooltip.attach(self.max_entities_spinbox, CONTROL_HELP["max_entities"])
         ttk.Label(request_row, text="Batch size").pack(side=tk.LEFT)
         self.batch_size_spinbox = ttk.Spinbox(request_row, from_=1, to=20, width=3,
                                                textvariable=self.batch_size_var,
@@ -67,6 +137,7 @@ class StepPanel:
         self.batch_size_spinbox.pack(side=tk.LEFT, padx=(2, 0))
         self.batch_size_spinbox.bind("<Return>", self._batch_size_changed)
         self.batch_size_spinbox.bind("<FocusOut>", self._batch_size_changed)
+        self.tooltips["batch_size"] = tooltip.attach(self.batch_size_spinbox, CONTROL_HELP["batch_size"])
         queue_row = ttk.Frame(self.frame)
         queue_row.pack(fill=tk.X, padx=4, pady=(0, 2))
         self.queue_label = ttk.Label(queue_row, textvariable=self.queue_var, anchor="w")
@@ -77,19 +148,31 @@ class StepPanel:
             values=tuple(label for _scope, label in implementation_queue.SCOPE_LABELS))
         self.scope_combobox.pack(side=tk.LEFT)
         self.scope_combobox.bind("<<ComboboxSelected>>", self._scope_changed)
+        self.tooltips["scope"] = tooltip.attach(self.scope_combobox, CONTROL_HELP["scope"])
         self._build_grouping_control(queue_row)
         self.auto_approve_check = ttk.Checkbutton(
             queue_row, text="Auto-approve while gates pass", variable=self.auto_approve_var,
             command=self._auto_approve_changed)
         self.auto_approve_check.pack(side=tk.LEFT, padx=(10, 0))
-        approach_row = ttk.Frame(self.frame)
-        approach_row.pack(fill=tk.X, padx=4, pady=(0, 2))
-        action_row = ttk.Frame(self.frame)
-        action_row.pack(fill=tk.X, padx=4, pady=(0, 2))
+        self.tooltips["auto_approve"] = tooltip.attach(self.auto_approve_check, CONTROL_HELP["auto_approve"])
+        self.hint_label = ttk.Label(self.frame, textvariable=self.hint_var, anchor="w", justify="left",
+                                    wraplength=1200, foreground="#1f4e79")
+        self.hint_label.pack(fill=tk.X, padx=6, pady=(2, 2))
+        self.action_row = ttk.Frame(self.frame)
+        self.action_row.pack(fill=tk.X, padx=4, pady=(0, 2))
         for action in ACTIONS:
-            parent = approach_row if action in ("propose_approach", "approve_approach") else action_row
-            self.buttons[action] = ttk.Button(parent, text=LABELS[action], command=self._pressed(action))
-            self.buttons[action].pack(side=tk.LEFT, padx=2)
+            self.buttons[action] = ttk.Button(self.action_row, text=LABELS[action], command=self._pressed(action))
+            self.tooltips[action] = tooltip.attach(self.buttons[action], self._help_for(action))
+        self.more_button = ttk.Menubutton(self.action_row, text="More…")
+        self.more_menu = tk.Menu(self.more_button, tearoff=0)
+        for action in MORE_ACTIONS:
+            self.more_menu.add_command(label=LABELS[action], command=self._pressed(action))
+        self.more_button.configure(menu=self.more_menu)
+        self.tooltips["more"] = tooltip.attach(self.more_button, CONTROL_HELP["more"])
+        self.cancel_button = ttk.Button(self.action_row, text="Cancel", command=self._pressed("cancel"))
+        self.tooltips["cancel"] = tooltip.attach(self.cancel_button, CONTROL_HELP["cancel"])
+        self.progress = ttk.Progressbar(self.action_row, mode="indeterminate", length=160)
+        self.activity_label = ttk.Label(self.action_row, textvariable=self.activity_var, foreground="#1f77b4")
 
     def _build_texts(self) -> None:
         ttk.Label(self.frame, textvariable=self.title_var, font=("TkDefaultFont", 11, "bold"),
@@ -113,17 +196,30 @@ class StepPanel:
         self.source_diff = _scrolled_text(self.detail_notebook, wrap="none", font=("TkFixedFont", 10))
         self.build_output = _scrolled_text(self.detail_notebook, wrap="none", font=("TkFixedFont", 10))
         self.test_output = _scrolled_text(self.detail_notebook, wrap="none", font=("TkFixedFont", 10))
+        self.prompt_view = _scrolled_text(self.detail_notebook, wrap="word", font=("TkFixedFont", 10))
+        self.reply_view = _scrolled_text(self.detail_notebook, wrap="word", font=("TkFixedFont", 10))
         self.detail_notebook.add(self.approach_text.master, text="Approach")
         self.detail_notebook.add(self.details.master, text="Delta")
-        self.detail_notebook.add(self.signature.master, text="Signature changes")
-        self.detail_notebook.add(self.entity_summary.master, text="Entity summary")
-        self.detail_notebook.add(self.source_diff.master, text="Source diff")
+        self.detail_notebook.add(self.signature.master, text="Signatures")
+        self.detail_notebook.add(self.entity_summary.master, text="Summary")
+        self.detail_notebook.add(self.source_diff.master, text="Diff")
         self.detail_notebook.add(self.build_output.master, text="Build")
         self.detail_notebook.add(self.test_output.master, text="Tests")
+        self.detail_notebook.add(self.prompt_view.master, text="Prompt")
+        self.detail_notebook.add(self.reply_view.master, text="Reply")
         paned.add(self.detail_notebook, weight=2)
 
     def _pressed(self, action: str) -> Callable[[], None]:
         return lambda: self.on_action(action)
+
+    def _help_for(self, action: str) -> Callable[[], str]:
+        """The button's tooltip: what it does, plus why it is grey when it is."""
+        def text() -> str:
+            what, when = HELP[action]
+            reason = self.disabled_reasons.get(action)
+            return f"{what}\nAvailable: {when}." + (f"\nGrey now: {reason}." if reason else "")
+
+        return text
 
     def _batch_size_changed(self, _event: Any = None) -> None:
         self.batch_size_var.set(self.implementation_batch_size())
@@ -174,6 +270,7 @@ class StepPanel:
             values=tuple(label for _mode, label in grouping.GROUPING_LABELS))
         self.grouping_combobox.pack(side=tk.LEFT)
         self.grouping_combobox.bind("<<ComboboxSelected>>", self._grouping_changed)
+        self.tooltips["grouping"] = tooltip.attach(self.grouping_combobox, CONTROL_HELP["grouping"])
 
     def _grouping_changed(self, _event: Any = None) -> None:
         self.on_action("grouping_changed")
@@ -196,6 +293,8 @@ class StepPanel:
         self.grouping_var.set(dict(grouping.GROUPING_LABELS)[mode])
         self.auto_approve_var.set(auto_approve)
         self.has_implementation_target = target is not None
+        self.target_name = ", ".join(batch) if len(batch) > 1 else (target or "")
+        self.remaining = remaining
         self.approach = None
         self.approach_approved = bool(approved_approach.strip())
         if self.phase_var.get() != prompt.IMPLEMENTATION:
@@ -236,7 +335,9 @@ class StepPanel:
                 text += "\n\nExpected files:\n" + "\n".join(f"- {item}" for item in approach.files)
             if approach.error:
                 text += "\n\nError: " + approach.error
+            self._show_exchange(approach.prompt_text, approach.reply)
         _set_text(self.approach_text, text)
+        self.auto_approve_note = ""
         self._update_buttons()
 
     def show(self, proposal: steps.Proposal | None) -> None:
@@ -244,6 +345,8 @@ class StepPanel:
         self.selected_iteration = None
         self.proposal = proposal
         self.signature_confirmed = False
+        self.auto_approve_note = ""
+        self._show_exchange(proposal.prompt_text if proposal else "", proposal.reply if proposal else "")
         self.build_status_var.set("Build: " + _result_status(proposal.build.ok if proposal else None))
         self.test_status_var.set("Tests: " + _result_status(proposal.test.ok if proposal else None))
         if proposal is None:
@@ -279,6 +382,11 @@ class StepPanel:
             _set_text(self.test_output, _test_text(proposal))
         self._update_signature_status()
         self._update_buttons()
+
+    def _show_exchange(self, prompt_text: str, reply: str) -> None:
+        """The Prompt and Reply tabs: exactly what went to the agent and what came back."""
+        _set_text(self.prompt_view, prompt_text or "No prompt has been sent for this item.")
+        _set_text(self.reply_view, reply or "No reply has been received for this item.")
 
     def _show_entity_summary(self, proposal: steps.Proposal) -> None:
         text = adaptation.render_summary(proposal.entities) if proposal.entities else adaptation.NO_ENTITY_SUMMARY
@@ -324,6 +432,8 @@ class StepPanel:
         _set_text(self.source_diff, "Historical source diff is not stored in the step log.")
         _set_text(self.build_output, record.build_output or _empty_result_text("Build", record.build_ok))
         _set_text(self.test_output, record.test_output or _empty_result_text("Tests", record.test_ok))
+        _set_text(self.prompt_view, "The prompt of a historical step is not stored in the step log.")
+        _set_text(self.reply_view, "The reply of a historical step is not stored in the step log.")
         self._update_signature_status()
         self.detail_notebook.select(self.details.master)
         self._update_buttons()
@@ -335,57 +445,153 @@ class StepPanel:
         self._update_buttons()
 
     def show_auto_approve_refusal(self, reason: str) -> None:
-        """Keep the proposal visible while explaining why unattended work stopped."""
-        self.title_var.set("Auto-approve stopped — " + reason)
-        _set_text(self.details, reason)
+        """Auto-approve paused: the proposal stays as it is; the hint line says why the developer must decide."""
+        self.auto_approve_note = f"Auto-approve paused: {reason}. Decide yourself."
         self._update_buttons()
 
-    def set_busy(self, busy: bool) -> None:
-        self.busy = busy
+    def set_project_facts(self, project_open: bool, has_model: bool = True, provider_ready: bool = True) -> None:
+        """What the hint needs to know about the surroundings: is a project open, built, and an agent chosen."""
+        self.project_open, self.has_model, self.provider_ready = project_open, has_model, provider_ready
         self._update_buttons()
+
+    def set_busy(self, busy: bool, activity: str = "", cancellable: bool = False) -> None:
+        """Replace the buttons with a moving bar and the activity while work runs; Cancel when it can be stopped."""
+        self.busy, self.cancellable = busy, cancellable
+        self.activity_var.set(activity)
+        if busy:
+            self.progress.start(40)
+        else:
+            self.progress.stop()
+        self._update_buttons()
+
+    def set_activity(self, activity: str) -> None:
+        """The runner's progress message, shown next to the moving bar."""
+        self.activity_var.set(activity)
+        if self.busy:
+            self.hint_var.set(guidance.next_step(self._situation()))
 
     def _update_buttons(self) -> None:
-        usable = self.proposal is not None and self.proposal.ok
-        signature_confirmation_required = bool(
-            usable and self.proposal and self.proposal.delta and self.proposal.delta.signature_changes
-            and not self.signature_confirmed)
-        phase = self.phase_var.get()
-        has_decision_item = self.proposal is not None or (self.approach is not None and not self.approach_approved)
+        """Enable, explain and show the buttons of the phase; then refresh the hint line."""
         self.enabled_actions = set()
+        self.disabled_reasons = {}
         for action, button in self.buttons.items():
-            enabled = not self.busy
-            if action == "propose_approach":
-                enabled = enabled and phase == prompt.IMPLEMENTATION and self.has_implementation_target \
-                    and not self.approach_approved and self.approach is None
-            if action == "approve_approach":
-                enabled = enabled and self.approach is not None and self.approach.ok and not self.approach_approved
-            if action == "propose":
-                enabled = enabled and (phase == prompt.ARCHITECTURE
-                                       or (phase == prompt.IMPLEMENTATION and self.has_implementation_target
-                                           and self.approach_approved))
-            if action == "approve":
-                enabled = enabled and usable and not signature_confirmation_required
-            if action == "confirm_signature":
-                enabled = enabled and signature_confirmation_required
-            if action == "approve_architecture":
-                enabled = enabled and phase == prompt.ARCHITECTURE and self.proposal is None
-            if action == "reject":
-                enabled = enabled and has_decision_item
-            if action == "adapt":
-                approach_adaptable = self.approach is not None and not self.approach_approved
-                proposal_adaptable = bool(usable and self.proposal and self.proposal.entities)
-                enabled = enabled and self.selected_iteration is None and (approach_adaptable or proposal_adaptable)
-            if action in ("rebuild", "open_worktree"):
-                enabled = enabled and self.proposal is not None
-            if enabled:
+            reason = self._blocked_reason(action)
+            if reason is None:
                 self.enabled_actions.add(action)
-            button.state(["!disabled"] if enabled else ["disabled"])
+            else:
+                self.disabled_reasons[action] = reason
+            button.state(["!disabled"] if reason is None else ["disabled"])
+        self._arrange_action_row()
+        self.hint_var.set(guidance.next_step(self._situation()))
+
+    def _signature_confirmation_required(self) -> bool:
+        usable = self.proposal is not None and self.proposal.ok
+        return bool(usable and self.proposal and self.proposal.delta and self.proposal.delta.signature_changes
+                    and not self.signature_confirmed)
+
+    def _blocked_reason(self, action: str) -> str | None:
+        """None when the action is possible now, otherwise a short reason (shown in the tooltip)."""
+        if self.busy:
+            return "a step is running"
+        usable = self.proposal is not None and self.proposal.ok
+        phase = self.phase_var.get()
+        pending_approach = self.approach is not None and not self.approach_approved
+        if action == "propose_approach":
+            if phase != prompt.IMPLEMENTATION:
+                return "only in the implementation phase"
+            if not self.has_implementation_target:
+                return "the implementation queue is empty"
+            if self.approach_approved:
+                return "the approach is already approved; press Propose"
+            if self.approach is not None:
+                return "decide on the current approach first"
+        elif action == "approve_approach":
+            if self.approach is None or self.approach_approved:
+                return "no approach is waiting for a decision"
+            if not self.approach.ok:
+                return "the approach is not usable; ask again or reject it"
+        elif action == "propose":
+            if phase == prompt.IMPLEMENTATION:
+                if not self.has_implementation_target:
+                    return "the implementation queue is empty"
+                if not self.approach_approved:
+                    return "approve an approach first"
+            elif phase != prompt.ARCHITECTURE:
+                return "save the specification first"
+        elif action == "approve":
+            if not usable:
+                return "no proposal that builds and passes its tests"
+            if self._signature_confirmation_required():
+                return "confirm the signature changes first"
+        elif action == "confirm_signature":
+            if not self._signature_confirmation_required():
+                return "no unconfirmed signature changes"
+        elif action == "approve_architecture":
+            if phase != prompt.ARCHITECTURE:
+                return "only in the architecture phase"
+            if self.proposal is not None:
+                return "approve or reject the current proposal first"
+        elif action == "reject":
+            if self.proposal is None and not pending_approach:
+                return "nothing to reject"
+        elif action == "adapt":
+            proposal_adaptable = bool(usable and self.proposal and self.proposal.entities)
+            if self.selected_iteration is not None:
+                return "a historical step is shown"
+            if not (pending_approach or proposal_adaptable):
+                return "needs a usable proposal or a pending approach"
+        elif action in ("rebuild", "open_worktree"):
+            if self.proposal is None:
+                return "no proposal"
+        return None
+
+    def _arrange_action_row(self) -> None:
+        """Pack the phase's buttons in order (Confirm signatures only when needed), then More…; busy shows the bar."""
+        for widget in (*self.buttons.values(), self.more_button, self.cancel_button, self.progress,
+                       self.activity_label):
+            widget.pack_forget()
+        if self.busy:
+            self.progress.pack(side=tk.LEFT, padx=(2, 8), pady=2)
+            self.activity_label.pack(side=tk.LEFT, padx=(0, 8))
+            if self.cancellable:
+                self.cancel_button.pack(side=tk.LEFT, padx=2)
+            self.visible_actions = ()
+            return
+        actions = [action for action in PHASE_ACTIONS.get(self.phase_var.get(), ())
+                   if action != "confirm_signature" or self._signature_confirmation_required()]
+        for action in actions:
+            self.buttons[action].pack(side=tk.LEFT, padx=2)
+        self.visible_actions = tuple(actions)
+        if self.project_open and self.phase_var.get() != persistence.ProjectPhase.SPECIFICATION.value:
+            self.more_button.pack(side=tk.LEFT, padx=(8, 2))
+            for index, action in enumerate(MORE_ACTIONS):
+                self.more_menu.entryconfigure(index, state="normal" if action in self.enabled_actions
+                                              else "disabled")
+
+    def _situation(self) -> guidance.Situation:
+        """The facts the hint sentence is built from."""
+        proposal = "none"
+        if self.proposal is not None:
+            proposal = "ok" if self.proposal.ok else "failed"
+        approach = "none"
+        if self.approach_approved:
+            approach = "approved"
+        elif self.approach is not None:
+            approach = "pending" if self.approach.ok else "failed"
+        number = self.proposal.number if self.proposal is not None else 0
+        return guidance.Situation(
+            project_open=self.project_open, phase=self.phase_var.get(), busy=self.busy,
+            activity=self.activity_var.get(), cancellable=self.cancellable, has_model=self.has_model,
+            provider_ready=self.provider_ready, proposal=proposal, step_number=number,
+            signature_confirmation_required=self._signature_confirmation_required(), approach=approach,
+            has_target=self.has_implementation_target, target=self.target_name, remaining=self.remaining,
+            historical_step=self.selected_iteration, auto_approve_note=self.auto_approve_note)
 
 
 def _scrolled_text(parent: Any, *, editable: bool = False, **options: Any) -> Any:
     """A read-only Text with scrollbars; the frame is ``text.master``."""
     frame = ttk.Frame(parent)
-    text = tk.Text(frame, height=9, state="normal" if editable else "disabled", **options)
+    text = tk.Text(frame, height=9, width=40, state="normal" if editable else "disabled", **options)
     vertical = ttk.Scrollbar(frame, orient=tk.VERTICAL, command=text.yview)
     text.configure(yscrollcommand=vertical.set)
     vertical.pack(side=tk.RIGHT, fill=tk.Y)

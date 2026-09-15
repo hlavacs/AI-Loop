@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+from typing import Any
 
 from icoda_core import clusters, persistence, session, views
 from icoda_core.model import DerivedModel, Edge, EdgeKind, Entity, FileInfo, Kind, merge_external_names
@@ -259,3 +260,140 @@ def test_libclang_menu_applies_persists_and_displays_chosen_library(app_module, 
     assert persistence.UserConfig.load(config_path).preferred_libclang == detected[1].path
     assert "Active: /llvm/two/libclang.so" in app.libclang_result_var.get()
     assert "/llvm/two/libclang.so" in app.status.get()
+
+
+def test_build_menu_runs_the_build_gate_and_reloads_or_reports(app_module, tmp_path: Path, monkeypatch) -> None:
+    app = app_module.App(app_module.tk.Tk(), config=persistence.UserConfig(), config_path=tmp_path / "c.json")
+    opened: list[Path] = []
+    app.open_project = opened.append
+    app.run_async = lambda work, done: done(work())
+    app.project = tmp_path
+    results = [app_module.steps.BuildResult(True, "ok"), app_module.steps.BuildResult(False, "error: boom")]
+    monkeypatch.setattr(app_module.steps, "build_project", lambda root: results.pop(0))
+    errors: list[str] = []
+    monkeypatch.setattr(app_module.dialogs, "show_error", lambda title, text: errors.append(text))
+
+    app.build_project()
+    assert opened == [tmp_path] and app.status.get().startswith("build passed") and not app.panel.busy
+    app.build_project()
+    assert opened == [tmp_path] and app.status.get().startswith("build failed")
+    assert errors and "boom" in errors[0] and "boom" in app.panel.details.get("1.0", "end")
+    log = persistence.ProjectStore(tmp_path).dir / "icoda.log"
+    assert "build passed (Project ▸ Build)" in log.read_text(encoding="utf-8")
+    app.project = None
+    app.build_project()  # without a project: an information box, nothing else
+    assert opened == [tmp_path]
+
+
+def test_test_command_menu_edits_the_project_state(app_module, tmp_path: Path, monkeypatch) -> None:
+    app = app_module.App(app_module.tk.Tk(), config=persistence.UserConfig(), config_path=tmp_path / "c.json")
+    app.project = tmp_path
+    store = persistence.ProjectStore(tmp_path)
+    store.ensure()
+    asked: list[dict[str, object]] = []
+
+    def askstring(title: str, prompt: str, **kwargs: object) -> str:
+        asked.append({"title": title, **kwargs})
+        return "ctest --preset debug --output-on-failure"
+
+    monkeypatch.setattr(app_module.simpledialog, "askstring", askstring)
+    app.edit_test_command()
+    assert store.load_state().test_command == ("ctest", "--preset", "debug", "--output-on-failure")
+    assert asked[0]["title"] == "Test command" and "initialvalue" in asked[0]
+    assert app.status.get() == "test command set to: ctest --preset debug --output-on-failure"
+    monkeypatch.setattr(app_module.simpledialog, "askstring", lambda *args, **kwargs: None)
+    app.edit_test_command()
+    assert store.load_state().test_command == ("ctest", "--preset", "debug", "--output-on-failure")
+
+
+def test_libclang_apply_reloads_an_open_project_instead_of_asking_for_a_restart(app_module, tmp_path: Path,
+                                                                                  monkeypatch) -> None:
+    detected = [app_module.toolchain.Candidate("/llvm/one/libclang.so", "linux")]
+    monkeypatch.setattr(app_module.toolchain, "candidates", lambda: detected)
+    app = app_module.App(app_module.tk.Tk(), config=persistence.UserConfig(), config_path=tmp_path / "c.json")
+    reloads: list[int] = []
+    app.reload = lambda: reloads.append(1)
+    app.libclang_choice_var.set(detected[0].path)
+    app.apply_libclang_choice()
+    assert reloads == [] and "next reload" in app.status.get()
+    app.show(opened_project(tmp_path))
+    app.apply_libclang_choice()
+    assert reloads == [1] and "Reloading the project" in app.status.get()
+    assert "Restart" not in app.status.get()
+
+
+def test_help_menu_opens_documents_and_the_log(app_module, tmp_path: Path, monkeypatch) -> None:
+    app = app_module.App(app_module.tk.Tk(), config=persistence.UserConfig(), config_path=tmp_path / "c.json")
+    opened: list[Path] = []
+    monkeypatch.setattr(app_module.session, "open_with_system", lambda path: opened.append(path) or True)
+    for _label, relative in app_module.DOCUMENTS:
+        assert (app_module.DOCS_ROOT / relative).is_file(), relative
+    app.open_document("docs/GETTING_STARTED.md")
+    assert opened[-1].name == "GETTING_STARTED.md"
+    app.open_document("docs/MISSING.md")
+    assert "not part of this installation" in app.status.get()
+    assert app.log_path() == (tmp_path / "icoda.log")  # beside the settings while no project is open
+    app.open_log_file()
+    assert "no log file yet" in app.status.get()
+    app.project = tmp_path
+    store = persistence.ProjectStore(tmp_path)
+    store.ensure()
+    session.log_event("hello", tmp_path)
+    app.open_log_file()
+    assert opened[-1] == store.dir / "icoda.log"
+
+
+def test_analysis_progress_keeps_the_panel_busy_until_the_result_arrives(app_module, tmp_path: Path,
+                                                                          monkeypatch) -> None:
+    started: list[Any] = []
+
+    class LazyThread:
+        def __init__(self, target, args, daemon) -> None:
+            del daemon
+            self.target, self.args = target, args
+
+        def start(self) -> None:
+            started.append(self)
+
+    monkeypatch.setattr(app_module.threading, "Thread", LazyThread)
+    app = app_module.App(app_module.tk.Tk(), config=persistence.UserConfig(), config_path=tmp_path / "c.json")
+    monkeypatch.setattr(app_module.session, "open_project", lambda root, config: opened_project(root))
+    persistence.ProjectStore(tmp_path).ensure()
+    app.open_project(tmp_path)
+    app.open_project(tmp_path)  # a second reload while the first analysis is still running
+    assert app.panel.busy and app.panel.activity_var.get() == "analysing the project" and app._pending_analyses == 2
+    assert "Working: analysing the project." == app.panel.hint_var.get()
+    for thread in started:
+        thread.target(*thread.args)
+    app._poll()
+    assert app.panel.busy and app._pending_analyses == 1  # one result is still to come
+    app._poll()
+    assert not app.panel.busy and app._pending_analyses == 0 and app.opened is not None
+    assert app.panel.project_open and app.panel.has_model
+
+
+def test_a_reload_during_a_step_keeps_the_step_busy_state(app_module, tmp_path: Path, monkeypatch) -> None:
+    started: list[Any] = []
+
+    class LazyThread:
+        def __init__(self, target, args, daemon) -> None:
+            del daemon
+            self.target, self.args = target, args
+
+        def start(self) -> None:
+            started.append(self)
+
+    monkeypatch.setattr(app_module.threading, "Thread", LazyThread)
+    app = app_module.App(app_module.tk.Tk(), config=persistence.UserConfig(), config_path=tmp_path / "c.json")
+    monkeypatch.setattr(app_module.session, "open_project", lambda root, config: opened_project(root))
+    persistence.ProjectStore(tmp_path).ensure()
+    app.panel.set_busy(True, "asking the agent for the next step", cancellable=True)
+    app.open_project(tmp_path)
+    assert app.panel.activity_var.get() == "asking the agent for the next step" and app.panel.cancellable
+    started[-1].target(*started[-1].args)
+    app._poll()
+    assert app.panel.busy  # the step is still running; only the step's end frees the buttons
+    app.panel.set_busy(False)
+    app._source_snapshot = ()
+    app._refresh_external_edits(None)  # not busy: a focus refresh may reload
+    assert app._pending_analyses == 1

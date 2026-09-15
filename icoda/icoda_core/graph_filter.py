@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import shlex
 from collections.abc import Iterable, Mapping
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from types import MappingProxyType
 
 from icoda_core.model import DerivedModel, Edge, Entity, Kind
@@ -49,8 +49,8 @@ class Graph:
 
     nodes: tuple[str, ...] = ()
     edges: tuple[Edge, ...] = ()
-    cluster_by_file: Mapping[str, str] = MappingProxyType({})
-    cluster_names: Mapping[str, str] = MappingProxyType({})
+    cluster_by_file: Mapping[str, str] = field(default_factory=lambda: MappingProxyType({}))
+    cluster_names: Mapping[str, str] = field(default_factory=lambda: MappingProxyType({}))
 
 
 NodeDecisionMap = Mapping[str, NodeDecision]

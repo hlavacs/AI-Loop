@@ -19,6 +19,7 @@ from icoda_core import (
     grouping,
     implementation_queue,
     persistence,
+    process,
     session,
     specification,
     steps,
@@ -31,6 +32,7 @@ Done = Callable[[Any], None]
 SIGNATURE_CONFIRMATION_REQUIRED = (
     auto_approve.SIGNATURE_CONFIRMATION_REQUIRED)
 ADAPT_CONSTRAINTS_PROMPT = "Hard constraints for the next attempt, separated by ';'."
+WAITING_REASONS = frozenset({auto_approve.NO_PROPOSAL, auto_approve.GATED_ROUND, auto_approve.IMPLEMENTATION_ONLY})
 
 
 class StepController:
@@ -44,6 +46,7 @@ class StepController:
         self.approach: steps.Approach | None = None
         self.confirmed_signature_proposal: steps.Proposal | None = None
         self._automatic_approvals_remaining: int | None = None
+        self.cancel_requested = False
 
     # -- dispatch -------------------------------------------------------------------------
 
@@ -67,15 +70,31 @@ class StepController:
         return self.runner
 
     def _progress(self, message: str) -> None:
-        self.window.run_on_ui(self.window.status.set, message)
+        self.window.run_on_ui(self._show_progress, message)
 
-    def _start(self, work: Work, done: Done) -> None:
-        self.window.panel.set_busy(True)
+    def _show_progress(self, message: str) -> None:
+        self.window.status.set(message)
+        self.window.panel.set_activity(message)
+
+    def run(self, work: Work, done: Done, activity: str = "working", cancellable: bool = False) -> None:
+        """Run ``work`` in the background with the panel busy; ``done`` gets the result on the Tk thread.
+
+        Errors go to the status bar, the panel and a small dialog; a cancel only to the status bar.
+        """
+        self._start(work, done, activity, cancellable)
+
+    def _start(self, work: Work, done: Done, activity: str = "working", cancellable: bool = False) -> None:
+        self.cancel_requested = False
+        if self.runner is not None and hasattr(self.runner, "begin"):
+            self.runner.begin()
+        self.window.panel.set_busy(True, activity, cancellable)
 
         def finished(result: Any) -> None:
             self.window.panel.set_busy(False)
-            if isinstance(result, steps.DirtyTree):
-                self._offer_manual_commit(str(result), lambda: self._start(work, done))
+            if isinstance(result, steps.StepCancelled):
+                self.window.status.set("cancelled — nothing was recorded")
+            elif isinstance(result, steps.DirtyTree):
+                self._offer_manual_commit(str(result), lambda: self._start(work, done, activity, cancellable))
             elif isinstance(result, Exception):
                 self.window.status.set(f"step failed: {str(result).splitlines()[0] if str(result) else result!r}")
                 self.window.panel.show_failure(str(result))
@@ -85,10 +104,22 @@ class StepController:
 
         self.window.run_async(work, finished)
 
+    def cancel(self) -> None:
+        """Stop the running agent call, build or test; the worker ends with StepCancelled."""
+        if not self.window.panel.busy:
+            return
+        self.cancel_requested = True
+        self.window.status.set("cancelling …")
+        self.window.panel.set_activity("cancelling …")
+        if self.runner is not None and hasattr(self.runner, "cancel"):
+            self.runner.cancel()
+        else:
+            process.cancel_running()
+
     def _offer_manual_commit(self, message: str, then: Callable[[], None]) -> None:
         if messagebox.askyesno("ICODA", message + "\n\nCommit them now as a manual step?"):
             runner = self._ensure_runner()
-            self._start(runner.commit_manual_edits, lambda _record: then())
+            self._start(runner.commit_manual_edits, lambda _record: then(), "committing your edits as a manual step")
         else:
             self.window.status.set(message)
 
@@ -102,7 +133,7 @@ class StepController:
             runner.prepare()
             return runner.propose_approach(request)
 
-        self._start(work, self._show_approach)
+        self._start(work, self._show_approach, "asking the agent for an approach", cancellable=True)
 
     def _show_approach(self, approach: steps.Approach) -> None:
         self.approach = approach
@@ -121,7 +152,7 @@ class StepController:
             runner.prepare()
             return runner.propose(request)
 
-        self._start(work, self._show_proposal)
+        self._start(work, self._show_proposal, "asking the agent for the next step", cancellable=True)
 
     def _show_proposal(self, proposal: steps.Proposal) -> None:
         self.proposal = proposal
@@ -185,7 +216,8 @@ class StepController:
         state = persistence.ProjectStore(Path(self.window.project)).load_state()
         command = test_selection.command(state.test_command, selected)
         self._start(lambda: runner.test(Path(self.window.project), command),
-                    lambda result: self._show_test_result(result, selected))
+                    lambda result: self._show_test_result(result, selected), "running the selected tests",
+                    cancellable=True)
 
     def _show_test_result(self, result: steps.TestResult, selected: tuple[str, ...]) -> None:
         outcome = "passed" if result.ok is True else "failed" if result.ok is False else "did not run"
@@ -211,7 +243,7 @@ class StepController:
             if automatic:
                 self._automatic_step_completed()
 
-        self._start(lambda: runner.approve(proposal), done)
+        self._start(lambda: runner.approve(proposal), done, "approving: promoting, rebuilding and committing")
 
     def confirm_signature(self) -> None:
         """Record the developer's confirmation for only the currently displayed proposal."""
@@ -235,7 +267,7 @@ class StepController:
             if self.window.panel.auto_approve_var.get():
                 self.propose()
 
-        self._start(lambda: runner.approve_approach(approach), done)
+        self._start(lambda: runner.approve_approach(approach), done, "recording the approved approach")
 
     def auto_approve_changed(self) -> None:
         """Persist the developer switch and evaluate the item already shown in the panel."""
@@ -259,7 +291,11 @@ class StepController:
             historical_record=self.window.panel.selected_iteration is not None,
         )
         if not decision.permitted:
-            self._stop_auto_approve(decision.reason)
+            if decision.reason in WAITING_REASONS:  # nothing to approve yet: not a pause, just waiting
+                self.window.status.set("automatic approval is on — it applies to the next code proposal that "
+                                       "passes its gates")
+            else:
+                self._stop_auto_approve(decision.reason)
             return
         if self._automatic_approvals_remaining is None:
             state = persistence.ProjectStore(Path(self.window.project)).load_state()
@@ -282,7 +318,7 @@ class StepController:
     def _stop_auto_approve(self, reason: str) -> None:
         self._automatic_approvals_remaining = None
         self.window.panel.show_auto_approve_refusal(reason)
-        self.window.status.set("auto-approve stopped: " + reason)
+        self.window.status.set("auto-approve paused: " + reason)
 
     def approve_architecture(self) -> None:
         """The explicit developer gate from architecture into implementation."""
@@ -298,7 +334,7 @@ class StepController:
             self.window.status.set(f"{record.title}; implementation phase is now active")
             self.window.reload()
 
-        self._start(runner.approve_architecture, done)
+        self._start(runner.approve_architecture, done, "closing the architecture phase")
 
     def batch_size_changed(self) -> None:
         """Persist the developer's next-step batch limit and invalidate any old approach."""
@@ -387,14 +423,15 @@ class StepController:
                 message = f"step {record.number} approach rejected; propose another approach"
             self.window.status.set(message)
 
-        if self.proposal is not None:
-            proposal = self.proposal
-            work = lambda: runner.reject(proposal, reason)
-        else:
-            assert self.approach is not None
-            approach = self.approach
-            work = lambda: runner.reject_approach(approach, reason)
-        self._start(work, done)
+        proposal, approach = self.proposal, self.approach
+
+        def work() -> steps.StepRecord:
+            if proposal is not None:
+                return runner.reject(proposal, reason)
+            assert approach is not None
+            return runner.reject_approach(approach, reason)
+
+        self._start(work, done, "recording the rejection")
 
     def adapt(self) -> None:
         if self.proposal is not None:
@@ -429,7 +466,8 @@ class StepController:
     def rebuild(self) -> None:
         runner, proposal = self._ensure_runner(), self.proposal
         if proposal is not None:
-            self._start(lambda: runner.rebuild(proposal), self._show_proposal)
+            self._start(lambda: runner.rebuild(proposal), self._show_proposal, "building and testing the worktree",
+                        cancellable=True)
 
     def open_worktree(self) -> None:
         if self.proposal is not None:
@@ -437,14 +475,14 @@ class StepController:
 
     def undo(self) -> None:
         runner = self._ensure_runner()
-        if not messagebox.askyesno("ICODA", "Undo the last approved step with a revert commit?"):
+        if not messagebox.askyesno("ICODA", undo_question(runner)):
             return
 
         def done(record: steps.StepRecord) -> None:
             self.window.status.set(f"step {record.number} undone: {record.title}")
             self.window.reload()
 
-        self._start(runner.undo, done)
+        self._start(runner.undo, done, "reverting the last approved step")
 
     def commit_manual(self) -> None:
         runner = self._ensure_runner()
@@ -455,4 +493,16 @@ class StepController:
             if record is not None:
                 self.window.reload()
 
-        self._start(runner.commit_manual_edits, done)
+        self._start(runner.commit_manual_edits, done, "committing your edits as a manual step")
+
+
+def undo_question(runner: Any) -> str:
+    """The confirmation for Undo: which step goes, and what happens to the files and the history."""
+    log = getattr(runner, "log", None)
+    approved = log.approved() if log is not None and hasattr(log, "approved") else []
+    last = next((record for record in reversed(approved) if record.number != 0), None)
+    if last is None:
+        return "There is no approved step to undo. Try anyway?"
+    return (f"Undo step {last.number} \u201c{last.title}\u201d?\n\n"
+            f"ICODA reverts that step's commit with a new commit, so the files return to the state before "
+            f"step {last.number}. Nothing is deleted from the git history or the step log.")

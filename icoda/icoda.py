@@ -8,10 +8,12 @@ from __future__ import annotations
 
 import math
 import queue
+import shlex
 import sys
 import threading
 import tkinter as tk
 import traceback
+from dataclasses import replace
 from pathlib import Path
 from tkinter import filedialog, messagebox, simpledialog, ttk
 from typing import Any
@@ -34,6 +36,7 @@ from icoda_core import (
     source_watch,
     specification,
     steplog,
+    steps,
     test_selection,
     toolchain,
     views,
@@ -59,6 +62,12 @@ from icoda_gui import (
 
 NODE_RADIUS = 6
 CLUSTER_LEVEL_BELOW = 1.6  # file-level arrows appear once zoomed in this far beyond the fit
+DOCS_ROOT = Path(__file__).resolve().parent
+DOCUMENTS = (("Getting started", "docs/GETTING_STARTED.md"), ("Tutorial", "docs/TUTORIAL.md"),
+             ("Handbook", "HANDBOOK.md"), ("Troubleshooting", "docs/TROUBLESHOOTING.md"))
+MODIFIER = "Command" if sys.platform == "darwin" else "Control"
+ACCELERATOR = "⌘" if sys.platform == "darwin" else "Ctrl+"
+STALL_SECONDS = 5.0
 
 class FileViewCanvas(graph_canvas.NodeAppearanceCanvas):
     """Draws a :class:`views.FileViewLayout` on a Tk canvas with zoom, pan, hover, click and double click."""
@@ -326,7 +335,7 @@ class App:
     """Main window with menu, File View, entity panel and status bar."""
 
     def __init__(self, root: tk.Tk, project: Path | None = None, config: persistence.UserConfig | None = None,
-                 config_path: Path | None = None) -> None:
+                 config_path: Path | None = None, watchdog: bool = False) -> None:
         self.root = root
         self.project: Path | None = None
         self.opened: session.OpenedProject | None = None
@@ -351,15 +360,23 @@ class App:
         self.tasks = tasks.UiTasks(root, on_failure=lambda trace: session.log_event("background task failed:\n"
                                                                                  + trace, self.project))
         self.run_async, self.run_on_ui = self.tasks.run_async, self.tasks.run_on_ui
+        self._pending_analyses = 0
+        self._panel_busy_by_analysis = False
+        self.watchdog: tasks.Watchdog | None = None
+        if watchdog:  # a real window only: reports a frozen Tk thread with every thread's stack in the log
+            self.watchdog = tasks.Watchdog(root, lambda text: session.log_event("watchdog: " + text, self.project),
+                                           stall_seconds=STALL_SECONDS)
         root.title("ICODA")
         screen.fit_to_screen(root, 1400, 900)
         self._build_menu()
         self._build_statusbar()  # packed first so that it is never squeezed out
         self._build_panel()
+        self._bind_shortcuts()
         self.graph_filter_var.trace_add("write", self.apply_graph_filter)
         self.neighborhood_depth_var.trace_add("write", self.apply_graph_filter)
         self.steps = step_controller.StepController(self)
         root.bind("<FocusIn>", self._refresh_external_edits)
+        self.panel.set_project_facts(False)
         if project is not None:
             self.open_project(project)
 
@@ -368,20 +385,24 @@ class App:
     def _build_menu(self) -> None:
         menubar = tk.Menu(self.root)
         file_menu = tk.Menu(menubar, tearoff=0)
-        file_menu.add_command(label="New Project…", command=self.ask_new_project)
-        file_menu.add_command(label="Open Project…", command=self.ask_open_project)
+        file_menu.add_command(label="New Project…", command=self.ask_new_project, accelerator=ACCELERATOR + "N")
+        file_menu.add_command(label="Open Project…", command=self.ask_open_project, accelerator=ACCELERATOR + "O")
         self.recent_menu = tk.Menu(file_menu, tearoff=0)
         file_menu.add_cascade(label="Open Recent", menu=self.recent_menu)
-        file_menu.add_command(label="Reload", command=self.reload)
+        file_menu.add_command(label="Reload", command=self.reload, accelerator=ACCELERATOR + "R")
         file_menu.add_separator()
-        file_menu.add_command(label="Quit", command=self.root.destroy)
+        file_menu.add_command(label="Quit", command=self.root.destroy, accelerator=ACCELERATOR + "Q")
         menubar.add_cascade(label="File", menu=file_menu)
         project_menu = tk.Menu(menubar, tearoff=0)
-        project_menu.add_command(label="Specification…", command=self.edit_specification)
+        project_menu.add_command(label="Specification…", command=self.edit_specification,
+                                 accelerator=ACCELERATOR + "E")
+        project_menu.add_command(label="Build", command=self.build_project, accelerator=ACCELERATOR + "B")
+        project_menu.add_command(label="Test Command…", command=self.edit_test_command)
         project_menu.add_command(label="Choose libclang Library…", command=self.choose_libclang_library)
         project_menu.add_separator()
         project_menu.add_command(label="Propose Approach", command=lambda: self.steps.action("propose_approach"))
-        project_menu.add_command(label="Propose Next Step", command=lambda: self.steps.action("propose"))
+        project_menu.add_command(label="Propose Next Step", command=lambda: self.steps.action("propose"),
+                                 accelerator=ACCELERATOR + "Return")
         project_menu.add_command(label="Approve Architecture", command=lambda: self.steps.action(
             "approve_architecture"))
         project_menu.add_command(label="Undo Last Step", command=lambda: self.steps.action("undo"))
@@ -399,8 +420,61 @@ class App:
         view_menu.add_checkbutton(label="Coverage colours", variable=self.coverage_mode_var,
                                   command=self.toggle_coverage_mode)
         menubar.add_cascade(label="View", menu=view_menu)
+        help_menu = tk.Menu(menubar, tearoff=0)
+        for label, relative in DOCUMENTS:
+            help_menu.add_command(label=label, command=self._document_opener(relative))
+        help_menu.add_separator()
+        help_menu.add_command(label="Open Log File", command=self.open_log_file)
+        help_menu.add_command(label="About ICODA", command=self.show_about)
+        menubar.add_cascade(label="Help", menu=help_menu)
         self.root.config(menu=menubar)
         self._fill_recent_menu()
+
+    def _bind_shortcuts(self) -> None:
+        """Keyboard shortcuts for the menu entries that carry an accelerator (Command on macOS, Control elsewhere)."""
+        for key, handler in (("n", self.ask_new_project), ("o", self.ask_open_project), ("r", self.reload),
+                             ("q", self.root.destroy), ("e", self.edit_specification), ("b", self.build_project),
+                             ("Return", lambda: self.steps.action("propose"))):
+            self.root.bind_all(f"<{MODIFIER}-{key}>", self._shortcut(handler))
+
+    @staticmethod
+    def _shortcut(handler: Any) -> Any:
+        def run(_event: Any) -> str:
+            handler()
+            return "break"
+        return run
+
+    # -- help -------------------------------------------------------------------------------
+
+    def _document_opener(self, relative: str) -> Any:
+        return lambda: self.open_document(relative)
+
+    def open_document(self, relative: str) -> None:
+        """Open one of the shipped documents with the system's default application."""
+        path = DOCS_ROOT / relative
+        if not path.is_file():
+            self.status.set(f"{relative} is not part of this installation")
+        elif not session.open_with_system(path):
+            self.status.set(f"could not open {path}")
+
+    def log_path(self) -> Path:
+        """Where the current project (or, without one, ICODA itself) writes its log."""
+        if self.project is not None:
+            return persistence.ProjectStore(self.project).dir / session.LOG_NAME
+        return self.config_path.parent / session.LOG_NAME
+
+    def open_log_file(self) -> None:
+        path = self.log_path()
+        if not path.is_file():
+            self.status.set(f"there is no log file yet at {path}")
+        elif not session.open_with_system(path):
+            self.status.set(f"could not open {path}")
+
+    def show_about(self) -> None:
+        messagebox.showinfo("About ICODA", f"ICODA {__version__} — Interactive Code Development and Analysis\n\n"
+                            f"Log file: {self.log_path()}\nSettings: {self.config_path}\n\n"
+                            "Help ▸ Getting started explains the first project; Help ▸ Troubleshooting the usual "
+                            "problems.")
 
     def choose_libclang_library(self) -> None:
         """Show the detected libraries as a deterministic chooser, with the active choice marked."""
@@ -444,7 +518,11 @@ class App:
         selection = toolchain.select_candidate(detected, requested)
         self._show_libclang_selection(selection)
         active = selection.active.path if selection.active is not None else "none"
-        self.status.set(f"Libclang choice saved. Active selection: {active}. Restart ICODA to load it.")
+        if self.opened is not None and self.project is not None:  # the analysis child loads the library afresh
+            self.status.set(f"Libclang choice saved. Active selection: {active}. Reloading the project …")
+            self.reload()
+        else:
+            self.status.set(f"Libclang choice saved. Active selection: {active}. It is used at the next reload.")
 
     def _show_libclang_selection(self, selection: toolchain.Selection) -> None:
         active = selection.active.path if selection.active is not None else "none"
@@ -606,7 +684,28 @@ class App:
         bar = ttk.Frame(self.root)
         bar.pack(fill=tk.X, side=tk.BOTTOM)
         ttk.Label(bar, textvariable=self.language_var, anchor="e").pack(side=tk.RIGHT, padx=6, pady=2)
-        ttk.Label(bar, textvariable=self.status, anchor="w").pack(fill=tk.X, padx=6, pady=2)
+        self.status_progress = ttk.Progressbar(bar, mode="indeterminate", length=110)
+        ttk.Label(bar, textvariable=self.status, anchor="w").pack(side=tk.LEFT, fill=tk.X, expand=True, padx=6,
+                                                                  pady=2)
+
+    def _set_analysing(self, running: bool) -> None:
+        """A moving bar in the status line while the analysis child runs; the step panel waits as well.
+
+        A step that is already running keeps its own busy state: its activity stays visible and its buttons come
+        back only when the step ends, not when a reload it did not start finishes.
+        """
+        if running:
+            self.status_progress.pack(side=tk.RIGHT, padx=6)
+            self.status_progress.start(40)
+            if not self.panel.busy:
+                self.panel.set_busy(True, "analysing the project")
+                self._panel_busy_by_analysis = True
+        else:
+            self.status_progress.stop()
+            self.status_progress.pack_forget()
+            if self._panel_busy_by_analysis:
+                self._panel_busy_by_analysis = False
+                self.panel.set_busy(False)
 
     # -- projects ---------------------------------------------------------------------------
 
@@ -628,8 +727,13 @@ class App:
         self.language_var.set(f"Language: {analysis.detect_language(self.project)}")
         self.root.title(f"ICODA — {self.project.name}")
         self.status.set(f"Analysing {self.project} …")
+        session.log_event("opening: analysis started", self.project)
+        self.panel.set_project_facts(True, self.panel.has_model, self._provider_ready())
+        self._set_analysing(True)
+        self._pending_analyses += 1
         threading.Thread(target=self._analyse, args=(self.project,), daemon=True).start()
-        self.root.after(100, self._poll)
+        if self._pending_analyses == 1:  # one poll loop serves every analysis in flight
+            self.root.after(100, self._poll)
 
     def ask_new_project(self) -> None:
         chosen = filedialog.askdirectory(title="New project: choose an empty directory", mustexist=False)
@@ -643,6 +747,7 @@ class App:
         self.project.mkdir(parents=True, exist_ok=True)
         persistence.ProjectStore(self.project).ensure()
         self.panel.set_phase(persistence.ProjectPhase.SPECIFICATION)
+        self.panel.set_project_facts(True, False, self._provider_ready())
         self.root.title(f"ICODA — {self.project.name}")
         self.status.set(f"New project {self.project}: write the specification and save it")
         self.edit_specification()
@@ -673,17 +778,68 @@ class App:
         phases.transition(store, persistence.ProjectPhase.ARCHITECTURE)
         self.panel.set_phase(persistence.ProjectPhase.ARCHITECTURE)
         session.log_event(f"skeleton written: {written}", self.project)
-        messagebox.showinfo("ICODA", f"Specification saved and the project skeleton written ({len(written)} files)."
-                            f"\n\nRun build.sh in {self.project}, then File → Reload to analyse it.")
-        self.open_project(self.project)
+        if messagebox.askyesno("ICODA", f"Specification saved and the project skeleton written ({len(written)} "
+                               "files).\n\nBuild it now? ICODA runs the build, then analyses the project. "
+                               "(Later: Project ▸ Build.)"):
+            self.build_project()
+        else:
+            self.open_project(self.project)
+
+    # -- building ---------------------------------------------------------------------------
+
+    def build_project(self) -> None:
+        """Project ▸ Build: run the project's build gate in the background, then reload the analysis."""
+        if self.project is None:
+            messagebox.showinfo("ICODA", "Open or create a project first.")
+            return
+        if self.panel.busy:
+            return
+        project = self.project
+
+        def work() -> steps.BuildResult:
+            result = steps.build_project(project)
+            if self.steps.cancel_requested:
+                raise steps.StepCancelled()
+            return result
+
+        def done(result: steps.BuildResult) -> None:
+            if result.ok:
+                session.log_event("build passed (Project ▸ Build)", project)
+                self.status.set("build passed — analysing the project …")
+                self.open_project(project)
+            else:
+                session.log_event("build failed (Project ▸ Build):\n" + result.output, project)
+                self.status.set("build failed — the output is in the step panel")
+                self.panel.show_failure("Build failed.\n\n" + result.output)
+                dialogs.show_error("ICODA", "The build failed.\n\n" + result.output)
+
+        self.steps.run(work, done, "building the project", cancellable=True)
+
+    def edit_test_command(self) -> None:
+        """Project ▸ Test Command…: the command that gates every proposal, kept in .icoda/state.json."""
+        if self.project is None:
+            messagebox.showinfo("ICODA", "Open or create a project first.")
+            return
+        store = persistence.ProjectStore(self.project)
+        state = store.load_state()
+        text = simpledialog.askstring(
+            "Test command", "The command that runs the project's tests. Every proposal must pass it.\n"
+            "Example: ctest --preset debug --output-on-failure", initialvalue=shlex.join(state.test_command),
+            parent=self.root)
+        if text is None:
+            return
+        command = tuple(shlex.split(text))
+        store.save_state(replace(state, test_command=command))
+        session.log_event(f"test command set to {command}", self.project)
+        self.status.set("test command set to: " + (shlex.join(command) or "(none — tests are skipped)"))
 
     def reload(self) -> None:
         if self.project is not None:
             self.open_project(self.project)
 
     def _refresh_external_edits(self, _event: Any) -> None:
-        """Re-analyse externally edited source when the application regains focus."""
-        if self.project is None or self.opened is None or self._source_snapshot is None:
+        """Re-analyse externally edited source when the application regains focus (not while a step runs)."""
+        if self.project is None or self.opened is None or self._source_snapshot is None or self.panel.busy:
             return
         current = source_watch.snapshot_files(self.project, self.opened.model.files)
         if not source_watch.changed_files(self._source_snapshot, current):
@@ -704,6 +860,11 @@ class App:
         except queue.Empty:
             self.root.after(100, self._poll)
             return
+        self._pending_analyses = max(0, self._pending_analyses - 1)
+        if self._pending_analyses:
+            self.root.after(100, self._poll)
+        else:
+            self._set_analysing(False)
         if isinstance(result, Exception):
             log = (self.project or Path(".")) / ".icoda" / "icoda.log"
             self.status.set(f"Analysis failed: {result!r}  (details in {log})")
@@ -715,10 +876,12 @@ class App:
         """Present an opened project: canvas, status bar, recent list, configuration."""
         self.opened = opened
         self.project = opened.root
+        session.log_event("showing: model ready, updating the window", opened.root)
         self.language_var.set(f"Language: {analysis.detect_language(opened.root)}")
         store = persistence.ProjectStore(opened.root)
         state = implementation_queue.ensure_state(store, opened.model)
         self.panel.set_phase(state.phase)
+        self.panel.set_project_facts(True, bool(opened.model.files), self._provider_ready())
         target = implementation_queue.target_usr(state)
         grouping_refusal = ""
         if state.implementation_grouping == grouping.Mode.FEW_LINE_GROUP.value:
@@ -771,6 +934,7 @@ class App:
         self.coverage_view.show(opened.model, records, coverage, spec)
         self.issue_view.show(opened.model, log)
         self._source_snapshot = source_watch.snapshot_files(opened.root, opened.model.files)
+        session.log_event("shown: window ready", opened.root)
 
     def _reload_after_specification_save(self) -> None:
         """Publish an edited truth through the ordinary asynchronous analysis/show path."""
@@ -871,6 +1035,19 @@ class App:
         if self.opened is not None:
             store = persistence.ProjectStore(self.opened.root)
             store.save_ui({**store.load_ui(), "provider": selection.to_dict()})
+        if hasattr(self, "panel"):
+            self.panel.set_project_facts(self.project is not None, self.panel.has_model, self._provider_ready())
+
+    def _provider_ready(self) -> bool:
+        """A known agent is chosen and its command-line tool is installed."""
+        selection = self.provider_field.selection()
+        if not selection.provider_id:
+            return False
+        try:
+            provider = agent.find_provider(self.providers, selection.provider_id)
+        except KeyError:
+            return False
+        return agent.binary_available(provider, selection.binary or None)
 
     # -- nodes ------------------------------------------------------------------------------
 
@@ -1023,7 +1200,7 @@ def parse_args(argv: list[str]) -> Path | None:
 def main(argv: list[str] | None = None) -> int:
     project = parse_args(sys.argv[1:] if argv is None else argv)
     root = tk.Tk()
-    app = App(root, project)
+    app = App(root, project, watchdog=True)
     if project is None and app.config.last_project and Path(app.config.last_project).is_dir():
         app.open_project(Path(app.config.last_project))
     root.mainloop()

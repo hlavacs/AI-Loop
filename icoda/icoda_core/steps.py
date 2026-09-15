@@ -35,7 +35,7 @@ from icoda_core import (
     test_selection,
 )
 from icoda_core.model import CALLABLE_KINDS, TYPE_KINDS, DerivedModel, Entity, Kind
-from icoda_core.process import run_bounded
+from icoda_core.process import cancel_running, run_bounded
 from icoda_core.steplog import APPROACH_ROUND, StepLog, StepRecord, apply_statuses
 
 WORKTREE_DIR = "worktree"
@@ -56,6 +56,13 @@ class StepError(RuntimeError):
 
 class DirtyTree(StepError):
     """Uncommitted changes in the working tree; commit them first (``commit_manual_edits``)."""
+
+
+class StepCancelled(StepError):
+    """The developer pressed Cancel while the step was running; nothing was recorded."""
+
+    def __init__(self, message: str = "the step was cancelled") -> None:
+        super().__init__(message)
 
 
 # --------------------------------------------------------------------------- build, delta, proposal
@@ -526,6 +533,22 @@ class StepRunner:
         self.analyse = analyse or analyse_tree
         self.attempts = attempts
         self.progress = progress
+        self.cancel_requested = False
+
+    # -- cancelling -----------------------------------------------------------------------
+
+    def cancel(self) -> int:
+        """Stop the running step: kill the provider, build or test process; the worker then raises StepCancelled."""
+        self.cancel_requested = True
+        return cancel_running()
+
+    def begin(self) -> None:
+        """Forget an earlier cancel before new work starts (called on the UI thread before the worker runs)."""
+        self.cancel_requested = False
+
+    def _check_cancelled(self) -> None:
+        if self.cancel_requested:
+            raise StepCancelled()
 
     def _build_project(self, root: Path) -> BuildResult:
         return build_project(root, code_profile=self._code_profile())
@@ -631,9 +654,11 @@ class StepRunner:
         approach = Approach(number, request, target)
         for attempt in range(1, self.attempts + 1):
             approach.attempts = attempt
+            self._check_cancelled()
             self.progress(f"step {number}: asking for an approach (attempt {attempt} of {self.attempts})")
             approach.prompt_text = self._approach_prompt(request)
             approach.reply = self.invoke(approach.prompt_text, self.root)
+            self._check_cancelled()
             parsed, error = response.parse_approach_response(approach.reply)
             if parsed is not None:
                 approach.plan, approach.entities, approach.files = parsed.plan, parsed.entities, parsed.files
@@ -659,9 +684,11 @@ class StepRunner:
         proposal = Proposal(number, request, self._fresh_worktree())
         for attempt in range(1, self.attempts + 1):
             proposal.attempts = attempt
+            self._check_cancelled()
             self.progress(f"step {number}: asking the provider (attempt {attempt} of {self.attempts})")
             proposal.prompt_text = self._prompt(request)
             proposal.reply = self.invoke(proposal.prompt_text, self.root)
+            self._check_cancelled()
             parsed, error = response.parse_response(proposal.reply)
             if parsed is None:
                 request = replace(request, validation_error=error)
@@ -735,6 +762,7 @@ class StepRunner:
         proposal.source_diff = git.working_tree_diff(proposal.worktree)
         self.progress(f"step {proposal.number}: building the proposal")
         proposal.build = self.build(proposal.worktree)
+        self._check_cancelled()
         if proposal.build.ok is not True:
             proposal.error = "the proposal does not build"
             return
@@ -742,6 +770,7 @@ class StepRunner:
         proposal.selected_tests = self._selected_tests(proposal.request)
         command = self._gate_commands(proposal.selected_tests).test
         proposal.test = self.test(proposal.worktree, command)
+        self._check_cancelled()
         self.progress(f"step {proposal.number}: parsing the proposal")
         proposal.model = self.analyse(proposal.worktree)
         files = [c.path for c in git.status_changes(proposal.worktree)]
@@ -980,6 +1009,8 @@ class StepRunner:
             raise StepError(f"{self.binary or provider.command} is not on the PATH; {provider.login_hint}")
         result = agent.run_provider(provider, self.model_id or provider.default_model, prompt_text, cwd,
                                     binary=self.binary or None, timeout=PROVIDER_TIMEOUT)
+        if result.cancelled or self.cancel_requested:
+            raise StepCancelled()
         if not result.ok:
             raise StepError(f"{provider.label} failed ({result.returncode}): {_tail(result.stderr or result.stdout)}"
                             f"\nIf it asks for a login: {provider.login_hint}")

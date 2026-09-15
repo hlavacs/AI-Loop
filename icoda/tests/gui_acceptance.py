@@ -210,11 +210,17 @@ def main(argv: list[str] | None = None) -> int:
         app.libclang_window.destroy()
         app.libclang_window = None
         app.fit_view()
-        require_visible(root, {**app.panel.buttons, "batch-size": app.panel.batch_size_spinbox,
+        if not app.panel.visible_actions or "propose" not in app.panel.visible_actions:
+            raise RuntimeError(f"the step panel shows no phase buttons: {app.panel.visible_actions}")
+        hidden = set(app.panel.buttons) - set(app.panel.visible_actions)
+        if any(app.panel.buttons[action].winfo_ismapped() for action in hidden):
+            raise RuntimeError("a button outside the phase is still mapped")
+        require_visible(root, {**{action: app.panel.buttons[action] for action in app.panel.visible_actions},
+                               "more": app.panel.more_button, "hint": app.panel.hint_label,
+                               "batch-size": app.panel.batch_size_spinbox,
                                "implementation-scope": app.panel.scope_combobox,
                                "implementation-grouping": app.panel.grouping_combobox,
                                "auto-approve": app.panel.auto_approve_check,
-                               "confirm-signature": app.panel.buttons["confirm_signature"],
                                "filter": app.graph_filter_entry,
                                "neighborhood": app.neighborhood_spinbox,
                                "collapse-all": app.collapse_all_button,

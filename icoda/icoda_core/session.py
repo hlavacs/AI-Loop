@@ -223,6 +223,11 @@ def editor_command(path: Path, line: int, editor: str = "") -> list[str]:
         return [part.format(file=str(path), line=line) for part in template.split()]
     if shutil.which("code"):
         return ["code", "--goto", f"{path}:{line}"]
+    return system_open_command(path)
+
+
+def system_open_command(path: Path) -> list[str]:
+    """Open ``path`` with the application the operating system associates with it."""
     if sys.platform == "darwin":
         return ["open", str(path)]
     if sys.platform == "win32":
@@ -231,9 +236,17 @@ def editor_command(path: Path, line: int, editor: str = "") -> list[str]:
 
 
 def open_in_editor(path: Path, line: int = 1, editor: str = "") -> bool:
+    return _spawn(editor_command(path, line, editor))
+
+
+def open_with_system(path: Path) -> bool:
+    """Open a document or log file with the system's default application (not the code editor)."""
+    return _spawn(system_open_command(path))
+
+
+def _spawn(command: list[str]) -> bool:
     try:
-        subprocess.Popen(editor_command(path, line, editor), stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
-                         env=dict(os.environ))
+        subprocess.Popen(command, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, env=dict(os.environ))
         return True
     except OSError:
         return False

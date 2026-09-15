@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import tkinter as tk
+from collections.abc import Callable
 from typing import Any
 
 DELAY_MS = 500
@@ -16,6 +17,7 @@ class Tooltip:
         self.widget = widget
         self.window: Any = None
         self.pending: Any = None
+        self.pointer = (0, 0)
 
     def show(self, text: str, x: int, y: int) -> None:
         self.hide()
@@ -37,13 +39,19 @@ class Tooltip:
             self.window = None
 
 
-def attach(widget: Any, text: str) -> Tooltip:
-    """Show ``text`` when the pointer rests on ``widget`` for half a second."""
+def attach(widget: Any, text: str | Callable[[], str]) -> Tooltip:
+    """Show ``text`` (or what the callable returns at that moment) when the pointer rests on ``widget``."""
     tip = Tooltip(widget)
+
+    def show() -> None:
+        message = text() if callable(text) else text
+        if message:
+            tip.show(message, tip.pointer[0], tip.pointer[1])
 
     def schedule(event: Any) -> None:
         tip.hide()
-        tip.pending = widget.after(DELAY_MS, lambda: tip.show(text, event.x_root, event.y_root))
+        tip.pointer = (event.x_root, event.y_root)
+        tip.pending = widget.after(DELAY_MS, show)
 
     widget.bind("<Enter>", schedule, add="+")
     widget.bind("<Leave>", lambda _event: tip.hide(), add="+")

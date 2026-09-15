@@ -995,8 +995,9 @@ def test_controller_auto_approves_two_green_steps_then_halts_on_failed_test_gate
     code_records_before_failure = len(approved)
     app.steps.action("approve_approach")
     stopped = "the proposal test gate is not passing"
-    assert app.status.get() == "auto-approve stopped: " + stopped
-    assert stopped in app.panel.title_var.get() and stopped in app.panel.details.get("1.0", "end")
+    assert app.status.get() == "auto-approve paused: " + stopped
+    assert stopped in app.panel.auto_approve_note and stopped in app.panel.hint_var.get()
+    assert app.panel.title_var.get().startswith("Step ")  # the proposal stays visible; the hint explains
     assert store.load_state().implementation_cursor == 2
     assert len(steplog.StepLog(store.steps_path).records()) == records_before_failure + 1
     assert len([record for record in steplog.StepLog(store.steps_path).records()
@@ -1047,3 +1048,146 @@ def test_failures_are_shortened_for_the_dialog_and_shown_in_full_in_the_panel(tm
     panel.show_failure(long)
     assert panel.title_var.get() == "Step failed — Claude Code failed (1): first line"
     assert "line 59" in panel.details.get("1.0", "end")
+
+
+# --------------------------------------------------------------------------- the panel's guidance and busy state
+
+
+def test_panel_shows_only_the_phase_buttons_and_explains_the_grey_ones(tmp_path: Path) -> None:
+    panel = step_panel.StepPanel(tk.Tk(), lambda action: None)
+    panel.set_project_facts(True)
+    assert panel.visible_actions == ()  # specification phase: nothing to press yet
+    assert "save it" in panel.hint_var.get()
+    panel.set_phase(persistence.ProjectPhase.ARCHITECTURE)
+    assert panel.visible_actions == ("propose", "approve", "reject", "adapt", "approve_architecture", "undo")
+    assert "propose" in panel.enabled_actions and "approve" not in panel.enabled_actions
+    assert panel.disabled_reasons["approve"] == "no proposal that builds and passes its tests"
+    help_text = panel.tooltips["approve"]  # the tooltip text is built when the pointer rests on the button
+    del help_text
+    assert "Grey now: no proposal" in panel._help_for("approve")()
+    assert "Grey now" not in panel._help_for("propose")()
+    assert panel.hint_var.get().startswith("Architecture phase: press Propose")
+    panel.show(fake_proposal(tmp_path))
+    assert "approve" in panel.enabled_actions and panel.hint_var.get().startswith("Step 1 is ready.")
+    assert "add b" in panel.prompt_view.get("1.0", "end") or "No prompt" in panel.prompt_view.get("1.0", "end")
+    panel.set_phase(persistence.ProjectPhase.IMPLEMENTATION)
+    assert panel.visible_actions[0] == "propose_approach" and "approve_architecture" not in panel.visible_actions
+    panel.set_implementation_queue(None, 0)
+    assert panel.disabled_reasons["propose_approach"] == "the implementation queue is empty"
+
+
+def test_panel_busy_state_hides_the_buttons_and_offers_cancel(tmp_path: Path) -> None:
+    pressed: list[str] = []
+    panel = step_panel.StepPanel(tk.Tk(), pressed.append)
+    panel.set_project_facts(True)
+    panel.set_phase(persistence.ProjectPhase.ARCHITECTURE)
+    panel.set_busy(True, "asking the agent for the next step", cancellable=True)
+    assert panel.visible_actions == () and panel.enabled_actions == set()
+    assert panel.hint_var.get() == "Working: asking the agent for the next step. Press Cancel to stop."
+    panel.set_activity("step 2: building the proposal")
+    assert panel.activity_var.get() == "step 2: building the proposal"
+    assert "building the proposal" in panel.hint_var.get()
+    panel._pressed("cancel")()  # what the Cancel button runs
+    assert pressed[-1] == "cancel"
+    panel.set_busy(False)
+    assert "propose" in panel.visible_actions and "propose" in panel.enabled_actions
+    panel.show_auto_approve_refusal("the proposal test gate is not passing")
+    assert panel.hint_var.get().endswith("Auto-approve paused: the proposal test gate is not passing. "
+                                         "Decide yourself.")
+    panel.show(None)
+    assert panel.auto_approve_note == ""
+
+
+def test_panel_prompt_and_reply_tabs_show_the_exchange(tmp_path: Path) -> None:
+    panel = step_panel.StepPanel(tk.Tk(), lambda action: None)
+    proposal = fake_proposal(tmp_path)
+    proposal.prompt_text, proposal.reply = "PROMPT TEXT", '{"title": "Add b"}'
+    panel.show(proposal)
+    assert panel.prompt_view.get("1.0", "end").startswith("PROMPT TEXT")
+    assert panel.reply_view.get("1.0", "end").startswith('{"title": "Add b"}')
+    panel.set_phase(persistence.ProjectPhase.IMPLEMENTATION)
+    panel.show_approach(fake_approach())
+    assert panel.prompt_view.get("1.0", "end").startswith("approach prompt")
+    assert "No reply" in panel.reply_view.get("1.0", "end")
+
+
+def test_controller_cancel_stops_the_runner_and_records_nothing(tmp_path: Path) -> None:
+    window = Window(tmp_path)
+    cancelled: list[str] = []
+
+    class CancellableRunner(FakeRunner):
+        def begin(self) -> None:
+            self.calls.append("begin")
+
+        def cancel(self) -> int:
+            cancelled.append("cancel")
+            return 1
+
+        def propose(self, request: prompt.StepRequest) -> steps.Proposal:
+            self.calls.append("propose")
+            raise steps.StepCancelled()
+
+    runners: list[CancellableRunner] = []
+
+    def factory(*args: Any, **kwargs: Any) -> CancellableRunner:
+        runner = CancellableRunner(*args, **kwargs)
+        runners.append(runner)
+        return runner
+
+    controller = step_controller.StepController(window, factory)
+    window.panel.set_phase(persistence.ProjectPhase.ARCHITECTURE)
+    controller.action("propose")
+    assert runners[0].calls == ["begin", "prepare", "propose"]
+    assert window.status.get() == "cancelled — nothing was recorded"
+    assert window.panel.proposal is None and not window.panel.busy
+    controller.cancel()  # not busy: nothing happens
+    assert cancelled == []
+    window.panel.set_busy(True, "x", cancellable=True)
+    controller.cancel()
+    assert cancelled == ["cancel"] and controller.cancel_requested and window.status.get() == "cancelling …"
+
+
+def test_controller_run_reports_progress_to_panel_and_status(tmp_path: Path) -> None:
+    window = Window(tmp_path)
+    controller = step_controller.StepController(window)
+    seen: list[str] = []
+
+    def work() -> str:
+        controller._progress("half way")
+        seen.append(window.panel.activity_var.get())
+        return "done"
+
+    results: list[str] = []
+    controller.run(work, results.append, "counting", cancellable=False)
+    assert results == ["done"] and seen == ["half way"] and window.status.get() == "half way"
+    assert not window.panel.busy
+
+
+def test_undo_question_names_the_step_that_goes(tmp_path: Path) -> None:
+    class Log:
+        @staticmethod
+        def approved() -> list[steplog.StepRecord]:
+            return [steplog.StepRecord(0, "architecture", "approved", title="skeleton"),
+                    steplog.StepRecord(4, "architecture", "approved", title="Add parser")]
+
+    class Runner:
+        log = Log()
+
+    question = step_controller.undo_question(Runner())
+    assert question.startswith("Undo step 4 “Add parser”?") and "Nothing is deleted" in question
+    assert step_controller.undo_question(object()).startswith("There is no approved step to undo")
+
+
+def test_watchdog_reports_a_stalled_tk_thread() -> None:
+    import time
+
+    from icoda_gui import tasks
+
+    reports: list[str] = []
+    watchdog = tasks.Watchdog(tk.Tk(), reports.append, stall_seconds=0.05, repeat_seconds=100.0)
+    watchdog.last_beat = time.monotonic() - 10  # the stub never runs ``after`` callbacks
+    time.sleep(1.5)
+    assert reports and reports[0].startswith("the window has not answered for") and "Tk thread" in reports[0]
+    assert len(reports) == 1  # repeated only after repeat_seconds
+    watchdog._beat()
+    assert time.monotonic() - watchdog.last_beat < 1

@@ -254,7 +254,8 @@ def _assert_overviews(app: Any, *, specification_phase: bool = False) -> None:
 
 def _approve(app: Any, action: str) -> None:
     app.steps.action(action)
-    assert not app.panel.busy
+    # the panel stays busy only while a reload's analysis is still in flight (consumed by ``_poll``)
+    assert not app.panel.busy or app._pending_analyses
 
 
 def _run_immediately(work: Callable[[], Any], done: Callable[[Any], None]) -> None:

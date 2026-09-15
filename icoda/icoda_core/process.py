@@ -25,10 +25,11 @@ class ProcessResult:
     timed_out: bool = False
     truncated: bool = False
     duration: float = 0.0
+    cancelled: bool = False
 
     @property
     def ok(self) -> bool:
-        return self.returncode == 0 and not self.timed_out
+        return self.returncode == 0 and not self.timed_out and not self.cancelled
 
 
 @dataclass
@@ -53,6 +54,38 @@ def _pump(stream: IO[bytes], tail: _Tail) -> None:
     for chunk in iter(lambda: stream.read(4096), b""):
         tail.append(chunk)
     stream.close()
+
+
+_running: dict[int, subprocess.Popen[bytes]] = {}
+_cancelled: set[int] = set()
+_registry_lock = threading.Lock()
+
+
+def cancel_running() -> int:
+    """Kill every process that :func:`run_bounded` is still waiting for; return how many were killed.
+
+    The affected results come back with ``cancelled`` set, so callers can tell a cancel from a failure.
+    """
+    with _registry_lock:
+        processes = list(_running.items())
+        _cancelled.update(pid for pid, _process in processes)
+    for _pid, process in processes:
+        kill_tree(process)
+    return len(processes)
+
+
+def _register(process: subprocess.Popen[bytes]) -> None:
+    with _registry_lock:
+        _running[process.pid] = process
+
+
+def _unregister(process: subprocess.Popen[bytes]) -> bool:
+    """Forget the process; True when it was killed through :func:`cancel_running`."""
+    with _registry_lock:
+        _running.pop(process.pid, None)
+        was_cancelled = process.pid in _cancelled
+        _cancelled.discard(process.pid)
+    return was_cancelled
 
 
 def kill_tree(process: subprocess.Popen[bytes]) -> None:
@@ -88,6 +121,7 @@ def run_bounded(
         env=dict(env) if env is not None else None,
         start_new_session=sys.platform != "win32",
     )
+    _register(process)
     out, err = _Tail(max_output), _Tail(max_output)
     assert process.stdout is not None and process.stderr is not None
     threads = [threading.Thread(target=_pump, args=(process.stdout, out), daemon=True),
@@ -97,9 +131,10 @@ def run_bounded(
     timed_out = _feed_and_wait(process, input_text, timeout)
     for thread in threads:
         thread.join(timeout=5)
+    cancelled = _unregister(process)
     return ProcessResult(list(command), process.returncode if process.returncode is not None else -1,
                          out.text(), err.text(), timed_out, out.truncated or err.truncated,
-                         time.monotonic() - started)
+                         time.monotonic() - started, cancelled)
 
 
 def _feed_and_wait(process: subprocess.Popen[bytes], input_text: str | None, timeout: float) -> bool:

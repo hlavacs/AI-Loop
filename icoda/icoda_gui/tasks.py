@@ -1,9 +1,11 @@
-"""Background work for a Tk window: run a callable in a thread, deliver its result (or exception) on the Tk thread."""
+"""Background work for a Tk window, and a watchdog that reports when the Tk thread stops answering."""
 
 from __future__ import annotations
 
 import queue
+import sys
 import threading
+import time
 import traceback
 from collections.abc import Callable
 from typing import Any
@@ -52,3 +54,53 @@ class UiTasks:
     def _poll(self) -> None:
         self.drain()
         self.root.after(self.interval, self._poll)
+
+
+class Watchdog:
+    """Notices when the Tk thread stops answering and writes every thread's stack through ``on_stall``.
+
+    The Tk thread beats every ``beat_ms`` through ``after``; a daemon thread checks the beat and reports a stall
+    once when it begins and then every ``repeat_seconds`` while it lasts.
+    """
+
+    def __init__(self, root: Any, on_stall: Callable[[str], None], stall_seconds: float = 5.0,
+                 beat_ms: int = 500, repeat_seconds: float = 30.0) -> None:
+        self.root = root
+        self.on_stall = on_stall
+        self.stall_seconds = stall_seconds
+        self.beat_ms = beat_ms
+        self.repeat_seconds = repeat_seconds
+        self.last_beat = time.monotonic()
+        self.ui_thread = threading.get_ident()
+        self.reported_at: float | None = None
+        root.after(beat_ms, self._beat)
+        threading.Thread(target=self._watch, daemon=True, name="icoda-watchdog").start()
+
+    def _beat(self) -> None:
+        self.last_beat = time.monotonic()
+        self.root.after(self.beat_ms, self._beat)
+
+    def _watch(self) -> None:
+        while True:
+            time.sleep(1.0)
+            silence = time.monotonic() - self.last_beat
+            if silence < self.stall_seconds:
+                self.reported_at = None
+                continue
+            if self.reported_at is None or time.monotonic() - self.reported_at >= self.repeat_seconds:
+                self.reported_at = time.monotonic()
+                self.on_stall(f"the window has not answered for {silence:.0f} s\n" + self.stacks())
+
+    def stacks(self) -> str:
+        """Every thread's stack, the Tk thread first."""
+        names = {t.ident: t.name for t in threading.enumerate()}
+        frames = sys._current_frames()
+        ordered = [self.ui_thread, *(i for i in frames if i != self.ui_thread)]
+        parts = []
+        for ident in ordered:
+            frame = frames.get(ident)
+            if frame is None:
+                continue
+            label = "Tk thread" if ident == self.ui_thread else names.get(ident, str(ident))
+            parts.append(f"--- {label}\n" + "".join(traceback.format_stack(frame)))
+        return "\n".join(parts)
