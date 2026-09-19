@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# ICODA launcher for macOS and Linux: checks the tools, keeps .icoda-venv current, starts icoda.py.
+# ICODA launcher for macOS and Linux: checks the tools and prepared environment, then starts icoda.py.
 set -euo pipefail
 
 script_dir="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
@@ -9,22 +9,17 @@ source ./icoda_python.bash
 
 venv_dir="$script_dir/.icoda-venv"
 venv_python="$venv_dir/bin/python"
-stamp="$venv_dir/.installed-from"
-
 pkg_install() {
-  # Install a package by the name the local package manager knows; print the manual command on failure.
+  # Print the package-manager command for the user; launch never installs system packages itself.
   local brew_pkg="$1" apt_pkg="$2" dnf_pkg="$3"
   if [ "$(uname -s)" = "Darwin" ] && command -v brew >/dev/null 2>&1; then
-    brew install "$brew_pkg" && return 0
-    echo "icoda: manual fix: brew install $brew_pkg" >&2
+    echo "icoda: run: brew install $brew_pkg" >&2
   elif command -v apt-get >/dev/null 2>&1; then
-    sudo apt-get install -y "$apt_pkg" && return 0
-    echo "icoda: manual fix: sudo apt-get install -y $apt_pkg" >&2
+    echo "icoda: run: sudo apt-get install -y $apt_pkg" >&2
   elif command -v dnf >/dev/null 2>&1; then
-    sudo dnf install -y "$dnf_pkg" && return 0
-    echo "icoda: manual fix: sudo dnf install -y $dnf_pkg" >&2
+    echo "icoda: run: sudo dnf install -y $dnf_pkg" >&2
   else
-    echo "icoda: install $brew_pkg with your package manager" >&2
+    echo "icoda: install $brew_pkg with your package manager, then launch ICODA again" >&2
   fi
   return 1
 }
@@ -33,8 +28,8 @@ need_tool() {
   # need_tool <command> <brew> <apt> <dnf> [fatal]
   local cmd="$1" fatal="${5:-no}"
   command -v "$cmd" >/dev/null 2>&1 && return 0
-  echo "icoda: $cmd is missing; attempting installation..." >&2
-  pkg_install "$2" "$3" "$4" && return 0
+  echo "icoda: $cmd is missing" >&2
+  pkg_install "$2" "$3" "$4" || true
   if [ "$fatal" = "fatal" ]; then
     echo "icoda: $cmd is required" >&2
     exit 1
@@ -63,23 +58,23 @@ check_vcpkg() {
 ensure_venv() {
   local base_python="$1"
   if [ ! -x "$venv_python" ]; then
-    echo "icoda: creating virtual environment .icoda-venv" >&2
-    "$base_python" -m venv "$venv_dir"
+    echo "icoda: .icoda-venv is missing; run these commands from $script_dir:" >&2
+    echo "  $base_python -m venv .icoda-venv" >&2
+    echo "  .icoda-venv/bin/python -m pip install -e '.[dev]' -c constraints.txt" >&2
+    return 1
   fi
-  if [ ! -f "$stamp" ] || [ pyproject.toml -nt "$stamp" ]; then
-    echo "icoda: installing Python dependencies" >&2
-    "$venv_python" -m pip install --quiet --upgrade pip
-    # The libclang wheel and LLVM's clang bindings both own the clang/ package; only one may be installed.
-    "$venv_python" -m pip uninstall --quiet --yes libclang >/dev/null 2>&1 || true
-    "$venv_python" -m pip install --quiet -e .
-    date > "$stamp"
+  if ! "$venv_python" -c 'from importlib.metadata import version; version("icoda"); import clang.cindex, jsonschema, networkx' \
+      >/dev/null 2>&1; then
+    echo "icoda: the ICODA environment is incomplete; run this command from $script_dir:" >&2
+    echo "  .icoda-venv/bin/python -m pip install -e '.[dev]' -c constraints.txt" >&2
+    return 1
   fi
 }
 
 python_bin="$(choose_icoda_python)" || exit 1
 if ! icoda_python_has_tk "$python_bin"; then
   version="$("$python_bin" -c 'import sys; print(f"{sys.version_info.major}.{sys.version_info.minor}")')"
-  echo "icoda: Tkinter is missing for $python_bin; attempting installation..." >&2
+  echo "icoda: Tkinter is missing for $python_bin" >&2
   pkg_install "python-tk@$version" "python3-tk" "python3-tkinter" || exit 1
   icoda_python_has_tk "$python_bin" || { echo "icoda: Tkinter still unavailable for $python_bin" >&2; exit 1; }
 fi

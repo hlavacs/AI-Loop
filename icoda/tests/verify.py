@@ -20,6 +20,8 @@ from icoda_core import steps
 
 ROOT = Path(__file__).resolve().parent.parent
 SAMPLE = ROOT / "tests" / "sample_project"
+REAL_PROVIDER_STAGE = "real-provider"
+REAL_PROVIDER_WAIVER = "--allow-missing-real-provider"
 
 
 @dataclass(frozen=True)
@@ -29,6 +31,7 @@ class CheckResult:
     returncode: int
     seconds: float
     log: str
+    outcome: str
 
 
 def run_check(name: str, command: list[str], artifact: Path, env: dict[str, str] | None = None) -> CheckResult:
@@ -53,7 +56,8 @@ def run_check(name: str, command: list[str], artifact: Path, env: dict[str, str]
             returncode = 127
     seconds = time.monotonic() - started
     print(f"=== {name}: {'PASS' if returncode == 0 else 'FAIL'} ({seconds:.1f}s) ===", flush=True)
-    return CheckResult(name, shown, returncode, round(seconds, 3), log_path.name)
+    outcome = "PASS" if returncode == 0 else "FAIL"
+    return CheckResult(name, shown, returncode, round(seconds, 3), log_path.name, outcome)
 
 
 def _output(command: list[str]) -> str:
@@ -68,6 +72,8 @@ def write_metadata(artifact: Path) -> None:
     metadata = {
         "started": datetime.now(timezone.utc).isoformat(timespec="seconds"),
         "platform": platform.platform(),
+        "machine": platform.machine(),
+        "python_version": platform.python_version(),
         "python": sys.version,
         "executable": sys.executable,
         "git_head": _output(["git", "rev-parse", "HEAD"]),
@@ -85,6 +91,19 @@ def gui_command(artifact: Path) -> list[str]:
     if sys.platform.startswith("linux") and not os.environ.get("DISPLAY") and shutil.which("xvfb-run"):
         return ["xvfb-run", "-a", *command]
     return command
+
+
+def real_provider_credential() -> str | None:
+    """Return the configured Codex credential kind without making a model request."""
+    binary = shutil.which("codex")
+    if binary is None:
+        return None
+    try:
+        result = subprocess.run([binary, "login", "status"], cwd=ROOT, capture_output=True,
+                                text=True, timeout=20, check=False)
+    except (OSError, subprocess.SubprocessError):
+        return None
+    return "authenticated Codex CLI session" if result.returncode == 0 else None
 
 
 def commands(artifact: Path) -> list[tuple[str, list[str], dict[str, str] | None]]:
@@ -107,11 +126,46 @@ def commands(artifact: Path) -> list[tuple[str, list[str], dict[str, str] | None
         ("compileall", [python, "-m", "compileall", "-q", "icoda.py", "icoda_core", "icoda_gui", "tests"], None),
         ("providers", [python, "-m", "icoda_core.provider_check", "--output",
                        str(artifact / "provider-qualification.json"), "--cwd", str(ROOT)], None),
+        (REAL_PROVIDER_STAGE, [python, str(ROOT / "tests" / "real_provider_acceptance.py"),
+                              "--output", str(artifact / REAL_PROVIDER_STAGE)], None),
         ("sample-build", build, build_env),
         ("pytest", coverage, test_env),
         ("analysis", [python, "-m", "icoda_core.session", str(SAMPLE)], None),
         ("gui", gui_command(artifact), dict(os.environ, ICODA_TK_STUB="0")),
     ]
+
+
+def unavailable_real_provider(command: list[str], artifact: Path, allow_missing: bool) -> CheckResult:
+    """Record a fail-closed or explicitly waived real-provider stage."""
+    shown = subprocess.list2cmdline(command) if os.name == "nt" else shlex.join(command)
+    log_path = artifact / f"{REAL_PROVIDER_STAGE}.log"
+    missing = ("missing Codex credential: run 'codex login', or authenticate with "
+               "'printenv OPENAI_API_KEY | codex login --with-api-key' or "
+               "'printenv CODEX_ACCESS_TOKEN | codex login --with-access-token'")
+    if allow_missing:
+        outcome, returncode = "SKIP", 0
+        message = f"SKIP {REAL_PROVIDER_STAGE}: {missing}; explicit waiver {REAL_PROVIDER_WAIVER} was requested"
+    else:
+        outcome, returncode = "FAIL", 1
+        message = (f"FAIL {REAL_PROVIDER_STAGE}: {missing}. To record an explicit waiver, rerun with "
+                   f"{REAL_PROVIDER_WAIVER}.")
+    print(f"\n=== {REAL_PROVIDER_STAGE}: {shown} ===", flush=True)
+    print(message, flush=True)
+    print(f"=== {REAL_PROVIDER_STAGE}: {outcome} (0.0s) ===", flush=True)
+    log_path.write_text(f"$ {shown}\n{message}\n", encoding="utf-8")
+    return CheckResult(REAL_PROVIDER_STAGE, shown, returncode, 0.0, log_path.name, outcome)
+
+
+def run_commands(stage_commands: list[tuple[str, list[str], dict[str, str] | None]], artifact: Path,
+                 allow_missing_real_provider: bool) -> list[CheckResult]:
+    """Run every configured stage, recording the real-provider credential policy explicitly."""
+    results = []
+    for name, command, env in stage_commands:
+        if name == REAL_PROVIDER_STAGE and real_provider_credential() is None:
+            results.append(unavailable_real_provider(command, artifact, allow_missing_real_provider))
+        else:
+            results.append(run_check(name, command, artifact, env))
+    return results
 
 
 def artifact_directory(root: Path) -> Path:
@@ -125,28 +179,41 @@ def artifact_directory(root: Path) -> Path:
 
 def write_summary(artifact: Path, results: list[CheckResult]) -> None:
     passed = all(result.returncode == 0 for result in results)
+    metadata = json.loads((artifact / "environment.json").read_text(encoding="utf-8"))
     summary: dict[str, Any] = {"passed": passed, "artifact": str(artifact),
+                               "platform": metadata["platform"], "machine": metadata["machine"],
+                               "python_version": metadata["python_version"],
+                               "waived": [result.name for result in results if result.outcome == "SKIP"],
                                "checks": [asdict(result) for result in results]}
     (artifact / "summary.json").write_text(json.dumps(summary, indent=2) + "\n", encoding="utf-8")
-    lines = [f"{'PASS' if result.returncode == 0 else 'FAIL'} {result.name} ({result.seconds:.1f}s)"
-             for result in results]
+    lines = [f"Platform: {summary['platform']}", f"Machine: {summary['machine']}",
+             f"Python: {summary['python_version']}", "",
+             *(f"{result.outcome} {result.name} ({result.seconds:.1f}s)" for result in results)]
     (artifact / "summary.txt").write_text("\n".join(lines) + "\n", encoding="utf-8")
+
+
+def exit_status(results: list[CheckResult]) -> int:
+    """Return the process status represented by the collected stage results."""
+    return 0 if all(result.returncode == 0 for result in results) else 1
 
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--artifacts-root", type=Path, default=ROOT / ".icoda-test-artifacts")
+    parser.add_argument(REAL_PROVIDER_WAIVER, action="store_true",
+                        help="record a SKIP when Codex credentials are unavailable")
     args = parser.parse_args(argv)
     artifact = artifact_directory(args.artifacts_root.resolve())
     print(f"ICODA verification evidence: {artifact}")
     write_metadata(artifact)
-    results = [run_check(name, command, artifact, env) for name, command, env in commands(artifact)]
+    results = run_commands(commands(artifact), artifact, args.allow_missing_real_provider)
     project_log = SAMPLE / ".icoda" / "icoda.log"
     if project_log.is_file():
         shutil.copy2(project_log, artifact / "icoda.log")
     write_summary(artifact, results)
-    print(f"\n{'PASS' if all(r.returncode == 0 for r in results) else 'FAIL'}: {artifact / 'summary.txt'}")
-    return 0 if all(result.returncode == 0 for result in results) else 1
+    status = exit_status(results)
+    print(f"\n{'PASS' if status == 0 else 'FAIL'}: {artifact / 'summary.txt'}")
+    return status
 
 
 if __name__ == "__main__":

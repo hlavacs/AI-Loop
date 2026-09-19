@@ -22,6 +22,7 @@ from typing import Any
 
 from clang import cindex
 
+from icoda_core import persistence
 from icoda_core.bodyhash import body_hash
 from icoda_core.model import (
     DerivedModel,
@@ -873,9 +874,8 @@ def _unit_result(command: CompileCommand, parser: Parser, extractor: Extractor, 
         explanation = explain_with_compiler(command, parser.arguments(command), shadow)
         result.file.errors = (*result.file.errors, f"compiler says: {explanation}")
     if cache_file:
-        cache_file.parent.mkdir(parents=True, exist_ok=True)
         key = unit_cache_key(command, result.contributing, root, libclang_version)
-        cache_file.write_text(json.dumps({"key": key, "result": result.to_json()}), encoding="utf-8")
+        persistence._atomic_write_text(cache_file, json.dumps({"key": key, "result": result.to_json()}))
     return result
 
 

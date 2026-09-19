@@ -131,6 +131,11 @@ def promote_worktree(repo: Path | str, worktree: Path | str) -> list[str]:
     return [change.path for change in changes]
 
 
+def rollback_promotion(repo: Path | str, paths: Sequence[str]) -> int:
+    """Restore successfully promoted paths from HEAD; return the number restored."""
+    return _rollback(Path(repo), [Change("", path) for path in paths])
+
+
 def _apply_change(repo: Path, worktree: Path, change: Change) -> None:
     target = repo / change.path
     if change.status == "D":

@@ -185,8 +185,9 @@ class DerivedModel:
         return model
 
     def save(self, path: Path) -> None:
-        path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text(self.to_json(), encoding="utf-8")
+        # Local import avoids the persistence -> model -> persistence cycle.
+        from icoda_core.persistence import _atomic_write_text
+        _atomic_write_text(path, self.to_json())
 
     @classmethod
     def load(cls, path: Path) -> DerivedModel:

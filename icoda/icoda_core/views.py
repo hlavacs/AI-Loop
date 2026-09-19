@@ -86,12 +86,17 @@ def circle_radius(file_count: int) -> float:
 
 def order_files(files: list[str], model: DerivedModel) -> list[str]:
     """Neighbours-first order along the circumference: a walk over the intra-cluster relations."""
+    return _order_files(files, model.file_edges())
+
+
+def _order_files(files: list[str], file_edges: dict[tuple[str, str, EdgeKind], int]) -> list[str]:
     weight: dict[tuple[str, str], int] = defaultdict(int)
-    for (source, target, _kind), count in model.file_edges().items():
-        if source in files and target in files:
+    file_set = set(files)
+    for (source, target, _kind), count in file_edges.items():
+        if source in file_set and target in file_set:
             weight[(source, target)] += count
             weight[(target, source)] += count
-    degree = {f: sum(w for (a, _b), w in weight.items() if a == f) for f in files}
+    degree = _degree_index(files, weight)
     remaining = sorted(files, key=lambda f: (-degree[f], f))
     ordered: list[str] = []
     while remaining:
@@ -105,6 +110,13 @@ def order_files(files: list[str], model: DerivedModel) -> list[str]:
             ordered.append(best)
             current = best
     return ordered
+
+
+def _degree_index(files: list[str], weight: dict[tuple[str, str], int]) -> dict[str, int]:
+    degree = {file: 0 for file in files}
+    for (source, _target), count in weight.items():
+        degree[source] += count
+    return degree
 
 
 def place_circles(clustering: Clustering, width: float, height: float) -> list[ClusterCircle]:
@@ -126,8 +138,13 @@ def place_circles(clustering: Clustering, width: float, height: float) -> list[C
 
 
 def place_files(circle: ClusterCircle, model: DerivedModel) -> dict[str, Node]:
+    return _place_files(circle, model.file_edges())
+
+
+def _place_files(circle: ClusterCircle,
+                 file_edges: dict[tuple[str, str, EdgeKind], int]) -> dict[str, Node]:
     nodes = {}
-    ordered = order_files(circle.files, model)
+    ordered = _order_files(circle.files, file_edges)
     for index, file in enumerate(ordered):
         angle = -math.pi / 2 + 2 * math.pi * index / max(len(ordered), 1)
         nodes[file] = Node(file, file.rsplit("/", 1)[-1], circle.cx + circle.radius * math.cos(angle),
@@ -147,8 +164,13 @@ def place_externals(model: DerivedModel, width: float, height: float) -> dict[st
 
 def merge_arrows(model: DerivedModel) -> list[Arrow]:
     """One arrow per (source file, target) with the counts of every relation kind between them."""
+    return _merge_arrows(model, model.file_edges())
+
+
+def _merge_arrows(model: DerivedModel,
+                  file_edges: dict[tuple[str, str, EdgeKind], int]) -> list[Arrow]:
     merged: dict[tuple[str, str], Arrow] = {}
-    for (source, target, kind), count in model.file_edges().items():
+    for (source, target, kind), count in file_edges.items():
         merged.setdefault((source, target), Arrow(source, target)).counts[kind] = count
     for edge in model.edges:
         if edge.target.startswith("external:"):
@@ -161,12 +183,14 @@ def merge_arrows(model: DerivedModel) -> list[Arrow]:
 
 def aggregate_to_clusters(arrows: list[Arrow], clustering: Clustering) -> list[Arrow]:
     """Arrows between different clusters summed per cluster pair; external targets keep their id."""
+    cluster_by_file: dict[str, str] = {}
+    for cluster in clustering.clusters:
+        for file in cluster.files:
+            cluster_by_file.setdefault(file, cluster.id)
     merged: dict[tuple[str, str], Arrow] = {}
     for arrow in arrows:
-        source_cluster = clustering.cluster_of(arrow.source)
-        target_cluster = clustering.cluster_of(arrow.target)
-        source_id = source_cluster.id if source_cluster else arrow.source
-        target_id = target_cluster.id if target_cluster else arrow.target
+        source_id = cluster_by_file.get(arrow.source, arrow.source)
+        target_id = cluster_by_file.get(arrow.target, arrow.target)
         if source_id == target_id:
             continue
         aggregate = merged.setdefault((source_id, target_id), Arrow(source_id, target_id))
@@ -177,12 +201,13 @@ def aggregate_to_clusters(arrows: list[Arrow], clustering: Clustering) -> list[A
 
 def layout_file_view(model: DerivedModel, clustering: Clustering, width: float = 1600.0,
                      height: float = 1000.0) -> FileViewLayout:
+    file_edges = model.file_edges()
     circles = place_circles(clustering, width, height - 100)
     nodes: dict[str, Node] = {}
     for circle in circles:
-        nodes.update(place_files(circle, model))
+        nodes.update(_place_files(circle, file_edges))
     nodes.update(place_externals(model, width, height))
-    arrows = merge_arrows(model)
+    arrows = _merge_arrows(model, file_edges)
     return FileViewLayout(circles, nodes, arrows, aggregate_to_clusters(arrows, clustering), width, height)
 
 

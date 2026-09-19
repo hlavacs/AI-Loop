@@ -14,6 +14,33 @@ proposal, failures with their traceback, and — when the window stops answering
 
 When you report a problem, the last thirty lines of the log say more than a screenshot.
 
+## The launcher refuses to start
+
+The Bash launcher stops with `icoda: .icoda-venv is missing; run these commands from <icoda directory>:` when the
+prepared environment does not exist. It stops with `icoda: the ICODA environment is incomplete; run this command
+from <icoda directory>:` when ICODA or one of `clang.cindex`, `jsonschema` and `networkx` cannot be imported. The
+Windows launcher reports the same two causes as `icoda: .icoda-venv is missing.` and `icoda: the ICODA environment
+is incomplete.`. Launch does not install or repair packages automatically.
+
+Create the environment, then install the checkout and its development dependencies with the versions pinned by
+`constraints.txt`:
+
+```bash
+python3 -m venv .icoda-venv
+.icoda-venv/bin/python -m pip install -e '.[dev]' -c constraints.txt
+```
+
+On Windows:
+
+```bat
+py -3.12 -m venv .icoda-venv
+.icoda-venv\Scripts\python.exe -m pip install -e ".[dev]" -c constraints.txt
+```
+
+Run the commands from the `icoda` directory, then launch again. The complete procedure and prerequisites are in
+[Getting started](GETTING_STARTED.md#1-install) and
+[Installation and launch](../HANDBOOK.md#2-installation-and-launch).
+
 ## The window looks frozen
 
 ICODA does its slow work (analysis, the agent call, builds, tests) in the background and shows a moving bar in the
@@ -44,11 +71,48 @@ details. The usual causes:
   icoda_core.provider_check` tests this without spending tokens). ICODA sends the prompt through standard input,
   so a very long prompt is not the problem.
 
+Two refusals come from `steps.StepRunner._invoke_provider` before ICODA can use a reply:
+
+- **`Gemini CLI (Google) is disabled; choose an enabled provider`**: the selected entry exists but its `enabled`
+  setting is false. Choose Claude Code or Codex CLI, the enabled providers in the shipped registry; changing the
+  binary path does not enable a disabled entry.
+- **`Codex CLI (OpenAI) timed out after 1800 seconds`** followed by `If it asks for a login: run 'codex login'`:
+  the provider process exceeded `PROVIDER_TIMEOUT`. Check its terminal output and login, then press **Propose**
+  again. For Claude Code, run `claude` and log in; for Codex CLI, run `codex login`.
+
+`python -m icoda_core.provider_check` checks installed CLI versions and required flags without making a model
+request. It does not prove that a login is current. See [LLM selection](../HANDBOOK.md#6-llm-selection) for the
+provider setup procedure.
+
+## A proposal reply is refused before the build
+
+**`the reply exceeds the 200000-byte size limit`** means `_payload_size` exceeded `MAX_RESPONSE_BYTES` before
+`extract_json` searched for JSON. Nothing was applied. Narrow the **Request** to fewer files or a smaller atomic
+step and press **Propose** again; if the provider still ignores the bound, choose another model.
+
+The following messages mean the JSON was found, but `response.validate` refused text or a candidate path:
+
+- `files/0/content: must contain valid UTF-8 text` identifies a lone Unicode surrogate. Ask the provider to return
+  valid UTF-8 text and propose again.
+- `files/0/path: must not contain a NUL byte` identifies a NUL in a path. Remove the NUL and use a normal project
+  path.
+- `files/0/path: must be relative to the project root` identifies an absolute POSIX or Windows path;
+  `files/0/path: must not leave the project root` identifies `..`; and `files/0/path: may not touch git, build
+  output or the .icoda folder` identifies protected output or metadata. Request a plain relative source or test
+  path inside the project. The full error starts `the JSON object does not match the response schema:`.
+
+**`could not apply the files: candidate path 'linked/escaped.txt' leaves the project root`** is the
+`response.apply_changes` symlink-escape refusal. A lexically relative path resolved through a symlink outside the
+proposal worktree, so ICODA stopped before writing or deleting it. Remove that candidate path or replace the
+project symlink with a real in-project directory, then propose again. The safety boundary and review procedure are
+described in [LLM selection](../HANDBOOK.md#6-llm-selection) and [The first step](GETTING_STARTED.md#4-the-first-step).
+
 ## The build fails
 
 **Project ▸ Build** and every proposal run the build gate: `cmake --preset debug` followed by `cmake --build
---preset debug` for C++, `python -m compileall src` for Python. The output is in the **Build** tab and in the
-error dialog (shortened; the full text is in the log).
+--preset debug` for C++. For Python, ICODA discovers project source roots and runs `python -m compileall -q -x
+<excluded paths> <source roots>`; it does not assume that source is under `src`. The output is in the **Build** tab
+and in the error dialog (shortened; the full text is in the log).
 
 - **`CMake 3.28 or higher is required`**: update CMake.
 - **`clang-scan-deps` not found**, or errors about modules: the compiler must be able to build C++20 modules. On
@@ -69,7 +133,8 @@ it, and takes the newest file.
 **"no libclang found"**: ICODA needs the libclang library of a Clang installation to parse C++. **Project ▸
 Choose libclang Library…** lists what it found; choose one, press **Apply**, and ICODA reloads the project with it
 (no restart is needed). If nothing is listed, install LLVM (`brew install llvm` on macOS, `libclang-dev` or
-`llvm` on Linux) or `pip install libclang` into `.icoda-venv`.
+`llvm` on Linux). If `clang.cindex` is missing from the prepared environment, repeat the pinned install command
+from [Getting started](GETTING_STARTED.md#1-install).
 
 A Python project is analysed without a build, but a file with a syntax error contributes no entities until it is
 fixed; the file list in the status line reports how many files have parse errors.
@@ -91,6 +156,13 @@ proposal (press **Propose** for a new one).
 Command…** changes it. For Python, the **Test runner** in the Code profile (for example `python -m pytest`) is
 used.
 
+**`LineGate.classify is 51 lines; split it below the hard maximum of 50.`** shows the exact refusal form. It is a
+required quality refusal, not an advisory issue. `StepRunner._quality_refusal` calls `rules.promotion_refusal`
+after the proposal is parsed, and approval calls `_quality_refusal` again so an altered or stale over-limit
+candidate cannot be promoted. Split the function into focused helpers, keep the original and every new function
+at 50 source lines or fewer, add tests for the same behaviour, and propose again. The worked procedure is
+[Worked example B](../HANDBOOK.md#worked-example-b-split-a-python-function-refused-by-the-50-line-gate).
+
 ## Saving the specification is refused
 
 The message at the bottom of the specification window names the page and the entry: `Use cases UC-1: title is
@@ -111,6 +183,12 @@ crashed in libclang on that unit; choose another libclang library or exclude the
 If `.icoda/state.json` is damaged, ICODA refuses to guess: restore it from Git (`git checkout .icoda/state.json`)
 when it is committed there, otherwise fix the JSON by hand — the message names the field.
 
+If saving reports an error but `.icoda/state.json` is still intact and a `.state.json.*.tmp` file remains beside
+it, `persistence._atomic_write_text` failed before `os.replace` and cleanup could not unlink the temporary file.
+Correct the directory permissions, confirm `state.json` is the intact version you want, and remove only the
+orphaned `.state.json.*.tmp` file. Do not replace the good state file with the orphan. See
+[Corrupt state](../HANDBOOK.md#corrupt-state) for the recovery procedure.
+
 ## Keyboard shortcuts do nothing
 
 The shortcuts use the Command key on macOS (⌘N, ⌘O, ⌘R, ⌘E, ⌘B, ⌘Return, ⌘S in the specification editor) and
@@ -122,3 +200,10 @@ proposes.
 `./verify.bash` runs the whole gate and writes its evidence under `.icoda-test-artifacts/`; the newest run is
 named in `LATEST`. Read `summary.txt` first, then the failing check's `.log`. The handbook's maintainer guide
 explains the gate.
+
+**`FAIL real-provider: missing Codex credential: run 'codex login'`** means `codex login status` found no current
+session; an expired login has the same result. Authenticate with `codex login` and rerun the gate. If a release is
+deliberately qualified without that external check, run `./verify.bash --allow-missing-real-provider`: the
+`real-provider` stage remains in `summary.txt` and `summary.json` with outcome `SKIP` instead of being omitted or
+reported as passed. See [Required verification after every change](../HANDBOOK.md#required-verification-after-every-change)
+for the full procedure.

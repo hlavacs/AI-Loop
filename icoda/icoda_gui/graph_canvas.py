@@ -234,7 +234,7 @@ class NodeAppearanceCanvas:
                                     font=("TkDefaultFont", 10, "bold"))
 
     def draw_appearance_key(self, *, uncertain_calls: bool = False) -> None:
-        mode = "COVERAGE — green covered · red uncovered" if self.coverage_mode else \
+        mode = "RECORDED TEST REACHABILITY — green reached · red not reached" if self.coverage_mode else \
             "STATUS — gray stub · blue implemented · green tested"
         if uncertain_calls:
             mode += " · dashed ? uncertain dynamic call"

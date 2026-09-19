@@ -1,4 +1,4 @@
-"""Pure callable test-coverage projection from the derived model and step log."""
+"""Pure recorded-test reachability projection from the derived model and step log."""
 
 from __future__ import annotations
 
@@ -12,7 +12,7 @@ from icoda_core.steplog import APPROACH_ROUND, StepLog, StepRecord
 
 @dataclass(frozen=True)
 class CoverageEvidence:
-    """One successful step-log entry whose named tests reach a callable."""
+    """One successful step-log entry whose named test identifiers structurally reach a callable."""
 
     step: int
     title: str
@@ -22,7 +22,7 @@ class CoverageEvidence:
 
 @dataclass(frozen=True)
 class CoverageEntry:
-    """The stable coverage row for one callable entity."""
+    """The stable recorded-test reachability row for one analysed callable entity."""
 
     usr: str
     qualified_name: str
@@ -39,7 +39,7 @@ class CoverageEntry:
 
 @dataclass(frozen=True)
 class CoverageIndex:
-    """All callable rows and the explicit subset with no successful test evidence."""
+    """All analysed callable rows and the subset with no recorded reaching test identifier."""
 
     entries: tuple[CoverageEntry, ...] = ()
     uncovered: tuple[str, ...] = ()
@@ -54,7 +54,11 @@ class CoverageIndex:
 
 def build_index(model: DerivedModel,
                 log: StepLog | Iterable[StepRecord]) -> CoverageIndex:
-    """Map every callable to successful step evidence and the tests that reach it."""
+    """Map analysed callables to successful records and structurally reaching test identifiers.
+
+    The index projects recorded identifiers through the model's static call edges. It does
+    not execute tests or measure assertions, runtime behavior, statements, or branches.
+    """
     records = log.records() if isinstance(log, StepLog) else list(log)
     successful = sorted(_successful_records(records), key=_record_key)
     candidates_by_record = [

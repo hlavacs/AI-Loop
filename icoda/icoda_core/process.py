@@ -13,6 +13,9 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import IO
 
+_TRUNCATION_MARKER = b"[output truncated]\n"
+_TERMINATE_GRACE = 0.25
+
 
 @dataclass
 class ProcessResult:
@@ -42,12 +45,15 @@ class _Tail:
 
     def append(self, chunk: bytes) -> None:
         self.data.extend(chunk)
-        if len(self.data) > self.limit:
-            del self.data[: len(self.data) - self.limit]
+        if self.truncated or len(self.data) > self.limit:
             self.truncated = True
+            payload_limit = max(0, self.limit - len(_TRUNCATION_MARKER))
+            if len(self.data) > payload_limit:
+                del self.data[: len(self.data) - payload_limit]
 
     def text(self) -> str:
-        return self.data.decode("utf-8", errors="replace")
+        marker = _TRUNCATION_MARKER[:self.limit] if self.truncated else b""
+        return (marker + self.data).decode("utf-8", errors="replace")
 
 
 def _pump(stream: IO[bytes], tail: _Tail) -> None:
@@ -89,16 +95,46 @@ def _unregister(process: subprocess.Popen[bytes]) -> bool:
 
 
 def kill_tree(process: subprocess.Popen[bytes]) -> None:
-    """Kill the process and everything it started (its session on POSIX, its tree on Windows)."""
-    if process.poll() is not None:
+    """Terminate the process tree, escalating to a forced kill after a short grace period."""
+    if sys.platform == "win32":
+        if process.poll() is not None:
+            return
+        try:
+            result = subprocess.run(["taskkill", "/F", "/T", "/PID", str(process.pid)],
+                                    stdin=subprocess.DEVNULL, capture_output=True, timeout=5, check=False)
+            if result.returncode != 0:
+                _kill_process(process)
+        except (OSError, subprocess.SubprocessError):
+            _kill_process(process)
         return
+
     try:
-        if sys.platform == "win32":
-            subprocess.run(["taskkill", "/F", "/T", "/PID", str(process.pid)], capture_output=True, check=False)
-        else:
-            os.killpg(os.getpgid(process.pid), signal.SIGKILL)
+        os.killpg(process.pid, signal.SIGTERM)
     except (ProcessLookupError, PermissionError, OSError):
-        process.kill()
+        _kill_process(process)
+        return
+    deadline = time.monotonic() + _TERMINATE_GRACE
+    while time.monotonic() < deadline:
+        process.poll()
+        try:
+            os.killpg(process.pid, 0)
+        except ProcessLookupError:
+            return
+        except (PermissionError, OSError):
+            break
+        time.sleep(0.01)
+    try:
+        os.killpg(process.pid, signal.SIGKILL)
+    except (ProcessLookupError, PermissionError, OSError):
+        _kill_process(process)
+
+
+def _kill_process(process: subprocess.Popen[bytes]) -> None:
+    if process.poll() is None:
+        try:
+            process.kill()
+        except OSError:
+            pass
 
 
 def run_bounded(
@@ -111,6 +147,8 @@ def run_bounded(
     env: Mapping[str, str] | None = None,
 ) -> ProcessResult:
     """Run ``command`` to completion or until ``timeout`` seconds, keeping bounded output."""
+    if isinstance(command, (str, bytes)):
+        raise TypeError("command must be an argument sequence, not a shell command string")
     started = time.monotonic()
     process = subprocess.Popen(
         list(command),
@@ -119,7 +157,9 @@ def run_bounded(
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
         env=dict(env) if env is not None else None,
+        shell=False,
         start_new_session=sys.platform != "win32",
+        creationflags=int(getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0)) if sys.platform == "win32" else 0,
     )
     _register(process)
     out, err = _Tail(max_output), _Tail(max_output)
@@ -128,7 +168,10 @@ def run_bounded(
                threading.Thread(target=_pump, args=(process.stderr, err), daemon=True)]
     for thread in threads:
         thread.start()
-    timed_out = _feed_and_wait(process, input_text, timeout)
+    writer = _feed_stdin(process, input_text)
+    timed_out = _wait(process, max(0.0, timeout - (time.monotonic() - started)))
+    if writer is not None:
+        writer.join(timeout=1)
     for thread in threads:
         thread.join(timeout=5)
     cancelled = _unregister(process)
@@ -137,14 +180,30 @@ def run_bounded(
                          time.monotonic() - started, cancelled)
 
 
-def _feed_and_wait(process: subprocess.Popen[bytes], input_text: str | None, timeout: float) -> bool:
-    """Write stdin, wait for exit; on timeout kill the tree and return True."""
-    if input_text is not None and process.stdin is not None:
+def _feed_stdin(process: subprocess.Popen[bytes], input_text: str | None) -> threading.Thread | None:
+    """Write and close piped stdin without delaying enforcement of the process timeout."""
+    stdin = process.stdin
+    if input_text is None or stdin is None:
+        return None
+
+    def write() -> None:
         try:
-            process.stdin.write(input_text.encode("utf-8"))
-            process.stdin.close()
+            stdin.write(input_text.encode("utf-8"))
         except (BrokenPipeError, OSError):
             pass
+        finally:
+            try:
+                stdin.close()
+            except OSError:
+                pass
+
+    thread = threading.Thread(target=write, daemon=True)
+    thread.start()
+    return thread
+
+
+def _wait(process: subprocess.Popen[bytes], timeout: float) -> bool:
+    """Wait for exit; on timeout terminate the process tree and return True."""
     try:
         process.wait(timeout=timeout)
         return False

@@ -34,7 +34,7 @@ duplicate specification refusal.
 | 07 | `IMPLEMENTATION` | `Class View` with `Formatter.normalize [stub]`; title `Step 2: Implement Formatter.normalize (attempt 1)`; `Build: passed`; `Tests: passed`; `Signature changes: none`; Delta showing the changed method and added `tests.test_service.test_normalize`; Source diff adding `return value.strip()` and the test. | `Approve`, `Reject…`, `Adapt…`, `Rebuild`, and `Open worktree` are live; seven detail tabs expose approach, derived Delta, signature decisions, editable structured summary, actual source diff, build output, and test output. | Approve the build-and-test-gated implementation. The queue advances to cursor 1; refreshed appearance is green `tested`, and Coverage picks up `tests/test_service.py`. | `sim-07-normalize-build-test.png` |
 | 08 | `IMPLEMENTATION` | Refreshed `Mind Map`; `Current target: service.main — 1 remaining`; status, requirement, and introducing-step metadata; Approach text `Complete main using Formatter and add its observable result test.` | `Approve approach`, `Reject…`, and `Adapt…` are live; `Propose` code is gated off until approval. Mind-map expansion/history selection, global graph controls, overview tabs, Request, batch size, queue scope, Binary, and Model remain available. | Approve the prose approach for `main`. | `sim-08-main-approach.png` |
 | 09 | `IMPLEMENTATION` | `Issues` tab with current rule rows; title `Step 3: Implement main (attempt 1)`; `Build: passed`; `Tests: passed`; `Signature changes: none`; Source diff adding the `ready:` result and `test_main`; persisted queue remains at cursor 1 until approval. | `Approve`, `Reject…`, `Adapt…`, `Rebuild`, and `Open worktree` are live; Delta, signature decisions, editable Entity summary, source diff, separate Build and Tests, every overview, and unchanged global/project controls remain inspectable. | Approve the second build-and-test-gated implementation. | `sim-09-main-build-test.png` |
-| 10 | terminal `IMPLEMENTATION` | Refreshed `Coverage`; `Test coverage: 4/4 callables covered · 0 uncovered`; callable/test/evidence rows; `Implementation queue: empty — no unimplemented functions`; `No proposal`; both targets have green `tested` appearance; step-log record numbers are `0, 0, 1, 1, 2, 2, 2, 3, 3`. | No approve/reject gate is live. The developer can inspect all views/history, change graph/view controls, edit the specification, reload, undo the last step, or commit manual edits. | End the session: terminal `ProjectPhase.IMPLEMENTATION`, cursor 2 equals queue length 2. | `sim-10-terminal-overview.png` |
+| 10 | terminal `IMPLEMENTATION` | Refreshed `Coverage`; `Recorded test reachability: 4/4 analysed callables reached · 0 not reached`; callable/test/evidence rows; `Implementation queue: empty — no unimplemented functions`; `No proposal`; both targets have green `tested` appearance; step-log record numbers are `0, 0, 1, 1, 2, 2, 2, 3, 3`. | No approve/reject gate is live. The developer can inspect all views/history, change graph/view controls, edit the specification, reload, undo the last step, or commit manual edits. | End the session: terminal `ProjectPhase.IMPLEMENTATION`, cursor 2 equals queue length 2. | `sim-10-terminal-overview.png` |
 
 ## Explicit gap list against the finishing criteria
 
@@ -79,12 +79,14 @@ criterion remain explicit:
   summary unchanged, the same Adapt action asks for a free-text instruction and sends it through that one channel;
   Reject instead records a reason, discards the live proposal, and waits for another explicit proposal request.
   Historical records, unusable proposals, and proposals without a structured summary keep Adapt disabled.
-- Exact test provenance is **DONE (gap 5)**: the coverage index considers only test identifiers recorded by each
-  successful step. `icoda_core/node_status.py:derive` assigns `NodeAppearance.covered` from the matching index
-  entry, and `NodeAppearanceCanvas.node_fill` consumes that same value. Model reachability and `@satisfies` alone
-  do not make a node green: a step naming no reaching test contributes no evidence, and its entity is shown as
-  `No recorded tests` and uncovered in both the Coverage tab and coverage colours. At stop 10 the actual
-  implementation records still credit `tests/test_service.py`, while architecture step 1 no longer does.
+- Exact recorded-test reachability is **DONE (gap 5)**: the structural index considers only test identifiers
+  recorded by each successful step, then follows analysed call edges. `icoda_core/node_status.py:derive` assigns
+  `NodeAppearance.covered` from the matching index entry, and `NodeAppearanceCanvas.node_fill` consumes that same
+  value. Model reachability without a successful record and `@satisfies` alone do not make a node green: a step
+  naming no reaching test contributes no evidence, and its entity is shown as `No reaching recorded test` and not
+  reached in both the Coverage tab and reachability colours. This does not verify behavior or measure statement or
+  branch coverage. At stop 10 the actual implementation records still credit `tests/test_service.py`, while
+  architecture step 1 no longer does.
 - Python Code Profile, skeleton, and gate integration is **DONE (gaps 6a, 6b, and 6c CLOSED)**: language detection selects concrete Python 3.12, pytest,
   test-file/source-extension, and module/class/function naming defaults for a new Python specification; the editor
   presents and persists them, and architecture/implementation prompts use Python module, stub, docstring, and test
@@ -186,7 +188,7 @@ and their screenshots did not change, and the terminal iteration list remains
 
 Iteration 39 re-proves gap 5 at the diagram boundary. The focused GUI regression gives one callable model-level
 test reachability with no successful record naming that test and gives another callable a reaching test named by a
-successful record; coverage mode renders the first red/uncovered and the second green/covered. The obsolete
+successful record; recorded-test reachability mode renders the first red/not reached and the second green/reached. The obsolete
 `NodeAppearance.specification_covered` input was removed because iteration 38 left it with no consumer. This does
 not change the ten stops: terminal iterations remain `[0, 0, 1, 1, 2, 2, 2, 3, 3]`, cursor 2, gate `none`, and the
 queue display contains `empty`.

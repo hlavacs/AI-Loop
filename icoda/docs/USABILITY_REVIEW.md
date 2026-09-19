@@ -1,10 +1,10 @@
 # ICODA — usability and documentation review
 
-Date: 2026-09-15. Basis: the current `develop` branch (README, HANDBOOK, docs/, the twelve handbook screenshots, the step panel and main window code) plus the problems that came up while using the app on the Mac over the last week.
+Date: 2026-09-15. Basis: the current `develop` branch (README, HANDBOOK, docs/, the 32 handbook screenshots, the step panel and main window code) plus the problems that came up while using the app on the Mac over the last week.
 
 ## Short verdict
 
-ICODA has a lot of features now: two languages, class view, mind map, coverage, issues, an implementation queue with scopes and batches, auto-approve, a verify gate, a 961-line handbook with screenshots and a PDF. What it does not have yet is a smooth first hour. A new user (or Helmut after a week away) has to know the right order of about eight manual steps, gets no feedback while the tool is busy, and looks at a bottom panel with twelve buttons of which most are grey. The documentation is complete but written for the maintainer, not for the person who wants to build a small program with it this afternoon.
+ICODA has a lot of features now: two languages, class view, mind map, coverage, issues, an implementation queue with scopes and batches, auto-approve, a verify gate, a 1,008-line handbook with screenshots and a PDF. What it does not have yet is a smooth first hour. A new user (or Helmut after a week away) has to know the right order of about eight manual steps, gets no feedback while the tool is busy, and looks at a bottom panel with twelve buttons of which most are grey. The documentation is complete but written for the maintainer, not for the person who wants to build a small program with it this afternoon.
 
 The thing most missing is not a feature. It is a guided path from "New Project" to the first approved step, with the app telling the user what to do next and what it is doing right now.
 
@@ -42,7 +42,10 @@ No keyboard shortcuts at all (no Ctrl-S in the editor, no Enter for Propose, no 
 
 ### 1. A split between "use it" and "maintain it"
 
-There are about 7 300 lines of documentation: README 224, HANDBOOK 961, EVOLUTION 514, ICODA_PLAN 271, GAP_ANALYSIS 253, SIMULATION 282, RELEASE_MATRIX 80, VERIFY_LOG 4 746. Most of it is evidence and history for the maintainer (verify gate, artifacts, simulation logs). The README front page links a 7 MB PDF as the first thing to open. A user who wants to build a small program has to find the three relevant pages inside the handbook.
+There are about 7,450 lines of documentation: README 251, HANDBOOK 1,008, EVOLUTION 514, ICODA_PLAN 271,
+GAP_ANALYSIS 254, SIMULATION 284, RELEASE_MATRIX 120, VERIFY_LOG 4,746. Most of it is evidence and history for the
+maintainer (verify gate, artifacts, simulation logs). The README front page links a 7 MB PDF as the first thing to
+open. A user who wants to build a small program has to find the three relevant pages inside the handbook.
 
 Missing: a two-page **Getting started** (install, first project, first step, what to do when the proposal does not build) that stands on its own; a clear line in the README saying "Users: read Getting started. Maintainers: read the rest"; the verification material moved out of the top-level README.
 

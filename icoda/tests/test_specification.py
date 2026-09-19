@@ -2,8 +2,12 @@
 
 from __future__ import annotations
 
+import json
 from pathlib import Path
 
+import pytest
+
+from icoda_core import persistence
 from icoda_core import specification as spec_module
 
 
@@ -12,6 +16,60 @@ def test_defaults_are_valid_and_round_trip(tmp_path: Path) -> None:
     assert spec["schema_version"] == 2 and spec_module.validate(spec) == []
     spec_module.save(tmp_path / ".icoda" / "specification.json", spec)
     assert spec_module.load(tmp_path / ".icoda" / "specification.json") == spec
+
+
+def test_atomic_save_preserves_previous_specification_when_replace_fails(tmp_path: Path, monkeypatch) -> None:
+    path = tmp_path / ".icoda" / "specification.json"
+    previous = spec_module.default_specification("Existing specification")
+    spec_module.save(path, previous)
+    previous_bytes = path.read_bytes()
+    assert sorted(item.name for item in path.parent.iterdir()) == ["specification.json"]
+    observed: dict[str, bytes] = {}
+
+    def fail_replace(source: Path, target: Path) -> None:
+        observed["temporary"] = source.read_bytes()
+        observed["target"] = target.read_bytes()
+        raise OSError("injected replace failure")
+
+    monkeypatch.setattr(persistence.os, "replace", fail_replace)
+    replacement = spec_module.default_specification("Replacement specification")
+
+    with pytest.raises(OSError, match="injected replace failure"):
+        spec_module.save(path, replacement)
+
+    expected_temporary = (json.dumps(replacement, indent=2, ensure_ascii=False) + "\n").encode()
+    assert observed["temporary"] == expected_temporary
+    assert observed["target"] == previous_bytes
+    assert path.read_bytes() == previous_bytes
+    assert spec_module.load(path) == previous
+    assert sorted(item.name for item in path.parent.iterdir()) == ["specification.json"]
+
+
+def test_save_uses_persistence_atomic_write_and_cleans_up_after_mid_write_failure(
+        tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    path = tmp_path / ".icoda" / "specification.json"
+    path.parent.mkdir()
+    path.write_bytes(b"previous specification bytes\n")
+    previous_bytes = path.read_bytes()
+    calls: list[Path] = []
+    atomic_write = persistence._atomic_write_text
+
+    def observed_atomic_write(target: Path, text: str) -> None:
+        calls.append(target)
+        atomic_write(target, text)
+
+    def fail_fsync(_descriptor: int) -> None:
+        raise OSError("injected mid-write failure")
+
+    monkeypatch.setattr(persistence, "_atomic_write_text", observed_atomic_write)
+    monkeypatch.setattr(persistence.os, "fsync", fail_fsync)
+
+    with pytest.raises(OSError, match="injected mid-write failure"):
+        spec_module.save(path, spec_module.default_specification("Replacement"))
+
+    assert calls == [path]
+    assert path.read_bytes() == previous_bytes
+    assert sorted(item.name for item in path.parent.iterdir()) == ["specification.json"]
 
 
 def test_pre_profile_specification_loads_with_the_unchanged_cpp_default(tmp_path: Path) -> None:
@@ -50,6 +108,41 @@ def test_schema_problems_are_readable() -> None:
     assert "Overview: title is missing" in spec_module.validate(spec)
     spec["use_cases"].append({"id": "UC-1"})
     assert "Use cases UC-1: title is missing" in spec_module.validate(spec)
+
+
+def test_adversarial_document_reports_every_schema_violation_without_being_saved(tmp_path: Path) -> None:
+    path = tmp_path / "specification.json"
+    path.write_bytes(b"existing specification bytes\n")
+    spec = spec_module.default_specification("Demo")
+    spec["schema_version"] = 99
+    spec["title"] = ""
+    spec["goals"] = "not a list"
+    spec["use_cases"] = [{"id": "hostile"}]
+    spec["code_profile"]["unexpected"] = "x"
+
+    assert spec_module.validate(spec) == [
+        "code_profile: Additional properties are not allowed ('unexpected' was unexpected)",
+        "goals: 'not a list' is not of type 'array'",
+        "schema_version: 2 was expected",
+        "Overview: title must not be empty",
+        "Use cases hostile: title is missing",
+        "use_cases/0/id: 'hostile' does not match '^UC-[0-9]+$'",
+    ]
+    assert path.read_bytes() == b"existing specification bytes\n"
+
+
+@pytest.mark.parametrize("content", ["{", '{"schema_version": 2'])
+def test_load_corrupt_or_truncated_specification_raises_without_replacing_it(
+        tmp_path: Path, content: str) -> None:
+    path = tmp_path / "specification.json"
+    path.write_text(content, encoding="utf-8")
+    before = path.read_bytes()
+
+    with pytest.raises(json.JSONDecodeError):
+        spec_module.load(path)
+
+    assert path.read_bytes() == before
+    assert sorted(item.name for item in tmp_path.iterdir()) == ["specification.json"]
 
 
 def test_version_1_files_are_upgraded() -> None:

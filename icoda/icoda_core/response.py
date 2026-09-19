@@ -16,6 +16,7 @@ SCHEMA_PATH = Path(__file__).with_name("response.schema.json")
 FORBIDDEN_PREFIXES = (".git/", ".icoda/", "build/", "bin/")
 DIFF_DISCRIMINATOR = "diff --git "
 HUNK_HEADER = re.compile(r"^@@ -(\d+)(?:,(\d+))? \+(\d+)(?:,(\d+))? @@(?: .*)?$")
+MAX_RESPONSE_BYTES = 200_000
 
 
 @dataclass(frozen=True)
@@ -85,6 +86,8 @@ def extract_json(text: str) -> str | None:
 
 def parse_response(text: str) -> tuple[StepResponse | None, str]:
     """Return the response and an empty string, or None and what is wrong with the text."""
+    if _payload_size(text) > MAX_RESPONSE_BYTES:
+        return None, f"the reply exceeds the {MAX_RESPONSE_BYTES}-byte size limit"
     candidate = extract_json(text)
     if candidate is None:
         return None, "the reply contains no JSON object"
@@ -104,6 +107,8 @@ def parse_response(text: str) -> tuple[StepResponse | None, str]:
 
 def parse_approach_response(text: str) -> tuple[ApproachResponse | None, str]:
     """Return a prose-only approach, rejecting file contents and unsafe expected paths."""
+    if _payload_size(text) > MAX_RESPONSE_BYTES:
+        return None, f"the reply exceeds the {MAX_RESPONSE_BYTES}-byte size limit"
     candidate = extract_json(text)
     if candidate is None:
         return None, "the reply contains no JSON object"
@@ -131,6 +136,7 @@ def _approach_problems(data: Any) -> list[str]:
         for index, item in enumerate(data["files"]):
             if isinstance(item, str) and path_problem(item):
                 problems.append(f"files/{index}: {path_problem(item)}")
+    problems.extend(_unicode_problems(data))
     return problems
 
 
@@ -143,7 +149,29 @@ def validate(data: Any) -> list[str]:
         problems.append(f"{where}: {error.message}")
     if isinstance(data, dict):
         problems.extend(_path_problems(data.get("files", [])))
+    problems.extend(_unicode_problems(data))
     return problems
+
+
+def _payload_size(text: str) -> int:
+    return len(text.encode("utf-8", errors="surrogatepass"))
+
+
+def _unicode_problems(value: Any, parts: tuple[str, ...] = ()) -> list[str]:
+    if isinstance(value, str):
+        try:
+            value.encode("utf-8")
+        except UnicodeEncodeError:
+            where = "/".join(parts) or "(root)"
+            return [f"{where}: must contain valid UTF-8 text"]
+        return []
+    if isinstance(value, dict):
+        return [problem for key, item in value.items()
+                for problem in _unicode_problems(item, (*parts, str(key)))]
+    if isinstance(value, list):
+        return [problem for index, item in enumerate(value)
+                for problem in _unicode_problems(item, (*parts, str(index)))]
+    return []
 
 
 def _path_problems(files: Any) -> list[str]:
@@ -166,6 +194,8 @@ def _path_problems(files: Any) -> list[str]:
 
 def path_problem(path: str) -> str:
     """Why ``path`` may not be written by the agent, or an empty string."""
+    if "\0" in path:
+        return "must not contain a NUL byte"
     posix = PurePosixPath(path.replace("\\", "/"))
     if posix.is_absolute() or (len(path) > 1 and path[1] == ":"):
         return "must be relative to the project root"
@@ -248,10 +278,15 @@ def _check_hunk_counts(path: str, number: int, old_count: int, new_count: int, l
 def apply_changes(root: Path, files: tuple[FileChange, ...] | list[FileChange]) -> list[str]:
     """Write and delete the files under ``root``; return the paths touched."""
     touched = []
+    resolved_root = root.resolve()
     for change in files:
         if path_problem(change.path):
             raise ValueError(f"{change.path}: {path_problem(change.path)}")
         target = root / change.path
+        try:
+            target.resolve().relative_to(resolved_root)
+        except ValueError as exc:
+            raise ValueError(f"candidate path {change.path!r} leaves the project root") from exc
         if change.delete:
             if target.exists():
                 target.unlink()

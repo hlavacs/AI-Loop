@@ -28,6 +28,7 @@ from icoda_core import (
     persistence,
     phases,
     prompt,
+    python_analysis,
     response,
     rules,
     session,
@@ -46,6 +47,8 @@ MAX_ATTEMPTS = 3
 BUILD_TIMEOUT = 900.0
 PROVIDER_TIMEOUT = 1800.0
 OUTPUT_TAIL = 6000
+# ICODA-generated CMake projects assume this preset convention; the specification has no preset-name field.
+CMAKE_PRESET = "debug"
 ARCHITECTURE_ENTITY_KINDS = TYPE_KINDS | CALLABLE_KINDS | frozenset({Kind.VARIABLE})
 SOURCE_SUFFIXES = analysis.MODULE_SUFFIXES | analysis.HEADER_SUFFIXES | frozenset({".c", ".cc", ".cpp", ".cxx"})
 
@@ -96,9 +99,32 @@ def gate_commands(root: Path, configured_test: Sequence[str], selected_tests: Se
     profile = code_profile or _project_code_profile(root)
     if profile.get("language") == analysis.PYTHON_LANGUAGE:
         runner = tuple(shlex.split(str(profile.get("test_runner", ""))))
-        return GateCommands([[sys.executable, "-m", "compileall", "-q", "src"]],
+        virtual_environments: list[Path] = []
+        relative_sources = (
+            path.relative_to(root)
+            for path in python_analysis.find_python_sources(
+                root, virtual_environments=virtual_environments,
+            )
+        )
+        source_roots = {path.parts[0] if len(path.parts) > 1 else "." for path in relative_sources}
+        if "." in source_roots:
+            source_roots = {"."}
+        compile_targets = sorted(source_roots) or ["."]
+        virtual_environment_patterns = [
+            r"^(?:\.[\\/])?"
+            + r"[\\/]".join(re.escape(part) for part in path.parts)
+            + r"(?:[\\/]|$)"
+            for path in virtual_environments
+        ]
+        exclude_pattern = "|".join((
+            python_analysis.PYTHON_SOURCE_EXCLUDE_PATTERN,
+            *virtual_environment_patterns,
+        ))
+        return GateCommands([[sys.executable, "-m", "compileall", "-q", "-x",
+                              exclude_pattern, *compile_targets]],
                             (*runner, *selected_tests))
-    return GateCommands([["cmake", "--preset", "debug"], ["cmake", "--build", "--preset", "debug"]],
+    return GateCommands([["cmake", "--preset", CMAKE_PRESET],
+                         ["cmake", "--build", "--preset", CMAKE_PRESET]],
                         test_selection.command(configured_test, selected_tests))
 
 
@@ -127,10 +153,11 @@ def build_project(root: Path, timeout: float = BUILD_TIMEOUT,
 
 def _build_commands(root: Path) -> list[list[str]]:
     if sys.platform == "win32" and (root / "build.cmd").is_file():
-        return [["cmd", "/c", "build.cmd", "debug", "build-only"]]
+        return [["cmd", "/c", "build.cmd", CMAKE_PRESET, "build-only"]]
     if (root / "build.sh").is_file():
-        return [["bash", "build.sh", "debug", "build-only"]]
-    return [["cmake", "--preset", "debug"], ["cmake", "--build", "--preset", "debug"]]
+        return [["bash", "build.sh", CMAKE_PRESET, "build-only"]]
+    return [["cmake", "--preset", CMAKE_PRESET],
+            ["cmake", "--build", "--preset", CMAKE_PRESET]]
 
 
 def build_environment(root: Path) -> dict[str, str] | None:
@@ -784,6 +811,8 @@ class StepRunner:
                 tuple(change.path for change in proposal.response.files) if proposal.response else (),
             )
             proposal.error = coverage.refusal_reason
+        if not proposal.error:
+            proposal.error = self._quality_refusal(proposal)
         if not proposal.error and proposal.test.ok is not True:
             proposal.error = "the proposal tests fail" if proposal.test.ok is False else "the proposal tests did not run"
 
@@ -880,6 +909,9 @@ class StepRunner:
         )
         if coverage.refusal_reason:
             raise StepError(coverage.refusal_reason)
+        quality_refusal = self._quality_refusal(proposal)
+        if quality_refusal:
+            raise StepError(quality_refusal)
         if proposal.request.phase != self.current_phase().value:
             raise StepError(f"the project phase changed after this {proposal.request.phase} proposal; propose again")
         queue_state: persistence.ProjectState | None = None
@@ -889,40 +921,59 @@ class StepRunner:
             if current_batch != self._request_batch(proposal.request):
                 raise StepError("the implementation queue batch changed after this proposal; propose again")
         self.progress(f"step {proposal.number}: promoting and rebuilding")
-        files = git.promote_worktree(self.root, proposal.worktree)
-        build = self.build(self.root)
-        if build.ok is not True:
-            raise StepError("the promoted project does not build:\n" + build.output)
-        self.progress(f"step {proposal.number}: testing the promoted project")
-        command = self._gate_commands(proposal.selected_tests).test
-        test = self.test(self.root, command)
-        if test.ok is not True:
-            result = "failed" if test.ok is False else "did not run"
-            raise StepError(f"the promoted project tests {result}:\n" + test.output)
-        record = self._record(proposal, "approved")
-        record.files = files
-        record.build_ok, record.build_output = build.ok, build.output
-        record.test_ok, record.test_output = test.ok, test.output
-        record.entities_added = [e.usr for e in proposal.delta.added]
-        record.entities_changed = [e.usr for e in proposal.delta.changed]
-        record.entities_renamed = [(pair.before.usr, pair.after.usr) for pair in proposal.delta.renamed]
-        touched = (*record.entities_added, *record.entities_changed,
-                   *(current for _previous, current in record.entities_renamed))
-        record.entity_body_hashes = _entity_body_hashes(proposal.model, touched)
-        self.log.append(record)
-        if queue_state is not None:
-            approved_batch = self._request_batch(proposal.request)
-            self.store.save_state(replace(
-                queue_state,
-                implementation_cursor=queue_state.implementation_cursor + len(approved_batch),
-                approved_approach="",
-            ))
-        record.commit = git.commit_all(self.root, f"icoda({proposal.request.phase}) step {record.number}: "
-                                                  f"{record.title}", *self._author())
-        if proposal.model is not None:
+        metadata_paths = (self.store.steps_path, self.store.state_path, self.store.model_path)
+        metadata = {path: path.read_bytes() if path.is_file() else None for path in metadata_paths}
+        files: list[str] = []
+        try:
+            files = git.promote_worktree(self.root, proposal.worktree)
+            build = self.build(self.root)
+            if build.ok is not True:
+                raise StepError("the promoted project does not build:\n" + build.output)
+            self.progress(f"step {proposal.number}: testing the promoted project")
+            command = self._gate_commands(proposal.selected_tests).test
+            test = self.test(self.root, command)
+            if test.ok is not True:
+                result = "failed" if test.ok is False else "did not run"
+                raise StepError(f"the promoted project tests {result}:\n" + test.output)
+        except BaseException:
+            try:
+                if files:
+                    git.rollback_promotion(self.root, files)
+            finally:
+                _restore_files(metadata)
+                git.run_git(["reset", "-q"], self.root, check=False)
+            raise
+        try:
+            record = self._record(proposal, "approved")
+            record.files = files
+            record.build_ok, record.build_output = build.ok, build.output
+            record.test_ok, record.test_output = test.ok, test.output
+            record.entities_added = [e.usr for e in proposal.delta.added]
+            record.entities_changed = [e.usr for e in proposal.delta.changed]
+            record.entities_renamed = [(pair.before.usr, pair.after.usr) for pair in proposal.delta.renamed]
+            touched = (*record.entities_added, *record.entities_changed,
+                       *(current for _previous, current in record.entities_renamed))
+            record.entity_body_hashes = _entity_body_hashes(proposal.model, touched)
+            self.log.append(record)
+            if queue_state is not None:
+                approved_batch = self._request_batch(proposal.request)
+                self.store.save_state(replace(
+                    queue_state,
+                    implementation_cursor=queue_state.implementation_cursor + len(approved_batch),
+                    approved_approach="",
+                ))
             proposal.model.root = str(self.root)
             self.store.save_model(proposal.model)
-        return record
+            record.commit = git.commit_all(self.root, f"icoda({proposal.request.phase}) step {record.number}: "
+                                                      f"{record.title}", *self._author())
+            return record
+        except BaseException:
+            try:
+                git.rollback_promotion(self.root, files)
+            finally:
+                _restore_files(metadata)
+                git.run_git(["reset", "-q"], self.root, check=False)
+            raise
 
     def _grouping_refusal(self, proposal: Proposal) -> str:
         if not proposal.request.grouped:
@@ -934,6 +985,17 @@ class StepRunner:
         if decision.grouped and accepted == selected:
             return ""
         return decision.refusal_reason or "the proposal no longer forms the selected few-line group"
+
+    def _quality_refusal(self, proposal: Proposal) -> str:
+        assert proposal.model is not None and proposal.delta is not None
+        changed = (
+            *(entity.usr for entity in proposal.delta.added),
+            *(entity.usr for entity in proposal.delta.changed),
+            *(pair.after.usr for pair in proposal.delta.renamed),
+        )
+        return rules.promotion_refusal(
+            proposal.model, self.log, changed,
+        )
 
     def reject(self, proposal: Proposal, reason: str) -> StepRecord:
         record = self._record(proposal, "rejected")
@@ -1005,12 +1067,19 @@ class StepRunner:
             provider = agent.find_provider(providers, self.provider_id)
         except KeyError as exc:
             raise StepError(f"unknown provider {self.provider_id!r}: choose a listed binary") from exc
+        if not provider.enabled:
+            raise StepError(f"{provider.label} is disabled; choose an enabled provider")
         if not agent.binary_available(provider, self.binary or None):
             raise StepError(f"{self.binary or provider.command} is not on the PATH; {provider.login_hint}")
         result = agent.run_provider(provider, self.model_id or provider.default_model, prompt_text, cwd,
                                     binary=self.binary or None, timeout=PROVIDER_TIMEOUT)
         if result.cancelled or self.cancel_requested:
             raise StepCancelled()
+        if result.timed_out:
+            detail = _tail(result.stderr or result.stdout)
+            suffix = f": {detail}" if detail else ""
+            raise StepError(f"{provider.label} timed out after {PROVIDER_TIMEOUT:g} seconds{suffix}\n"
+                            f"If it asks for a login: {provider.login_hint}")
         if not result.ok:
             raise StepError(f"{provider.label} failed ({result.returncode}): {_tail(result.stderr or result.stdout)}"
                             f"\nIf it asks for a login: {provider.login_hint}")
@@ -1029,6 +1098,17 @@ def analyse_tree(root: Path) -> DerivedModel:
     if model is None:
         raise StepError("analysis produced no model: " + "; ".join(result.messages))
     return model
+
+
+def _restore_files(snapshots: Mapping[Path, bytes | None]) -> None:
+    """Restore small protocol metadata captured before an approval transaction."""
+    for path, content in snapshots.items():
+        if content is None:
+            if path.exists():
+                path.unlink()
+        else:
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_bytes(content)
 
 
 def _ensure_ignored(gitignore: Path, entry: str) -> None:

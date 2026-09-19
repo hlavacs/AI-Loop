@@ -57,6 +57,48 @@ def test_unit_cache_key_changes_with_the_extractor_schema(tmp_path: Path, monkey
     assert analysis.unit_cache_key(command, ["a.cpp"], tmp_path, "clang 22") != before
 
 
+def test_unit_result_cache_uses_atomic_write_and_cleans_up_after_mid_write_failure(
+        tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    source = tmp_path / "a.cpp"
+    source.write_text("int a;\n", encoding="utf-8")
+    command = analysis.CompileCommand(str(source), str(tmp_path), (), "clang++", False)
+    cache_dir = tmp_path / "cache"
+    cache_file = cache_dir / "units" / f"{analysis._sha1(command.file.encode())}.json"
+    cache_file.parent.mkdir(parents=True)
+    cache_file.write_text('{"key": "stale", "result": {"contributing": []}}', encoding="utf-8")
+    previous_bytes = cache_file.read_bytes()
+    result = analysis.UnitResult(analysis.FileInfo("a.cpp"), ["a.cpp"])
+
+    class ParserStub:
+        def parse(self, _command: analysis.CompileCommand) -> tuple[object, None]:
+            return object(), None
+
+    class ExtractorStub:
+        def extract(self, _unit: object, _shadow: None,
+                    _command: analysis.CompileCommand) -> analysis.UnitResult:
+            return result
+
+    calls: list[Path] = []
+    atomic_write = analysis.persistence._atomic_write_text
+
+    def observed_atomic_write(target: Path, text: str) -> None:
+        calls.append(target)
+        atomic_write(target, text)
+
+    def fail_fsync(_descriptor: int) -> None:
+        raise OSError("injected mid-write failure")
+
+    monkeypatch.setattr(analysis.persistence, "_atomic_write_text", observed_atomic_write)
+    monkeypatch.setattr(analysis.persistence.os, "fsync", fail_fsync)
+
+    with pytest.raises(OSError, match="injected mid-write failure"):
+        analysis._unit_result(command, ParserStub(), ExtractorStub(), tmp_path, cache_dir, "clang test")
+
+    assert calls == [cache_file]
+    assert cache_file.read_bytes() == previous_bytes
+    assert sorted(item.name for item in cache_file.parent.iterdir()) == [cache_file.name]
+
+
 def test_body_hash_ignores_whitespace_and_comments_but_not_statements() -> None:
     compact = "{ const auto url = R\"(https://example.test/a//b)\"; return value + 1; }"
     reformatted = """{

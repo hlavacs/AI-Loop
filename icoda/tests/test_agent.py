@@ -6,7 +6,9 @@ import json
 from datetime import datetime, timezone
 from pathlib import Path
 
-from icoda_core import agent, provider_check
+import pytest
+
+from icoda_core import agent, persistence, provider_check
 from icoda_core.process import ProcessResult
 
 EXPECTED_IDS = ["claude", "codex", "gemini", "opencode", "aider", "copilot", "qwen"]
@@ -83,6 +85,34 @@ def test_provider_check_cli_writes_qualification_report(tmp_path: Path, monkeypa
     data = json.loads(output.read_text(encoding="utf-8"))
     assert data["configured_on"] == "2026-09-09"
     assert data["providers"][0]["path"] == "/opt/bin/codex"
+
+
+def test_provider_check_output_uses_atomic_write_and_cleans_up_after_mid_write_failure(
+        tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    output = tmp_path / "qualification.json"
+    output.write_bytes(b"previous qualification bytes\n")
+    previous_bytes = output.read_bytes()
+    calls: list[Path] = []
+    atomic_write = persistence._atomic_write_text
+
+    def observed_atomic_write(target: Path, text: str) -> None:
+        calls.append(target)
+        atomic_write(target, text)
+
+    def fail_fsync(_descriptor: int) -> None:
+        raise OSError("injected mid-write failure")
+
+    monkeypatch.setattr(provider_check.agent, "load_providers", list)
+    monkeypatch.setattr(provider_check.agent, "check_providers", lambda _providers, _cwd: [])
+    monkeypatch.setattr(persistence, "_atomic_write_text", observed_atomic_write)
+    monkeypatch.setattr(persistence.os, "fsync", fail_fsync)
+
+    with pytest.raises(OSError, match="injected mid-write failure"):
+        provider_check.main(["--output", str(output), "--cwd", str(tmp_path)])
+
+    assert calls == [output]
+    assert output.read_bytes() == previous_bytes
+    assert sorted(item.name for item in tmp_path.iterdir()) == ["qualification.json"]
 
 
 def test_provider_check_cli_fails_for_an_enabled_incompatible_binary(tmp_path: Path, monkeypatch) -> None:

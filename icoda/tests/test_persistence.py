@@ -3,8 +3,14 @@
 from __future__ import annotations
 
 import json
+import os
 import re
+import stat
+import sys
+from collections.abc import Iterator
+from contextlib import contextmanager
 from pathlib import Path
+from typing import Any, TextIO
 
 import pytest
 
@@ -151,6 +157,287 @@ def test_project_store_creates_folder_and_round_trips(tmp_path: Path) -> None:
     loaded = store.load_model()
     assert loaded is not None and "a.cpp" in loaded.files
     assert store.model_path.parent == store.cache_dir
+
+
+def test_invalid_project_phase_is_refused_without_changing_persisted_bytes(tmp_path: Path) -> None:
+    store = persistence.ProjectStore(tmp_path)
+    store.state_path.parent.mkdir(parents=True)
+    invalid = b'{"phase": "retired"}'
+    store.state_path.write_bytes(invalid)
+    before_entries = sorted(path.name for path in store.dir.iterdir())
+
+    with pytest.raises(ValueError) as refused:
+        store.load_state()
+
+    assert str(refused.value) == (
+        "unknown project phase 'retired'; expected one of: specification, architecture, implementation")
+    assert store.state_path.read_bytes() == invalid
+    assert sorted(path.name for path in store.dir.iterdir()) == before_entries
+
+
+def test_invalid_optional_json_loads_as_default_without_changing_file(tmp_path: Path) -> None:
+    store = persistence.ProjectStore(tmp_path)
+    store.ui_path.parent.mkdir(parents=True)
+    invalid = b'{"zoom":'
+    store.ui_path.write_bytes(invalid)
+    before_entries = sorted(path.name for path in store.dir.iterdir())
+
+    assert store.load_ui() == {}
+    assert store.ui_path.read_bytes() == invalid
+    assert sorted(path.name for path in store.dir.iterdir()) == before_entries
+
+
+def test_atomic_state_save_preserves_previous_file_when_replace_fails(tmp_path: Path, monkeypatch) -> None:
+    store = persistence.ProjectStore(tmp_path)
+    previous = persistence.ProjectState(
+        persistence.ProjectPhase.IMPLEMENTATION, ("u:old",), approved_approach="Keep this state.")
+    store.save_state(previous)
+    previous_bytes = store.state_path.read_bytes()
+    assert sorted(path.name for path in store.dir.iterdir()) == ["state.json"]
+    observed: dict[str, bytes] = {}
+
+    def fail_replace(source: Path, target: Path) -> None:
+        observed["temporary"] = source.read_bytes()
+        observed["target"] = target.read_bytes()
+        raise OSError("injected replace failure")
+
+    monkeypatch.setattr(persistence.os, "replace", fail_replace)
+    replacement = persistence.ProjectState(persistence.ProjectPhase.ARCHITECTURE, ("u:new",))
+
+    with pytest.raises(OSError, match="injected replace failure"):
+        store.save_state(replacement)
+
+    assert observed["temporary"] == json.dumps(replacement.to_dict(), indent=1).encode()
+    assert observed["target"] == previous_bytes
+    assert store.state_path.read_bytes() == previous_bytes
+    assert store.load_state() == previous
+    assert sorted(path.name for path in store.dir.iterdir()) == ["state.json"]
+
+
+def test_atomic_state_save_preserves_previous_file_when_write_fails_midway(
+        tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    store = persistence.ProjectStore(tmp_path)
+    previous = persistence.ProjectState(
+        persistence.ProjectPhase.IMPLEMENTATION, ("u:old",), approved_approach="Keep this state.")
+    store.save_state(previous)
+    previous_bytes = store.state_path.read_bytes()
+    real_named_temporary_file = persistence.tempfile.NamedTemporaryFile
+
+    class FailingWriter:
+        def __init__(self, handle: TextIO) -> None:
+            self.handle = handle
+            self.name = handle.name
+
+        def write(self, text: str) -> int:
+            self.handle.write(text[:8])
+            self.handle.flush()
+            raise OSError("injected partial write failure")
+
+        def __getattr__(self, name: str) -> Any:
+            return getattr(self.handle, name)
+
+    @contextmanager
+    def fail_midway(*args: Any, **kwargs: Any) -> Iterator[FailingWriter]:
+        with real_named_temporary_file(*args, **kwargs) as handle:
+            yield FailingWriter(handle)
+
+    monkeypatch.setattr(persistence.tempfile, "NamedTemporaryFile", fail_midway)
+
+    with pytest.raises(OSError, match="injected partial write failure"):
+        store.save_state(persistence.ProjectState(persistence.ProjectPhase.ARCHITECTURE, ("u:new",)))
+
+    assert store.state_path.read_bytes() == previous_bytes
+    assert store.load_state() == previous
+    assert sorted(path.name for path in store.dir.iterdir()) == ["state.json"]
+
+
+@pytest.mark.parametrize("entry_point", ["layout", "ui", "state", "model", "config"])
+def test_every_persistence_save_entry_point_uses_atomic_write(
+        tmp_path: Path, monkeypatch: pytest.MonkeyPatch, entry_point: str) -> None:
+    calls: list[Path] = []
+
+    def record_atomic_write(path: Path, _text: str) -> None:
+        calls.append(path)
+
+    monkeypatch.setattr(persistence, "_atomic_write_text", record_atomic_write)
+    store = persistence.ProjectStore(tmp_path)
+    if entry_point == "layout":
+        store.save_layout(Layout())
+        expected = store.layout_path
+    elif entry_point == "ui":
+        store.save_ui({"zoom": 1.5})
+        expected = store.ui_path
+    elif entry_point == "state":
+        store.save_state(persistence.ProjectState())
+        expected = store.state_path
+    elif entry_point == "model":
+        store.save_model(DerivedModel(str(tmp_path)))
+        expected = store.model_path
+    else:
+        expected = tmp_path / "config.json"
+        persistence.UserConfig().save(expected)
+
+    assert calls == [expected]
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="POSIX file modes are required")
+@pytest.mark.parametrize("mode", (0o644, 0o640))
+def test_atomic_state_save_preserves_existing_mode(tmp_path: Path, mode: int) -> None:
+    store = persistence.ProjectStore(tmp_path)
+    store.save_state(persistence.ProjectState(persistence.ProjectPhase.SPECIFICATION))
+    os.chmod(store.state_path, mode)
+
+    store.save_state(persistence.ProjectState(persistence.ProjectPhase.ARCHITECTURE))
+
+    assert stat.S_IMODE(os.stat(store.state_path).st_mode) == mode
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="POSIX file modes are required")
+def test_atomic_state_save_new_file_matches_write_text_mode(tmp_path: Path) -> None:
+    plain_path = tmp_path / "plain.json"
+    store = persistence.ProjectStore(tmp_path / "project")
+    previous_umask = os.umask(0o027)
+    try:
+        plain_path.write_text("{}", encoding="utf-8")
+        store.save_state(persistence.ProjectState())
+    finally:
+        os.umask(previous_umask)
+
+    assert stat.S_IMODE(os.stat(store.state_path).st_mode) == \
+        stat.S_IMODE(os.stat(plain_path).st_mode)
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="directory fsync is POSIX-only")
+def test_atomic_state_save_fsyncs_parent_directory(tmp_path: Path, monkeypatch) -> None:
+    store = persistence.ProjectStore(tmp_path)
+    fsynced_inodes: list[int] = []
+    real_fsync = os.fsync
+
+    def record_fsync(descriptor: int) -> None:
+        fsynced_inodes.append(os.fstat(descriptor).st_ino)
+        real_fsync(descriptor)
+
+    monkeypatch.setattr(persistence.os, "fsync", record_fsync)
+
+    store.save_state(persistence.ProjectState())
+
+    assert os.stat(store.state_path.parent).st_ino in fsynced_inodes
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="directory fsync is POSIX-only")
+def test_atomic_state_save_ignores_directory_fsync_failure(tmp_path: Path, monkeypatch) -> None:
+    store = persistence.ProjectStore(tmp_path)
+    real_fsync = os.fsync
+    directory_fsync_attempted = False
+
+    def reject_directory_fsync(descriptor: int) -> None:
+        nonlocal directory_fsync_attempted
+        if stat.S_ISDIR(os.fstat(descriptor).st_mode):
+            directory_fsync_attempted = True
+            raise OSError("injected directory fsync failure")
+        real_fsync(descriptor)
+
+    monkeypatch.setattr(persistence.os, "fsync", reject_directory_fsync)
+    replacement = persistence.ProjectState(
+        persistence.ProjectPhase.IMPLEMENTATION, ("u:new",), approved_approach="Saved despite directory fsync.")
+
+    store.save_state(replacement)
+
+    assert directory_fsync_attempted
+    assert store.load_state() == replacement
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="directory close is POSIX-only")
+def test_atomic_state_save_ignores_directory_close_failure(
+        tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    store = persistence.ProjectStore(tmp_path)
+    previous = persistence.ProjectState(persistence.ProjectPhase.SPECIFICATION)
+    replacement = persistence.ProjectState(persistence.ProjectPhase.ARCHITECTURE)
+    store.save_state(previous)
+    before_entries = sorted(path.name for path in store.dir.iterdir())
+    real_close = persistence.os.close
+
+    def reject_directory_close(descriptor: int) -> None:
+        real_close(descriptor)
+        raise OSError("injected directory close failure")
+
+    monkeypatch.setattr(persistence.os, "close", reject_directory_close)
+
+    store.save_state(replacement)
+
+    assert store.load_state() == replacement
+    assert sorted(path.name for path in store.dir.iterdir()) == before_entries
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="directory open is POSIX-only")
+def test_atomic_state_save_ignores_directory_open_failure(
+        tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    store = persistence.ProjectStore(tmp_path)
+    replacement = persistence.ProjectState(persistence.ProjectPhase.ARCHITECTURE)
+    real_open = persistence.os.open
+
+    def reject_directory_open(path: str | bytes | os.PathLike[str], *args: Any) -> int:
+        if Path(path) == store.dir:
+            raise OSError("injected directory open failure")
+        return real_open(path, *args)
+
+    monkeypatch.setattr(persistence.os, "open", reject_directory_open)
+
+    store.save_state(replacement)
+
+    assert store.load_state() == replacement
+    assert sorted(path.name for path in store.dir.iterdir()) == ["state.json"]
+
+
+def test_atomic_state_save_preserves_old_file_when_temporary_creation_fails(
+        tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    store = persistence.ProjectStore(tmp_path)
+    previous = persistence.ProjectState(persistence.ProjectPhase.IMPLEMENTATION, ("u:old",))
+    store.save_state(previous)
+    previous_bytes = store.state_path.read_bytes()
+    before_entries = sorted(path.name for path in store.dir.iterdir())
+    monkeypatch.setattr(
+        persistence.tempfile, "NamedTemporaryFile",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(OSError("temporary creation refused")),
+    )
+
+    with pytest.raises(OSError, match="^temporary creation refused$"):
+        store.save_state(persistence.ProjectState(persistence.ProjectPhase.ARCHITECTURE))
+
+    assert store.state_path.read_bytes() == previous_bytes
+    assert sorted(path.name for path in store.dir.iterdir()) == before_entries
+
+
+def test_atomic_state_save_cleanup_failure_does_not_mask_replace_error(
+        tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    store = persistence.ProjectStore(tmp_path)
+    previous = persistence.ProjectState(
+        persistence.ProjectPhase.IMPLEMENTATION, ("u:old",), approved_approach="Keep this state.")
+    store.save_state(previous)
+    previous_bytes = store.state_path.read_bytes()
+    cleanup_attempts: list[Path] = []
+
+    monkeypatch.setattr(
+        persistence.os, "replace",
+        lambda *_args: (_ for _ in ()).throw(OSError("injected replace failure")),
+    )
+
+    def deny_unlink(path: str | bytes | os.PathLike[str]) -> None:
+        cleanup_attempts.append(Path(path))
+        raise OSError("injected cleanup failure")
+
+    monkeypatch.setattr(persistence.os, "unlink", deny_unlink)
+
+    with pytest.raises(OSError, match="^injected replace failure$"):
+        store.save_state(persistence.ProjectState(persistence.ProjectPhase.ARCHITECTURE))
+
+    assert len(cleanup_attempts) == 1
+    assert store.state_path.read_bytes() == previous_bytes
+    orphan = cleanup_attempts[0]
+    assert orphan.exists()
+    assert orphan.name.startswith(".state.json.")
+    assert orphan.name.endswith(".tmp")
+    assert sorted(path.name for path in store.dir.iterdir()) == sorted(["state.json", orphan.name])
 
 
 def test_model_body_hash_round_trip_and_legacy_unknown(tmp_path: Path) -> None:

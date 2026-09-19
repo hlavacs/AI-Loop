@@ -1,4 +1,4 @@
-"""Readable specification and callable test-coverage overview."""
+"""Readable specification coverage and callable recorded-test reachability overview."""
 
 from __future__ import annotations
 
@@ -13,7 +13,7 @@ from icoda_core.steplog import StepLog, StepRecord
 
 
 class CoverageOverview:
-    """Compact requirement and callable coverage tables with their evidence."""
+    """Compact requirement coverage and callable reachability tables with their evidence."""
 
     def __init__(self, parent: Any, open_editor: Callable[[str, int], None]) -> None:
         self.frame = ttk.Frame(parent)
@@ -22,7 +22,7 @@ class CoverageOverview:
         self.requirements: tuple[requirement_coverage.RequirementCoverage, ...] = ()
         self.requirements_summary_var = tk.StringVar(value="Specification coverage: no model")
         self.requirements_note_var = tk.StringVar(value="")
-        self.summary_var = tk.StringVar(value="Test coverage: no model")
+        self.summary_var = tk.StringVar(value="Recorded test reachability: no model")
         self.note_var = tk.StringVar(value="")
         self._build()
 
@@ -57,8 +57,8 @@ class CoverageOverview:
         holder.pack(fill=tk.BOTH, expand=True, padx=8, pady=(0, 8))
         columns = ("coverage", "callable", "tests", "steps")
         self.tree = ttk.Treeview(holder, columns=columns, show="headings")
-        for name, heading, width in (("coverage", "Coverage", 80), ("callable", "Callable", 270),
-                                     ("tests", "How covered: tests", 280),
+        for name, heading, width in (("coverage", "Reachability", 90), ("callable", "Callable", 260),
+                                     ("tests", "Reaching recorded tests", 280),
                                      ("steps", "Evidence", 140)):
             self.tree.heading(name, text=heading)
             self.tree.column(name, width=width, anchor="w")
@@ -100,19 +100,21 @@ class CoverageOverview:
         self.index = index or coverage_index.build_index(model, log)
         total, uncovered = len(self.index.entries), len(self.index.uncovered)
         covered = total - uncovered
-        self.summary_var.set("Test coverage: no callable entities" if not total else
-                             f"Test coverage: {covered}/{total} callables covered · {uncovered} uncovered")
-        self.note_var.set("No recorded test provenance is available; the overview remains available."
+        self.summary_var.set("Recorded test reachability: no callable entities" if not total else
+                             f"Recorded test reachability: {covered}/{total} analysed callables reached · "
+                             f"{uncovered} not reached")
+        self.note_var.set("No reaching recorded test identifiers are available; the overview remains available."
                           if total and not covered else
-                          "Coverage evidence comes from successful recorded test runs and call reachability.")
+                          "This structural index uses successful step records and analysed call edges; it does not "
+                          "measure test quality or behavior.")
         self.tree.delete(*self.tree.get_children())
         for entry in self.index.entries:
-            status = "Covered" if entry.covered else "Uncovered"
+            status = "Reached" if entry.covered else "Not reached"
             callable_name = entry.qualified_name + (f"  {entry.signature}" if entry.signature else "")
-            tests = ", ".join(entry.tests) if entry.tests else "No recorded tests"
+            tests = ", ".join(entry.tests) if entry.tests else "No reaching recorded test"
             steps = ", ".join(_step_label(item) for item in entry.evidence) if entry.evidence else "—"
             self.tree.insert("", tk.END, iid=entry.usr, values=(status, callable_name, tests, steps),
-                             tags=(status.lower(),))
+                             tags=("covered" if entry.covered else "uncovered",))
 
     def _open_selected(self, _event: Any) -> None:
         entries = self.index.entry_map()

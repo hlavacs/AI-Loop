@@ -7,50 +7,50 @@ Unless a slide says otherwise, each ICODA GUI capture is proportionally containe
 ## Slide 01 — ICODA
 
 - **Visual:** Title diagram.
-- **Exact on-screen elements:** `ICODA`; subtitle `Interactive Code Development and Analysis`; `Helmut Hlavacs`; `University of Vienna`; centered progression `SPECIFICATION → ARCHITECTURE → IMPLEMENTATION` above a small loop `propose → inspect evidence → decide`.
-- **Screenshot:** drawn.
+- **Exact on-screen elements:** `ICODA`; subtitle `Interactive Code Development and Analysis`; `Helmut Hlavacs`; `University of Vienna`; `https://entertain.univie.ac.at/~hlavacs/`; centered progression `SPECIFICATION → ARCHITECTURE → IMPLEMENTATION` above a small loop `propose → inspect evidence → decide`.
+- **Screenshot or diagram:** drawn title diagram.
 - **Contain target:** `[180,240]–[1740,900]`, below and clear of the logo box.
-- **Highlight:** none.
+- **Highlight:** none; the title, affiliation, personal page, and lifecycle diagram are the complete visual focus.
 
 ## Slide 02 — About Helmut Hlavacs
 
 - **Visual:** Five-row contact card with small line icons.
-- **Exact on-screen elements:** `Helmut Hlavacs`; `Professor, Faculty of Computer Science`; `University of Vienna`; `https://www.univie.ac.at/`; `helmut.hlavacs@univie.ac.at`; `https://github.com/hlavacs/AI-Loop/tree/main/icoda`.
-- **Screenshot:** drawn.
+- **Exact on-screen elements:** `Helmut Hlavacs`; `Professor, Faculty of Computer Science`; `University of Vienna`; `https://www.univie.ac.at/`; `helmut.hlavacs@univie.ac.at`; `https://entertain.univie.ac.at/~hlavacs/`; `https://github.com/hlavacs/AI-Loop/tree/main/icoda`.
+- **Screenshot or diagram:** drawn contact-card diagram.
 - **Contain target:** card `[210,235]–[1710,900]`, below and clear of the logo box.
-- **Highlight:** none.
+- **Highlight:** none; the contact-card rows are the complete visual focus.
 
 ## Slide 03 — What ICODA is for
 
 - **Visual:** Left/right comparison.
 - **Exact on-screen elements:** left heading `CODE AS TEXT` with cards `files`, `symbols`, `tests`; right heading `CODE AS A DECISION SYSTEM` with cards `specification`, `architecture`, `proposals`, `evidence`, `history`; footer `new projects`, `existing systems`, `controlled AI-assisted change`.
-- **Screenshot:** drawn.
+- **Screenshot or diagram:** drawn comparison diagram.
 - **Contain target:** comparison `[120,235]–[1800,900]`, below and clear of the logo box.
-- **Highlight:** none.
+- **Highlight:** none; the two-column comparison and footer are the complete visual focus.
 
 ## Slide 04 — The basic idea
 
 - **Visual:** Single flow diagram.
-- **Exact on-screen elements:** inputs `Written specification`, `Source tree`, `Developer intent`; center `Derived code model`; views `File`, `Call`, `Class`, `Mind Map`, `Coverage`, `Issues`; decision loop `Agent proposal → isolated worktree → build + tests → developer decision → Git commit`.
-- **Screenshot:** drawn.
+- **Exact on-screen elements:** inputs `Written specification`, `Source tree`, `Developer intent`; center `Derived code model`; views `File`, `Call`, `Class`, `Mind Map`, `Coverage`, `Issues`; decision loop `Sandboxed provider subprocess → validated reply → isolated worktree → build + tests → developer decision → Git commit`.
+- **Screenshot or diagram:** drawn data-flow and decision-loop diagram.
 - **Contain target:** diagram `[105,220]–[1815,915]`, below and clear of the logo box.
-- **Highlight:** none.
+- **Highlight:** none; the input, model, views, and sandboxed proposal loop are the complete visual focus.
 
 ## Slide 05 — The mental model: two truths
 
 - **Visual:** Two-column model joined by a comparison lens.
 - **Exact on-screen elements:** left card `INTENT` with `goals`, `scope`, `requirements`, `decisions`, `code profile`; right card `IMPLEMENTATION` with `files`, `entities`, `calls`, `tests`, `history`; center lens `ICODA derives the map and exposes the gaps`; lower line `the developer owns every consequential decision`.
-- **Screenshot:** drawn.
+- **Screenshot or diagram:** drawn two-truths diagram.
 - **Contain target:** diagram `[150,220]–[1770,900]`, below and clear of the logo box.
-- **Highlight:** none.
+- **Highlight:** none; the intent and implementation cards joined by the ICODA lens are the complete visual focus.
 
 ## Slide 06 — How ICODA works
 
 - **Visual:** Numbered architecture pipeline.
-- **Exact on-screen elements:** `1  Parse the project`; `2  Build a derived model`; `3  Select a phase and target`; `4  Ask the configured coding agent`; `5  Apply in an isolated worktree`; `6  Build and test`; `7  Approve, reject, or adapt`; `8  Commit approved work`; storage cards `.icoda specification + state + step log` and `Git history`.
-- **Screenshot:** drawn.
+- **Exact on-screen elements:** bootstrap card `constraints.txt pins the prepared environment`; launcher note `validate only — never install or upgrade`; `1  Parse the project`; `2  Build a derived model`; `3  Select a phase and target`; `4  Ask the configured coding agent`; `5  Apply in an isolated worktree`; `6  Build and test`; `7  Approve, reject, or adapt`; `8  Commit approved work`; storage cards `.icoda specification + state + step log` and `Git history`.
+- **Screenshot or diagram:** drawn bootstrap card and numbered architecture pipeline.
 - **Contain target:** pipeline `[120,220]–[1800,920]`, below and clear of the logo box.
-- **Highlight:** none.
+- **Highlight:** none; the pinned bootstrap card, validate-only launcher note, and operating pipeline are the complete visual focus.
 
 ## Slide 07 — GUI tour: File View
 
@@ -87,18 +87,18 @@ Unless a slide says otherwise, each ICODA GUI capture is proportionally containe
 ## Slide 11 — GUI tour: Requirements Coverage
 
 - **Visual:** Full GUI screenshot.
-- **Exact on-screen elements:** labels `specification requirement`, `implementing entity`, `recorded test reachability`, `covered / uncovered summary`, and `open the source`. Explain the Coverage tab, summary line, requirement-to-entity rows, test evidence, right-side context, and lower workflow controls.
+- **Exact on-screen elements:** labels `specification requirement`, `implementing entity`, `recorded test reachability`, `successful step records + analysed call edges`, `not runtime or branch coverage`, `reached / not reached summary`, and `open the source`. Explain that specification traceability and structural recorded test reachability are separate dimensions; cover the summary, rows, right-side context, and lower workflow controls.
 - **Screenshot:** `video/icoda/screenshots/views/requirements-coverage.png` (exact ICODA capture id from the capture plan).
 - **Contain target:** `[120,190]–[1800,1000]`, centered proportionally; logo box remains clear.
-- **Highlight:** red rectangles `[335,255]–[1245,340]` around the coverage summary and `[335,345]–[1245,610]` around requirement and test rows; red arrow `[1760,400]→[1490,400]` points to entity context.
+- **Highlight:** red rectangles `[335,255]–[1245,340]` around the recorded test reachability summary and `[335,345]–[1245,610]` around requirement and structural evidence rows; red arrow `[1760,400]→[1490,400]` points to entity context.
 
 ## Slide 12 — GUI tour: Rule Issues
 
 - **Visual:** Full GUI screenshot.
-- **Exact on-screen elements:** labels `severity`, `rule`, `entity`, `action`, `location`, and `double-click to inspect source`. Explain the Issues tab, issue-count summary, all five table columns, selected issue context, and the unchanged workflow panel below.
+- **Exact on-screen elements:** labels `severity`, `rule`, `entity`, `action`, `location`, `30 lines: advisory`, `over 50 lines: blocked`, `checked at proposal and approval`, and `double-click to inspect source`. Explain the Issues tab, issue-count summary, all five table columns, selected issue context, and the separate blocking hard 50-line function gate.
 - **Screenshot:** `video/icoda/screenshots/views/rule-issues.png` (exact ICODA capture id from the capture plan).
 - **Contain target:** `[120,190]–[1800,1000]`, centered proportionally; logo box remains clear.
-- **Highlight:** red rectangle `[335,270]–[1245,600]` around the issue table; sequential red arrows `[180,330]→[410,330]`, `[180,390]→[650,390]`, and `[1750,455]→[1480,455]` identify severity, rule/action, and source context.
+- **Highlight:** red rectangle `[335,270]–[1245,600]` around the issue table; sequential red arrows `[180,330]→[410,330]`, `[180,390]→[650,390]`, and `[1750,455]→[1480,455]` identify severity, the 30-line advisory and blocking hard 50-line rule, and source context.
 
 ## Slide 13 — Walkthrough input: create the project
 
@@ -119,7 +119,7 @@ Unless a slide says otherwise, each ICODA GUI capture is proportionally containe
 ## Slide 15 — Walkthrough inputs: specify, build, and configure
 
 - **Visual:** Specification-editor screenshot, provider-selection screenshot inset, and drawn build/test output strip.
-- **Exact on-screen elements:** inputs `4  Overview: title + description`; `5  Scope: goals, exclusions, constraints, done conditions`; `6  Use cases`; `7  Requirements with priorities and links`; `8  Decisions with rationale`; `9  Code profile: Python, pytest, naming and size rules`; `10  Save`; `11  Confirm Build now`; `12  Project → Test Command…: python -m pytest -q`; `13  Binary: codex`; `14  Model: configured default`; outputs `.icoda/specification.json`, `step 0 recorded`, `project skeleton written`, `build passed`, `analysis populates all views`, and `phase → architecture`.
+- **Exact on-screen elements:** inputs `4  Overview: title + description`; `5  Scope: goals, exclusions, constraints, done conditions`; `6  Use cases`; `7  Requirements with priorities and links`; `8  Decisions with rationale`; `9  Code profile: Python, pytest, 30-line advisory, hard 50-line limit`; `10  Validate, then Save`; `11  Confirm Build now`; `12  Project → Test Command…: python -m pytest -q`; `13  Binary: codex`; `14  Model: configured default`; outputs `.icoda/specification.json`, `step 0 recorded`, `project skeleton written`, `build passed`, `analysis populates all views`, and `phase → architecture`.
 - **Screenshot:** primary `video/icoda/screenshots/lifecycle/sim-02-specification-save.png` and inset `video/icoda/screenshots/views/provider-selection.png` (exact ICODA capture ids from the capture plan).
 - **Contain target:** specification editor `[80,190]–[1380,900]`; provider inset `[1410,240]–[1810,560]`; drawn output strip `[80,920]–[1810,1010]`; all remain clear of the logo box.
 - **Highlight:** red rectangle `[180,220]–[1260,270]` around the six editor pages; arrows `[120,355]→[420,355]` to the visible fields and `[1310,850]→[1190,850]` to Save; red rectangles `[1480,295]–[1770,365]` around Binary and Model and `[620,935]–[1040,992]` around build/test output.
@@ -159,10 +159,10 @@ Unless a slide says otherwise, each ICODA GUI capture is proportionally containe
 ## Slide 20 — Walkthrough target one: verify and approve code
 
 - **Visual:** Full lifecycle screenshot.
-- **Exact on-screen elements:** inputs `28  Click Propose`; `29  Inspect Delta, Diff, Build, Tests, Prompt, Reply`; `30  Click Approve`; outputs `Implement Formatter.normalize`, `return value.strip()`, `tests/test_service.py added`, `Python syntax/build gate passed`, `Test gate passed: python -m pytest -q`, `source promoted + committed`, and `normalize marked tested`.
+- **Exact on-screen elements:** inputs `28  Click Propose`; `29  Inspect Delta, Diff, Build, Tests, Prompt, Reply`; `30  Click Approve`; outputs `Implement Formatter.normalize`, `return value.strip()`, `tests/test_service.py added`, `Python syntax/build gate passed`, `Test gate passed: python -m pytest -q`, `source promoted + committed`, and `recorded evidence structurally reaches normalize`.
 - **Screenshot:** `video/icoda/screenshots/lifecycle/sim-07-normalize-build-test.png` (exact ICODA capture id from the capture plan).
 - **Contain target:** `[120,190]–[1800,1000]`, centered proportionally; logo box remains clear.
-- **Highlight:** sequential red rectangles `[320,665]–[780,740]` around title and passing statuses, `[790,745]–[1595,970]` around measured Delta/build/test evidence, and `[350,705]–[430,742]` around `Approve`; red arrow `[180,500]→[610,500]` points to the tested class-view entity.
+- **Highlight:** sequential red rectangles `[320,665]–[780,740]` around title and passing statuses, `[790,745]–[1595,970]` around measured Delta/build/test evidence, and `[350,705]–[430,742]` around `Approve`; red arrow `[180,500]→[610,500]` points to the structurally reached class-view entity.
 
 ## Slide 21 — Walkthrough target two: approve the approach
 
@@ -175,7 +175,7 @@ Unless a slide says otherwise, each ICODA GUI capture is proportionally containe
 ## Slide 22 — Walkthrough target two: verify and approve code
 
 - **Visual:** Full lifecycle screenshot.
-- **Exact on-screen elements:** inputs `34  Click Propose`; `35  Inspect source Diff and both gates`; `36  Click Approve`; outputs `Implement main`, `return f"ready:{value}"`, `test_main expects ready:item`, `Build: passed`, `Tests: passed`, `source promoted + committed`, and `main marked tested`.
+- **Exact on-screen elements:** inputs `34  Click Propose`; `35  Inspect source Diff and both gates`; `36  Click Approve`; outputs `Implement main`, `return f"ready:{value}"`, `test_main expects ready:item`, `Build: passed`, `Tests: passed`, `source promoted + committed`, and `recorded evidence structurally reaches main`.
 - **Screenshot:** `video/icoda/screenshots/lifecycle/sim-09-main-build-test.png` (exact ICODA capture id from the capture plan).
 - **Contain target:** `[120,190]–[1800,1000]`, centered proportionally; logo box remains clear.
 - **Highlight:** red rectangle `[340,275]–[1240,595]` around the visible Issues view, sequential rectangle `[790,745]–[1595,970]` around Diff and gate evidence, and red arrow `[180,715]→[390,715]` to `Approve`.
@@ -183,15 +183,15 @@ Unless a slide says otherwise, each ICODA GUI capture is proportionally containe
 ## Slide 23 — Walkthrough output: terminal overview
 
 - **Visual:** Full lifecycle screenshot.
-- **Exact on-screen elements:** outputs `Implementation queue: empty — no unimplemented functions`, `both targets tested`, `Coverage links both callables to tests/test_service.py`, `approved steps in history`, `working tree clean`, and `all scripted provider replies consumed`. Explain the Coverage overview, summary and rows, right-side entities, terminal queue, absent proposal, and disabled action state.
+- **Exact on-screen elements:** outputs `Implementation queue: empty — no unimplemented functions`, `recorded test reachability links both callables to a successful test record`, `approved steps in history`, `working tree clean`, and `all scripted provider replies consumed`; release card `verify.bash includes real-provider acceptance` and `missing authentication: fail, or explicit waiver records SKIP`. Explain the structural evidence, terminal queue, absent proposal, disabled action state, and release acceptance card.
 - **Screenshot:** `video/icoda/screenshots/lifecycle/sim-10-terminal-overview.png` (exact ICODA capture id from the capture plan).
 - **Contain target:** `[120,190]–[1800,1000]`, centered proportionally; logo box remains clear.
-- **Highlight:** red rectangles `[335,255]–[1245,610]` around final coverage and `[320,665]–[1595,760]` around the empty implementation queue; red arrows `[1750,410]→[1470,410]` to the two tested entities and `[180,720]→[500,720]` to the terminal state.
+- **Highlight:** red rectangles `[335,255]–[1245,610]` around final recorded test reachability and `[320,665]–[1595,760]` around the empty implementation queue; red arrows `[1750,410]→[1470,410]` to both structurally reached entities and `[180,720]→[500,720]` to the terminal state; a red arrow on the release card points to `real-provider acceptance`.
 
 ## Slide 24 — Keep intent, evidence, and decisions together
 
 - **Visual:** Closing diagram and contact card.
 - **Exact on-screen elements:** three cards `Specify the intended system`, `Inspect structure and evidence`, `Approve only verified change`; `https://github.com/hlavacs/AI-Loop/tree/main/icoda`; `helmut.hlavacs@univie.ac.at`; `https://entertain.univie.ac.at/~hlavacs/`; `Robimo.at - AI-tooling service provider`; closing line `Thank you`.
-- **Screenshot:** drawn.
+- **Screenshot or diagram:** drawn closing diagram and contact card.
 - **Contain target:** three-card diagram `[130,220]–[1790,600]`; contact card `[250,640]–[1670,960]`; both remain clear of the logo box.
-- **Highlight:** none.
+- **Highlight:** none; the three summary cards and closing contact card are the complete visual focus.

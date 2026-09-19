@@ -26,6 +26,15 @@ choose_icoda_python() {
       return 0
     fi
   done
-  echo "could not find a Python 3.10+ interpreter" >&2
+  echo "icoda: could not find a Python 3.10+ interpreter" >&2
+  if [ "$(uname -s)" = "Darwin" ] && command -v brew >/dev/null 2>&1; then
+    echo "icoda: run: brew install python@3.12" >&2
+  elif command -v apt-get >/dev/null 2>&1; then
+    echo "icoda: run: sudo apt-get install -y python3 python3-venv python3-tk" >&2
+  elif command -v dnf >/dev/null 2>&1; then
+    echo "icoda: run: sudo dnf install -y python3 python3-tkinter" >&2
+  else
+    echo "icoda: install Python 3.10 or newer with Tkinter, then launch ICODA again" >&2
+  fi
   return 1
 }

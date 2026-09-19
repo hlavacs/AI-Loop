@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import os
 import sys
+import tempfile
 from collections.abc import Mapping
 from dataclasses import asdict, dataclass, field
 from enum import Enum
@@ -250,5 +251,48 @@ def _read_json(path: Path) -> Any:
 
 
 def _write_json(path: Path, data: Any) -> None:
+    _atomic_write_text(path, json.dumps(data, indent=1))
+
+
+def _atomic_write_text(path: Path, text: str) -> None:
+    """Replace ``path`` only after its complete new contents are durable."""
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps(data, indent=1), encoding="utf-8")
+    temporary_path: Path | None = None
+    try:
+        with tempfile.NamedTemporaryFile(
+            mode="w", encoding="utf-8", dir=path.parent,
+            prefix=f".{path.name}.", suffix=".tmp", delete=False,
+        ) as handle:
+            temporary_path = Path(handle.name)
+            handle.write(text)
+            handle.flush()
+            try:
+                mode = os.stat(path).st_mode
+            except FileNotFoundError:
+                current_umask = os.umask(0)
+                os.umask(current_umask)
+                mode = 0o666 & ~current_umask
+            os.chmod(temporary_path, mode)
+            os.fsync(handle.fileno())
+        os.replace(temporary_path, path)
+        if sys.platform != "win32":
+            directory_descriptor: int | None = None
+            try:
+                flags = os.O_RDONLY | getattr(os, "O_DIRECTORY", 0)
+                directory_descriptor = os.open(path.parent, flags)
+                os.fsync(directory_descriptor)
+            except OSError:
+                pass
+            finally:
+                if directory_descriptor is not None:
+                    try:
+                        os.close(directory_descriptor)
+                    except OSError:
+                        pass
+    except BaseException:
+        if temporary_path is not None:
+            try:
+                temporary_path.unlink()
+            except OSError:
+                pass
+        raise

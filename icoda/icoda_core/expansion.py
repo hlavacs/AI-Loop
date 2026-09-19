@@ -99,12 +99,13 @@ def derive(model: DerivedModel, graph: Graph, decisions: NodeDecisionMap,
            appearances: NodeAppearanceMap, expanded: frozenset[str] = frozenset()) -> ExpansionResult:
     """Derive one immutable expansion projection without recomputing existing facts."""
     hierarchy = _hierarchy(model, graph)
+    indexed_decisions = _index_decisions(hierarchy, decisions)
     accepted = frozenset(
         hierarchy.aliases.get(key, key) for key in expanded
         if _expandable(hierarchy, hierarchy.aliases.get(key, key))
     )
-    visible = _visible_nodes(hierarchy, decisions, accepted)
-    expansion_decisions = _decisions(hierarchy, decisions, appearances, accepted, visible)
+    visible = _visible_nodes(hierarchy, indexed_decisions, accepted)
+    expansion_decisions = _decisions(hierarchy, indexed_decisions, appearances, accepted, visible)
     nodes = tuple(node for key, node in hierarchy.nodes.items() if key in visible)
     edges = _expanded_edges(graph, hierarchy, expansion_decisions)
     return ExpansionResult(
@@ -115,19 +116,20 @@ def derive(model: DerivedModel, graph: Graph, decisions: NodeDecisionMap,
 def _hierarchy(model: DerivedModel, graph: Graph) -> _Hierarchy:
     nodes: dict[str, ExpansionNode] = {}
     aliases: dict[str, str] = {}
+    graph_nodes = frozenset(graph.nodes)
     clusters = sorted(set(graph.cluster_by_file.values()))
     for cluster in clusters:
         _add_node(nodes, aliases, f"cluster:{cluster}", f"cluster:{cluster}",
                   graph.cluster_names.get(cluster, cluster),
                   "cluster", None, 0, (cluster,))
-    for file in _graph_files(model, graph):
+    for file in _graph_files(model, graph, graph_nodes):
         parent = f"cluster:{graph.cluster_by_file[file]}" if file in graph.cluster_by_file else None
         depth = 1 if parent else 0
         _add_node(nodes, aliases, f"file:{file}", file, PurePath(file).name,
                   "file", parent, depth, (file,))
     entities = tuple(entity for entity in sorted(
         model.entities.values(), key=lambda item: (item.file, item.line, item.usr))
-        if entity.kind != Kind.NAMESPACE and _in_graph(graph, entity.usr))
+        if entity.kind != Kind.NAMESPACE and _in_graph(graph_nodes, entity.usr))
     for entity in entities:
         _add_node(nodes, aliases, f"entity:{entity.usr}", entity.usr, entity.name,
                   entity.kind.value, None, 0, (entity.usr,))
@@ -164,13 +166,13 @@ def _add_node(nodes: dict[str, ExpansionNode], aliases: dict[str, str], key: str
         aliases[alias] = key
 
 
-def _graph_files(model: DerivedModel, graph: Graph) -> tuple[str, ...]:
+def _graph_files(model: DerivedModel, graph: Graph, graph_nodes: frozenset[str]) -> tuple[str, ...]:
     candidates = set(model.files) | {entity.file for entity in model.entities.values() if entity.file}
-    return tuple(sorted(file for file in candidates if file in graph.nodes or f"file:{file}" in graph.nodes))
+    return tuple(sorted(file for file in candidates if file in graph_nodes or f"file:{file}" in graph_nodes))
 
 
-def _in_graph(graph: Graph, usr: str) -> bool:
-    return usr in graph.nodes or f"entity:{usr}" in graph.nodes
+def _in_graph(graph_nodes: frozenset[str], usr: str) -> bool:
+    return usr in graph_nodes or f"entity:{usr}" in graph_nodes
 
 
 def _entity_parent(model: DerivedModel, nodes: Mapping[str, ExpansionNode], usr: str) -> str | None:
@@ -227,16 +229,21 @@ def _ancestors_expanded(hierarchy: _Hierarchy, parent: str | None,
 
 
 def _graph_decision(decisions: NodeDecisionMap, hierarchy: _Hierarchy, key: str) -> NodeDecision:
-    if key in decisions:
-        return decisions[key]
-    raw = next((alias for alias, canonical in hierarchy.aliases.items()
-                if canonical == key and alias in decisions), None)
-    if raw is not None:
-        return decisions[raw]
+    decision = decisions.get(key)
+    if decision is not None:
+        return decision
     node = hierarchy.nodes[key]
     if node.synthetic and node.parent is not None:
         return _graph_decision(decisions, hierarchy, node.parent)
     return NodeDecision()
+
+
+def _index_decisions(hierarchy: _Hierarchy, decisions: NodeDecisionMap) -> NodeDecisionMap:
+    indexed = {key: decisions[key] for key in hierarchy.nodes if key in decisions}
+    for alias, canonical in hierarchy.aliases.items():
+        if alias in decisions:
+            indexed.setdefault(canonical, decisions[alias])
+    return MappingProxyType(indexed)
 
 
 def _decisions(hierarchy: _Hierarchy, decisions: NodeDecisionMap,

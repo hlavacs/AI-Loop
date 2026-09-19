@@ -45,7 +45,8 @@ def test_accepted_accessor_group_names_every_entity_and_requires_evidence_for_ea
         IMPLEMENTATION, 3, target="method:get", batch=("method:get", "method:set"), grouped=True)
     refused = rules.group_test_coverage(model, (), request)
     assert refused.refusal_reason == (
-        "group test coverage requires recorded evidence for every entity; missing: "
+        "group approval requires a recorded successful test identifier that structurally reaches every entity; "
+        "missing: "
         "app::Widget::get_value, app::Widget::set_value")
 
     covered_model = _accessor_model(with_test=True)

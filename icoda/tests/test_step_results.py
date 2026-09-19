@@ -7,8 +7,9 @@ from pathlib import Path
 
 import pytest
 
-from icoda_core import persistence, prompt, response, steplog, steps
+from icoda_core import git, persistence, prompt, response, steplog, steps
 from icoda_core.model import DerivedModel, Edge, EdgeKind, Entity, Kind
+from icoda_core.process import ProcessResult
 
 
 def proposal(root: Path, build: steps.BuildResult, test: steps.TestResult) -> steps.Proposal:
@@ -17,6 +18,168 @@ def proposal(root: Path, build: steps.BuildResult, test: steps.TestResult) -> st
         response=response.StepResponse("A change", "Because.", ()), build=build, test=test,
         model=DerivedModel(str(root)), delta=steps.Delta((), (), (), ("x.cpp",)),
     )
+
+
+def quality_proposal(root: Path, *, end_line: int = 10) -> steps.Proposal:
+    model = DerivedModel(str(root))
+    target = Entity(
+        "u:work", Kind.FUNCTION, "work", "app::work", "src/app.cpp", 1, end_line,
+        signature="void work()", status="implemented", brief="Do production work.", satisfies=("R-1",),
+    )
+    model.add_entity(target)
+    added = [target]
+    files = ["src/app.cpp"]
+    test_entity = Entity(
+        "u:test-work", Kind.FUNCTION, "test_work", "test_work", "tests/app_test.cpp", 1, 5,
+        signature="void test_work()", status="implemented", brief="Verify work.", satisfies=("R-1",),
+    )
+    model.add_entity(test_entity)
+    model.add_edge(Edge(EdgeKind.CALLS, test_entity.usr, target.usr))
+    added.append(test_entity)
+    files.append("tests/app_test.cpp")
+    candidate = proposal(root, steps.BuildResult(True, "built"), steps.TestResult(True, "tested"))
+    candidate.model = model
+    candidate.delta = steps.Delta(tuple(added), (), (), tuple(files))
+    return candidate
+
+
+def approval_runner(root: Path) -> steps.StepRunner:
+    persistence.ProjectStore(root).save_state(
+        persistence.ProjectState(persistence.ProjectPhase.ARCHITECTURE))
+    return steps.StepRunner(
+        root, persistence.UserConfig(), build=lambda _root: steps.BuildResult(True, "rebuilt"),
+        test=lambda _root, _command: steps.TestResult(True, "retested"),
+    )
+
+
+def allow_promotion(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(steps.git, "promote_worktree", lambda _root, _worktree: ["src/app.cpp"])
+    monkeypatch.setattr(steps.git, "commit_all", lambda *_args: "commit")
+
+
+def provider(*, enabled: bool = True) -> steps.agent.Provider:
+    return steps.agent.Provider(
+        "test-provider", "Test Provider", "test-provider", ("{binary}",), "stdin",
+        (steps.agent.Model("test-model", "Test Model"),), enabled, enabled, "sign in",
+    )
+
+
+def implementation_runner(
+        root: Path, reply: str, monkeypatch: pytest.MonkeyPatch) -> steps.StepRunner:
+    store = persistence.ProjectStore(root)
+    model = DerivedModel(str(root))
+    model.add_entity(Entity("u:work", Kind.FUNCTION, "work", "app::work", "src/app.cpp", 1,
+                            signature="void work()", status="stub"))
+    store.save_model(model)
+    store.save_state(persistence.ProjectState(
+        persistence.ProjectPhase.IMPLEMENTATION, ("u:work",), 0))
+    runner = steps.StepRunner(
+        root, persistence.UserConfig(), invoke=lambda _prompt, _root: reply, attempts=1)
+    monkeypatch.setattr(runner, "_prompt_context", lambda: ({}, [], {}))
+    return runner
+
+
+def test_provider_lookup_refuses_unknown_and_disabled_entries(
+        tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    runner = steps.StepRunner(tmp_path, persistence.UserConfig(), provider_id="missing")
+    monkeypatch.setattr(steps.agent, "load_providers", list)
+    with pytest.raises(steps.StepError) as unknown:
+        runner._invoke_provider("prompt", tmp_path)
+    assert str(unknown.value) == "unknown provider 'missing': choose a listed binary"
+
+    runner.provider_id = "test-provider"
+    monkeypatch.setattr(steps.agent, "load_providers", lambda: [provider(enabled=False)])
+    monkeypatch.setattr(
+        steps.agent, "binary_available",
+        lambda *_args: pytest.fail("a disabled provider must be refused before probing its binary"),
+    )
+    with pytest.raises(steps.StepError) as disabled:
+        runner._invoke_provider("prompt", tmp_path)
+    assert str(disabled.value) == "Test Provider is disabled; choose an enabled provider"
+
+
+def test_provider_refuses_missing_binary_nonzero_exit_and_timeout(
+        tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    runner = steps.StepRunner(
+        tmp_path, persistence.UserConfig(), provider_id="test-provider", binary="chosen-tool")
+    monkeypatch.setattr(steps.agent, "load_providers", lambda: [provider()])
+    monkeypatch.setattr(steps.agent, "binary_available", lambda *_args: False)
+    with pytest.raises(steps.StepError) as missing:
+        runner._invoke_provider("prompt", tmp_path)
+    assert str(missing.value) == "chosen-tool is not on the PATH; sign in"
+
+    monkeypatch.setattr(steps.agent, "binary_available", lambda *_args: True)
+    monkeypatch.setattr(
+        steps.agent, "run_provider",
+        lambda *_args, **_kwargs: ProcessResult(["chosen-tool"], 7, "", "permission denied"),
+    )
+    with pytest.raises(steps.StepError) as failed:
+        runner._invoke_provider("prompt", tmp_path)
+    assert str(failed.value) == (
+        "Test Provider failed (7): permission denied\nIf it asks for a login: sign in")
+
+    monkeypatch.setattr(
+        steps.agent, "run_provider",
+        lambda *_args, **_kwargs: ProcessResult(["chosen-tool"], -9, "", "", timed_out=True),
+    )
+    with pytest.raises(steps.StepError) as timed_out:
+        runner._invoke_provider("prompt", tmp_path)
+    assert str(timed_out.value) == (
+        "Test Provider timed out after 1800 seconds\nIf it asks for a login: sign in")
+
+
+@pytest.mark.parametrize(
+    ("reply", "expected"),
+    [
+        ("", "the reply contains no JSON object"),
+        ('{"title": ]}', "the JSON object does not parse: Expecting value at line 1, column 11"),
+    ],
+)
+def test_code_proposal_preserves_exact_parser_refusal(
+        tmp_path: Path, monkeypatch: pytest.MonkeyPatch, reply: str, expected: str) -> None:
+    persistence.ProjectStore(tmp_path).save_state(
+        persistence.ProjectState(persistence.ProjectPhase.ARCHITECTURE))
+    runner = steps.StepRunner(
+        tmp_path, persistence.UserConfig(), invoke=lambda _prompt, _root: reply, attempts=1)
+    monkeypatch.setattr(runner, "_fresh_worktree", lambda: tmp_path / "worktree")
+    monkeypatch.setattr(runner, "_prompt", lambda _request: "prompt")
+
+    candidate = runner.propose(prompt.StepRequest(prompt.ARCHITECTURE, 0))
+
+    assert candidate.response is None and candidate.error == expected
+    assert not (tmp_path / "worktree").exists()
+
+
+@pytest.mark.parametrize(
+    ("reply", "expected"),
+    [
+        ("", "the reply contains no JSON object"),
+        ('{"plan": ]}', "the JSON object does not parse: Expecting value at line 1, column 10"),
+    ],
+)
+def test_approach_preserves_exact_parser_refusal(
+        tmp_path: Path, monkeypatch: pytest.MonkeyPatch, reply: str, expected: str) -> None:
+    runner = implementation_runner(tmp_path, reply, monkeypatch)
+
+    approach = runner.propose_approach(prompt.StepRequest(prompt.IMPLEMENTATION, 0))
+
+    assert not approach.ok and approach.error == expected
+    assert runner.log.records() == []
+
+
+def test_approach_scope_may_name_planned_entities_and_files(
+        tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    reply = ('{"plan": "Add a helper and its focused test.", '
+             '"entities": ["app::planned_helper"], "files": ["tests/planned_test.cpp"]}')
+    runner = implementation_runner(tmp_path, reply, monkeypatch)
+
+    approach = runner.propose_approach(prompt.StepRequest(prompt.IMPLEMENTATION, 0))
+    record = runner.approve_approach(approach)
+
+    assert approach.ok and approach.entities == ("app::planned_helper",)
+    assert not (tmp_path / "tests/planned_test.cpp").exists()
+    assert record.expected_entities == ["app::planned_helper"]
+    assert record.expected_files == ["tests/planned_test.cpp"]
 
 
 def test_compile_failure_skips_tests_and_test_failure_stays_separate(
@@ -45,6 +208,367 @@ def test_compile_failure_skips_tests_and_test_failure_stays_separate(
     assert events == ["build", "test", "analyse"]
     assert test_failure.build.ok is True and test_failure.test.ok is False
     assert test_failure.delta is not None and test_failure.error == "the proposal tests fail"
+
+    events.clear()
+    tests_not_run = steps.StepRunner(
+        tmp_path, persistence.UserConfig(), build=lambda root: _build(events, True),
+        test=lambda _root, _command: steps.TestResult(
+            None, "No project test command is configured."),
+        analyse=lambda root: _analyse(events, root),
+    )
+    missing_test_gate = proposal(tmp_path, steps.BuildResult(), steps.TestResult())
+    tests_not_run._build_and_parse(missing_test_gate)
+    assert events == ["build", "analyse"]
+    assert missing_test_gate.test.ok is None
+    assert missing_test_gate.error == "the proposal tests did not run"
+
+
+def test_prepare_surfaces_initial_build_failure(tmp_path: Path) -> None:
+    persistence.ProjectStore(tmp_path).save_state(
+        persistence.ProjectState(persistence.ProjectPhase.ARCHITECTURE))
+    runner = steps.StepRunner(
+        tmp_path, persistence.UserConfig(),
+        build=lambda _root: steps.BuildResult(False, "configure failed"),
+    )
+
+    with pytest.raises(steps.StepError) as refused:
+        runner.prepare()
+
+    assert str(refused.value) == "the project does not build:\nconfigure failed"
+    assert runner.log.records() == []
+
+
+def test_approach_refuses_wrong_phase_and_existing_approval(
+        tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    store = persistence.ProjectStore(tmp_path)
+    store.save_state(persistence.ProjectState(persistence.ProjectPhase.ARCHITECTURE))
+    runner = steps.StepRunner(tmp_path, persistence.UserConfig())
+    with pytest.raises(steps.StepError) as wrong_phase:
+        runner.propose_approach(prompt.StepRequest(prompt.IMPLEMENTATION, 0))
+    assert str(wrong_phase.value) == (
+        "an implementation approach can be proposed only in the implementation phase")
+
+    runner = implementation_runner(tmp_path, "", monkeypatch)
+    state = runner.store.load_state()
+    runner.store.save_state(persistence.ProjectState(
+        state.phase, state.implementation_queue, state.implementation_cursor,
+        approved_approach="Already accepted."))
+    with pytest.raises(steps.StepError) as already_approved:
+        runner.propose_approach(prompt.StepRequest(prompt.IMPLEMENTATION, 0))
+    assert str(already_approved.value) == (
+        "an implementation approach for 'app::work' is already approved")
+
+
+def test_approval_refuses_changed_phase_before_promotion(
+        tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    source = tmp_path / "app.cpp"
+    source.write_bytes(b"original\n")
+    persistence.ProjectStore(tmp_path).save_state(
+        persistence.ProjectState(persistence.ProjectPhase.IMPLEMENTATION))
+    runner = steps.StepRunner(tmp_path, persistence.UserConfig())
+    monkeypatch.setattr(
+        steps.git, "promote_worktree",
+        lambda *_args: pytest.fail("phase refusal must precede promotion"),
+    )
+
+    with pytest.raises(steps.StepError) as refused:
+        runner.approve(proposal(
+            tmp_path, steps.BuildResult(True, "built"), steps.TestResult(True, "tested")))
+
+    assert str(refused.value) == (
+        "the project phase changed after this architecture proposal; propose again")
+    assert source.read_bytes() == b"original\n"
+
+
+def test_undo_refuses_when_no_approved_code_step_exists(tmp_path: Path) -> None:
+    runner = steps.StepRunner(tmp_path, persistence.UserConfig())
+
+    with pytest.raises(steps.StepError) as refused:
+        runner.undo()
+
+    assert str(refused.value) == "nothing to undo"
+    assert runner.log.records() == []
+
+
+def test_queue_refusals_name_empty_and_stale_targets(
+        tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    store = persistence.ProjectStore(tmp_path)
+    store.save_model(DerivedModel(str(tmp_path)))
+    store.save_state(persistence.ProjectState(persistence.ProjectPhase.IMPLEMENTATION))
+    runner = steps.StepRunner(tmp_path, persistence.UserConfig())
+    with pytest.raises(steps.StepError) as empty:
+        runner.propose_approach(prompt.StepRequest(prompt.IMPLEMENTATION, 0))
+    assert str(empty.value) == (
+        "the implementation queue is empty; there are no unimplemented functions")
+
+    store.save_state(persistence.ProjectState(
+        persistence.ProjectPhase.IMPLEMENTATION, ("u:missing",), 0))
+    monkeypatch.setattr(
+        steps.implementation_queue, "ensure_state", lambda _store, _model: store.load_state())
+    with pytest.raises(steps.StepError) as stale:
+        runner.propose_approach(prompt.StepRequest(prompt.IMPLEMENTATION, 0))
+    assert str(stale.value) == (
+        "the implementation queue target 'u:missing' is absent from the derived model")
+
+
+def test_approach_approval_refuses_unusable_changed_phase_and_duplicate(
+        tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    runner = implementation_runner(tmp_path, "", monkeypatch)
+    request = prompt.StepRequest(
+        prompt.IMPLEMENTATION, 0, target="u:work", batch=("u:work",))
+    unusable = steps.Approach(0, request, "u:work", error="invalid reply")
+    with pytest.raises(steps.StepError) as bad:
+        runner.approve_approach(unusable)
+    assert str(bad.value) == "only a usable implementation approach can be approved"
+
+    usable = steps.Approach(0, request, "u:work", plan="Implement directly.")
+    state = runner.store.load_state()
+    runner.store.save_state(persistence.ProjectState(persistence.ProjectPhase.ARCHITECTURE))
+    with pytest.raises(steps.StepError) as phase:
+        runner.approve_approach(usable)
+    assert str(phase.value) == (
+        "the project is no longer in the implementation phase; propose an approach again")
+
+    runner.store.save_state(persistence.ProjectState(
+        state.phase, state.implementation_queue, state.implementation_cursor,
+        approved_approach="Already accepted."))
+    with pytest.raises(steps.StepError) as duplicate:
+        runner.approve_approach(usable)
+    assert str(duplicate.value) == (
+        "an implementation approach for 'app::work' is already approved")
+
+
+def test_approach_log_failure_restores_unapproved_state(
+        tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    runner = implementation_runner(tmp_path, "", monkeypatch)
+    original = runner.store.load_state()
+    approach = steps.Approach(
+        0, prompt.StepRequest(
+            prompt.IMPLEMENTATION, 0, target="u:work", batch=("u:work",)),
+        "u:work", plan="Implement directly.",
+    )
+    failure = OSError("step log is unavailable")
+
+    def fail_append(_record: steplog.StepRecord) -> steplog.StepRecord:
+        raise failure
+
+    monkeypatch.setattr(runner.log, "append", fail_append)
+    with pytest.raises(OSError, match="step log is unavailable") as caught:
+        runner.approve_approach(approach)
+
+    assert caught.value is failure
+    assert runner.store.load_state() == original
+
+
+def test_candidate_diff_planning_failures_leave_every_file_byte_identical(
+        tmp_path: Path) -> None:
+    safe = tmp_path / "safe.txt"
+    target = tmp_path / "target.txt"
+    safe.write_bytes(b"safe original\n")
+    target.write_bytes(b"one\ntwo\n")
+    before = {path.name: path.read_bytes() for path in (safe, target)}
+    overlap = response.FileChange(
+        "target.txt", hunks=(
+            response.DiffHunk(1, 1, 1, 1, ("-one\n", "+first\n")),
+            response.DiffHunk(1, 1, 1, 1, ("-one\n", "+again\n")),
+        ),
+    )
+
+    with pytest.raises(ValueError) as refused:
+        steps._apply_candidate_files(
+            tmp_path, (response.FileChange("safe.txt", "changed\n"), overlap))
+
+    assert str(refused.value) == (
+        "unified diff for 'target.txt' does not apply: hunk 2 overlaps an earlier hunk")
+    assert {path.name: path.read_bytes() for path in (safe, target)} == before
+
+
+def test_candidate_diff_refuses_a_symlink_escape_before_writing(
+        tmp_path: Path) -> None:
+    root = tmp_path / "project"
+    outside = tmp_path / "outside"
+    root.mkdir()
+    outside.mkdir()
+    safe = root / "safe.txt"
+    escaped = outside / "escaped.txt"
+    safe.write_bytes(b"safe original\n")
+    escaped.write_bytes(b"outside original\n")
+    try:
+        (root / "linked").symlink_to(outside, target_is_directory=True)
+    except OSError:
+        pytest.skip("creating directory symlinks is not available")
+    patch = response.FileChange(
+        "linked/escaped.txt", hunks=(
+            response.DiffHunk(1, 1, 1, 1, ("-outside original\n", "+changed\n")),
+        ),
+    )
+
+    with pytest.raises(ValueError) as refused:
+        steps._apply_candidate_files(
+            root, (response.FileChange("safe.txt", "changed\n"), patch))
+
+    assert str(refused.value) == (
+        "candidate path 'linked/escaped.txt' leaves the project root")
+    assert safe.read_bytes() == b"safe original\n"
+    assert escaped.read_bytes() == b"outside original\n"
+
+
+def test_dirty_tree_and_wrong_head_refuse_undo_before_git_changes(
+        tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    runner = steps.StepRunner(tmp_path, persistence.UserConfig())
+    runner.log.append(steplog.StepRecord(1, prompt.ARCHITECTURE, "approved", title="change"))
+    monkeypatch.setattr(steps.git, "is_clean", lambda *_args, **_kwargs: False)
+    with pytest.raises(steps.DirtyTree) as dirty:
+        runner.undo()
+    assert str(dirty.value) == (
+        "uncommitted changes in the project: commit them first (Project → Commit manual edits)")
+
+    monkeypatch.setattr(steps.git, "is_clean", lambda *_args, **_kwargs: True)
+    monkeypatch.setattr(
+        steps.git, "run_git",
+        lambda *_args, **_kwargs: ProcessResult(["git"], 0, "manual commit\n", ""),
+    )
+    with pytest.raises(steps.StepError) as wrong_head:
+        runner.undo()
+    assert str(wrong_head.value) == (
+        "HEAD is not the commit of step 1 ('manual commit'); undo in git by hand")
+
+
+def test_cancelled_provider_and_missing_analysis_model_are_explicit(
+        tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    runner = steps.StepRunner(tmp_path, persistence.UserConfig(), provider_id="test-provider")
+    monkeypatch.setattr(steps.agent, "load_providers", lambda: [provider()])
+    monkeypatch.setattr(steps.agent, "binary_available", lambda *_args: True)
+    monkeypatch.setattr(
+        steps.agent, "run_provider",
+        lambda *_args, **_kwargs: ProcessResult(["test-provider"], -9, "", "", cancelled=True),
+    )
+    with pytest.raises(steps.StepCancelled) as cancelled:
+        runner._invoke_provider("prompt", tmp_path)
+    assert str(cancelled.value) == "the step was cancelled"
+
+    monkeypatch.setattr(
+        steps.session, "analyse_in_child",
+        lambda _root: steps.session.AnalysisResult(None, None, ["worker exited without cache"]),
+    )
+    with pytest.raises(steps.StepError) as missing:
+        steps.analyse_tree(tmp_path)
+    assert str(missing.value) == "analysis produced no model: worker exited without cache"
+
+    runner.cancel_requested = True
+    with pytest.raises(steps.StepCancelled) as pre_cancelled:
+        runner._check_cancelled()
+    assert str(pre_cancelled.value) == "the step was cancelled"
+
+
+@pytest.mark.parametrize("refusal", ["grouping refusal", "coverage refusal"])
+def test_approval_rechecks_grouping_and_coverage_before_promotion(
+        tmp_path: Path, monkeypatch: pytest.MonkeyPatch, refusal: str) -> None:
+    runner = approval_runner(tmp_path)
+    if refusal == "grouping refusal":
+        monkeypatch.setattr(runner, "_grouping_refusal", lambda _proposal: refusal)
+    else:
+        monkeypatch.setattr(
+            steps.rules, "group_test_coverage",
+            lambda *_args, **_kwargs: steps.rules.GroupTestCoverage(refusal_reason=refusal),
+        )
+    monkeypatch.setattr(
+        steps.git, "promote_worktree",
+        lambda *_args: pytest.fail("refusal must precede promotion"),
+    )
+
+    with pytest.raises(steps.StepError) as refused:
+        runner.approve(proposal(
+            tmp_path, steps.BuildResult(True, "built"), steps.TestResult(True, "tested")))
+
+    assert str(refused.value) == refusal
+
+
+def test_grouped_proposal_revalidates_the_exact_selected_members(tmp_path: Path) -> None:
+    model = DerivedModel(str(tmp_path))
+    first = Entity("u:first", Kind.FUNCTION, "get_value", "A::get_value", "a.cpp", 1, 2,
+                   status="implemented")
+    second = Entity("u:second", Kind.FUNCTION, "set_value", "B::set_value", "b.cpp", 1, 2,
+                    status="implemented")
+    model.add_entity(first)
+    model.add_entity(second)
+    candidate = proposal(
+        tmp_path, steps.BuildResult(True, "built"), steps.TestResult(True, "tested"))
+    candidate.model = model
+    candidate.request = prompt.StepRequest(
+        prompt.IMPLEMENTATION, 1, target=first.usr,
+        batch=(first.usr, second.usr), grouped=True,
+    )
+    runner = steps.StepRunner(tmp_path, persistence.UserConfig())
+
+    assert runner._grouping_refusal(candidate) == (
+        "cannot group B::set_value with A::get_value: entities are in different files")
+
+
+def test_undo_reverts_the_step_but_preserves_pending_history(tmp_path: Path) -> None:
+    root = tmp_path / "project"
+    root.mkdir()
+    git.run_git(["init", "-q", "-b", "main"], root)
+    source = root / "app.txt"
+    source.write_bytes(b"version zero\n")
+    runner = steps.StepRunner(root, persistence.UserConfig())
+    runner.store.ensure()
+    runner.log.append(steplog.StepRecord(0, prompt.ARCHITECTURE, "approved", title="skeleton"))
+    git.commit_all(root, "icoda step 0: skeleton", "Test", "test@example.org")
+    source.write_bytes(b"version one\n")
+    runner.log.append(steplog.StepRecord(1, prompt.ARCHITECTURE, "approved", title="change"))
+    git.commit_all(root, "icoda(architecture) step 1: change", "Test", "test@example.org")
+    runner.log.append(steplog.StepRecord(2, prompt.ARCHITECTURE, "rejected", reason="keep this"))
+
+    undone = runner.undo()
+
+    assert source.read_bytes() == b"version zero\n"
+    assert undone.decision == "undone" and undone.undoes == 1
+    assert [(record.number, record.decision) for record in runner.log.records()] == [
+        (0, "approved"), (2, "rejected"), (1, "undone"),
+    ]
+    assert git.is_clean(root)
+
+
+def test_hard_function_limit_refuses_promotion(tmp_path: Path) -> None:
+    runner = approval_runner(tmp_path)
+
+    with pytest.raises(steps.StepError) as refused:
+        runner.approve(quality_proposal(tmp_path, end_line=51))
+
+    assert str(refused.value) == "app::work is 51 lines; split it below the hard maximum of 50."
+
+
+def test_hard_function_limit_allows_compliant_promotion(
+        tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    runner = approval_runner(tmp_path)
+    allow_promotion(monkeypatch)
+
+    record = runner.approve(quality_proposal(tmp_path, end_line=50))
+
+    assert record.decision == "approved"
+
+
+def test_required_quality_rule_refuses_the_proposal_step(
+        tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    expected = quality_proposal(tmp_path, end_line=51)
+    assert expected.model is not None and expected.delta is not None
+    runner = steps.StepRunner(
+        tmp_path, persistence.UserConfig(), build=lambda _root: steps.BuildResult(True, "built"),
+        test=lambda _root, _command: steps.TestResult(True, "tested"),
+        analyse=lambda _root: expected.model,
+    )
+    monkeypatch.setattr(steps.git, "working_tree_diff", lambda _root: "")
+    monkeypatch.setattr(
+        steps.git, "status_changes",
+        lambda _root: [git.Change("A", path) for path in expected.delta.files],
+    )
+    candidate = proposal(tmp_path, steps.BuildResult(), steps.TestResult())
+
+    runner._build_and_parse(candidate)
+
+    assert candidate.error == "app::work is 51 lines; split it below the hard maximum of 50."
+    assert not candidate.ok
 
 
 def _build(events: list[str], ok: bool) -> steps.BuildResult:
@@ -93,6 +617,136 @@ def test_approval_names_failed_gate_and_records_both_successes(
     assert (loaded.test_ok, loaded.test_output) == (True, "retested")
     assert loaded.selected_tests == ["tests/focused_test.cpp"]
     assert loaded.entity_body_hashes == {"u:touched": "approved-hash"}
+
+
+@pytest.mark.parametrize("failed_gate", ["build", "test"])
+def test_approval_gate_failure_rolls_back_promotion(tmp_path: Path, failed_gate: str) -> None:
+    root = tmp_path / "project"
+    root.mkdir()
+    git.run_git(["init", "-q", "-b", "main"], root)
+    (root / "existing.cpp").write_text("original\n", encoding="utf-8")
+    store = persistence.ProjectStore(root)
+    store.save_state(persistence.ProjectState(persistence.ProjectPhase.ARCHITECTURE))
+    git.commit_all(root, "initial", "Test", "test@example.org")
+    worktree = git.create_worktree(root, tmp_path / "worktree", "icoda/step-1")
+    (worktree / "existing.cpp").write_text("promoted\n", encoding="utf-8")
+    (worktree / "added.cpp").write_text("added\n", encoding="utf-8")
+
+    def build(_root: Path) -> steps.BuildResult:
+        return steps.BuildResult(failed_gate != "build", "build failed")
+
+    def test(_root: Path, _command: Sequence[str]) -> steps.TestResult:
+        return steps.TestResult(failed_gate != "test", "test failed")
+
+    runner = steps.StepRunner(root, persistence.UserConfig(), build=build, test=test)
+    candidate = proposal(root, steps.BuildResult(True, "built"), steps.TestResult(True, "tested"))
+    candidate.worktree = worktree
+
+    failure = "does not build" if failed_gate == "build" else "tests failed"
+    with pytest.raises(steps.StepError, match=failure):
+        runner.approve(candidate)
+
+    assert (root / "existing.cpp").read_text(encoding="utf-8") == "original\n"
+    assert not (root / "added.cpp").exists()
+    assert git.is_clean(root)
+
+
+def test_approval_rolls_back_when_post_promotion_build_raises(
+        tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    failure = RuntimeError("injected rebuild crash")
+    rolled_back: list[tuple[Path, list[str]]] = []
+
+    def raise_failure(_root: Path) -> steps.BuildResult:
+        raise failure
+
+    runner = approval_runner(tmp_path)
+    runner.build = raise_failure
+    monkeypatch.setattr(steps.git, "promote_worktree", lambda _root, _worktree: ["src/app.cpp"])
+    monkeypatch.setattr(
+        steps.git, "rollback_promotion", lambda root, files: rolled_back.append((root, files)))
+
+    with pytest.raises(RuntimeError, match="injected rebuild crash") as caught:
+        runner.approve(proposal(tmp_path, steps.BuildResult(True, "built"), steps.TestResult(True, "tested")))
+
+    assert caught.value is failure
+    assert rolled_back == [(tmp_path, ["src/app.cpp"])]
+
+
+def test_approval_surfaces_rollback_failure(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    runner = approval_runner(tmp_path)
+    runner.build = lambda _root: steps.BuildResult(False, "injected rebuild failure")
+    monkeypatch.setattr(steps.git, "promote_worktree", lambda _root, _worktree: ["src/app.cpp"])
+
+    def fail_rollback(_root: Path, _files: Sequence[str]) -> None:
+        raise OSError("injected rollback failure")
+
+    monkeypatch.setattr(steps.git, "rollback_promotion", fail_rollback)
+
+    with pytest.raises(OSError, match="injected rollback failure") as caught:
+        runner.approve(proposal(tmp_path, steps.BuildResult(True, "built"), steps.TestResult(True, "tested")))
+
+    assert isinstance(caught.value.__context__, steps.StepError)
+    assert "promoted project does not build" in str(caught.value.__context__)
+
+
+def test_approval_rolls_back_and_reraises_keyboard_interrupt(
+        tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    interruption = KeyboardInterrupt("injected interrupt")
+    rolled_back: list[tuple[Path, list[str]]] = []
+
+    def interrupt_retest(_root: Path, _command: Sequence[str]) -> steps.TestResult:
+        raise interruption
+
+    runner = approval_runner(tmp_path)
+    runner.test = interrupt_retest
+    monkeypatch.setattr(steps.git, "promote_worktree", lambda _root, _worktree: ["src/app.cpp"])
+    monkeypatch.setattr(
+        steps.git, "rollback_promotion", lambda root, files: rolled_back.append((root, files)))
+
+    with pytest.raises(KeyboardInterrupt, match="injected interrupt") as caught:
+        runner.approve(proposal(tmp_path, steps.BuildResult(True, "built"), steps.TestResult(True, "tested")))
+
+    assert caught.value is interruption
+    assert rolled_back == [(tmp_path, ["src/app.cpp"])]
+
+
+@pytest.mark.parametrize("failure_stage", ["log", "commit"])
+def test_approval_metadata_or_commit_failure_restores_the_entire_project(
+        tmp_path: Path, monkeypatch: pytest.MonkeyPatch, failure_stage: str) -> None:
+    root = tmp_path / "project"
+    root.mkdir()
+    git.run_git(["init", "-q", "-b", "main"], root)
+    source = root / "existing.cpp"
+    source.write_bytes(b"original\n")
+    store = persistence.ProjectStore(root)
+    store.ensure()
+    store.save_state(persistence.ProjectState(persistence.ProjectPhase.ARCHITECTURE))
+    git.commit_all(root, "initial", "Test", "test@example.org")
+    worktree = git.create_worktree(root, tmp_path / "worktree", "icoda/step-1")
+    (worktree / "existing.cpp").write_bytes(b"promoted\n")
+    (worktree / "added.cpp").write_bytes(b"added\n")
+    runner = steps.StepRunner(
+        root, persistence.UserConfig(), build=lambda _root: steps.BuildResult(True, "rebuilt"),
+        test=lambda _root, _command: steps.TestResult(True, "retested"),
+    )
+    candidate = proposal(root, steps.BuildResult(True, "built"), steps.TestResult(True, "tested"))
+    candidate.worktree = worktree
+    before = {path: path.read_bytes() for path in (source, store.state_path)}
+    failure = OSError(f"injected {failure_stage} failure")
+
+    if failure_stage == "log":
+        monkeypatch.setattr(runner.log, "append", lambda _record: (_ for _ in ()).throw(failure))
+    else:
+        monkeypatch.setattr(steps.git, "commit_all", lambda *_args: (_ for _ in ()).throw(failure))
+
+    with pytest.raises(OSError, match=f"injected {failure_stage} failure") as caught:
+        runner.approve(candidate)
+
+    assert caught.value is failure
+    assert {path: path.read_bytes() for path in before} == before
+    assert not (root / "added.cpp").exists()
+    assert not store.steps_path.exists() and not store.model_path.exists()
+    assert git.is_clean(root)
 
 
 def test_step_log_round_trip_and_legacy_test_result_is_unknown(tmp_path: Path) -> None:

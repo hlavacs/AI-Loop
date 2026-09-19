@@ -240,7 +240,7 @@ def _assert_overviews(app: Any, *, specification_phase: bool = False) -> None:
         assert app.mind_map_view.tree is not None and app.mind_map_view.tree.nodes()
         assert app.mind_map_view.item_nodes
         assert not app.coverage_view.index.entries
-        assert app.coverage_view.summary_var.get() == "Test coverage: no callable entities"
+        assert app.coverage_view.summary_var.get() == "Recorded test reachability: no callable entities"
         assert app.issue_view.summary_var.get() == "Rule checks: 0 issues · 0 errors · 0 warnings"
         assert not app.issue_view.issues
         return
@@ -248,7 +248,8 @@ def _assert_overviews(app: Any, *, specification_phase: bool = False) -> None:
     assert app.class_view.graph.nodes and app.class_view.item_nodes
     assert app.mind_map_view.tree is not None and app.mind_map_view.tree.nodes()
     assert app.mind_map_view.item_nodes
-    assert app.coverage_view.index.entries and app.coverage_view.summary_var.get().startswith("Test coverage:")
+    assert app.coverage_view.index.entries \
+        and app.coverage_view.summary_var.get().startswith("Recorded test reachability:")
     assert app.issue_view.summary_var.get().startswith("Rule checks:") and app.issue_view.issues
 
 

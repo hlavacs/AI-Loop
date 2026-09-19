@@ -5,10 +5,13 @@ description = "ICODA: Interactive Code Development and Analysis"
 requires-python = ">=3.10"
 license = { text = "MIT" }
 dependencies = [
-    "clang>=20",
-    "networkx>=3",
-    "jsonschema>=4",
+    "clang>=20,<22",
+    "networkx>=3,<4",
+    "jsonschema>=4,<5",
 ]
+
+[project.scripts]
+icoda = "icoda:main"
 
 [project.optional-dependencies]
 # The libclang wheel bundles a library for machines without a toolchain; it replaces the bindings above.
@@ -19,13 +22,15 @@ dev = [
     "pillow>=10,<13",
     "ruff>=0.6,<1",
     "mypy>=1.11,<3",
+    "wheel>=0.41,<1",
 ]
 
 [tool.setuptools]
 packages = ["icoda_core", "icoda_gui"]
+py-modules = ["icoda"]
 
 [tool.setuptools.package-data]
-icoda_core = ["*.json"]
+icoda_core = ["providers.json", "response.schema.json", "specification.schema.json"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

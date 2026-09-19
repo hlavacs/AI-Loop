@@ -28,6 +28,9 @@ from __future__ import annotations
 
 import ast
 import hashlib
+import os
+import re
+from collections import deque
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -35,6 +38,14 @@ from icoda_core.bodyhash import body_hash
 from icoda_core.model import DerivedModel, Edge, EdgeKind, Entity, External, FileInfo, Kind
 
 FunctionNode = ast.FunctionDef | ast.AsyncFunctionDef
+PYTHON_SOURCE_EXCLUDED_DIRECTORIES = frozenset({
+    "build", "dist", "node_modules", "site-packages",
+})
+PYTHON_SOURCE_EXCLUDE_PATTERN = (
+    rf"(?:^|[\\/])\.[^\\/]+[\\/]"
+    rf"|(?:^|[\\/])(?:{'|'.join(re.escape(name) for name in sorted(PYTHON_SOURCE_EXCLUDED_DIRECTORIES))})"
+    r"(?:[\\/]|$)"
+)
 
 
 @dataclass(frozen=True)
@@ -62,6 +73,8 @@ class _Context:
     model: DerivedModel
     modules: dict[str, _Module]
     symbols: dict[tuple[str, str], str]
+    members: dict[tuple[str, str], str]
+    edges: set[Edge]
 
 
 def parse_project(root: Path) -> DerivedModel:
@@ -71,25 +84,50 @@ def parse_project(root: Path) -> DerivedModel:
     but contributes no entities or edges.  Missing, empty, and Python-free
     directories therefore return valid (possibly empty) models.
     """
-    root = root.resolve()
-    model = DerivedModel(str(root))
+    model = DerivedModel(str(root.resolve()))
     modules = _read_modules(root, model)
-    context = _Context(model, modules, {})
+    context = _Context(model, modules, {}, {}, set())
     for module in modules.values():
         module.imports = _collect_imports(module, modules)
         _add_import_facts(context, module)
     for module in modules.values():
         _collect_entities(context, module, module.tree.body, None, ())
+    for entity in model.entities.values():
+        if entity.parent is not None:
+            context.members.setdefault((entity.parent, entity.name), entity.usr)
     for module in modules.values():
         _collect_relations(context, module, module.tree.body, None, ())
         _ExternalUses(context, module).visit(module.tree)
     return model
 
 
+def _add_edge(context: _Context, edge: Edge) -> None:
+    if edge not in context.edges:
+        context.edges.add(edge)
+        context.model.edges.append(edge)
+
+
+def find_python_sources(root: Path, *, virtual_environments: list[Path] | None = None) -> tuple[Path, ...]:
+    """Discover project Python files, optionally reporting root-relative virtual environments."""
+    sources: list[Path] = []
+    for directory, subdirectories, files in os.walk(root):
+        directory_path = Path(directory)
+        if "pyvenv.cfg" in files:
+            subdirectories.clear()
+            if virtual_environments is not None:
+                virtual_environments.append(directory_path.relative_to(root))
+            continue
+        subdirectories[:] = sorted(
+            name for name in subdirectories
+            if not name.startswith(".") and name not in PYTHON_SOURCE_EXCLUDED_DIRECTORIES
+        )
+        sources.extend(directory_path / name for name in sorted(files) if name.endswith(".py"))
+    return tuple(sources)
+
+
 def _read_modules(root: Path, model: DerivedModel) -> dict[str, _Module]:
     modules: dict[str, _Module] = {}
-    for path in sorted(path for path in root.rglob("*.py")
-                       if ".icoda" not in path.relative_to(root).parts):
+    for path in find_python_sources(root):
         relative = path.relative_to(root).as_posix()
         try:
             raw = path.read_bytes()
@@ -148,9 +186,9 @@ def _collect_imports(module: _Module, modules: dict[str, _Module]) -> dict[str, 
 
 def _module_nodes(statements: list[ast.stmt]) -> list[ast.stmt]:
     result: list[ast.stmt] = []
-    pending = list(statements)
+    pending = deque(statements)
     while pending:
-        node = pending.pop(0)
+        node = pending.popleft()
         if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
             continue
         result.append(node)
@@ -185,7 +223,8 @@ def _add_import_facts(context: _Context, module: _Module) -> None:
         if library or target_module is not None:
             key = (target, imported.module)
             if key not in seen:
-                context.model.add_edge(
+                _add_edge(
+                    context,
                     Edge(EdgeKind.IMPORTS, module.file, target, module.file, label=imported.module)
                 )
                 seen.add(key)
@@ -332,7 +371,8 @@ def _class_relations(context: _Context, module: _Module, node: ast.ClassDef, usr
     for base in node.bases:
         target = _resolve_type(context, module, base)
         if target is not None:
-            context.model.add_edge(
+            _add_edge(
+                context,
                 Edge(EdgeKind.INHERITS, usr, target[0], module.file, node.lineno, target[1])
             )
     for statement in node.body:
@@ -381,7 +421,7 @@ def _annotation_edges(
     for expression in _annotation_parts(annotation):
         target = _resolve_type(context, module, expression)
         if target is not None and target[0] != source:
-            context.model.add_edge(Edge(EdgeKind.USES_TYPE, source, target[0], module.file, line, target[1]))
+            _add_edge(context, Edge(EdgeKind.USES_TYPE, source, target[0], module.file, line, target[1]))
 
 
 def _annotation_parts(annotation: ast.expr) -> list[ast.expr]:
@@ -436,7 +476,7 @@ def _constructor(context: _Context, usr: str) -> str | None:
     entity = context.model.entities.get(usr)
     if entity is None or entity.kind != Kind.CLASS:
         return usr
-    return next((child.usr for child in context.model.children(usr) if child.name == "__init__"), None)
+    return context.members.get((usr, "__init__"))
 
 
 def _is_class(model: DerivedModel, usr: str) -> bool:
@@ -444,8 +484,8 @@ def _is_class(model: DerivedModel, usr: str) -> bool:
     return entity is not None and entity.kind == Kind.CLASS
 
 
-def _class_member(model: DerivedModel, class_usr: str, name: str) -> str | None:
-    return next((child.usr for child in model.children(class_usr) if child.name == name), None)
+def _class_member(context: _Context, class_usr: str, name: str) -> str | None:
+    return context.members.get((class_usr, name))
 
 
 def _name_chain(node: ast.AST) -> tuple[str, ...]:
@@ -491,7 +531,8 @@ class _CallVisitor(ast.NodeVisitor):
     def visit_Call(self, node: ast.Call) -> None:
         target = self._target(node.func)
         if target is not None and target[0] != self.source:
-            self.context.model.add_edge(
+            _add_edge(
+                self.context,
                 Edge(EdgeKind.CALLS, self.source, target[0], self.module.file, node.lineno, target[1], uncertain=False)
             )
         self.generic_visit(node)
@@ -528,7 +569,7 @@ class _CallVisitor(ast.NodeVisitor):
         if chain[0] in {"self", "cls"} and self.class_scope:
             usr = self.context.symbols.get((self.module.name, ".".join((*self.class_scope, *chain[1:]))))
         elif chain[0] in self.local_types and len(chain) == 2:
-            usr = _class_member(self.context.model, self.local_types[chain[0]], chain[1])
+            usr = _class_member(self.context, self.local_types[chain[0]], chain[1])
         else:
             usr = _resolve_project_chain(self.context, self.module, chain)
         if usr is not None:
@@ -553,7 +594,7 @@ class _CallVisitor(ast.NodeVisitor):
         class_usr = self._constructed_class(expression.value)
         if class_usr is None:
             return None
-        member = _class_member(self.context.model, class_usr, expression.attr)
+        member = _class_member(self.context, class_usr, expression.attr)
         return (member, "") if member is not None else None
 
 

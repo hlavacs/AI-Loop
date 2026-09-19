@@ -687,6 +687,6 @@ def _test_text(proposal: steps.Proposal) -> str:
     group = ""
     if proposal.request.grouped:
         names = _proposal_batch_names(proposal)
-        group = ("Few-line group test coverage (recorded evidence required for every entity):\n"
+        group = ("Few-line group recorded-test reachability (required for every entity):\n"
                  + "\n".join(f"- {name}" for name in names) + "\n\n")
     return f"{group}{scope}\n\n{result}"

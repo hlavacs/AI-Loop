@@ -30,7 +30,7 @@ the **Help** menu opens the same pages, and the sentence above the buttons in th
 - **Build and test gates:** keep approval blocked when a proposal fails its configured checks. Review the source
   diff, entity changes, API signature changes, and build/test output before deciding.
 - **Traceability:** connect requirements to code through `@satisfies` tags and inspect recorded test evidence,
-  uncovered callables, advisory rule findings, and development history.
+  callables not structurally reached by recorded test identifiers, advisory rule findings, and development history.
 - **Git integration:** approve changes as commits, record manual edits, or revert the last approved step when
   its undo conditions are satisfied.
 
@@ -81,10 +81,10 @@ To open a project immediately, pass its absolute path from the `icoda/` director
 icoda.cmd "C:\path\to\project"
 ```
 
-The launcher creates `.icoda-venv`, installs ICODA's Python dependencies, and starts the application.
-This virtual environment keeps ICODA's packages separate from other Python projects; manual activation is not
-required. The Bash launcher also attempts to install missing system prerequisites through a supported package
-manager. Windows reports missing prerequisites for you to install.
+The launchers only validate Python, Tkinter, required system tools, and an already prepared `.icoda-venv` before
+starting ICODA; they never create the environment or install or upgrade packages. The virtual environment keeps
+ICODA's packages separate from other Python projects, and manual activation is not required. Follow
+[Getting started](docs/GETTING_STARTED.md#1-install) to create it and install the pinned dependencies explicitly.
 
 ### Create or Open a Project
 
@@ -161,9 +161,10 @@ macOS, and Windows. The committed [release matrix](docs/RELEASE_MATRIX.md) quali
 verification gate; macOS has a hands-on usage record but no gate run yet, and Windows is unmeasured.
 
 The specification editor validates structure and references, but does not yet run an AI-guided requirements
-interview. Many Code Profile rules are advisory. Test coverage in the GUI represents recorded test provenance and
-call reachability, not measured statement or branch coverage. C++ proposal gates currently expect `debug` build
-and test presets. Known scaling issues and feature gaps are tracked in the [gap analysis](docs/GAP_ANALYSIS.md).
+interview. Many Code Profile rules are advisory. Recorded test reachability in the GUI is a structural index of
+successful step records and analysed call edges, not verified behavior or measured statement/branch coverage. C++
+proposal gates currently expect `debug` build and test presets. Known scaling issues and feature gaps are tracked in
+the [gap analysis](docs/GAP_ANALYSIS.md).
 
 ## Documentation
 
@@ -175,7 +176,14 @@ For users:
 | [Tutorial](docs/TUTORIAL.md) | One small program from specification to tested code, step by step |
 | [Troubleshooting](docs/TROUBLESHOOTING.md) | The problems people meet, their fixes, and where the log is |
 | [Handbook](HANDBOOK.md) | Every view, control and file; the reference |
-| [Illustrated PDF handbook](output/pdf/ICODA-Handbook.pdf) | The handbook with 32 screenshots (edition of 2026-09-11; the Markdown is newer) |
+| [Illustrated PDF handbook](output/pdf/ICODA-Handbook.pdf) | The four user guides with 32 screenshots in one searchable PDF |
+
+Build the PDF entirely offline from the current handbook, getting-started guide, tutorial, troubleshooting guide,
+and their committed screenshots. Run this command from `icoda/`:
+
+```bash
+.icoda-venv/bin/python tools/build_handbook_pdf.py
+```
 
 For maintainers:
 
@@ -191,8 +199,8 @@ For maintainers:
 
 ## Development
 
-Run contributor commands from `icoda/`. After the launcher has created the virtual environment, install the
-development dependencies and run the full verification gate:
+Run contributor commands from `icoda/`. After creating the virtual environment explicitly, install the development
+dependencies and run the full verification gate:
 
 ```bash
 .icoda-venv/bin/python -m pip install -e '.[dev]'
@@ -206,9 +214,10 @@ On Windows:
 verify.cmd
 ```
 
-The verifier runs whitespace checks, Ruff, mypy, byte compilation, provider qualification, the C++ sample build
-and CTest, pytest with an 85% coverage threshold, fresh analysis, and real-Tk GUI acceptance. Run it after code or
-GUI changes. GUI checks need a display; on headless Linux the verifier uses `xvfb-run` when available.
+The verifier runs whitespace checks, Ruff, mypy, byte compilation, provider qualification, real-provider
+acceptance, the C++ sample build and CTest, pytest with an 85% coverage threshold, fresh analysis, and real-Tk GUI
+acceptance. Run it after code or GUI changes. GUI checks need a display; on headless Linux the verifier uses
+`xvfb-run` when available.
 
 Each run retains command logs, JUnit results, coverage reports, environment details, GUI state, and screenshots in
 `.icoda-test-artifacts/<run>/`. The `LATEST` file identifies the newest run. Inspect affected screenshots as well
@@ -228,8 +237,16 @@ compatibility without consuming model usage:
   --output .icoda-test-artifacts/provider-qualification.json
 ```
 
-Real-provider acceptance consumes model usage and is separate from the standard verifier. Commands for it, the
-full lifecycle simulation, and performance testing are in the [maintainer guide](HANDBOOK.md#12-maintainer-guide).
+The real-provider stage defaults to Codex CLI and consumes model usage. It requires the `codex` executable, network
+access, and an active credential reported by `codex login status`. Authenticate interactively with `codex login`,
+or pipe `OPENAI_API_KEY` to `codex login --with-api-key`; enterprise automation can instead pipe
+`CODEX_ACCESS_TOKEN` to `codex login --with-access-token`. No environment variable is required after login, and
+there is no ICODA-specific credential variable. Missing credentials fail the gate by default. When a release is
+intentionally qualified without this external check, `./verify.bash --allow-missing-real-provider` records the
+stage as `SKIP` in both summaries; it is never reported as a pass. The scenario makes one request, may retry it up
+to three times after rate limiting, and gives each provider attempt a 30-minute timeout, in addition to its local
+build and test time. Commands for the focused acceptance scripts and performance testing are in the [maintainer
+guide](HANDBOOK.md#12-maintainer-guide).
 
 The desktop shell is [icoda.py](icoda.py). Core logic lives in [icoda_core/](icoda_core/), reusable Tk widgets in
 [icoda_gui/](icoda_gui/), and verification scripts and tests in [tests/](tests/). Keep workflow and analysis

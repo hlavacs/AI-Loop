@@ -9,7 +9,7 @@ from dataclasses import asdict
 from datetime import datetime, timezone
 from pathlib import Path
 
-from icoda_core import agent
+from icoda_core import agent, persistence
 
 
 def _report(checks: list[agent.ProviderCheck]) -> dict[str, object]:
@@ -34,8 +34,7 @@ def main(argv: list[str] | None = None) -> int:
     data = _report(checks)
     text = json.dumps(data, indent=2) + "\n"
     if args.output:
-        args.output.parent.mkdir(parents=True, exist_ok=True)
-        args.output.write_text(text, encoding="utf-8")
+        persistence._atomic_write_text(args.output, text)
     print(text, end="")
     incompatible = [check for check in checks
                     if check.configured_enabled and check.installed and not check.compatible]

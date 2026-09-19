@@ -16,6 +16,8 @@ from typing import Any
 
 import jsonschema
 
+from icoda_core import persistence
+
 SCHEMA_PATH = Path(__file__).with_name("specification.schema.json")
 SCHEMA_VERSION = 2
 LIST_SECTIONS = ("goals", "out_of_scope", "not_allowed", "done_when")
@@ -149,8 +151,7 @@ def load(path: Path) -> Specification:
 
 
 def save(path: Path, spec: Specification) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps(spec, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
+    persistence._atomic_write_text(path, json.dumps(spec, indent=2, ensure_ascii=False) + "\n")
 
 
 def upgrade(spec: Specification) -> Specification:

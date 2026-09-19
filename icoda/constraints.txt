@@ -1,0 +1,25 @@
+# Regenerate: .icoda-venv/bin/python -m pip freeze --exclude-editable, then remove unrelated and local-path entries.
+# Install: .icoda-venv/bin/python -m pip install -e '.[dev]' -c constraints.txt
+ast_serialize==0.11.2
+attrs==26.1.0
+clang==21.1.7
+coverage==7.16.1
+iniconfig==2.3.0
+jsonschema==4.26.0
+jsonschema-specifications==2025.9.1
+librt==0.15.0
+mypy==2.3.1
+mypy_extensions==1.1.0
+networkx==3.6.1
+packaging==26.3
+pathspec==1.1.1
+pillow==12.3.0
+pluggy==1.6.0
+Pygments==2.21.0
+pytest==9.1.1
+pytest-cov==7.1.0
+referencing==0.37.0
+rpds-py==2026.6.3
+ruff==0.16.8
+typing_extensions==4.16.0
+wheel==0.48.0

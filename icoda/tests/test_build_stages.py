@@ -13,6 +13,16 @@ def _result(command: list[str], returncode: int, stdout: str) -> ProcessResult:
     return ProcessResult(command, returncode, stdout, "")
 
 
+def test_cmake_gate_uses_the_assumed_debug_preset(tmp_path: Path) -> None:
+    commands = steps.gate_commands(tmp_path, ("ctest",), code_profile={"language": "C++"})
+
+    assert commands.build == [
+        ["cmake", "--preset", steps.CMAKE_PRESET],
+        ["cmake", "--build", "--preset", steps.CMAKE_PRESET],
+    ]
+    assert steps.CMAKE_PRESET == "debug"
+
+
 def test_build_failure_stops_the_build_gate(tmp_path: Path, monkeypatch: Any) -> None:
     commands: list[list[str]] = []
 
@@ -25,6 +35,28 @@ def test_build_failure_stops_the_build_gate(tmp_path: Path, monkeypatch: Any) ->
     result = steps.build_project(tmp_path, code_profile={"language": "C++"})
     assert commands == [["cmake", "--preset", "debug"]]
     assert result.ok is False and result.output == "compiler error"
+
+
+def test_compile_failure_stops_after_configuration(tmp_path: Path, monkeypatch: Any) -> None:
+    commands: list[list[str]] = []
+
+    def run(command: list[str], **_kwargs: Any) -> ProcessResult:
+        commands.append(command)
+        return _result(command, int(command[:2] == ["cmake", "--build"]),
+                       "compiler error" if "--build" in command else "configured\n")
+
+    monkeypatch.setattr(steps, "run_bounded", run)
+    monkeypatch.setattr(steps, "build_environment", lambda _root: None)
+
+    result = steps.build_project(tmp_path, code_profile={"language": "C++"})
+
+    assert commands == [["cmake", "--preset", "debug"], ["cmake", "--build", "--preset", "debug"]]
+    assert result == steps.BuildResult(False, "configured\ncompiler error")
+
+
+def test_missing_test_command_is_a_distinct_not_run_gate(tmp_path: Path) -> None:
+    assert steps.test_project(tmp_path, ()) == steps.TestResult(
+        None, "No project test command is configured.")
 
 
 def test_test_failure_is_distinct_from_a_successful_build(tmp_path: Path, monkeypatch: Any) -> None:

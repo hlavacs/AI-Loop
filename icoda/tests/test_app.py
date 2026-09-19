@@ -37,7 +37,8 @@ def test_show_updates_status_config_and_canvas(app_module, tmp_path: Path) -> No
     assert app.class_view.layout is not None and set(app.class_view.layout.nodes) == {"u:A"}
     assert app.mind_map_view.layout is not None
     assert {item.node.id for item in app.mind_map_view.layout.nodes} == {"cluster:src"}
-    assert app.coverage_view.summary_var.get() == "Test coverage: 0/2 callables covered · 2 uncovered"
+    assert app.coverage_view.summary_var.get() == \
+        "Recorded test reachability: 0/2 analysed callables reached · 2 not reached"
     assert app.issue_view.issues and "issues" in app.issue_view.summary_var.get()
     assert app.panel.phase_var.get() == "implementation"
     assert app.panel.queue_var.get() == "Implementation queue: empty — no unimplemented functions"

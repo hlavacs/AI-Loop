@@ -74,7 +74,7 @@ class IssueSelection(Sequence[Issue]):
 
 @dataclass(frozen=True)
 class GroupTestCoverage:
-    """Per-entity recorded evidence required by one deliberate function group."""
+    """Per-entity recorded-test reachability required by one deliberate function group."""
 
     covered: tuple[str, ...] = ()
     missing: tuple[str, ...] = ()
@@ -99,6 +99,27 @@ def check(model: DerivedModel, state_or_log: History) -> tuple[Issue, ...]:
     issues.extend(_platform_issues(model))
     issues.extend(_test_issues(model, state_or_log))
     return tuple(sorted(issues, key=_issue_key))
+
+
+def promotion_refusal(
+    model: DerivedModel,
+    state_or_log: History,
+    changed_usrs: Iterable[str],
+) -> str:
+    """Return the first required-rule violation introduced or changed by a proposal.
+
+    The hard function limit is deterministic and applies only to callables the
+    proposal touches. Other issues remain advisory.
+    """
+    changed = set(changed_usrs)
+    if not changed:
+        return ""
+    for issue in check(model, state_or_log):
+        if issue.usr not in changed:
+            continue
+        if issue.rule_id == "function-lines" and issue.severity == "error":
+            return issue.message
+    return ""
 
 
 def for_step(model: DerivedModel, state_or_log: History, request: StepRequest) -> IssueSelection:
@@ -131,7 +152,7 @@ def group_test_coverage(
     selected_tests: Sequence[str] = (),
     files: Sequence[str] = (),
 ) -> GroupTestCoverage:
-    """Require prospective successful step evidence for every deliberate group member.
+    """Require prospective recorded-test reachability for every deliberate group member.
 
     Candidate matching and call reachability stay owned by ``coverage_index`` and
     ``test_selection``. The synthetic record is not persisted; it models exactly the
@@ -152,7 +173,8 @@ def group_test_coverage(
         return GroupTestCoverage(covered)
     names = tuple(sorted(
         model.entities[target].qualified_name if target in model.entities else target for target in missing))
-    reason = "group test coverage requires recorded evidence for every entity; missing: " + ", ".join(names)
+    reason = ("group approval requires a recorded successful test identifier that structurally reaches every "
+              "entity; missing: " + ", ".join(names))
     return GroupTestCoverage(covered, missing, reason)
 
 
@@ -218,7 +240,8 @@ def _test_issues(model: DerivedModel, history: History) -> list[Issue]:
     covered = set(coverage_index.build_index(model, records).covered)
     test_identifiers = set(test_selection.model_test_identifiers(model))
     return [_issue("missing-test", "warning", entity,
-                   f"{entity.qualified_name} has no successful test evidence; add or run its focused test.")
+                   f"{entity.qualified_name} has no recorded successful test identifier that structurally "
+                   "reaches it; add or run its focused test.")
             for entity in model.entities.values()
             if entity.kind in CALLABLE_KINDS and entity.status != "stub" and entity.usr not in covered
             and entity.file not in test_identifiers and entity.qualified_name not in test_identifiers]

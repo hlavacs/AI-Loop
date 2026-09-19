@@ -71,16 +71,32 @@ icoda.cmd
 icoda.cmd C:\path\to\project
 ```
 
-The launcher selects a suitable Python interpreter, checks the main prerequisites, creates `.icoda-venv`, installs
-ICODA in editable mode, and starts `icoda.py`. Warnings about optional C++ tools do not prevent Python-only work.
-
-For contributor tools, install the development dependencies once:
+Bootstrap the environment explicitly from the repository's `icoda` directory. `constraints.txt` pins every runtime
+and development dependency used by this checkout; the three launchers (`icoda.bash`, `icoda_python.bash`, and
+`icoda.cmd`) only select/check Python, Tkinter, tools, and the already prepared environment. They never install or
+upgrade packages:
 
 ```bash
-.icoda-venv/bin/python -m pip install -e '.[dev]'
+python3 -m venv .icoda-venv
+.icoda-venv/bin/python -m pip install -e '.[dev]' -c constraints.txt
+./icoda.bash
 ```
 
-Use `.icoda-venv\Scripts\python.exe` instead on Windows.
+On Windows, use `py -3.12 -m venv .icoda-venv`, then
+`.icoda-venv\Scripts\python.exe -m pip install -e ".[dev]" -c constraints.txt`, then `icoda.cmd`. Repeat the pinned
+install after `pyproject.toml` or `constraints.txt` changes.
+
+The distributable wheel path is also exercised offline by the test suite. From an environment that already has the
+pinned build tools and runtime dependencies, build and install it with:
+
+```bash
+.icoda-venv/bin/python -m pip wheel --no-deps --no-build-isolation -w dist .
+.icoda-venv/bin/python -m pip install --no-deps dist/icoda-0.1.0-py3-none-any.whl
+.icoda-venv/bin/icoda
+```
+
+The wheel contains `icoda.py`, both packages, the provider registry, and both JSON schemas. `--no-build-isolation`
+and `--no-deps` make this path fully offline; prepare dependencies with the pinned bootstrap before disconnecting.
 
 ### Authenticate a provider
 
@@ -258,7 +274,7 @@ The Code Profile constrains generated code and supplies build/test conventions. 
 - test-file and source-file conventions;
 - module, class, and function naming;
 - library policy;
-- function-size limits (the soft limit that asks for a split, and the hard limit that refuses);
+- function-size budgets used in prompts and few-line grouping;
 - class-size limits (methods and data members);
 - project-specific style rules.
 
@@ -266,9 +282,11 @@ The Code Profile constrains generated code and supplies build/test conventions. 
 
 *The Code Profile turns project conventions into explicit generation and verification constraints.*
 
-Every limit the rule checks use is editable on this page. Only the generated build settings (`build`) are kept in
-the JSON without an editor field; they can be changed in `.icoda/specification.json` while ICODA is closed, then
-checked by reopening the editor and pressing **Validate**.
+The Code Profile's `max_function_lines` and `hard_max_function_lines` values bound few-line grouping and inform the
+provider. The promotion rule itself is deliberately fixed: `FUNCTION_LINE_GUIDELINE` is 30 and
+`FUNCTION_LINE_HARD_MAX` is 50. Other editable profile budgets cover methods and data members. Only the generated
+build settings (`build`) are kept in the JSON without an editor field; change those with ICODA closed, then check
+them by reopening the editor and pressing **Validate**.
 
 ### A quality checklist
 
@@ -318,8 +336,8 @@ after code has been tagged.
 
 **File** creates, opens, reloads, and remembers projects. **Project** opens the specification, builds the project,
 sets the test command, opens the libclang chooser, starts proposals, approves the architecture, undoes the last
-approved step, or commits manual edits. **View** opens the analysis surfaces, fits diagrams, and toggles coverage
-colours. **Help** opens Getting started, the Tutorial, this handbook and Troubleshooting, opens the current log
+approved step, or commits manual edits. **View** opens the analysis surfaces, fits diagrams, and toggles
+recorded test reachability colours. **Help** opens Getting started, the Tutorial, this handbook and Troubleshooting, opens the current log
 file, and shows the version and file locations.
 
 Keyboard shortcuts (Command on macOS, Control elsewhere): N new project, O open project, R reload, E specification,
@@ -368,7 +386,8 @@ edge:calls
 ```
 
 Terms can be combined. Quoted values are accepted. An invalid or unfinished quote is handled as plain text rather
-than crashing the filter.
+than crashing the filter. `covered:true` matches the structural recorded test reachability index; it is not a test
+assurance or runtime execution filter.
 
 ![Call graph filtered to stub entities](docs/images/handbook/diagram-filtered.png)
 
@@ -429,19 +448,19 @@ clicking a node with history also loads that step into the review panel.
 
 **Coverage** has two independent sections:
 
-- specification coverage from exact `@satisfies` tags;
-- callable test coverage from successful recorded test runs and call reachability.
+- specification traceability from exact `@satisfies` tags;
+- recorded test reachability for analysed callables from successful step records and static call edges.
 
-Double-click a callable row to open its source location. Specification coverage and test coverage are intentionally
-different facts.
+Double-click a callable row to open its source location. The second section is a structural provenance index: it
+does not inspect assertions, execute tests, verify behavior, or measure statement/branch coverage.
 
 ![Coverage view with covered and uncovered specification items](docs/images/handbook/requirements-coverage.png)
 
-*Requirement traceability and executed test evidence are reported as separate coverage dimensions.*
+*Requirement traceability and structural recorded test reachability are reported as separate dimensions.*
 
 **Issues** lists advisory code-rule findings such as missing documentation, missing `@satisfies`, large functions,
-large classes, too many parameters, direct platform API use, and missing successful test evidence. Double-click a
-row to open the source.
+large classes, too many parameters, direct platform API use, and callables with no structurally reaching recorded
+test identifier. Double-click a row to open the source.
 
 ![Issues view with errors and warnings linked to source locations](docs/images/handbook/rule-issues.png)
 
@@ -449,16 +468,16 @@ row to open the source.
 
 ### Status and colours
 
-In normal status mode, callable nodes are gray for `stub`, blue for `implemented`, and green for `tested`. Coverage
-colour mode uses green for covered and red for uncovered. A red warning marker means the whole derived model or an
-entity's recorded test evidence is stale.
+In normal status mode, callable nodes are gray for `stub`, blue for `implemented`, and green for `tested`. The
+recorded test reachability colour mode uses green for reached and red for not reached. A red warning marker means
+the whole derived model or an entity's recorded evidence is stale.
 
-Issue findings are currently advisory except where a specific workflow gate, such as grouped test coverage,
-explicitly enforces them.
+Issue findings are currently advisory except where a specific workflow gate, such as the grouped-step requirement
+for a structurally reaching recorded test identifier, explicitly enforces them.
 
-![Call graph in coverage colour mode](docs/images/handbook/diagram-coverage-colours.png)
+![Call graph in recorded test reachability colour mode](docs/images/handbook/diagram-coverage-colours.png)
 
-*Coverage colour mode makes recorded test reachability visible directly on a graph.*
+*The colour mode makes structural recorded test reachability visible directly on a graph.*
 
 ## 6. LLM selection
 
@@ -486,6 +505,17 @@ Provider calls are bounded to 30 minutes. ICODA retries rate-limit responses up 
 provider-supplied delay when it can parse one. A malformed proposal is also re-requested up to three times with
 validation or build feedback.
 
+Provider subprocesses receive the prompt on standard input and cannot edit the checkout: Claude Code is invoked
+with `--disallowedTools Edit,Write,MultiEdit,NotebookEdit,Bash`, and Codex CLI with `--sandbox read-only`. All
+commands use argument arrays with `shell=False`; bounded subprocess handling limits time and retained output and
+kills the process group on timeout or cancellation. ICODA itself applies only the validated structured reply in
+the isolated Git worktree.
+
+Both response parsers enforce `MAX_RESPONSE_BYTES` (200,000 bytes) before searching for or parsing JSON. Validation
+refuses lone Unicode surrogates as invalid UTF-8, refuses NUL bytes in candidate paths (a literal NUL also makes JSON
+invalid), and rejects absolute, parent-traversing, metadata, and build-output paths. `response.apply_changes`
+resolves every destination against the worktree root and refuses a symlink escape before writing or deleting.
+
 ## 7. Architecture workflow
 
 The architecture phase grows the structural skeleton in small increments. Functions introduced here should remain
@@ -506,6 +536,9 @@ proposal worktree, builds it, runs tests, reparses it, and computes the architec
 
 An architecture proposal is rejected automatically if it exceeds the entity budget, changes implementation bodies
 where only stubs are expected, fails to build, fails to test, cannot be parsed, or violates the response contract.
+The hard 50-line function limit is a gate, not advice: `_quality_refusal` rejects a proposal that adds or changes a
+function above `FUNCTION_LINE_HARD_MAX`, and `approve` repeats the same check so a post-review change cannot bypass
+it. Functions from 31 through 50 lines receive only the 30-line guideline warning.
 
 ![Architecture proposal with a bounded three-entity delta and passing gates](docs/images/handbook/sim-04-architecture-approve.png)
 
@@ -672,6 +705,11 @@ cmake --build --preset debug
 ctest --preset debug
 ```
 
+The identifier is `steps.CMAKE_PRESET`, currently `"debug"`. Both `gate_commands` and the direct fallback in
+`_build_commands` configure with `cmake --preset debug` and build with `cmake --build --preset debug`; when a
+generated `build.sh` or `build.cmd` is used by `_build_commands`, it receives `debug build-only`. The configured
+test command remains a separate gate.
+
 For generated projects, `build.sh debug build-only` or `build.cmd debug build-only` provides the separate build-only
 contract, while running those scripts without `build-only` also invokes CTest for manual use.
 
@@ -679,8 +717,8 @@ For Python projects, the build gate byte-compiles `src/`, and the test gate uses
 Targeted test identifiers are appended when ICODA can associate tests with the selected functions.
 
 Test selection uses explicit model associations and successful step-log provenance. The Tests tab says whether a
-focused subset or the full suite ran. Test output is retained with the step; callable coverage is credited only when
-a successful recorded test identifier can reach that callable through the call graph.
+focused subset or the full suite ran. Test output is retained with the step; the structural index marks a callable
+reached only when a successful recorded test identifier can reach it through analysed call edges.
 
 ![Failed proposal gate showing the targeted tests that were selected](docs/images/handbook/proposal-targeted-tests.png)
 
@@ -692,6 +730,163 @@ characters so a failing process cannot flood the GUI or step log.
 The C++ test command defaults to `ctest --preset debug` in `.icoda/state.json`. There is currently no GUI editor for
 that field. Change `test_command` only with ICODA closed, preserve it as a JSON array of command arguments, and
 reopen the project.
+
+## Worked examples
+
+These examples begin in the repository's `icoda` directory with an authenticated `codex` or `claude` command.
+Provider prose and titles vary, but the commands, GUI labels, gates, and quoted status text below are deterministic.
+
+### Worked example A: new Python project from first launch to approval
+
+This run creates a disposable formatter project, takes it through analysis and architecture, and approves one
+implementation step.
+
+1. Prepare the pinned installation and an empty project directory:
+
+   ```bash
+   cd /absolute/path/to/repository/icoda
+   python3 -m venv .icoda-venv
+   .icoda-venv/bin/python -m pip install -e '.[dev]' -c constraints.txt
+   project_dir="$(mktemp -d /tmp/icoda-formatter.XXXXXX)"
+   printf '%s\n' "$project_dir"
+   ./icoda.bash
+   ```
+
+   The terminal prints the directory to select, then the main window opens. Before a project is selected the status
+   line is `No project open`, and the hint starts `Open a project (File ▸ Open Project…)`.
+
+2. In **LLM**, set **Binary** to the authenticated `codex` or `claude` command and choose a **Model**. Choose
+   **File ▸ New Project…**, select the printed empty directory, and observe the status
+   `New project <directory-name>: write the specification and save it` and the Specification window.
+
+3. Enter these exact values, using **Add** after the use case, each requirement, and the decision:
+
+   - **Overview** — Title: `Formatter`; Description: `Normalize one line of text.`
+   - **Scope** — Goals: `trim leading and trailing whitespace`; Not in scope: `file input`; Not allowed:
+     `third-party packages`; Done when: `normalize has a passing unit test`.
+   - **Use cases** — Title: `Normalize a line`; Details: `Return a line without surrounding whitespace.` The list
+     assigns `UC-1`.
+   - **Requirements** — `normalize removes surrounding whitespace`, priority `must`, use case `UC-1`; and
+     `normalize has a unit test`, priority `must`, use case `UC-1`. The list assigns `R-1` and `R-2`.
+   - **Decisions** — Title: `Standard library only`; Rationale: `No dependency is needed.`
+   - **Code profile** — choose Language `Python`; keep Test runner `python -m pytest`, Max function lines `30`, and
+     Hard max function lines `50`.
+
+4. Press **Validate**. The message beside the buttons is exactly `valid`. Press **Save**. The message becomes
+   `saved`, and the confirmation begins `Specification saved and the project skeleton written (5 files).` Press
+   **Yes** at `Build it now?`. The status temporarily reads `build passed — analysing the project …`; after analysis,
+   the **File View** contains `src/formatter.py` and `tests/test_formatter.py`, and the phase label is `architecture`.
+
+5. In **Request**, type `Add a stub normalize(value: str) -> str method to Formatter and its test shape; do not
+   implement the method.` Press **Propose**. The hint successively reports `Working: asking the agent for the next
+   step.`, `step 1: building the proposal`, `step 1: testing the proposal`, and `step 1: parsing the proposal`.
+   Review **Delta**, **Diff**, **Build**, and **Tests**. A usable result shows `Build: passed` and `Tests: passed`;
+   its `normalize` body is a stub. If the title says `no usable proposal`, use the named error in **Adapt…** and
+   repeat until those two gate labels pass.
+
+6. Press **Approve**. ICODA promotes the isolated worktree, rebuilds and retests the real project, records the step,
+   creates an `icoda(architecture) step 1: ...` commit, and refreshes the diagrams. Press **Approve architecture**,
+   then **Yes** at `Approve the architecture and begin implementation?`. The phase label becomes `implementation`,
+   and the queue line starts `Current target:` and ends `— 1 remaining` for the new stub.
+
+7. Press **Propose approach**. In **Approach**, require `return value.strip()` and a pytest test for padded and clean
+   strings; use **Adapt…** if needed. A usable plan starts `Awaiting developer approval`. Press **Approve approach**;
+   it changes to `Approved`, and the hint ends `Press Propose to get the code and its tests.`
+
+8. Press **Propose**. Inspect the implementation and test, then require `Build: passed` and `Tests: passed`. Press
+   **Approve**. The approved code is in the project and Git history; after the last stub is completed the queue reads
+   `Implementation queue: empty — no unimplemented functions`. The **Coverage** view reports recorded test
+   reachability: it projects successful recorded test identifiers through analysed calls and is not runtime or
+   branch coverage.
+
+### Worked example B: split a Python function refused by the 50-line gate
+
+This example deliberately requests an oversized implementation so the proposal-time gate is visible, then accepts
+the split version. Use another empty directory and start ICODA:
+
+```bash
+cd /absolute/path/to/repository/icoda
+project_dir="$(mktemp -d /tmp/icoda-line-gate.XXXXXX)"
+printf '%s\n' "$project_dir"
+./icoda.bash
+```
+
+1. Choose **File ▸ New Project…** and the printed directory. Create a Python specification titled `Line Gate` with
+   goal `classify input lines`, one use case `Classify a line`, requirement `classify returns a category for every
+   input`, and done condition `classification tests pass`. Keep Hard max function lines `50`; press **Validate**,
+   **Save**, and **Yes**. Observe `valid`, then `saved`, then `build passed — analysing the project …` and phase
+   `architecture`.
+
+2. Request `Add a stub classify(value: str) -> str method to LineGate.` Press **Propose**, require `Build: passed`
+   and `Tests: passed`, then **Approve**. Press **Approve architecture** and confirm. The phase becomes
+   `implementation`, with `LineGate.classify` in `Current target:`.
+
+3. Press **Propose approach** and request one deliberately long implementation: `For this gate exercise, make
+   classify exactly 51 source lines including its def line, with repeated explicit branches, plus a passing test.`
+   Press **Approve approach**, then **Propose**. ICODA may retry the provider up to three times, feeding the same
+   deterministic rule error back. The rejected proposal title ends with the exact refusal form:
+
+   > `LineGate.classify is 51 lines; split it below the hard maximum of 50.`
+
+   **Approve** stays grey. This is proposal-time enforcement by `_quality_refusal`, not an Issues warning. If the
+   provider pre-emptively splits the function, use **Adapt…** to reiterate the 51-line exercise; do not approve it.
+
+4. Press **Adapt…** and enter `Split classify into small private helpers; keep classify and every helper at or below
+   50 source lines, preserve the approved behavior, and test the public method.` Press **Propose** if the adapted
+   response is not started automatically. The accepted candidate shows no `hard maximum of 50` error and shows
+   `Build: passed` and `Tests: passed`.
+
+5. Review the helper signatures and **Diff**, press **Confirm signatures** if that button appears, then press
+   **Approve**. Approval invokes `_quality_refusal` again against the candidate model before promotion; passing that
+   second check, rebuild, and tests creates the implementation commit. The hard 50-line function limit therefore
+   blocks both proposal time and approval time, while the split version completes the same queue target.
+
+### Worked example C: CMake/C++ with `CMAKE_PRESET`
+
+This run uses the generated C++20-module skeleton and the exact `steps.CMAKE_PRESET` build path.
+
+```bash
+cd /absolute/path/to/repository/icoda
+project_dir="$(mktemp -d /tmp/icoda-cmake-preset.XXXXXX)"
+printf '%s\n' "$project_dir"
+./icoda.bash
+```
+
+1. Choose **File ▸ New Project…** and the printed directory. Enter title `Preset Counter`, goal `increment a
+   counter`, one use case `Increment once`, requirement `increment returns the next value`, and done condition
+   `CTest passes`. Keep Code profile Language `C++`, C++20 modules enabled, and Test runner
+   `ctest --preset debug`. Press **Validate**, **Save**, and **Yes**. The confirmation says the skeleton wrote
+   `11 files`.
+
+2. **Project ▸ Build** calls the C++ gate selected by `CMAKE_PRESET = "debug"`:
+
+   ```text
+   cmake --preset debug
+   cmake --build --preset debug
+   ```
+
+   Success briefly shows `build passed — analysing the project …`. The generated preset writes
+   `build/debug/compile_commands.json`; after analysis, **File View** contains `src/main.cpp` and
+   `src/app/app.cppm`. Failure instead shows `build failed — the output is in the step panel`; use the exact remedy
+   in [Troubleshooting](docs/TROUBLESHOOTING.md), then choose **Project ▸ Build** again.
+
+3. Request `Add a stub app::increment(int value) function and a CTest smoke assertion; do not implement the
+   function.` Press **Propose**. The proposal repeats the configure and build commands above and then runs the
+   separately configured `ctest --preset debug` test gate. Require `Build: passed` and `Tests: passed`, inspect the
+   module diff, and press **Approve**. The project rebuild repeats those gates before the architecture commit.
+
+4. To observe the same generated project independently, close no windows and type in another terminal:
+
+   ```bash
+   cd "$project_dir"
+   cmake --preset debug
+   cmake --build --preset debug
+   ctest --preset debug
+   ```
+
+   CMake ends the configure with `Build files have been written to: .../build/debug`, the build exits successfully,
+   and CTest ends with `100% tests passed, 0 tests failed out of 1`. Those are the configure, build, and test stages
+   ICODA gates separately; the preset name is not inferred from the directory.
 
 ## 10. Git, persistence, and recovery
 
@@ -735,6 +930,12 @@ the current `HEAD`.
 Invalid JSON in `.icoda/state.json` is refused rather than silently replaced with defaults. The error is shown in
 the application and logged, and an existing proposal worktree is preserved. Repair or restore the state file from
 version control before continuing.
+
+State saves use `persistence._atomic_write_text`: a flushed and synced temporary file beside `state.json` is
+atomically replaced into place, followed by a best-effort directory sync. If replacement fails, the original
+`state.json` stays intact. The accepted limitation is narrow: if cleanup is also denied, the replacement error is
+still reported and one orphaned `.state.json.*.tmp` file can remain beside that intact original; remove the orphan
+after correcting permissions.
 
 ### User configuration
 
@@ -833,12 +1034,12 @@ captured screenshots.
 | Analysis and model | `icoda_core/analysis.py`, `python_analysis.py`, `model.py`, `session.py` |
 | Views and graph behavior | `views.py`, `class_view.py`, `mind_map.py`, `graph_filter.py`, `expansion.py` |
 | Workflow and gates | `steps.py`, `phases.py`, `implementation_queue.py`, `grouping.py`, `auto_approve.py` |
-| History and coverage | `steplog.py`, `coverage_index.py`, `requirement_coverage.py`, `rules.py` |
+| History and reachability | `steplog.py`, `coverage_index.py`, `requirement_coverage.py`, `rules.py` |
 | Provider integration | `agent.py`, `providers.json`, `provider_check.py` |
 | Persistence and Git | `persistence.py`, `git.py` |
 
 Keep non-GUI decisions in `icoda_core` whenever possible. Tk widgets should render core results and dispatch explicit
-actions rather than reimplementing queue, coverage, rule, or phase logic.
+actions rather than reimplementing queue, reachability, rule, or phase logic.
 
 ### Required verification after every change
 
@@ -854,17 +1055,21 @@ On Windows:
 verify.cmd
 ```
 
-The verifier runs all checks even after one fails and retains evidence for each:
+The verifier runs all checks even after one fails and retains evidence for each, in this exact order:
 
 1. `git diff --check`
-2. Ruff
-3. mypy
+2. Ruff (`python -m ruff check .`)
+3. mypy over the application, core, GUI, verifier, GUI acceptance, and real-provider acceptance
 4. Python byte compilation
 5. local provider qualification
-6. C++ sample configure, build, and CTest
-7. pytest with branch coverage, JUnit XML, and an 85% minimum
-8. fresh sample-project analysis
-9. real-Tk GUI acceptance with validated screenshots
+6. real-provider acceptance (`tests/real_provider_acceptance.py`)
+7. C++ sample configure, build, and CTest
+8. pytest with branch coverage, JUnit XML, and `--cov-fail-under=85`
+9. fresh sample-project analysis
+10. real-Tk GUI acceptance with validated screenshots
+
+The real-provider stage is fail-closed when no authenticated Codex CLI session is available. A deliberate
+`./verify.bash --allow-missing-real-provider` run records that stage as `SKIP`; it does not silently omit it.
 
 Each run creates `.icoda-test-artifacts/<timestamp>/` with command logs, `summary.json`, `summary.txt`,
 `environment.json`, provider qualification, JUnit, XML/HTML coverage, the sample ICODA log, GUI state, and PNG
@@ -874,9 +1079,9 @@ Do not treat a screenshot's existence as visual verification. The acceptance scr
 variation, visible controls, and graph content; maintainers should also inspect captures affected by a GUI change
 for clipping, overlap, unreadable labels, incorrect state, and stale output.
 
-![Completed lifecycle with all callables covered by recorded tests](docs/images/handbook/sim-10-terminal-overview.png)
+![Completed lifecycle with all analysed callables reached by recorded test identifiers](docs/images/handbook/sim-10-terminal-overview.png)
 
-*The deterministic lifecycle ends only after the queue is empty and recorded evidence covers every callable.*
+*The deterministic lifecycle ends only after the queue is empty and recorded test identifiers reach every callable.*
 
 ### Focused acceptance scripts
 
@@ -897,7 +1102,7 @@ project directory must be absent or empty:
   --output .icoda-test-artifacts/simulation-manual
 ```
 
-Run the retained large-project benchmark when changing analysis, layout, expansion, or coverage algorithms:
+Run the retained large-project benchmark when changing analysis, layout, expansion, or reachability algorithms:
 
 ```bash
 .icoda-venv/bin/python tests/performance_acceptance.py \
@@ -909,9 +1114,9 @@ when it is available.
 
 ### Real-provider acceptance
 
-Real-provider acceptance consumes model usage and is intentionally excluded from `verify.bash`. Run it only when a
-provider, prompt, response, or end-to-end generation contract needs qualification, and always use a new output
-directory:
+Real-provider acceptance consumes model usage and is the sixth `verify.bash` stage. Run it directly only when a
+provider, prompt, response, or end-to-end generation contract needs focused qualification, and always use a new
+output directory:
 
 ```bash
 .icoda-venv/bin/python tests/real_provider_acceptance.py \
@@ -939,8 +1144,8 @@ The current implementation has the following important boundaries:
 
 - The specification editor validates a supplied formal specification but does not yet guide the developer through
   an AI-assisted discovery and choice process.
-- Specification coverage is shown in the Coverage table; the all-diagram coverage colour mode represents recorded
-  test provenance, not specification-tag coverage.
+- Specification traceability is shown in the Coverage table; the all-diagram colour mode represents structural
+  recorded test reachability, not specification-tag traceability or verified behavior.
 - Most Code Profile and rule-check findings are advisory rather than approval-blocking.
 - C++ proposal gates assume the `debug` CMake build and test presets.
 - Only Claude Code and Codex CLI are enabled in the shipped provider registry. Other provider templates are present
@@ -961,7 +1166,7 @@ The **Project > Build** menu entry runs the same build gate as a proposal (`cmak
 ./icoda.bash [project-directory]
 
 # Install contributor dependencies
-.icoda-venv/bin/python -m pip install -e '.[dev]'
+.icoda-venv/bin/python -m pip install -e '.[dev]' -c constraints.txt
 
 # Run the complete verification gate
 ./verify.bash
@@ -992,7 +1197,7 @@ associations.
 **Entity**: a parsed namespace, type, function, method, field, variable, alias, or related source construct.
 
 **Gate**: a condition that must pass before approval, especially build, tests, delta validation, phase consistency,
-signature confirmation, and grouped test coverage.
+signature confirmation, and grouped-step recorded test reachability.
 
 **Implementation queue**: the persisted bottom-up order of remaining stub or undefined callables.
 

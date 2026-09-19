@@ -4,176 +4,224 @@
     1920,
     1080
   ],
-  "pad_seconds": 0.5,
-  "total_seconds": 716.470201,
+  "pad_seconds": 0,
+  "total_seconds": 714.083266,
   "slides": [
     {
       "slide": 1,
-      "start_seconds": 0.0,
-      "audio_duration_seconds": 29.831837,
-      "pad_seconds": 0.5,
-      "slide_duration_seconds": 30.331837
+      "image_file": "slides/slide-01.png",
+      "audio_file": "audio-v2/slide-01.mp3",
+      "start_seconds": 0,
+      "audio_duration_seconds": 36.675918,
+      "pad_seconds": 0,
+      "slide_duration_seconds": 36.675918
     },
     {
       "slide": 2,
-      "start_seconds": 30.331837,
-      "audio_duration_seconds": 24.032653,
-      "pad_seconds": 0.5,
-      "slide_duration_seconds": 24.532653
+      "image_file": "slides/slide-02.png",
+      "audio_file": "audio-v2/slide-02.mp3",
+      "start_seconds": 36.675918,
+      "audio_duration_seconds": 25.208163,
+      "pad_seconds": 0,
+      "slide_duration_seconds": 25.208163
     },
     {
       "slide": 3,
-      "start_seconds": 54.86449,
-      "audio_duration_seconds": 31.320816,
-      "pad_seconds": 0.5,
-      "slide_duration_seconds": 31.820816
+      "image_file": "slides/slide-03.png",
+      "audio_file": "audio-v2/slide-03.mp3",
+      "start_seconds": 61.884081,
+      "audio_duration_seconds": 30.458776,
+      "pad_seconds": 0,
+      "slide_duration_seconds": 30.458776
     },
     {
       "slide": 4,
-      "start_seconds": 86.685306,
-      "audio_duration_seconds": 27.193469,
-      "pad_seconds": 0.5,
-      "slide_duration_seconds": 27.693469
+      "image_file": "slides/slide-04.png",
+      "audio_file": "audio-v2/slide-04.mp3",
+      "start_seconds": 92.342857,
+      "audio_duration_seconds": 29.492245,
+      "pad_seconds": 0,
+      "slide_duration_seconds": 29.492245
     },
     {
       "slide": 5,
-      "start_seconds": 114.37877499999999,
-      "audio_duration_seconds": 29.074286,
-      "pad_seconds": 0.5,
-      "slide_duration_seconds": 29.574286
+      "image_file": "slides/slide-05.png",
+      "audio_file": "audio-v2/slide-05.mp3",
+      "start_seconds": 121.835102,
+      "audio_duration_seconds": 31.947755,
+      "pad_seconds": 0,
+      "slide_duration_seconds": 31.947755
     },
     {
       "slide": 6,
-      "start_seconds": 143.953061,
-      "audio_duration_seconds": 30.981224,
-      "pad_seconds": 0.5,
-      "slide_duration_seconds": 31.481224
+      "image_file": "slides/slide-06.png",
+      "audio_file": "audio-v2/slide-06.mp3",
+      "start_seconds": 153.782857,
+      "audio_duration_seconds": 36.362449,
+      "pad_seconds": 0,
+      "slide_duration_seconds": 36.362449
     },
     {
       "slide": 7,
-      "start_seconds": 175.434285,
-      "audio_duration_seconds": 28.499592,
-      "pad_seconds": 0.5,
-      "slide_duration_seconds": 28.999592
+      "image_file": "slides/slide-07.png",
+      "audio_file": "audio-v2/slide-07.mp3",
+      "start_seconds": 190.145306,
+      "audio_duration_seconds": 29.204898,
+      "pad_seconds": 0,
+      "slide_duration_seconds": 29.204898
     },
     {
       "slide": 8,
-      "start_seconds": 204.433877,
-      "audio_duration_seconds": 28.421224,
-      "pad_seconds": 0.5,
-      "slide_duration_seconds": 28.921224
+      "image_file": "slides/slide-08.png",
+      "audio_file": "audio-v2/slide-08.mp3",
+      "start_seconds": 219.350204,
+      "audio_duration_seconds": 29.570612,
+      "pad_seconds": 0,
+      "slide_duration_seconds": 29.570612
     },
     {
       "slide": 9,
-      "start_seconds": 233.355101,
-      "audio_duration_seconds": 28.290612,
-      "pad_seconds": 0.5,
-      "slide_duration_seconds": 28.790612
+      "image_file": "slides/slide-09.png",
+      "audio_file": "audio-v2/slide-09.mp3",
+      "start_seconds": 248.920816,
+      "audio_duration_seconds": 28.734694,
+      "pad_seconds": 0,
+      "slide_duration_seconds": 28.734694
     },
     {
       "slide": 10,
-      "start_seconds": 262.145713,
-      "audio_duration_seconds": 25.652245,
-      "pad_seconds": 0.5,
-      "slide_duration_seconds": 26.152245
+      "image_file": "slides/slide-10.png",
+      "audio_file": "audio-v2/slide-10.mp3",
+      "start_seconds": 277.65551,
+      "audio_duration_seconds": 26.226939,
+      "pad_seconds": 0,
+      "slide_duration_seconds": 26.226939
     },
     {
       "slide": 11,
-      "start_seconds": 288.297958,
-      "audio_duration_seconds": 30.171429,
-      "pad_seconds": 0.5,
-      "slide_duration_seconds": 30.671429
+      "image_file": "slides/slide-11.png",
+      "audio_file": "audio-v2/slide-11.mp3",
+      "start_seconds": 303.882449,
+      "audio_duration_seconds": 31.425306,
+      "pad_seconds": 0,
+      "slide_duration_seconds": 31.425306
     },
     {
       "slide": 12,
-      "start_seconds": 318.969387,
-      "audio_duration_seconds": 25.730612,
-      "pad_seconds": 0.5,
-      "slide_duration_seconds": 26.230612
+      "image_file": "slides/slide-12.png",
+      "audio_file": "audio-v2/slide-12.mp3",
+      "start_seconds": 335.307755,
+      "audio_duration_seconds": 27.768163,
+      "pad_seconds": 0,
+      "slide_duration_seconds": 27.768163
     },
     {
       "slide": 13,
-      "start_seconds": 345.199999,
-      "audio_duration_seconds": 23.457959,
-      "pad_seconds": 0.5,
-      "slide_duration_seconds": 23.957959
+      "image_file": "slides/slide-13.png",
+      "audio_file": "audio-v2/slide-13.mp3",
+      "start_seconds": 363.075918,
+      "audio_duration_seconds": 27.846531,
+      "pad_seconds": 0,
+      "slide_duration_seconds": 27.846531
     },
     {
       "slide": 14,
-      "start_seconds": 369.157958,
-      "audio_duration_seconds": 27.768163,
-      "pad_seconds": 0.5,
-      "slide_duration_seconds": 28.268163
+      "image_file": "slides/slide-14.png",
+      "audio_file": "audio-v2/slide-14.mp3",
+      "start_seconds": 390.922449,
+      "audio_duration_seconds": 30.51102,
+      "pad_seconds": 0,
+      "slide_duration_seconds": 30.51102
     },
     {
       "slide": 15,
-      "start_seconds": 397.426121,
-      "audio_duration_seconds": 43.075918,
-      "pad_seconds": 0.5,
-      "slide_duration_seconds": 43.575918
+      "image_file": "slides/slide-15.png",
+      "audio_file": "audio-v2/slide-15.mp3",
+      "start_seconds": 421.433469,
+      "audio_duration_seconds": 33.332245,
+      "pad_seconds": 0,
+      "slide_duration_seconds": 33.332245
     },
     {
       "slide": 16,
-      "start_seconds": 441.002039,
-      "audio_duration_seconds": 27.533061,
-      "pad_seconds": 0.5,
-      "slide_duration_seconds": 28.033061
+      "image_file": "slides/slide-16.png",
+      "audio_file": "audio-v2/slide-16.mp3",
+      "start_seconds": 454.765714,
+      "audio_duration_seconds": 26.331429,
+      "pad_seconds": 0,
+      "slide_duration_seconds": 26.331429
     },
     {
       "slide": 17,
-      "start_seconds": 469.0351,
-      "audio_duration_seconds": 33.619592,
-      "pad_seconds": 0.5,
-      "slide_duration_seconds": 34.119592
+      "image_file": "slides/slide-17.png",
+      "audio_file": "audio-v2/slide-17.mp3",
+      "start_seconds": 481.097143,
+      "audio_duration_seconds": 33.671837,
+      "pad_seconds": 0,
+      "slide_duration_seconds": 33.671837
     },
     {
       "slide": 18,
-      "start_seconds": 503.154692,
-      "audio_duration_seconds": 33.750204,
-      "pad_seconds": 0.5,
-      "slide_duration_seconds": 34.250204
+      "image_file": "slides/slide-18.png",
+      "audio_file": "audio-v2/slide-18.mp3",
+      "start_seconds": 514.76898,
+      "audio_duration_seconds": 31.764898,
+      "pad_seconds": 0,
+      "slide_duration_seconds": 31.764898
     },
     {
       "slide": 19,
-      "start_seconds": 537.404896,
-      "audio_duration_seconds": 29.857959,
-      "pad_seconds": 0.5,
-      "slide_duration_seconds": 30.357959
+      "image_file": "slides/slide-19.png",
+      "audio_file": "audio-v2/slide-19.mp3",
+      "start_seconds": 546.533878,
+      "audio_duration_seconds": 25.913469,
+      "pad_seconds": 0,
+      "slide_duration_seconds": 25.913469
     },
     {
       "slide": 20,
-      "start_seconds": 567.7628550000001,
-      "audio_duration_seconds": 33.201633,
-      "pad_seconds": 0.5,
-      "slide_duration_seconds": 33.701633
+      "image_file": "slides/slide-20.png",
+      "audio_file": "audio-v2/slide-20.mp3",
+      "start_seconds": 572.447347,
+      "audio_duration_seconds": 27.062857,
+      "pad_seconds": 0,
+      "slide_duration_seconds": 27.062857
     },
     {
       "slide": 21,
-      "start_seconds": 601.4644880000001,
-      "audio_duration_seconds": 27.768163,
-      "pad_seconds": 0.5,
-      "slide_duration_seconds": 28.268163
+      "image_file": "slides/slide-21.png",
+      "audio_file": "audio-v2/slide-21.mp3",
+      "start_seconds": 599.510204,
+      "audio_duration_seconds": 23.666939,
+      "pad_seconds": 0,
+      "slide_duration_seconds": 23.666939
     },
     {
       "slide": 22,
-      "start_seconds": 629.732651,
-      "audio_duration_seconds": 26.67102,
-      "pad_seconds": 0.5,
-      "slide_duration_seconds": 27.17102
+      "image_file": "slides/slide-22.png",
+      "audio_file": "audio-v2/slide-22.mp3",
+      "start_seconds": 623.177143,
+      "audio_duration_seconds": 25.312653,
+      "pad_seconds": 0,
+      "slide_duration_seconds": 25.312653
     },
     {
       "slide": 23,
-      "start_seconds": 656.903671,
-      "audio_duration_seconds": 30.850612,
-      "pad_seconds": 0.5,
-      "slide_duration_seconds": 31.350612
+      "image_file": "slides/slide-23.png",
+      "audio_file": "audio-v2/slide-23.mp3",
+      "start_seconds": 648.489796,
+      "audio_duration_seconds": 30.119184,
+      "pad_seconds": 0,
+      "slide_duration_seconds": 30.119184
     },
     {
       "slide": 24,
-      "start_seconds": 688.254283,
-      "audio_duration_seconds": 27.715918,
-      "pad_seconds": 0.5,
-      "slide_duration_seconds": 28.215918
+      "image_file": "slides/slide-24.png",
+      "audio_file": "audio-v2/slide-24.mp3",
+      "start_seconds": 678.60898,
+      "audio_duration_seconds": 35.474286,
+      "pad_seconds": 0,
+      "slide_duration_seconds": 35.474286
     }
   ]
 }

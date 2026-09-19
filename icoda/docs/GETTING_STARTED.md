@@ -11,16 +11,43 @@ logged in: **Claude Code** (`claude`) or **Codex CLI** (`codex`). For C++ projec
 newer, Ninja and Clang; on macOS install LLVM with `brew install llvm` because Apple's Clang cannot build C++20
 modules with CMake. For Python projects nothing else is needed.
 
-Start ICODA from the `icoda` directory of the repository:
+ICODA never installs system packages, requests administrator privileges, or contacts package indexes when it
+starts. Install missing system prerequisites yourself; when a launcher finds one, it prints the exact command to
+run and exits when that prerequisite is required. Then prepare the pinned Python environment explicitly from the
+`icoda` directory of the repository:
 
 ```bash
 cd icoda
-./icoda.bash            # macOS, Linux
-icoda.cmd               # Windows
+python3 -m venv .icoda-venv
+.icoda-venv/bin/python -m pip install -e '.[dev]' -c constraints.txt
+./icoda.bash
 ```
 
-The first start creates `.icoda-venv` and installs ICODA's Python packages into it. This takes a minute. On
-Windows, missing prerequisites are reported for you to install.
+On Windows, use Command Prompt:
+
+```bat
+cd icoda
+py -3.12 -m venv .icoda-venv
+.icoda-venv\Scripts\python.exe -m pip install -e ".[dev]" -c constraints.txt
+icoda.cmd
+```
+
+`constraints.txt` records the exact versions used to develop ICODA while `pyproject.toml` defines the supported
+version ranges. Repeat the corresponding `pip install` command after either file changes. The launchers only
+validate Python, Tkinter, system tools, and this prepared environment before starting ICODA; they do not modify
+the machine or environment.
+
+For a non-editable wheel installation, first prepare the pinned dependencies above, then use the offline-tested
+wheel path:
+
+```bash
+.icoda-venv/bin/python -m pip wheel --no-deps --no-build-isolation -w dist .
+.icoda-venv/bin/python -m pip install --no-deps dist/icoda-0.1.0-py3-none-any.whl
+.icoda-venv/bin/icoda
+```
+
+The wheel includes the entry module, packages, provider registry, and schemas. The `--no-build-isolation` and
+`--no-deps` flags prevent this path from contacting a package index; they assume the pinned bootstrap is complete.
 
 If the window does not open, look at **Troubleshooting** (`docs/TROUBLESHOOTING.md`); the log file is named there.
 
@@ -58,6 +85,11 @@ The lower panel shows a moving bar and what ICODA is doing: asking the agent, bu
 worktree, running the tests, parsing the result. This takes one to three minutes. **Cancel** stops it; nothing is
 recorded then.
 
+Provider subprocesses cannot edit the checkout: Codex uses `--sandbox read-only`, and Claude disables its edit,
+write, notebook-edit and Bash tools. ICODA validates the structured reply before applying it in the worktree.
+`MAX_RESPONSE_BYTES` is enforced before JSON parsing; lone Unicode surrogates, NUL bytes in candidate paths, unsafe
+paths, and a `response.apply_changes` symlink escape are refused.
+
 When the proposal is ready, ICODA switches to the **Call View** with the new entities marked. Read:
 
 - the rationale on the left;
@@ -73,6 +105,10 @@ Then decide:
 
 If the proposal did not build or its tests failed, the title says so and the tabs show the output. Reject or adapt
 it, or edit the worktree yourself and choose **More… ▸ Rebuild**.
+
+A function longer than the hard 50-line function limit is also refused at proposal time. ICODA repeats the same
+`_quality_refusal` at approval time, so split the function and propose again; the 30-line value remains an advisory
+guideline for functions no longer than 50 lines.
 
 ## 5. From architecture to implementation
 

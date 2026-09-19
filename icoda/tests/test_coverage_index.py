@@ -1,4 +1,4 @@
-"""Callable coverage index and its Tk-stub overview."""
+"""Callable recorded-test reachability index and its Tk-stub overview."""
 
 from __future__ import annotations
 
@@ -157,18 +157,20 @@ def test_coverage_overview_renders_covered_uncovered_and_empty_history(monkeypat
                         lambda _parent, _where, **kwargs: rendered.append(tuple(kwargs["values"])))
 
     overview.show(coverage_model(), [successful_record()])
-    assert overview.summary_var.get() == "Test coverage: 3/4 callables covered · 1 uncovered"
-    assert any(row[0] == "Covered" and "app::direct" in row[1]
+    assert overview.summary_var.get() == \
+        "Recorded test reachability: 3/4 analysed callables reached · 1 not reached"
+    assert any(row[0] == "Reached" and "app::direct" in row[1]
                and "suite::test_direct" in row[2] and "#7 Implement direct" in row[3]
                for row in rendered)
-    assert any(row[0] == "Uncovered" and "app::unused" in row[1] for row in rendered)
+    assert any(row[0] == "Not reached" and "app::unused" in row[1] for row in rendered)
     monkeypatch.setattr(overview.tree, "selection", lambda: ("u:direct",))
     overview._open_selected(None)
     assert opened == [("src/app.cpp", 10)]
 
     rendered.clear()
     overview.show(coverage_model(), [])
-    assert overview.summary_var.get() == "Test coverage: 0/4 callables covered · 4 uncovered"
-    assert overview.note_var.get().startswith("No recorded test provenance")
+    assert overview.summary_var.get() == \
+        "Recorded test reachability: 0/4 analysed callables reached · 4 not reached"
+    assert overview.note_var.get().startswith("No reaching recorded test identifiers")
     assert len(rendered) == 4 and all(
-        row[0] == "Uncovered" and row[2] == "No recorded tests" for row in rendered)
+        row[0] == "Not reached" and row[2] == "No reaching recorded test" for row in rendered)

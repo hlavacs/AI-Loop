@@ -417,7 +417,7 @@ class App:
         view_menu.add_command(label="Coverage Overview", command=self.show_coverage_view)
         view_menu.add_command(label="Rule Issues", command=self.show_issue_view)
         view_menu.add_separator()
-        view_menu.add_checkbutton(label="Coverage colours", variable=self.coverage_mode_var,
+        view_menu.add_checkbutton(label="Recorded-test reachability colours", variable=self.coverage_mode_var,
                                   command=self.toggle_coverage_mode)
         menubar.add_cascade(label="View", menu=view_menu)
         help_menu = tk.Menu(menubar, tearoff=0)
@@ -666,7 +666,8 @@ class App:
         self.graph_filter_entry.pack(side=tk.LEFT, padx=(2, 8))
         self.graph_filter_tooltip = tooltip.attach(
             self.graph_filter_entry,
-            "Space-separated filters: name:, kind:, status:, covered:, stale:, cluster:, namespace:, edge:. "
+            "Space-separated filters: name:, kind:, status:, covered: (recorded-test reachability), stale:, "
+            "cluster:, namespace:, edge:. "
             "Plain text filters by name; clear the entry to show all nodes.")
         ttk.Label(parent, text="Neighborhood:").pack(side=tk.LEFT)
         self.neighborhood_spinbox = ttk.Spinbox(
