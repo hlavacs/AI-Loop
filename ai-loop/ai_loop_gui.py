@@ -124,6 +124,7 @@ from ai_loop.config import (
 )
 from ai_loop.progress import estimate_progress
 from ai_loop.job_status import active_job_status, current_active_task
+from ai_loop.human_summary import status_summary, task_summary
 from ai_loop.elicitation import CliStructuredOutputProvider
 from ai_loop.specification_gui import VerificationDashboardView, open_specification_editor
 from ai_loop.specification_workflow import derive_formal_job_inputs
@@ -3508,11 +3509,11 @@ class AiLoopGui(tk.Tk):
         self.plan_text.tag_configure("current_plan_item", background="#fff0a8", foreground="#202020", font=("TkDefaultFont", 11, "bold"))
         self.task_text = self.help_widget(
             self.add_scrolled_text(task_tab, 0, 0),
-            "The current task followed by a detailed explanation of its goal, progress, constraints, checks, and expected result.",
+            "A concise plain-language summary of the current task, its main completion signs, and its latest result.",
         )
         self.status_text = self.help_widget(
             self.add_scrolled_text(status_tab, 0, 0),
-            "Current controller, worker, Redis, SMTP delivery, mailbox access, process, blocker, and suggested-solution status in plain language.",
+            "A concise plain-language summary of job progress, current focus, and any action that needs attention.",
         )
         self.controller_text = self.help_widget(
             self.add_scrolled_text(controller_tab, 0, 0),
@@ -4192,50 +4193,7 @@ class AiLoopGui(tk.Tk):
         return "\n\n".join(lines), current
 
     def task_view_text(self, details: dict[str, Any]) -> str:
-        task = self.current_task(details)
-        if task is None:
-            status = str(details["job"].get("status"))
-            return f"There is no current worker task.\n\nThe job status is {status}. The controller may still be preparing the next instruction."
-        status = str(task.get("status"))
-        explanations = {
-            "queued": "The task is ready and waiting for the worker to start.",
-            "running": "The worker is carrying out this task now.",
-            "waiting_tokens": "Work is paused until model tokens replenish; it will resume automatically.",
-            "completed": "The worker finished this task and returned the result to the controller.",
-            "failed": "The task stopped with a failure and needs controller review or repair.",
-        }
-        lines = [
-            "CURRENT TASK",
-            str(task.get("goal") or "No task goal was recorded."),
-            "",
-            "What is happening",
-            explanations.get(status, f"The task is in state {status}."),
-            f"Task number: {task.get('iteration')}",
-            f"Task id: {task.get('id')}",
-            f"Last update: {task.get('updated_at')}",
-            "",
-            "Detailed instructions",
-        ]
-        constraints = list(task.get("constraints") or [])
-        lines.extend([f"{index}. {item}" for index, item in enumerate(constraints, start=1)] or ["No extra constraints were recorded."])
-        lines.extend(["", "How completion will be checked"])
-        acceptance = list(task.get("acceptance") or [])
-        lines.extend([f"{index}. {item}" for index, item in enumerate(acceptance, start=1)] or ["No task-specific acceptance checks were recorded."])
-        lines.extend(["", f"Validation command: {task.get('test_cmd') or 'none'}"])
-        matching_run = next((run for run in details.get("runs", []) if run.get("task_id") == task.get("id")), None)
-        if matching_run:
-            changed = ", ".join(matching_run.get("changed_files") or []) or "none recorded"
-            test_result = "passed" if matching_run.get("test_rc") == 0 else "failed or did not run"
-            lines.extend([
-                "",
-                "Latest result for this task",
-                f"Worker result: {matching_run.get('status')}",
-                f"Tests: {test_result}",
-                f"Changed files: {changed}",
-            ])
-            if matching_run.get("error"):
-                lines.append(f"Problem reported: {matching_run.get('error')}")
-        return "\n".join(lines)
+        return task_summary(details, self.current_task(details))
 
     def blockers(self, details: dict[str, Any]) -> list[tuple[str, str]]:
         job = details["job"]
@@ -4274,50 +4232,12 @@ class AiLoopGui(tk.Tk):
         return result
 
     def plain_status_text(self, details: dict[str, Any]) -> str:
-        job = details["job"]
-        task = self.current_task(details)
-        status = str(job.get("status"))
-        status_explanations = {
-            "planning": "The controller is deciding what the worker should do next.",
-            "queued": "A task is ready and waiting for the worker.",
-            "implementing": "The worker is changing the repository and will run the configured checks.",
-            "fixing": "The worker is repairing or diagnosing a failed result.",
-            "waiting_tokens": "Work is paused until model tokens replenish, then it will resume automatically.",
-            "human_needed": "Automation cannot continue safely without human input.",
-            "dead": "The loop stopped after an internal failure.",
-            "done": "The controller confirmed that the job is complete.",
-        }
-        lines = [
-            "SYSTEM STATUS",
-            f"Job: {job.get('id')}",
-            f"State: {status}",
-            status_explanations.get(status, f"The job is in state {status}."),
-            f"Progress: {details.get('percent')}% complete; about {self.duration_text(details.get('remaining'))} remaining.",
-            "Redis message service: " + (
-                "checking…" if not details.get("redis_checked", 0)
-                else ("online" if details.get("redis_running") else "offline")
-            ),
-            f"Email delivery: {self.mail_access_status.smtp_detail}",
-            f"Mailbox access: {self.mail_access_status.mailbox_detail}",
-            "",
-            "CONTROLLER",
-            f"Selected controller: {job.get('controller')}",
-        ]
-        controller_info = details.get("processes", {}).get("controller", {})
-        lines.append(f"Process: {'running' if controller_info.get('running') else 'stopped'}; pid {controller_info.get('pid') or '-'}")
-        lines.append("Role: reviews worker results and sends the next task or marks the job complete.")
-        lines.extend(["", "WORKER", f"Selected worker: {job.get('worker')}"])
-        worker_info = details.get("processes", {}).get("worker", {})
-        lines.append(f"Process: {'running' if worker_info.get('running') else 'stopped'}; pid {worker_info.get('pid') or '-'}")
-        lines.append(f"Current task: {task.get('goal') if task else 'none'}")
-        lines.extend(["", "BLOCKERS AND SOLUTIONS"])
-        blockers = self.blockers(details)
-        if blockers:
-            for index, (problem, solution) in enumerate(blockers, start=1):
-                lines.extend([f"{index}. Problem: {problem}", f"   Solution: {solution}"])
-        else:
-            lines.append("No blocker is currently visible. The loop can continue automatically.")
-        return "\n".join(lines)
+        return status_summary(
+            details,
+            self.current_task(details),
+            self.blockers(details),
+            remaining_text=self.duration_text(details.get("remaining")),
+        )
 
     def compact_output(self, value: Any, limit: int = 1800) -> str:
         lines = [line.strip() for line in str(value or "").splitlines() if line.strip()]
