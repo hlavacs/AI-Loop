@@ -8,7 +8,7 @@ Hello, I am Helmut Hlavacs from the University of Vienna. This is AI-Loop, a way
 
 ## Slide 02
 
-I am a professor in the Faculty of Computer Science at the University of Vienna, where I lead the research group for Education, Didactics and Entertainment Computing. The university website is www dot univie dot ac dot at. My university email is helmut dot hlavacs at univie dot ac dot at. AI-Loop is open source at github dot com slash hlavacs slash AI dash Loop. The exact addresses are visible here for copying.
+I am a professor in the Faculty of Computer Science at the University of Vienna, where I lead the research group for Education, Didactics and Entertainment Computing. AI-Loop is open source, and you can find my university web site, my university e-mail address, and the project's GitHub repository listed here on the slide.
 
 ## Slide 03
 
@@ -96,4 +96,4 @@ Here is the final output. The job row is done at one hundred percent. The worker
 
 ## Slide 24
 
-Use a model directly when one focused question or edit is enough. Use AI-Loop when work benefits from persistence, separate review, repeated checks, safe pauses, or unattended continuation. If a provider tool breaks, use the repair path and then resume the preserved job. The project, my university email, and my page at entertain dot univie dot ac dot at slash tilde hlavacs are on screen. Robimo dot at is an AI-tooling service provider. Thank you for watching.
+Use a model directly when one focused question or edit is enough. Use AI-Loop when work benefits from persistence, separate review, repeated checks, safe pauses, or unattended continuation. If a provider tool breaks, use the repair path and then resume the preserved job. The project, my university email, and my personal page are on screen. Robimo is an AI-tooling service provider. Thank you for watching.
