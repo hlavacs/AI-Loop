@@ -150,3 +150,17 @@ def test_scope_page_holds_the_four_lists() -> None:
     spec = editor.to_specification()
     assert spec["not_allowed"] == ["Boost", "exceptions"] and spec["done_when"] == ["every use case runs"]
     assert editor.validate() == [] and spec_editor._page_of("Done when: x") == "scope"
+
+
+def test_reread_checks_unsaved_new_record_forms(monkeypatch) -> None:
+    editor, _ = editor_with()
+    page = editor.records["requirements"]
+    page.form.vars["title"].set("Not yet added")
+    assert editor.changed()
+    monkeypatch.setattr(spec_editor.messagebox, "askyesno", lambda *a, **kw: False)
+    assert not editor.confirm_reread()
+    assert page.form.vars["title"].get() == "Not yet added"
+    monkeypatch.setattr(spec_editor.messagebox, "askyesno", lambda *a, **kw: True)
+    assert editor.confirm_reread()
+    editor.load(full_specification())
+    assert not editor.changed() and page.form.vars["title"].get() == ""

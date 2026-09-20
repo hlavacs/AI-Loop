@@ -53,6 +53,9 @@ def default_code_profile(language: str = "C++") -> dict[str, Any]:
                 "Use type annotations for public functions and methods.",
                 "Every entity carries a docstring and, where a requirement applies, an @satisfies tag.",
                 "Platform independence: no platform API without a portable wrapper.",
+                ("Place all example and demo source files in the project-root examples/ directory; "
+                 "use examples/<name>/ for multi-file examples. Keep reusable library code in src/ "
+                 "and have examples use it."),
             ],
         }
     return {
@@ -71,6 +74,9 @@ def default_code_profile(language: str = "C++") -> dict[str, Any]:
             "Prefer STL algorithms to hand-written loops; lambdas where they make sense; templates for reuse.",
             "Every entity carries a Doxygen comment with @brief and, where a requirement applies, @satisfies.",
             "Platform independence: no platform API without a portable wrapper.",
+            ("Place all example and demo source files in the project-root examples/ directory; "
+             "use examples/<name>/ for multi-file examples. Keep reusable library code in src/ "
+             "and have examples use it."),
         ],
     }
 

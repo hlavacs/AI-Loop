@@ -3,11 +3,14 @@ from __future__ import annotations
 
 from types import SimpleNamespace
 
-from icoda_core import persistence, prompt, recovery, steps
+import pytest
+
+from icoda_core import git, persistence, prompt, recovery, steps
 from icoda_core.process import ProcessResult
 
 
 def window(app_module, tmp_path):
+    git.run_git(["init", "-q"], tmp_path)
     app = app_module.App(app_module.tk.Tk(), config=persistence.UserConfig(),
                          config_path=tmp_path / "config.json")
     app.project = tmp_path
@@ -45,6 +48,103 @@ def test_prompt_works_before_any_failure_and_keeps_history(app_module, tmp_path,
     assert all(cwd == tmp_path for _, cwd in calls)
     assert "Explain this project" in calls[1][0] and "Start with main.cpp." in calls[1][0]
     assert "Diagnosis:" not in calls[0][0] and "failure" not in calls[0][0]
+
+
+@pytest.mark.parametrize("outcome", ["success", "failure", "cancelled", "exception"])
+def test_prompt_applies_edits_and_refreshes_even_after_partial_failure(app_module, tmp_path, monkeypatch, outcome):
+    app, pending = window(app_module, tmp_path)
+    original = tmp_path / "app.cppm"
+    original.write_text("int run();\n")
+    app.source_editor.open_file(tmp_path, original.name)
+    changed = []
+    monkeypatch.setattr(app, "_source_changed", changed.append)
+
+    def invoke(provider, model, request, cwd, **kwargs):
+        assert kwargs["writable"] and ".icoda/specification.json" in request
+        original.rename(cwd / "app.cpp")
+        if outcome == "exception":
+            raise OSError("interrupted after edit")
+        return recovery.RecoveryResult(
+            ProcessResult([], 0 if outcome == "success" else 1, "Renamed app.cppm to app.cpp.", "",
+                          cancelled=outcome == "cancelled"), recovery.diagnose("connection reset"))
+
+    monkeypatch.setattr(recovery, "invoke", invoke)
+    app.recovery.input.insert("end", "Rename app.cppm according to the specification")
+    app.recovery.send()
+    complete(pending)
+    assert (tmp_path / "app.cpp").exists() and not original.exists()
+    assert changed == [tmp_path] and not app.panel.busy
+    assert app.source_editor.document is None  # The clean editor no longer points at a deleted file.
+    assert app.recovery.history[0][1].startswith("Rename app.cppm")
+    if outcome in {"failure", "exception"}:
+        assert app.recovery.issue is not None
+        app.recovery.details()
+        assert app.recovery.issue.detail in app.recovery.transcript.get("1.0", "end")
+
+
+def test_prompt_without_edits_does_not_refresh(app_module, tmp_path, monkeypatch):
+    app, pending = window(app_module, tmp_path)
+    monkeypatch.setattr(app, "_source_changed", lambda _: pytest.fail("No files changed"))
+    monkeypatch.setattr(recovery, "invoke", lambda *args, **kwargs:
+                        recovery.RecoveryResult(ProcessResult([], 0, "Explanation", "")))
+    app.recovery.input.insert("end", "Explain the project")
+    app.recovery.send()
+    complete(pending)
+
+
+def test_prompt_candidate_edits_invalidate_passed_checks_and_keep_unsaved_buffer(app_module, tmp_path, monkeypatch):
+    app, pending = window(app_module, tmp_path)
+    candidate = tmp_path / "candidate"
+    candidate.mkdir()
+    git.run_git(["init", "-q"], candidate)
+    source = candidate / "app.cpp"
+    source.write_text("int run();\n")
+    proposal = steps.Proposal(1, prompt.StepRequest(prompt.ARCHITECTURE, 1), candidate,
+                              build=steps.BuildResult(True, "passed"), test=steps.TestResult(True, "passed"))
+    app.steps.proposal = proposal
+    app.steps.confirmed_signature_proposal = proposal
+    app.recovery.handle_failure("test failed", attempted=True, cwd=candidate)
+    app.source_editor.open_file(candidate, source.name)
+    app.source_editor.text.insert("end", "// unsaved buffer\n")
+
+    def invoke(*args, **kwargs):
+        source.write_text("int run() { return 1; }\n")
+        return recovery.RecoveryResult(ProcessResult([], 0, "Changed return value.", ""))
+
+    monkeypatch.setattr(recovery, "invoke", invoke)
+    app.recovery.input.insert("end", "Fix the return value")
+    app.recovery.send()
+    complete(pending)
+    assert not proposal.build.ok and not proposal.test.ok
+    assert app.steps.confirmed_signature_proposal is None
+    assert app.source_editor.dirty and "unsaved buffer" in app.source_editor.text.get("1.0", "end")
+    assert not (tmp_path / "app.cpp").exists()
+
+
+def test_refresh_failure_keeps_prompt_conversation(app_module, tmp_path):
+    app, _pending = window(app_module, tmp_path)
+    app.recovery.history.append(("Developer", "Rename the example file"))
+    app.recovery.handle_failure("compiler error after rename", attempted=True)
+    assert app.recovery.history[0] == ("Developer", "Rename the example file")
+
+
+def test_stale_prompt_completion_cannot_refresh_a_different_project(app_module, tmp_path, monkeypatch):
+    app, pending = window(app_module, tmp_path)
+    monkeypatch.setattr(app, "_source_changed", lambda _: pytest.fail("Stale edit callback"))
+
+    def invoke(*args, **kwargs):
+        (tmp_path / "app.cpp").write_text("int run();\n")
+        return recovery.RecoveryResult(ProcessResult([], 0, "Created app.cpp", ""))
+
+    monkeypatch.setattr(recovery, "invoke", invoke)
+    app.recovery.input.insert("end", "Create app.cpp")
+    app.recovery.send()
+    work, done = pending.pop()
+    result = work()
+    app.project = tmp_path / "other"
+    app.recovery.set_project(app.project)
+    done(result)
+    assert not app.recovery.history and not app.recovery.busy
 
 
 def test_prompt_controls_follow_input_project_provider_and_busy_state(app_module, tmp_path, monkeypatch):

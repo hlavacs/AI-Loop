@@ -11,7 +11,7 @@ add_library(ScoreClamp_lib STATIC)
 target_sources(ScoreClamp_lib PUBLIC FILE_SET CXX_MODULES FILES
     src/app/app.cppm
 )
-add_executable(ScoreClamp src/main.cpp)
+add_executable(ScoreClamp examples/basic/main.cpp)
 target_link_libraries(ScoreClamp PRIVATE ScoreClamp_lib)
 
 enable_testing()

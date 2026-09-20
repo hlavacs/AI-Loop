@@ -117,6 +117,16 @@ class DerivedModel:
         if existing is None or (entity.is_definition and not existing.is_definition):
             self.entities[entity.usr] = entity
 
+    def resolve_legacy_main(self, usr: str, files: Iterable[str] = ()) -> str:
+        """Keep old main history/queue references attached to their source after entry-point disambiguation."""
+        if usr in self.entities or "@entry:" in usr:
+            return usr
+        mains = [entity for entity in self.entities.values()
+                 if entity.qualified_name == "main" and entity.usr.startswith(usr + "@entry:")]
+        relevant = [entity for entity in mains if entity.file in files] or mains
+        # Before disambiguation, declaration pairing kept the first definition by source path.
+        return min(relevant, key=lambda entity: entity.file).usr if relevant else usr
+
     def add_edge(self, edge: Edge) -> None:
         if edge not in self._edge_set():
             self.edges.append(edge)

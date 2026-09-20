@@ -16,6 +16,57 @@ def result(ok=True, out="", err="", **kwargs):
     return ProcessResult([], 0 if ok else 1, out, err, **kwargs)
 
 
+@pytest.mark.parametrize("provider_id,flag,mode", [
+    ("codex", "--sandbox", "workspace-write"), ("claude", "--permission-mode", "acceptEdits")])
+def test_writable_request_uses_edit_permissions_without_changing_defaults(tmp_path, provider_id, flag, mode):
+    provider = agent.find_provider(agent.load_providers(), provider_id)
+    calls = []
+
+    def run(command, **kwargs):
+        calls.append((command, kwargs))
+        return result(out="Edited app.cpp")
+
+    outcome = recovery.invoke(provider, "chosen-model", "Rename the file", tmp_path,
+                              binary="/test/" + provider_id, writable=True, runner=run)
+    assert outcome.result.ok and len(calls) == 1
+    command, options = calls[0]
+    assert command[0] == "/test/" + provider_id and "chosen-model" in command
+    assert command[command.index(flag) + 1] == mode and "--disallowedTools" not in command
+    assert options["cwd"] == tmp_path and options["input_text"] == "Rename the file"
+    readonly, _ = agent.build_command(provider, "m", "p", tmp_path)
+    assert "read-only" in readonly if provider_id == "codex" else "--disallowedTools" in readonly
+
+
+@pytest.mark.parametrize("error,extra", [
+    ("connection reset", {}), (OLD, {}), ("timeout", {"timed_out": True}),
+    ("cancelled", {"cancelled": True})])
+def test_writable_failure_never_replays_partial_edits(tmp_path, error, extra):
+    calls = []
+
+    def run(command, **kwargs):
+        calls.append(command)
+        with (tmp_path / "app.cpp").open("a") as source:
+            source.write("// applied once\n")
+        return result(False, err=error, **extra)
+
+    outcome = recovery.invoke(CODEX, "m", "Edit the source", tmp_path, binary="/test/codex",
+                              writable=True, runner=run)
+    assert not outcome.result.ok and len(calls) == 1
+    assert (tmp_path / "app.cpp").read_text() == "// applied once\n"
+    if not extra.get("cancelled"):
+        assert "not retried" in outcome.diagnosis.text()
+
+
+def test_writable_prompt_reads_specification_and_preserves_conversation(tmp_path):
+    history = [("Developer", "Use the specification"), ("Assistant", "I found the examples rule"),
+               ("Developer", "Apply that rule now")]
+    request = recovery.conversation_prompt(None, history, tmp_path, writable=True)
+    assert ".icoda/specification.json" in request and "rename" in request
+    assert all(text in request for _, text in history)
+    assert "Do not modify files" not in request
+    assert "Do not modify files" in recovery.conversation_prompt(None, history, tmp_path)
+
+
 def test_known_update_retries_same_request_and_model(tmp_path, monkeypatch):
     calls, progress = [], []
     versions = iter(["codex 0.152", "codex 0.155"])

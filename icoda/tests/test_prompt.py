@@ -65,6 +65,9 @@ def test_python_profile_and_prompt_rules_are_language_appropriate() -> None:
             "Use type annotations for public functions and methods.",
             "Every entity carries a docstring and, where a requirement applies, an @satisfies tag.",
             "Platform independence: no platform API without a portable wrapper.",
+            ("Place all example and demo source files in the project-root examples/ directory; "
+             "use examples/<name>/ for multi-file examples. Keep reusable library code in src/ "
+             "and have examples use it."),
         ],
     }
     state = persistence.ProjectState(persistence.ProjectPhase.ARCHITECTURE)

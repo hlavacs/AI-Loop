@@ -80,6 +80,12 @@ def build(model: DerivedModel) -> tuple[str, ...]:
 def ensure_state(store: ProjectStore, model: DerivedModel) -> ProjectState:
     """Populate an implementation queue once and persist it; other phases are untouched."""
     state = store.load_state()
+    queue = tuple(model.resolve_legacy_main(usr) for usr in state.implementation_queue)
+    override = model.resolve_legacy_main(state.implementation_override)
+    if queue != state.implementation_queue or override != state.implementation_override:
+        state = replace(state, implementation_queue=queue, implementation_override=override,
+                        approved_approach="")
+        store.save_state(state)
     if state.phase != ProjectPhase.IMPLEMENTATION or state.implementation_queue \
             or state.implementation_cursor:
         return state

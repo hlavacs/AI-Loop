@@ -5,7 +5,9 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any
 
-from icoda_core import clusters, persistence, session, views
+import pytest
+
+from icoda_core import clusters, persistence, session, specification, views
 from icoda_core.model import DerivedModel, Edge, EdgeKind, Entity, FileInfo, Kind, merge_external_names
 
 
@@ -436,3 +438,128 @@ def test_reload_button_refreshes_external_source_but_keeps_unsaved_edits(app_mod
     app.project = None
     reload()
     assert len(opened) == 2
+
+
+def test_reread_specification_refreshes_editor_and_coverage_without_writing(app_module, tmp_path, monkeypatch):
+    app = app_module.App(app_module.tk.Tk(), config=persistence.UserConfig(), config_path=tmp_path / "c.json")
+    app.show(opened_project(tmp_path))
+    path = persistence.ProjectStore(tmp_path).specification_path
+    original = specification.default_specification("Original")
+    specification.save(path, original)
+    app.edit_specification()
+    editor = app.spec_editor
+    editor.show_page("scope")
+    app.edit_specification()
+    assert app.spec_editor is editor
+    (tmp_path / "main.cpp").write_text("int main() {}\n")
+    app.source_editor.open_file(tmp_path, "main.cpp")
+    app.source_editor.text.insert("end", "// unsaved source\n")
+    draft = app.source_editor.content()
+    updated = specification.default_specification("External")
+    updated["goals"] = ["New goal"]
+    updated["code_profile"]["build"] = "External build settings"
+    specification.save(path, updated)
+    saved_bytes = path.read_bytes()
+    monkeypatch.setattr(app, "open_project", lambda *_: pytest.fail("Reread must not reanalyse code"))
+    app.reread_spec_button.kwargs["command"]()
+    assert app.spec_editor is editor and editor.to_specification() == updated
+    assert not editor.changed() and editor.current_page == "scope"
+    assert len(app.coverage_view.requirements) == 1
+    assert path.read_bytes() == saved_bytes
+    assert app.source_editor.content() == draft and app.source_editor.dirty
+    editor.close()
+    app.reread_specification()
+    assert app.spec_editor is not editor and app.spec_editor.to_specification() == updated
+
+
+def test_reread_specification_preserves_dirty_edits_until_confirmed(app_module, tmp_path, monkeypatch):
+    app = app_module.App(app_module.tk.Tk(), config=persistence.UserConfig(), config_path=tmp_path / "c.json")
+    app.project = tmp_path
+    path = persistence.ProjectStore(tmp_path).specification_path
+    specification.save(path, specification.default_specification("Original"))
+    app.edit_specification()
+    editor = app.spec_editor
+    editor.overview.vars["title"].set("Unsaved")
+    specification.save(path, specification.default_specification("External"))
+    monkeypatch.setattr(app_module.spec_editor.messagebox, "askyesno", lambda *a, **kw: False)
+    editor.reread_button.kwargs["command"]()
+    assert editor.to_specification()["title"] == "Unsaved" and editor.changed()
+    assert specification.load(path)["title"] == "External"
+    monkeypatch.setattr(app_module.spec_editor.messagebox, "askyesno", lambda *a, **kw: True)
+    editor.reread_button.kwargs["command"]()
+    assert editor.to_specification()["title"] == "External" and not editor.changed()
+
+
+@pytest.mark.parametrize("contents", [None, '{"title":', '{"title": ""}', '{"requirements": [7]}'])
+def test_reread_failure_retries_before_prompt_and_preserves_edits(
+        app_module, tmp_path, monkeypatch, contents):
+    app = app_module.App(app_module.tk.Tk(), config=persistence.UserConfig(), config_path=tmp_path / "c.json")
+    app.project = tmp_path
+    app.edit_specification()
+    app.spec_editor.overview.vars["title"].set("Unsaved")
+    path = persistence.ProjectStore(tmp_path).specification_path
+    path.parent.mkdir(exist_ok=True)
+    if contents is not None:
+        path.write_text(contents)
+    calls = []
+    original_load = specification.load
+
+    def read(path):
+        calls.append(path)
+        return original_load(path)
+
+    def run(work, done):
+        try:
+            result = work()
+        except ValueError as exc:
+            result = exc
+        done(result)
+
+    monkeypatch.setattr(specification, "load", read)
+    app.run_async = run
+    app.reread_specification()
+    assert calls == [path, path]
+    assert "Prompt" in app.status.get() and "specification" in app.recovery.issue.detail
+    assert app.spec_editor.to_specification()["title"] == "Unsaved" and app.spec_editor.changed()
+    assert path.read_text() == contents if contents is not None else not path.exists()
+
+
+def test_reread_recovers_an_interrupted_external_write(app_module, tmp_path, monkeypatch):
+    app = app_module.App(app_module.tk.Tk(), config=persistence.UserConfig(), config_path=tmp_path / "c.json")
+    app.project = tmp_path
+    calls = []
+
+    def read(path):
+        calls.append(path)
+        if len(calls) == 1:
+            raise ValueError("external writer has not finished")
+        return specification.default_specification("Recovered")
+
+    monkeypatch.setattr(specification, "load", read)
+    app.run_async = lambda work, done: done(work())
+    app.reread_specification()
+    assert len(calls) == 2 and app.spec_editor.to_specification()["title"] == "Recovered"
+    assert app.status.get().startswith("Specification reread") and not app.panel.busy
+
+
+def test_reread_guards_busy_missing_and_changed_project(app_module, tmp_path, monkeypatch):
+    app = app_module.App(app_module.tk.Tk(), config=persistence.UserConfig(), config_path=tmp_path / "c.json")
+    app.reread_specification()
+    assert app.spec_editor is None
+    app.project = tmp_path
+    app.edit_specification()
+    editor = app.spec_editor
+    monkeypatch.setattr(specification, "load", lambda *_: pytest.fail("Must not read while unavailable"))
+    app.panel.set_busy(True, "building")
+    editor.reread_button.kwargs["command"]()
+    app.panel.set_busy(False)
+    app.project = tmp_path / "another"
+    editor.reread_button.kwargs["command"]()
+    assert app.spec_editor is editor
+    with pytest.raises(ValueError, match="Open .* again"):
+        editor.save()
+    app.edit_specification()
+    assert app.spec_editor is not editor
+    app.project = tmp_path
+    app.edit_specification()
+    assert app.spec_editor is editor

@@ -47,6 +47,7 @@ from icoda_gui import (
     call_view,
     class_view,
     coverage_view,
+    executable_selector,
     graph_canvas,
     issue_view,
     mind_map_view,
@@ -369,6 +370,7 @@ class App:
         self.project: Path | None = None
         self.opened: session.OpenedProject | None = None
         self.spec_editor: spec_editor.SpecificationEditor | None = None
+        self._spec_editors: dict[Path, spec_editor.SpecificationEditor] = {}
         self.config_path = config_path or persistence.config_path()
         self.config = config or persistence.UserConfig.load(self.config_path)
         self.status = tk.StringVar(value="No project open")
@@ -406,6 +408,7 @@ class App:
         self.neighborhood_depth_var.trace_add("write", self.apply_graph_filter)
         self.steps = step_controller.StepController(self)
         self.recovery = troubleshooting.Troubleshooting(self)
+        self.executables = executable_selector.ExecutableSelector(self, self.executable_bar, self.side_views)
         self.panel.activity_var.trace_add("write", lambda *_args: self._update_reload_button())
         self.status.trace_add("write", lambda *_args: self._update_reload_button())
         self._update_reload_button()
@@ -640,6 +643,8 @@ class App:
         return lambda: self.open_project(path)
 
     def _build_panel(self) -> None:
+        self.executable_bar = ttk.Frame(self.root)
+        self.executable_bar.pack(fill=tk.X, pady=2)
         vertical = self.main_panes = ttk.PanedWindow(self.root, orient=tk.VERTICAL)
         vertical.pack(fill=tk.BOTH, expand=True)
         paned = ttk.PanedWindow(vertical, orient=tk.HORIZONTAL)
@@ -754,6 +759,10 @@ class App:
         self.reload_tooltip = tooltip.attach(
             self.reload_button, "Reload source and project metadata after external changes (" + ACCELERATOR
             + "R). Unsaved source-editor changes are kept. Available when no operation is running.")
+        self.reread_spec_button = ttk.Button(bar, text="Reread specification", command=self.reread_specification)
+        self.reread_spec_button.pack(side=tk.LEFT, padx=(0, 6), pady=2)
+        tooltip.attach(self.reread_spec_button, "Read .icoda/specification.json again, update Coverage, "
+                       "and show it in the specification editor. Unsaved edits require confirmation.")
         ttk.Label(bar, textvariable=self.language_var, anchor="e").pack(side=tk.RIGHT, padx=6, pady=2)
         self.status_progress = ttk.Progressbar(bar, mode="indeterminate", length=110)
         ttk.Label(bar, textvariable=self.status, anchor="w").pack(side=tk.LEFT, fill=tk.X, expand=True, padx=6,
@@ -786,12 +795,13 @@ class App:
             self.open_project(Path(chosen))
 
     def open_project(self, path: Path) -> None:
-        if self.recovery.busy:
+        if self.recovery.busy or self.executables.running:
             return
         resolved = Path(path).expanduser().resolve()
         if self.project != resolved:
             if not self.source_editor.clear():
                 return
+            self.executables.clear()
             self._editor_refresh_pending = None
             self.recovery.reset()
             self.steps.proposal = None
@@ -823,10 +833,11 @@ class App:
 
     def new_project(self, path: Path) -> None:
         """Phase 0: create ``.icoda/`` and open the specification editor; saving it writes the step 0 skeleton."""
-        if self.recovery.busy:
+        if self.recovery.busy or self.executables.running:
             return
         if not self.source_editor.clear():
             return
+        self.executables.clear()
         self._editor_refresh_pending = None
         self.recovery.reset()
         self.steps.proposal = None
@@ -847,13 +858,87 @@ class App:
         if self.project is None:
             messagebox.showinfo("ICODA", "Open or create a project first.")
             return
+        editor = self._current_spec_editor()
+        if editor is not None:
+            self.spec_editor = editor
+            editor.window.deiconify()
+            editor.window.lift()
+            return
         store = persistence.ProjectStore(self.project)
         if store.specification_path.is_file():
             spec = specification.load(store.specification_path)
         else:
             spec = specification.default_specification(self.project.name, analysis.detect_language(self.project))
-        self.spec_editor = spec_editor.SpecificationEditor(self.root, spec, self._save_specification,
-                                                           title=f"Specification — {self.project.name}")
+        self._open_spec_editor(spec)
+
+    def _current_spec_editor(self) -> spec_editor.SpecificationEditor | None:
+        editor = self._spec_editors.get(self.project) if self.project is not None else None
+        return editor if editor is not None and not editor.closed else None
+
+    def _open_spec_editor(self, spec: specification.Specification) -> None:
+        assert self.project is not None
+        project = self.project
+
+        def save(value: specification.Specification) -> None:
+            if self.project != project:
+                raise ValueError(f"Open {project} again before saving its specification. Your edits are kept.")
+            self._save_specification(value)
+
+        def reread() -> None:
+            if self.project == project:
+                self.reread_specification()
+
+        self.spec_editor = spec_editor.SpecificationEditor(
+            self.root, spec, save, title=f"Specification — {project.name}", on_reread=reread)
+        self._spec_editors[project] = self.spec_editor
+        self._update_reload_button()
+
+    def reread_specification(self) -> None:
+        """Refresh the saved specification without regenerating code or replacing unsaved edits silently."""
+        if self.project is None or self.panel.busy:
+            return
+        project = self.project
+        path = persistence.ProjectStore(project).specification_path
+
+        def read() -> specification.Specification:
+            try:
+                spec = specification.load(path)
+                problems = specification.validate(spec)
+                if problems:
+                    raise ValueError("; ".join(problems[:3]))
+                return spec
+            except (OSError, ValueError, TypeError, AttributeError, KeyError) as exc:
+                raise ValueError(f"Cannot reread the specification at {path}: {exc}. "
+                                 "The saved file and editor contents have been preserved.") from exc
+
+        def apply(spec: specification.Specification) -> None:
+            if self.project != project:
+                return
+            editor = self._current_spec_editor()
+            if editor is not None:
+                self.spec_editor = editor
+                if not editor.confirm_reread():
+                    self.status.set("Specification reread cancelled — unsaved edits kept")
+                    return
+                editor.load(spec)
+                editor.problems.set("reread from disk")
+                editor.window.deiconify()
+                editor.window.lift()
+            else:
+                self._open_spec_editor(spec)
+            if self.opened is not None and self.opened.root == project:
+                records = steplog.StepLog(persistence.ProjectStore(project).steps_path).records()
+                self.coverage_view.show(self.opened.model, records,
+                                        coverage_index.build_index(self.opened.model, records), spec)
+            self.status.set("Specification reread from .icoda/specification.json")
+            session.log_event("specification reread", project)
+
+        try:
+            spec = read()
+        except ValueError as exc:
+            self.recovery.handle_failure(exc, retry=self.reread_specification, repair=read, repaired=apply)
+            return
+        apply(spec)
 
     def _save_specification(self, spec: specification.Specification) -> None:
         """Write ``.icoda/specification.json``; for a project without code, write the skeleton (step 0)."""
@@ -937,6 +1022,12 @@ class App:
     def _update_reload_button(self) -> None:
         enabled = self.project is not None and not self.panel.busy
         self.reload_button.state(["!disabled"] if enabled else ["disabled"])
+        self.reread_spec_button.state(["!disabled"] if enabled else ["disabled"])
+        self.executables.update_controls()
+        for project, editor in self._spec_editors.items():
+            if not editor.closed:
+                editor_enabled = enabled and project == self.project
+                editor.reread_button.state(["!disabled"] if editor_enabled else ["disabled"])
 
     def _refresh_external_edits(self, _event: Any) -> None:
         """Re-analyse externally edited source when the application regains focus (not while a step runs)."""
@@ -1041,6 +1132,7 @@ class App:
         self.tree.delete(*self.tree.get_children())
         self._restore_provider(opened.root)
         self.call_view.show(opened.model)
+        self.executables.show(opened.root, opened.model)
         self.class_view.show(opened.model)
         log = steplog.StepLog(store.steps_path)
         self.mind_map_view.show(opened.model, log, store, opened.clustering)
@@ -1320,20 +1412,24 @@ class App:
         self.open_editor(file, line, root=proposal.worktree if candidate and proposal is not None else self.project)
 
     def _editor_saved(self, document: source_edit.Document) -> None:
+        self._source_changed(document.root)
+
+    def _source_changed(self, root: Path) -> None:
+        """Refresh analysis and invalidate checks after editor saves or Prompt edits."""
         proposal = self.steps.proposal
-        if proposal is not None and document.root == proposal.worktree.resolve():
+        if proposal is not None and root == proposal.worktree.resolve():
             proposal.build, proposal.test = steps.BuildResult(), steps.TestResult()
             proposal.error = ""
             self.steps.confirmed_signature_proposal = None
             self.panel.show(proposal)
-            self.status.set("Candidate source saved. Rebuild the candidate before approval.")
-        elif self.project is not None and document.root == self.project.resolve():
+            self.status.set("Candidate files changed. Rebuild the candidate before approval.")
+        elif self.project is not None and root == self.project.resolve():
             if proposal is not None:
                 proposal.error = "Project source changed. Commit manual edits and request a new proposal."
                 self.panel.show(proposal)
             self._editor_refresh_pending = self.project
             self.root.after(250, self._refresh_editor_save)
-            self.status.set("Source saved — refreshing analysis; changes remain uncommitted.")
+            self.status.set("Project files changed — refreshing analysis; changes remain uncommitted.")
 
     def _refresh_editor_save(self) -> None:
         if self._editor_refresh_pending != self.project or self._editor_refresh_pending is None:
@@ -1346,6 +1442,7 @@ class App:
 
     def close(self) -> None:
         if self.source_editor.confirm_saved():
+            self.executables.stop()
             self.root.destroy()
 
     def select_step(self, iteration: int) -> None:

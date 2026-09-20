@@ -4902,3 +4902,118 @@ Verification:
 - The handbook PDF was regenerated (96 pages, 37 images); its revised panel instructions were rendered with
   Poppler and visually inspected. Desktop screenshots remain unavailable without computer-use permission;
   the application checks use native widget geometry rather than a manual visual pass.
+
+## 2026-09-20 — Reread the saved specification
+
+Added Reread specification beside Reload project and in the specification editor. The action validates
+`.icoda/specification.json`, updates the editor and requirement coverage, and asks before replacing unsaved
+edits (including unfinished new record forms). It preserves source buffers and does not write project files
+or trigger source analysis. Editors are reused per project; callbacks cannot save into another project.
+Missing, malformed, or invalid files get a recovery read before details are presented in Prompt.
+
+Verification:
+
+- **584 tests passed in 71.86 seconds**. After refining editor reuse across project switches, **51 focused
+  application, specification-editor, and recovery tests passed**. Ruff, mypy on all 59 production source files,
+  and `git diff --check` passed. An optional mypy run including `test_app.py` found two existing test typing
+  issues (the menu command typed as object, and a lambda using list.append as a value); these are unchanged.
+- Native Tk button invocation and geometry checks in `.icoda-test-artifacts/spec-reread` confirmed both buttons
+  are fully visible (164 px each), refresh external changes, honor discard/cancel, and disable while busy.
+  The checks use an isolated project and do not require desktop input or screenshot permissions.
+- The handbook PDF was regenerated (96 pages, 37 images). Pages 5, 17, and 18 were rendered with Poppler and
+  visually inspected for the new reread instructions and surrounding layout.
+
+## 2026-09-20 — Default example source directory in new specifications
+
+New C++ and Python specifications include a Code Profile style rule placing example and demo sources in the
+project-root `examples/` directory, with `examples/<name>/` for multi-file examples. The existing compact
+specification serialization carries the rule into architecture, implementation, and approach prompts.
+
+- **58 specification, prompt, editor, and application tests passed**. Ruff, mypy for the changed production
+  module, and `git diff --check` passed.
+- A direct prompt-assembly check confirmed the rule appears in all three prompt types for both languages.
+- The handbook explains the new default and how existing specifications can add it in Style notes. Its PDF
+  was regenerated (96 pages, 37 images); page 15 was rendered and visually inspected.
+
+## 2026-09-20 — Select, build, and run the intended example
+
+Added the Example / executable selector above the diagrams. Choices identify the main source file and, once
+refreshed, the CMake target and configuration. Selection opens the source, selects the Call View root, controls
+From main, and persists per project. The row provides Refresh examples, Build, Run, Stop, and Output; the
+Program output tab captures commands and completed output. Build/Run use CMake's file API artifact paths and
+build only the selected target and its dependencies. Ambiguous targets require an explicit selection.
+
+C++ main identifiers now include their source path, preventing separate entry points and their outgoing calls
+from merging. The unit cache version is advanced; legacy main status and implementation-queue references are
+resolved to the original source, with an old approved approach cleared when its identity changes.
+
+Verification:
+
+- The complete suite ran **593 tests: 592 passed**, with only the module-inventory documentation assertion
+  failing because this feature added modules. Updated GAP_ANALYSIS and RELEASE_MATRIX counts; **all 10
+  verification tests then passed**, including that assertion. Ruff, mypy (61 production files), and
+  `git diff --check` passed.
+- Real CMake fixtures compiled and ran two separate C++ main functions, verified independent call graphs,
+  respected a renamed executable in a custom output directory, avoided an unrelated intentionally broken
+  target, required selection when targets share a main, and prevented launch after cancellation.
+- Selector tests cover source navigation, per-project persistence, From main, removed entries, cancelled
+  unsaved edits, busy guards, ambiguous selection, and recovery of the main project on build failure.
+- Native Tk checks in `.icoda-test-artifacts/executable-selector` used the actual combobox event and Run button
+  to select and execute the second example. Output was `second`; the first executable was not built. The
+  selection and graph root survived project reload. All five row buttons fit in a 1200x760 window.
+- Native checks use widget geometry and application calls; no desktop screenshot or manual visual pass is
+  claimed. The updated 96-page handbook PDF was rendered and pages 18–19 visually inspected.
+
+Build/run currently targets configured CMake projects and captures non-interactive output without run
+arguments. Project > Build and proposal gates retain their full-project behavior.
+
+## 2026-09-20 — Create example sources in the examples directory
+
+The C++ starter now creates `examples/basic/main.cpp` and points its executable target there. The reusable
+module library stays in `src/`. Default Code Profiles explicitly preserve this separation, and the handbook,
+C++ tutorial reference project, and tutorial capture tool use the new entry-point path.
+
+Repaired the existing `icoda-tests/Worktrees` project: moved its example entry point and integration module to
+`examples/basic/`, kept the reusable `work_tree` module in `src/work_tree/`, and separated their CMake targets.
+Its specification now records the directory policy. The library remains in the architecture phase; no worker
+implementation or job execution is claimed. The existing proposal worktree and step history were preserved.
+
+Verification:
+
+- **72 focused tests passed** across generation, application behavior, specification, prompts, specification
+  editing, and repository verification. Ruff, mypy for both changed production modules, and diff checks passed.
+- The repaired Worktrees project built and passed both CTests. ICODA analysis found all four source files without
+  errors. Its executable selector resolved `Worktrees [Debug]` to `examples/basic/main.cpp` and ran it with exit 0.
+- The tutorial reference was copied to an isolated directory, compiled, and passed both CTests. Running its
+  example printed exactly `scores: 0 42 100` and exited successfully.
+- The regenerated handbook contains 96 pages and 37 images. Pages 4, 15, 68, 81, and 90 were rendered with
+  Poppler and visually inspected for the changed directory instructions and source listing.
+
+## 2026-09-20 — Allow Prompt to edit project files
+
+Prompt **Send** now uses Codex `workspace-write` or Claude `acceptEdits`, with instructions to read the saved
+specification and apply requested file changes. Proposal generation and automatic investigation keep their
+read-only defaults. Editing requests have a 30-minute limit and are never automatically replayed after failure
+or cancellation, since partial edits may already exist. Failure evidence is available through Details.
+
+Filesystem snapshots detect edits, creations, deletions, and renames, including in new projects without Git or
+nested inside an ignored parent directory. Changes refresh project analysis or invalidate candidate build/test
+results. Clean source buffers refresh or close after deletion; unsaved buffers are preserved. Conversation
+context survives same-project reloads and failures, retaining the existing 16-message/20,000-character limit.
+
+Verification:
+
+- **611 tests passed** in the complete suite, including **86 focused tests** covering both provider permission modes, unchanged read-only defaults, partial
+  failures without retries, renames, candidate checks, dirty buffers, stale callbacks, and conversation history.
+  Ruff, mypy across 61 production files, and `git diff --check` passed.
+- An actual Codex request using the application's default model renamed `examples/basic/app.cppm` to `app.cpp`
+  in an isolated fixture by reading its specification, preserved the source bytes, and updated README references.
+  Evidence: `.icoda-test-artifacts/writable-prompt/codex-live.json`.
+- The actual Claude request was blocked before editing: installed Claude Code 2.1.191 reported that the configured
+  `claude-fable-5-1` requires 2.1.251 or newer. No installation was changed; Claude invocation wiring is covered by
+  tests, but a successful live Claude edit is not claimed.
+- The native Tk acceptance check passed five scripted provider turns, performed a real file rename through Send,
+  observed the renamed file in refreshed analysis, retained conversation history, and checked project switching
+  and recovery controls. Evidence: `.icoda-test-artifacts/writable-prompt/gui-final2/recovery-gui.json` and screenshots.
+- Updated the handbook and troubleshooting guide. Regenerated the 97-page handbook (37 images), rendered pages
+  20, 43, and 94 with Poppler, and visually checked the changed instructions and the native Prompt screenshot.

@@ -10,7 +10,7 @@ import re
 import shutil
 import time
 from collections.abc import Callable, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
@@ -96,6 +96,20 @@ def build_command(provider: Provider, model: str, prompt: str, cwd: Path | str,
         else:
             argv.append(token.format(**values))
     return argv, stdin_text
+
+
+def editing_provider(provider: Provider) -> Provider:
+    """Enable project edits for an explicit conversation without altering proposal defaults."""
+    invocation: tuple[str, ...]
+    if provider.enabled and provider.id == "codex":
+        invocation = ("{binary}", "exec", "--cd", "{cwd}", "-m", "{model}",
+                      "--sandbox", "workspace-write", "-")
+    elif provider.enabled and provider.id == "claude":
+        invocation = ("{binary}", "-p", "--model", "{model}", "--output-format", "text",
+                      "--permission-mode", "acceptEdits")
+    else:
+        raise ValueError(f"Editing is not supported for provider {provider.id}.")
+    return replace(provider, invocation=invocation, prompt_mode="stdin")
 
 
 def binary_available(provider: Provider, binary: str | None = None) -> bool:

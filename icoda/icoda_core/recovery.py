@@ -107,8 +107,10 @@ def _upgrade_command(binary: str, cwd: Path, runner: Callable[..., ProcessResult
 def invoke(provider: agent.Provider, model: str, prompt: str, cwd: Path, *, binary: str,
            timeout: float = 1800, progress: Callable[[str], None] = lambda _message: None,
            cancelled: Callable[[], bool] = lambda: False,
-           runner: Callable[..., ProcessResult] = run_bounded) -> RecoveryResult:
-    """Retry the provider call once after a targeted repair; never repeat approval or Git mutations."""
+           runner: Callable[..., ProcessResult] = run_bounded, writable: bool = False) -> RecoveryResult:
+    """Repair/retry read-only calls; explicit editing requests run once to preserve partial work."""
+    if writable:
+        provider = agent.editing_provider(provider)
     # Desktop launch environments may omit the shell's CLI installation directories.
     if binary in {"codex", "claude"} and shutil.which(binary) is None:
         for directory in (Path.home() / ".local/bin", Path("/opt/homebrew/bin"), Path("/usr/local/bin")):
@@ -134,6 +136,10 @@ def invoke(provider: agent.Provider, model: str, prompt: str, cwd: Path, *, bina
     if result.timed_out:
         detail = f"Provider timed out after {timeout:g} seconds.\n{detail}"
     issue = diagnose(detail)
+    if writable:
+        return RecoveryResult(result, replace(issue, next_step=(
+            "This editing request was not retried because it may have changed files. "
+            "Review the files and error evidence before sending a follow-up or using Open CLI.")))
     progress("Checking the provider and attempting automatic recovery…")
     if issue.code == "outdated_codex" and provider.id == "codex" and not cancelled():
         return _update_and_retry(binary, cwd, result, issue, call, progress, cancelled, runner)
@@ -186,7 +192,7 @@ def _update_and_retry(binary: str, cwd: Path, result: ProcessResult, issue: Diag
 
 
 def conversation_prompt(issue: Diagnosis | None, history: list[tuple[str, str]], project: Path, *,
-                        interactive: bool = False) -> str:
+                        interactive: bool = False, writable: bool = False) -> str:
     """Bounded conversational context; no proposal JSON schema and no credential/config dumps."""
     turns = "\n\n".join(f"{role}: {redact(text)}" for role, text in history[-16:])[-20000:]
     purpose = "resolve an ICODA failure" if issue is not None else "with their ICODA project"
@@ -195,6 +201,14 @@ def conversation_prompt(issue: Diagnosis | None, history: list[tuple[str, str]],
                    "You may inspect files and run read-only diagnostics. Do not modify files, install packages, "
                    "change Git history, or read credentials. Explain exact fixes; the developer can use Open CLI "
                    "for interactive edits and approvals. ")
+    if writable:
+        permissions = (
+            "Carry out the developer's requested changes in this project/worktree: you may create, edit, "
+            "rename, or delete project files as needed. Before editing, read .icoda/specification.json "
+            "if present and follow its saved requirements and coding decisions. Preserve existing uncommitted "
+            "work and tests. Run relevant available checks and report the actual changes and results. "
+            "Do not commit, push, change ICODA metadata, or read credentials. If a required action is blocked "
+            "by CLI permissions, explain what remains and suggest Open CLI for interactive approval. ")
     evidence = (f"Diagnosis:\n{issue.text()}\n\nError evidence:\n{issue.detail}\n\n"
                 if issue is not None else "")
     return (f"Help the developer {purpose}. Speak plainly and distinguish evidence from guesses. "

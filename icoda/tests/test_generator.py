@@ -17,7 +17,8 @@ def test_identifier_and_files(tmp_path: Path) -> None:
     assert generator.project_identifier("3d viewer") == "p_3d_viewer"
     files = generator.skeleton_files("Demo App")
     assert "src/app/app.cppm" in files and "export module app;" in files["src/app/app.cppm"]
-    assert "add_executable(Demo_App src/main.cpp)" in files["CMakeLists.txt"]
+    assert "add_executable(Demo_App examples/basic/main.cpp)" in files["CMakeLists.txt"]
+    assert "int main()" in files["examples/basic/main.cpp"] and "src/main.cpp" not in files
     assert 'mode="${2:-all}"' in files["build.sh"] and 'if [ "$mode" != "build-only" ]' in files["build.sh"]
     assert 'set "MODE=%~2"' in files["build.cmd"] and 'if /i "%MODE%"=="build-only"' in files["build.cmd"]
     written = generator.write_skeleton(tmp_path, "Demo App")
@@ -105,3 +106,6 @@ def test_skeleton_builds_and_is_analysable(tmp_path: Path) -> None:
     names = {e.qualified_name for e in opened.model.entities.values()}
     assert {"main", "app::run"} <= names
     assert not any(f.errors for f in opened.model.files.values())
+    assert "examples/basic/main.cpp" in opened.model.files
+    assert any(e.name == "main" and e.file == "examples/basic/main.cpp"
+               for e in opened.model.entities.values())

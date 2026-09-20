@@ -130,6 +130,8 @@ At every point the sentence above the buttons in the lower panel names the next 
 
 Saving the first specification creates only files that do not already exist. It generates either a C++ CMake
 skeleton or a Python skeleton according to the Code Profile, then moves the project into the `architecture` phase.
+The C++ skeleton includes a runnable entry point at `examples/basic/main.cpp`, linked to the module library in
+`src/`. Existing projects keep their current layout; changing Style notes alone does not relocate their files.
 
 An empty directory receives the C++ defaults. For Score Clamp, the full tutorial included in this PDF, use:
 
@@ -192,6 +194,13 @@ constitute the starting point. Later uncommitted edits are refused until they ar
 
 Open the editor with **Project > Specification...**. It has six pages and uses JSON Schema validation before save.
 Hover over a field or its label for an example.
+
+After editing `.icoda/specification.json` outside ICODA, press **Reread specification** beside **Reload project**
+in the main window or at the bottom of this editor. ICODA validates the saved file, refreshes the editor and
+specification coverage, and asks before discarding unsaved specification edits. Cancel keeps your edits.
+Rereading does not save the specification or change source files. The buttons are unavailable during an operation.
+If the file cannot be read or validated, ICODA retries before showing recovery details in **Prompt**; the editor
+contents and saved file are preserved.
 
 ### Overview
 
@@ -266,6 +275,11 @@ strategy. Record the rationale when it will help a later proposal preserve the i
 
 ### Code Profile
 
+New specifications include a style rule placing all example and demo source files in the project's `examples/`
+folder, using `examples/<name>/` for multi-file examples. Reusable library code stays in `src/` and examples
+use that library. ICODA includes this rule in architecture,
+implementation, and approach prompts. Existing specifications can adopt it through **Code profile > Style notes**.
+
 The Code Profile constrains generated code and supplies build/test conventions. Review at least:
 
 - language and standard;
@@ -286,8 +300,8 @@ The Code Profile constrains generated code and supplies build/test conventions. 
 The Code Profile's `max_function_lines` and `hard_max_function_lines` values bound few-line grouping and inform the
 provider. The promotion rule itself is deliberately fixed: `FUNCTION_LINE_GUIDELINE` is 30 and
 `FUNCTION_LINE_HARD_MAX` is 50. Other editable profile budgets cover methods and data members. Only the generated
-build settings (`build`) are kept in the JSON without an editor field; change those with ICODA closed, then check
-them by reopening the editor and pressing **Validate**.
+build settings (`build`) are kept in the JSON without an editor field; after changing them externally, press
+**Reread specification** to load the updated settings.
 
 ### A quality checklist
 
@@ -348,6 +362,40 @@ The **Reload project** button beside the status message at the bottom refreshes 
 after external edits. It also refreshes a clean source-editor buffer while keeping its current line. Unsaved
 editor changes remain intact. The button is unavailable while an operation is running or no project is open.
 
+The adjacent **Reread specification** button reloads `.icoda/specification.json` and opens or refreshes the
+specification editor. It also updates specification coverage without reanalysing the source. Unsaved
+specification edits require confirmation before replacement.
+
+### Choose an example or executable
+
+Use **Example / executable** at the top of the window to select the intended `main()` by its source path,
+for example `examples/renderer/main.cpp`. Selecting it opens that source and roots **Call View** at its entry
+point. **From main** returns to the selected example after you inspect another function. ICODA remembers the
+selection per project and restores it after reload or reopening; if its source was removed, it selects an
+available entry point. Separate C++ `main()` functions retain separate identities and call edges.
+
+For a configured CMake project, **Refresh examples** reads the actual executable target names, configurations,
+and output paths from CMake. The selector then shows the target, configuration, and main source file together.
+If several targets share a main source, explicitly choose the intended target/configuration before building
+or running. ICODA does not guess a binary filename from the source name.
+
+- **Build** in this row builds the selected executable and its dependencies.
+- **Run** builds that target first, then launches the executable from the project directory. A failed build
+  prevents launch. Runs capture output and do not provide an interactive terminal or command-line arguments.
+- **Stop** cancels the active example operation and its subprocesses. Runs have a one-hour time limit.
+- **Output** opens the upper-right **Program output** tab, where commands and captured output appear after
+  the operation finishes. Failures enter automatic recovery; unresolved problems appear in **Prompt**.
+
+Selection and build/run controls wait while another operation is active. Unsaved source changes receive the
+usual Save/Discard/Cancel prompt. If saving starts analysis, wait for it to finish before pressing Build or Run
+again. The existing **Project > Build** command and proposal build/test gates continue checking the full project.
+
+Each C++ example must belong to its own CMake executable target, such as
+`add_executable(renderer examples/renderer/main.cpp)`. Configure the project with its normal build tools first.
+After adding an example externally, use **Refresh examples** to refresh CMake metadata, then **Reload project**
+to discover its entry point. Target discovery uses the
+[CMake file API](https://cmake.org/cmake/help/latest/manual/cmake-file-api.7.html).
+
 ### Source editor
 
 The upper-right pane has **Entities** and **Source Editor** tabs. Click a file, class, or function in a diagram,
@@ -385,13 +433,17 @@ cannot be edited here.
 Open the **Prompt** tab beside the diagram tabs to talk to the selected CLI about the current project. It is
 available as soon as a project is open; no error needs to occur first. Select **Binary/Model**, type a message,
 and click **Send** or press Command/Control-Return. Follow-up messages include the conversation history.
-**Send** permits questions and read-only inspection. **Open CLI** opens an interactive session for edits with
-the provider's normal approvals, carrying the conversation and any unsent prompt into the terminal.
+**Send** can answer questions and edit project files, including renaming files to follow the saved specification.
+Changes remain uncommitted. ICODA refreshes the project after edits and invalidates a changed candidate's build/test
+results; unsaved editor buffers are preserved. Failed or cancelled editing requests are not automatically repeated
+because they may already have changed files. **Open CLI** opens an interactive session with the provider's normal
+approvals, carrying the conversation and any unsent prompt into the terminal.
 
 **Send** becomes available when the message contains text and an enabled provider is selected. While ICODA is
 busy, wait for the operation to finish; **Cancel** stops an active Prompt request. **Retry step** and **Details**
 become available when an unresolved failure supplies a retry action or diagnostic evidence. Automatic recovery
-opens this same tab if it needs your help. Switching projects clears the conversation and draft.
+opens this same tab if it needs your help. Reloads and failures retain recent conversation context (up to 16
+messages and 20,000 characters per request). Switching projects or restarting clears the conversation.
 
 ### The step panel
 
@@ -564,11 +616,15 @@ Provider calls are bounded to 30 minutes. ICODA retries rate-limit responses up 
 provider-supplied delay when it can parse one. A malformed proposal is also re-requested up to three times with
 validation or build feedback.
 
-Provider subprocesses receive the prompt on standard input and cannot edit the checkout: Claude Code is invoked
+Proposal and automatic investigation subprocesses receive the prompt on standard input and cannot edit the checkout: Claude Code is invoked
 with `--disallowedTools Edit,Write,MultiEdit,NotebookEdit,Bash`, and Codex CLI with `--sandbox read-only`. All
 commands use argument arrays with `shell=False`; bounded subprocess handling limits time and retained output and
 kills the process group on timeout or cancellation. ICODA itself applies only the validated structured reply in
 the isolated Git worktree.
+
+Explicit **Prompt > Send** requests enable project edits: Codex uses `--sandbox workspace-write` and Claude uses
+`--permission-mode acceptEdits`. These requests run once, with the same 30-minute limit, and keep the conversation
+context. Further provider approvals requiring terminal interaction can be handled through **Open CLI**.
 
 Both response parsers enforce `MAX_RESPONSE_BYTES` (200,000 bytes) before searching for or parsing JSON. Validation
 refuses lone Unicode surrogates as invalid UTF-8, refuses NUL bytes in candidate paths (a literal NUL also makes JSON
@@ -808,7 +864,7 @@ It uses a C++23 module, a small static method, a thin entry point, and two CTest
    **File > New Project...**.
 2. Enter title `ScoreClamp`, two use cases (clamp a score and run the demonstration), and four requirements for
    low, in-range, and high scores plus console output. Use the tutorial's C++ Code Profile.
-3. Validate, save, and build. Inspect `src/app/app.cppm`, `src/main.cpp`, `tests/smoke_test.cpp`, and the presets.
+3. Validate, save, and build. Inspect `src/app/app.cppm`, `examples/basic/main.cpp`, `tests/smoke_test.cpp`, and the presets.
 4. Request `app::ScoreClamp` with a static `int clamp(int value)` stub. Keep application behavior unchanged.
    Inspect the delta and source diff; require passing build and test gates, then approve.
 5. Explicitly **Approve architecture**. Keep one entity per implementation step.

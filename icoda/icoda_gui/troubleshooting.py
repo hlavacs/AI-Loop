@@ -8,7 +8,7 @@ from pathlib import Path
 from tkinter import ttk
 from typing import Any
 
-from icoda_core import agent, process, recovery, session, steps, terminal
+from icoda_core import agent, process, recovery, session, source_watch, steps, terminal
 from icoda_gui import provider_field
 
 
@@ -27,14 +27,14 @@ class Troubleshooting:
         self.cancelled = False
         self.finishing = False
         self.pending: list[tuple[Exception | str, dict[str, Any], Path | None]] = []
-        self.summary = tk.StringVar(value="Open a project to ask the CLI questions in Prompt.")
+        self.summary = tk.StringVar(value="Open a project to ask questions or edit files in Prompt.")
         ttk.Label(self.frame, textvariable=self.summary, wraplength=850, justify="left").pack(
             fill=tk.X, padx=8, pady=6)
         selection = window.provider_field.selection()
         self.provider = provider_field.ProviderField(self.frame, agent.load_providers(),
                                                     binary=selection.binary, model=selection.model)
         self.provider.frame.pack(fill=tk.X, padx=8)
-        ttk.Label(self.frame, text="Send asks questions and inspects files. Open CLI allows interactive edits.",
+        ttk.Label(self.frame, text="Send can inspect and edit project files. Open CLI opens an interactive terminal.",
                   anchor="w").pack(fill=tk.X, padx=8, pady=2)
         self.transcript = self._text(self.frame, 12, editable=False)
         self.input = self._text(self.frame, 3, editable=True)
@@ -100,7 +100,7 @@ class Troubleshooting:
         self.reset()
         self.project = self.cwd = project
         self.follow_provider()
-        self.summary.set(f"Ask about {project.name}, review code, or discuss a change with the selected CLI.")
+        self.summary.set(f"Ask about {project.name}, review code, or request changes with the selected CLI.")
         self._controls()
 
     def follow_provider(self) -> None:
@@ -122,7 +122,7 @@ class Troubleshooting:
         self.transcript.delete("1.0", "end")
         self.transcript.configure(state="disabled")
         self.input.delete("1.0", "end")
-        self.summary.set("Open a project to ask the CLI questions in Prompt.")
+        self.summary.set("Open a project to ask questions or edit files in Prompt.")
         self._controls()
 
     def handle_failure(self, error: Exception | str, *, retry: Callable[[], None] | None = None,
@@ -137,13 +137,15 @@ class Troubleshooting:
                 self.pending.append((error, {"retry": retry, "repair": repair, "repaired": repaired,
                                                 "attempted": attempted, "cwd": cwd}, self.window.project))
             return
-        self.project = Path(self.window.project) if self.window.project else None
+        project = Path(self.window.project) if self.window.project else None
+        if self.project != project:
+            self.reset()
+        self.project = project
         self.cwd = cwd or self.project
         self.retry = retry
         self.issue = error.diagnosis if isinstance(error, steps.ProviderError) else recovery.diagnose(str(error))
         selection = self.window.provider_field.selection()
         self.provider.set(selection.binary, selection.model)
-        self.history.clear()
         self.generation += 1
         if isinstance(error, steps.ProviderError) or attempted or self.finishing:
             self._present("Automatic recovery attempts have finished without resolving the failure.")
@@ -271,30 +273,60 @@ class Troubleshooting:
         self.input.delete("1.0", "end")
         self.history.append(("Developer", message))
         self._append("You", message)
-        request = recovery.conversation_prompt(self.issue, self.history, self.cwd)
+        request = recovery.conversation_prompt(self.issue, self.history, self.cwd, writable=True)
         cwd, token = self.cwd, self.generation
+        changed = False
         self._set_busy(True)
+
+        def work() -> recovery.RecoveryResult:
+            nonlocal changed
+            before = source_watch.snapshot_project(cwd)
+            try:
+                return recovery.invoke(
+                    provider, selection.model or provider.default_model, request, cwd, binary=selection.binary,
+                    timeout=1800, cancelled=lambda: self.cancelled, writable=True)
+            finally:
+                after = source_watch.snapshot_project(cwd)
+                changed = before is None or after is None or bool(source_watch.changed_files(before, after))
 
         def done(result: Any) -> None:
             if token != self.generation:
                 return
             self._set_busy(False)
+            # A failed or cancelled request can still have made changes before it stopped.
+            if changed:
+                self._refresh_after_edits(cwd)
             if self.cancelled or isinstance(result, steps.StepCancelled):
                 self._append("ICODA", "Conversation request cancelled.")
                 return
             if isinstance(result, Exception):
-                self._append("ICODA", recovery.diagnose(str(result)).text())
+                self.issue = recovery.diagnose(str(result))
+                self._append("ICODA", self.issue.text())
+                self._controls()
                 return
             if result.result.cancelled:
                 self._append("ICODA", "Conversation request cancelled.")
                 return
-            answer = result.result.stdout if result.result.ok else result.diagnosis.text()
+            if result.result.ok:
+                answer = result.result.stdout
+            else:
+                self.issue = result.diagnosis or recovery.diagnose(result.result.stderr or result.result.stdout)
+                answer = self.issue.text()
             self.history.append(("Assistant", answer))
             self._append(provider.label, answer)
+            self._controls()
 
-        self.window.run_async(lambda: recovery.invoke(
-            provider, selection.model or provider.default_model, request, cwd, binary=selection.binary,
-            timeout=180, cancelled=lambda: self.cancelled), done)
+        self.window.run_async(work, done)
+
+    def _refresh_after_edits(self, cwd: Path) -> None:
+        editor = self.window.source_editor
+        document = editor.document
+        if document is not None and document.root == cwd.resolve() and not editor.dirty:
+            if document.path.is_file():
+                editor.refresh()
+            else:
+                editor.clear()
+        self.window._source_changed(cwd.resolve())
 
     def retry_step(self) -> None:
         if self.busy or self.window.panel.busy or self.retry is None or self.project != self.window.project:

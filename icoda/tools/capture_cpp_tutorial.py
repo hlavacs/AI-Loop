@@ -152,7 +152,7 @@ def main() -> int:
     specification.save(store.specification_path, reference_specification())
     reference = ROOT / "docs/examples/score-clamp"
     final_module = (reference / "src/app/app.cppm").read_text()
-    final_main = (reference / "src/main.cpp").read_text()
+    final_main = (reference / "examples/basic/main.cpp").read_text()
     final_test = (reference / "tests/smoke_test.cpp").read_text()
     run_body = ('    std::cout << "scores: " << ScoreClamp::clamp(-5) << \' \'\n'
                 "              << ScoreClamp::clamp(42) << ' '\n"
@@ -247,9 +247,9 @@ def main() -> int:
             elif name == "app::run":
                 plan = "Print the three clamped values, return 0, and add the executable demo CTest."
                 files = {"src/app/app.cppm": final_module, "CMakeLists.txt": cmake + demo}
-            elif name == "main" and entity.file == "src/main.cpp":
+            elif name == "main" and entity.file == "examples/basic/main.cpp":
                 plan = "Call app::run and convert its result to process status 0 or 1. Retain the demo CTest."
-                files = {"src/main.cpp": final_main}
+                files = {"examples/basic/main.cpp": final_main}
             else:
                 raise RuntimeError(f"Unexpected tutorial target {name} in {entity.file}")
             print("Implementation target: " + name, flush=True)

@@ -349,6 +349,7 @@ class RecordListPage:
         if record is None:
             self.header.set("New entry — fill in the form, then press Add")
             self.form.set(RECORD_DEFAULTS.get(self.section, {}))
+            self.empty_form = self.form.get()
         else:
             self.header.set(f"{record['id']} — editing (New starts a new entry)")
             self.form.set(record)
@@ -364,11 +365,13 @@ def _headline(record: Mapping[str, Any]) -> str:
 
 
 class SpecificationEditor:
-    """A window with six pages, Validate/Save/Close, and the problems of the last validation."""
+    """A window with six pages, reread/validate/save actions, and validation feedback."""
 
     def __init__(self, parent: Any, spec: Specification, on_save: Callable[[Specification], None],
-                 title: str = "Specification") -> None:
+                 title: str = "Specification", on_reread: Callable[[], None] | None = None) -> None:
         self.on_save = on_save
+        self.on_reread = on_reread
+        self.closed = False
         self.hidden_profile: dict[str, Any] = {}
         self.window = tk.Toplevel(parent)
         self.window.title(title)
@@ -395,14 +398,19 @@ class SpecificationEditor:
         bar = ttk.Frame(self.window)
         bar.pack(side=tk.BOTTOM, fill=tk.X, padx=6, pady=(0, 6))
         self.problems = tk.StringVar(value="")
-        ttk.Label(bar, textvariable=self.problems, foreground="#c00000", anchor="w",
-                  wraplength=700).pack(side=tk.LEFT, fill=tk.X, expand=True)
+        self.reread_button = ttk.Button(bar, text="Reread specification", command=self.on_reread or "")
+        self.reread_button.pack(side=tk.LEFT, padx=(0, 6))
+        self.reread_button.state(["!disabled"] if self.on_reread else ["disabled"])
+        tooltip.attach(self.reread_button, "Read .icoda/specification.json again after external edits. "
+                       "You will be asked before discarding unsaved changes.")
         for text, command, hint in (("Close", self.close, "Close the editor; unsaved changes are asked about."),
                                     ("Save", self.save, SAVE_HINT),
                                     ("Validate", self.validate, "Check the specification without saving.")):
             button = ttk.Button(bar, text=text, command=command)
             button.pack(side=tk.RIGHT, padx=(4, 0))
             tooltip.attach(button, hint)
+        ttk.Label(bar, textvariable=self.problems, foreground="#c00000", anchor="w",
+                  wraplength=420).pack(side=tk.LEFT, fill=tk.X, expand=True)
 
     def _page(self, title: str, key: str) -> Any:
         frame = ttk.Frame(self.notebook)
@@ -438,7 +446,13 @@ class SpecificationEditor:
         return spec
 
     def changed(self) -> bool:
-        return self.to_specification() != self.loaded
+        return self.to_specification() != self.loaded or any(
+            page.current is None and page.form.get() != page.empty_form for page in self.records.values())
+
+    def confirm_reread(self) -> bool:
+        return not self.changed() or messagebox.askyesno(
+            "Reread specification", "Discard unsaved specification edits and reread the saved file?",
+            parent=self.window)
 
     # -- actions --------------------------------------------------------------------------
 
@@ -466,6 +480,7 @@ class SpecificationEditor:
         if self.changed() and messagebox.askyesno("Specification", "Save the changes before closing?") \
                 and not self.save():
             return
+        self.closed = True
         self.window.destroy()
 
 

@@ -32,6 +32,10 @@ def main() -> None:
 
     def provider(provider, model, prompt, cwd, **kwargs):
         calls.append(prompt)
+        assert kwargs["writable"]
+        if prompt.endswith("Rename draft.py to app.py"):
+            (cwd / "draft.py").rename(cwd / "app.py")
+            return recovery.RecoveryResult(ProcessResult([], 0, "Renamed draft.py to app.py.", ""))
         if "Diagnosis:" not in prompt:
             return recovery.RecoveryResult(ProcessResult([], 0, "Start by inspecting main.cpp.", ""))
         return recovery.RecoveryResult(ProcessResult([], 0,
@@ -50,7 +54,8 @@ def main() -> None:
 
         def finish() -> None:
             deadline = time.monotonic() + 10
-            while app.recovery.busy and time.monotonic() < deadline:
+            while (app.recovery.busy or app.panel.busy or app._editor_refresh_pending is not None
+                   ) and time.monotonic() < deadline:
                 root.update()
                 time.sleep(.02)
             assert not app.recovery.busy and not app.panel.busy
@@ -88,6 +93,21 @@ def main() -> None:
         assert len(calls) == 2 and "Explain this project" in calls[1]
         assert not actions, "Prompt's Send shortcut must not also propose a workflow step"
         assert "Start by inspecting main.cpp." in calls[1] and app.recovery.issue is None
+        (project / "draft.py").write_text("def run():\n    return 42\n")
+        assert app.source_editor.open_file(project, "draft.py")
+        app.recovery.input.insert("end", "Rename draft.py to app.py")
+        root.update()
+        app.recovery.buttons["Send"].invoke()
+        finish()
+        deadline = time.monotonic() + 10
+        while (app.opened is None or app.panel.busy) and time.monotonic() < deadline:
+            root.update()
+            time.sleep(.02)
+        assert (project / "app.py").is_file() and not (project / "draft.py").exists()
+        assert app.source_editor.document is None or app.source_editor.document.relative == "app.py"
+        assert app.opened is not None and "app.py" in app.opened.model.files
+        assert len(app.recovery.history) == 6 and "Explain this project" in calls[2]
+        app.views.select(app.recovery.frame)
         app.recovery.input.insert("end", "How can I add a C++ test?")
         root.update()
         require_visible(root, app.recovery.buttons)
@@ -113,8 +133,8 @@ def main() -> None:
             assert app.recovery.buttons["Send"].instate(["!disabled"])
             app.recovery.buttons["Send"].invoke()
             finish()
-        assert len(calls) == 4 and "What is the cause?" in calls[3]
-        assert "Your project files are unchanged." in calls[3]
+        assert len(calls) == 5 and "What is the cause?" in calls[4]
+        assert "Your project files are unchanged." in calls[4]
         app.recovery.input.insert("end", "I have updated the CLI. What should I check before retrying?")
         require_visible(root, app.recovery.buttons)
         root.update()
@@ -122,7 +142,7 @@ def main() -> None:
         (args.output / "recovery-gui.json").write_text(json.dumps({
             "passed": True, "scripted_provider_turns": len(calls), "bounds": bounds,
             "status": app.status.get()}, indent=2) + "\n")
-        print("PASS: real Tk Prompt before failure, four conversational turns, project reset, recovery, controls")
+        print("PASS: real Tk Prompt, five turns, file rename and refreshed analysis, project reset, recovery, controls")
     finally:
         recovery.invoke = original
         root.destroy()

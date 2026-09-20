@@ -33,6 +33,7 @@ class CallViewCanvas(graph_canvas.GraphCanvas):
         self.model: DerivedModel | None = None
         self.layout: views.CallViewLayout | None = None
         self.root_usr: str | None = None
+        self.entry_usr: str | None = None
         self.selected: str | None = None
         self.added: set[str] = set()
         self.changed: set[str] = set()
@@ -83,7 +84,7 @@ class CallViewCanvas(graph_canvas.GraphCanvas):
              changed: set[str] | None = None) -> None:
         self.model = model
         self.added, self.changed = added or set(), changed or set()
-        self.root_usr = root or views.default_root(model)
+        self.root_usr = root or (self.entry_usr if self.entry_usr in model.entities else views.default_root(model))
         self.user_zoomed = False
         self.relayout()
 
@@ -102,7 +103,8 @@ class CallViewCanvas(graph_canvas.GraphCanvas):
 
     def from_main(self) -> None:
         if self.model is not None:
-            self.root_usr, self.user_zoomed = views.default_root(self.model), False
+            entry = self.entry_usr if self.entry_usr in self.model.entities else views.default_root(self.model)
+            self.root_usr, self.user_zoomed = entry, False
             self.relayout()
 
     def controls_changed(self) -> None:

@@ -129,7 +129,7 @@ The important generated files are:
 - `CMakeLists.txt`: module library, application executable, and CTest smoke-test target.
 - `CMakePresets.json`: debug/release configure, build, and test presets.
 - `src/app/app.cppm`: exported module app, initially containing app::run().
-- `src/main.cpp`: program entry point that calls app::run().
+- `examples/basic/main.cpp`: example entry point that calls app::run().
 - `tests/smoke_test.cpp`: separate C++ test executable registered as the smoke CTest.
 - `build.sh` and `build.cmd`: platform-aware configure/build/test helpers.
 
@@ -312,7 +312,7 @@ int run() {
 }  // namespace app
 ```
 
-### Executable entry point: src/main.cpp
+### Executable entry point: examples/basic/main.cpp
 
 ```cpp
 /// @file main.cpp

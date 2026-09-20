@@ -37,7 +37,7 @@ from icoda_core.model import (
 
 MODULE_SUFFIXES = frozenset({".cppm", ".ixx", ".mpp", ".cxxm", ".c++m", ".ccm"})
 HEADER_SUFFIXES = frozenset({".h", ".hh", ".hpp", ".hxx", ".h++", ".inl"})
-UNIT_CACHE_VERSION = 2
+UNIT_CACHE_VERSION = 3
 CPP_SUFFIXES = MODULE_SUFFIXES | HEADER_SUFFIXES | frozenset({".c", ".cc", ".cpp", ".cxx", ".c++"})
 CPP_LANGUAGE = "C++"
 PYTHON_LANGUAGE = "Python"
@@ -517,11 +517,18 @@ class Extractor:
         digest = body_hash(_body_source(cursor, file_name)) if cursor.kind in _CALLABLE else ""
         is_definition = bool(cursor.is_definition())
         relative_file = self.relative(Path(file_name))
-        return Entity(cursor.get_usr(), kind, cursor.spelling, qualified_name(cursor), self.relative(Path(file_name)),
+        name = qualified_name(cursor)
+        return Entity(self._usr(cursor), kind, cursor.spelling, name, relative_file,
                       cursor.location.line, cursor.extent.end.line, parent, _signature(cursor, kind), brief, satisfies,
                       _template_params(cursor), is_definition, self._exported(cursor),
                       _value(cursor, kind), body_hash=digest,
                       declaration_file="" if is_definition else relative_file)
+
+    def _usr(self, cursor: Any) -> str:
+        usr = cursor.get_usr()
+        if cursor.kind == CK.FUNCTION_DECL and qualified_name(cursor) == "main" and cursor.location.file:
+            return f"{usr}@entry:{self.relative(Path(cursor.location.file.name))}"
+        return str(usr)
 
     def _exported(self, cursor: Any) -> bool:
         if self._shadow is None:
@@ -576,8 +583,9 @@ class Extractor:
         pattern = template_pattern(declaration)
         target_file = pattern.location.file.name if pattern.location.file else None
         if self.inside(target_file):
-            if pattern.get_usr() != source:
-                self._current.edges.append(Edge(kind, source, pattern.get_usr(), file, line, label, uncertain))
+            target_usr = self._usr(pattern)
+            if target_usr != source:
+                self._current.edges.append(Edge(kind, source, target_usr, file, line, label, uncertain))
         elif target_file:
             library = library_name(target_file, self.resource_dirs)
             names = self._current.externals.setdefault(library, [])

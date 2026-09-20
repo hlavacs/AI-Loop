@@ -154,7 +154,8 @@ def apply_statuses(model: DerivedModel, log: StepLog) -> None:
                 digest = _record_hash(record, current) if previous_status == "tested" else ""
                 statuses[current] = (previous_status, digest or previous_hash, previous_tests)
         for usr in (*record.entities_added, *record.entities_changed):
-            entity = model.entities.get(usr)
+            resolved_usr = model.resolve_legacy_main(usr, record.files)
+            entity = model.entities.get(resolved_usr)
             legacy_tests = tuple(record.test_files.get(usr, ()))
             tested = status == "implemented" and (
                 record.test_ok is True
@@ -163,7 +164,7 @@ def apply_statuses(model: DerivedModel, log: StepLog) -> None:
             )
             effective_status = "tested" if tested else status
             digest = _record_hash(record, usr) if effective_status == "tested" else ""
-            statuses[usr] = (effective_status, digest, legacy_tests)
+            statuses[resolved_usr] = (effective_status, digest, legacy_tests)
     for usr, (status, tested_hash, required_tests) in statuses.items():
         entity = model.entities.get(usr)
         if entity is not None and entity.kind in CALLABLE_KINDS:

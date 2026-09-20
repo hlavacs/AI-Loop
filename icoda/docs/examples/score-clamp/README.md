@@ -22,6 +22,7 @@ Expected output: `scores: 0 42 100`, exit status 0. CTest runs `smoke` (nine
 boundary and extreme cases plus idempotence and the application service) and
 `demo` (the executable's output). No external C++ test library is required.
 
+The example entry point is `examples/basic/main.cpp`; it links the reusable module in `src/app/app.cppm`.
 The module, entry point, and smoke test are reproduced in full in the tutorial.
 The minimal CMake files here contain only the debug preset used by the walkthrough;
 a project created by ICODA also includes release presets and generated build scripts.

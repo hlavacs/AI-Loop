@@ -1,5 +1,5 @@
 /// @file main.cpp
-/// @brief Entry point for the Score Clamp demonstration.
+/// @brief Basic example entry point for the Score Clamp demonstration.
 import app;
 
 /// @brief Return a conventional process success or failure status.

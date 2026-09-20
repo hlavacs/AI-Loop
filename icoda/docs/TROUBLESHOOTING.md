@@ -3,13 +3,22 @@
 ## Automatic recovery and the Prompt tab
 
 The **Prompt** tab is available whenever a project is open, including before any error occurs. Choose an enabled
-**Binary/Model**, type a message, and click **Send** (Command/Control-Return). Send supports questions and read-only
-inspection. It is disabled for an empty message or while another operation is running. **Open CLI** opens an
-interactive session with the conversation and your unsent prompt for edits using the provider's normal approvals.
+**Binary/Model**, type a message, and click **Send** (Command/Control-Return). Send supports questions and project
+edits, including creating and renaming files according to the saved specification. Codex uses `workspace-write`;
+Claude uses `acceptEdits`. It is disabled for an empty message or while another operation is running. **Open CLI**
+opens an interactive session with the conversation and your unsent prompt when terminal interaction or further
+provider approvals are needed.
 **Retry step** and **Details** require a failed operation and stay disabled during ordinary conversations.
 
+Send keeps recent conversation context and reads the current saved specification before editing. Changes are
+made in the displayed project or affected candidate worktree and remain uncommitted. ICODA refreshes the project
+after changes and invalidates a changed candidate's build/test results. Unsaved editor buffers are preserved.
+Failed or cancelled editing requests are not automatically repeated: they may already have changed files.
+Review those files before sending a follow-up. Ordinary reloads and failures retain the conversation; changing
+projects or restarting ICODA clears it. Each request replays up to 16 recent messages, capped at 20,000 characters.
+
 ICODA attempts recovery before displaying an operational failure. While it works, the status reads
-**Trying automatic recovery**. Provider requests receive one read-only retry. When Codex explicitly reports
+**Trying automatic recovery**. Read-only provider requests receive one retry. When Codex explicitly reports
 that its CLI is too old for the selected model, ICODA checks the selected executable's installation and tries
 its supported updater (Homebrew for a Codex cask, otherwise `codex update` when supported), then retries the
 same model and request once. App-bundled executables are never overwritten. Cancel stops the active process.
@@ -24,12 +33,12 @@ persistent failures cannot create an endless loop.
 
 If recovery cannot finish, the **Prompt** tab opens with a plain-language diagnosis and recovery
 result. **Details** reveals the diagnostic evidence. Use **Send** for a conversation with the selected CLI;
-the conversation includes the failure and previous messages and permits read-only investigation. You can
+the conversation includes the failure and previous messages and can apply requested fixes. You can
 select another installed **Binary/Model** if the failing provider cannot respond. Common credential forms are
 redacted from the conversation context.
 
 Use **Open CLI** for an interactive session in the affected project or candidate worktree, with the failure
-context and the provider's normal approvals, when edits or login are needed. Return to ICODA and choose
+context and the provider's normal approvals, when interactive commands or login are needed. Return to ICODA and choose
 **Retry step** to run the failed operation and its checks again. Selecting a different project clears the chat.
 
 
