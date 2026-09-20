@@ -5144,3 +5144,21 @@ Verification:
 - Ruff, mypy for both changed production modules, and `git diff --check` passed.
 - Native `tests/editor_gui_acceptance.py` passed navigation, editing, undo/redo, saving, and reloading checks.
   Visually checked the filename heading in `.icoda-test-artifacts/editor-filename/source-editor.png`.
+
+## 2026-09-20 — Drag the hierarchy panel by its header
+
+The previous mouse fix moved the diagram; the hierarchy overlay still had a fixed screen position. Its shaded
+header now says "Hierarchy — drag here to move" and moves the panel independently in File, Call, and Class View.
+The scrollbar moves with it, row clicks keep their navigation behavior, and header releases cannot open nodes.
+Each view retains the panel position across redraws. Dragging and resizing clamp it within the canvas, with the
+number of visible rows adjusted to the available height.
+
+Verification:
+
+- **88 focused GUI and navigation tests passed in 17.32 seconds**, including slow header drags, single/double
+  releases, independent diagram coordinates, redraw persistence, and drag/resize bounds.
+- Ruff, mypy for the four changed production files and native acceptance script, and `git diff --check` passed.
+- Native `tests/editor_gui_acceptance.py` passed in all three views: actual mouse events moved the hierarchy
+  120 pixels left and 30 pixels down, its scrollbar followed, and a row click after scrolling still opened the
+  correct source line. The existing diagram-drag and editor checks also passed. Screenshots and evidence are in
+  `.icoda-test-artifacts/movable-hierarchy-final/`; the moved File and Class hierarchy screenshots were inspected.

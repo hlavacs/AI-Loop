@@ -137,6 +137,52 @@ def test_slow_diagram_drags_accumulate_and_survive_resize(app_module, tmp_path):
         assert canvas.drag_start is None
 
 
+def test_hierarchy_header_moves_independently_and_stays_put_on_redraw(app_module, tmp_path, monkeypatch):
+    app = _app(app_module, tmp_path)
+    for canvas in app._expansion_canvases():
+        # A header release must never be interpreted as a diagram or hierarchy-row click.
+        monkeypatch.setattr(canvas, "node_at", lambda *_args: (_ for _ in ()).throw(AssertionError("node click")))
+        left, top, _right, _bottom = canvas.hierarchy_bounds
+        event = SimpleNamespace(x=left + 60, y=top + 12, num=1)
+        canvas.on_press(event)
+        canvas.on_release(event)
+        assert canvas.hierarchy_position is None
+        for release in (canvas.on_release, canvas.on_double_click):
+            before = (canvas.scale, canvas.offset, canvas.user_zoomed)
+            canvas.on_press(event)
+            for distance in range(1, 26):
+                moved = SimpleNamespace(x=event.x - distance, y=event.y + distance, num=1)
+                canvas.on_drag(moved)
+            release(moved)
+            assert canvas.hierarchy_bounds[:2] == (left - 25, top + 25)
+            assert (canvas.scale, canvas.offset, canvas.user_zoomed) == before
+            assert canvas.dragged and canvas.drag_start is None
+            position = canvas.hierarchy_bounds
+            canvas.redraw()
+            canvas.on_resize(None)
+            assert canvas.hierarchy_bounds == position
+            left, top = position[:2]
+            event = moved
+
+
+def test_hierarchy_stays_inside_canvas_after_dragging_or_resizing(app_module, tmp_path, monkeypatch):
+    app = _app(app_module, tmp_path)
+    for canvas in app._expansion_canvases():
+        left, top, _right, _bottom = canvas.hierarchy_bounds
+        canvas.on_press(SimpleNamespace(x=left + 60, y=top + 12))
+        for x, y in ((-1000, -1000), (2000, 2000)):
+            canvas.on_drag(SimpleNamespace(x=x, y=y))
+            left, top, right, bottom = canvas.hierarchy_bounds
+            assert left >= 12 and top >= 48
+            assert right <= canvas.canvas.winfo_width() and bottom <= canvas.canvas.winfo_height()
+        canvas.on_release(SimpleNamespace(x=2000, y=2000, num=1))
+        monkeypatch.setattr(canvas.canvas, "winfo_width", lambda: 320)
+        monkeypatch.setattr(canvas.canvas, "winfo_height", lambda: 200)
+        canvas.on_resize(None)
+        left, top, right, bottom = canvas.hierarchy_bounds
+        assert 12 <= left < right <= 320 and 48 <= top < bottom <= 200
+
+
 def test_hierarchy_clicks_do_not_select_diagram_nodes_underneath(app_module, tmp_path, monkeypatch):
     app = _app(app_module, tmp_path)
     for canvas in app._expansion_canvases():

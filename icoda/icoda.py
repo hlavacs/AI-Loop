@@ -325,11 +325,14 @@ class FileViewCanvas(graph_canvas.NodeAppearanceCanvas):
         return "break"
 
     def on_press(self, event: Any) -> None:
-        self.drag_start = None if self.in_hierarchy(event.x, event.y) else (event.x, event.y)
+        self.drag_start = None if self.press_hierarchy(event) else (event.x, event.y)
         self._drag_offset, self.dragged = self.offset, False
         self.tooltip.hide()
 
     def on_drag(self, event: Any) -> None:
+        if self.drag_hierarchy(event):
+            self.dragged = True
+            return
         if self.drag_start is None:
             return
         dx, dy = event.x - self.drag_start[0], event.y - self.drag_start[1]
@@ -340,6 +343,8 @@ class FileViewCanvas(graph_canvas.NodeAppearanceCanvas):
         self.redraw()
 
     def on_release(self, event: Any) -> None:
+        if self.release_hierarchy():
+            return
         if not self.dragged and getattr(event, "num", 1) == 1 and self.toggle_expansion_at(event.x, event.y):
             self.drag_start = None
             return
@@ -351,7 +356,7 @@ class FileViewCanvas(graph_canvas.NodeAppearanceCanvas):
 
     def on_double_click(self, event: Any) -> None:
         self.drag_start = None
-        if self.dragged:
+        if self.release_hierarchy() or self.dragged:
             return
         node = self.node_at(event.x, event.y)
         if node is not None and not node.startswith("external:"):

@@ -155,6 +155,8 @@ class NodeAppearanceCanvas:
         self.hierarchy_page_size = 1
         self.hierarchy_bounds: tuple[float, float, float, float] | None = None
         self.hierarchy_background: Any | None = None
+        self.hierarchy_position: tuple[float, float] | None = None
+        self._hierarchy_drag_anchor: tuple[float, float] | None = None
         self.coverage_mode = False
         self.globally_stale = False
         self.stale_reason = ""
@@ -268,8 +270,13 @@ class NodeAppearanceCanvas:
             self.hide_hierarchy()
             return
         nodes = self.expansion_result.graph.nodes
-        left = max(12.0, float(self.canvas.winfo_width()) - 294.0)
-        top, width, row_height = 48.0, 280.0, 27.0
+        canvas_width, canvas_height = float(self.canvas.winfo_width()), float(self.canvas.winfo_height())
+        left, top = self.hierarchy_position or (canvas_width - 294.0, 48.0)
+        width, row_height = min(280.0, max(100.0, canvas_width - 24.0)), 27.0
+        left = max(12.0, min(left, canvas_width - width - 12.0))
+        top = max(48.0, min(top, canvas_height - 64.0))
+        if self.hierarchy_position is not None:
+            self.hierarchy_position = (left, top)
         self.hierarchy_page_size = max(1, int((self.canvas.winfo_height() - top - 25 - 12) // row_height))
         self.hierarchy_offset = min(self.hierarchy_offset, max(0, len(nodes) - self.hierarchy_page_size))
         visible = nodes[self.hierarchy_offset:self.hierarchy_offset + self.hierarchy_page_size]
@@ -277,7 +284,9 @@ class NodeAppearanceCanvas:
         self.hierarchy_bounds = (left, top, left + width, bottom)
         self.hierarchy_background = self.canvas.create_rectangle(
             left, top, left + width, bottom, fill="#ffffff", outline="#d1d5db", width=1)
-        self.canvas.create_text(left + 8, top + 12, anchor="w", text="Hierarchy — click + / −",
+        self.canvas.create_rectangle(left, top, left + width, top + 25,
+                                      fill="#e8edf3", outline="#d1d5db")
+        self.canvas.create_text(left + 8, top + 12, anchor="w", text="Hierarchy — drag here to move",
                                 fill="#4b5563", font=("TkDefaultFont", 9, "bold"))
         positions = {
             node.key: (left + 8 + min(node.depth, 5) * 16.0,
@@ -296,6 +305,7 @@ class NodeAppearanceCanvas:
     def hide_hierarchy(self) -> None:
         self.hierarchy_bounds = None
         self.hierarchy_background = None
+        self._hierarchy_drag_anchor = None
         self.hierarchy_offset = 0
         self.expansion_items = {}
         if self.hierarchy_scrollbar is not None:
@@ -306,6 +316,31 @@ class NodeAppearanceCanvas:
             return False
         left, top, right, bottom = self.hierarchy_bounds
         return left <= x <= right and top <= y <= bottom
+
+    def press_hierarchy(self, event: Any) -> bool:
+        """Let the header move the panel; row presses stay available for navigation."""
+        self._hierarchy_drag_anchor = None
+        if not self.in_hierarchy(event.x, event.y):
+            return False
+        assert self.hierarchy_bounds is not None
+        left, top, _right, _bottom = self.hierarchy_bounds
+        if event.y < top + 25:
+            self._hierarchy_drag_anchor = (event.x - left, event.y - top)
+        return True
+
+    def drag_hierarchy(self, event: Any) -> bool:
+        if self._hierarchy_drag_anchor is None:
+            return False
+        dx, dy = self._hierarchy_drag_anchor
+        self.hierarchy_position = (event.x - dx, event.y - dy)
+        self.redraw()
+        return True
+
+    def release_hierarchy(self) -> bool:
+        """Consume header gestures so their release cannot select or open a node."""
+        active = self._hierarchy_drag_anchor is not None
+        self._hierarchy_drag_anchor = None
+        return active
 
     def scroll_hierarchy(self, action: str, amount: str, unit: str = "units") -> None:
         total = len(self.expansion_result.graph.nodes) if self.expansion_result else 0
@@ -483,10 +518,13 @@ class GraphCanvas(NodeAppearanceCanvas):
         return "break"
 
     def on_press(self, event: Any) -> None:
-        self.drag_start = None if self.in_hierarchy(event.x, event.y) else (event.x, event.y)
+        self.drag_start = None if self.press_hierarchy(event) else (event.x, event.y)
         self._drag_offset, self.dragged = self.offset, False
 
     def on_drag(self, event: Any) -> None:
+        if self.drag_hierarchy(event):
+            self.dragged = True
+            return
         if self.drag_start is None:
             return
         dx, dy = event.x - self.drag_start[0], event.y - self.drag_start[1]

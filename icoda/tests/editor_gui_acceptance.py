@@ -274,13 +274,47 @@ def verify_scrolling_and_dragging(root: tk.Tk, app: Any, output: Path) -> None:
         assert view.offset == (before_offset[0] + 30, before_offset[1])
         view.on_resize(None)
         assert view.offset == (before_offset[0] + 30, before_offset[1])
+        # Move the hierarchy itself by its header, independently of the diagram.
+        left, top, _right, _bottom = view.hierarchy_bounds
+        diagram_state = (view.scale, view.offset, view.user_zoomed)
+        x, y = int(left + 80), int(top + 12)
+        view.canvas.event_generate("<ButtonPress-1>", x=x, y=y, time=timestamp + 500)
+        for distance in range(1, 31):
+            view.canvas.event_generate("<B1-Motion>", x=x - 4 * distance, y=y + distance,
+                                       time=timestamp + 500 + distance)
+            root.update()
+        view.canvas.event_generate("<ButtonRelease-1>", x=x - 120, y=y + 30, time=timestamp + 550)
+        root.update()
+        assert view.hierarchy_bounds[:2] == (left - 120, top + 30)
+        assert (view.scale, view.offset, view.user_zoomed) == diagram_state
+        position = view.hierarchy_bounds
+        view.redraw()
+        view.on_resize(None)
+        root.update()
+        assert view.hierarchy_bounds == position
+        left, top, right, _bottom = position
+        assert view.hierarchy_scrollbar.winfo_x() == int(right - 17)
+        assert view.hierarchy_scrollbar.winfo_y() == int(top + 25)
         root.tk.call(command, "moveto", "1")
         root.update()
+        items = [item for item, target in view.item_nodes.items()
+                 if target == "value_59" and view.canvas.type(item) == "rectangle"]
+        x1, y1, x2, y2 = view.canvas.coords(items[-1])
+        x, y = int((x1 + x2) / 2), int((y1 + y2) / 2)
+        app.source_editor.goto(1)
+        view.canvas.event_generate("<ButtonPress-1>", x=x, y=y, time=timestamp + 700)
+        view.canvas.event_generate("<ButtonRelease-1>", x=x, y=y, time=timestamp + 720)
+        root.update()
+        assert app.source_editor.text.index("insert") == "62.0"
+        assert view.hierarchy_bounds == position
         capture(root, output / f"hierarchy-scroll-{index}.png")
     app.collapse_all()
     root.update()
     assert all(view.hierarchy_offset == 0 for view in app._expansion_canvases())
     app.source_editor.clear()
+    # Restore fixture geometry; the next navigation scenario assumes the default panel position.
+    for view in app._expansion_canvases():
+        view.hierarchy_position = None
     app._expansion_initialized = False
     app._expansion_auto_expand = True
 
@@ -377,6 +411,7 @@ def main() -> None:
             "passed": True, "bounds": bounds, "saved_source": str(source), "panel_layout": panel_layout,
             "checks": ["visible file boxes", "repeated Fit", "parent/child hierarchy order", "hierarchy collapse and source clicks",
                        "hierarchy scrollbar and wheel", "last row source navigation", "slow drag after a rapid second press",
+                       "hierarchy header drag", "scrollbar and source clicks after moving the hierarchy",
                        "file/class/function clicks", "Unicode find", "literal replace", "replace all",
                        "undo/redo", "unsaved navigation", "save", "analysis refresh", "reload"]}, indent=2) + "\n")
         print("PASS: real Tk source navigation, search/replace, undo/redo, save/reload, visible controls, screenshot")
