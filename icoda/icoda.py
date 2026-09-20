@@ -92,13 +92,12 @@ class FileViewCanvas(graph_canvas.NodeAppearanceCanvas):
         self.item_nodes: dict[int, str] = {}
         self.node_boxes: dict[str, tuple[float, float, float, float]] = {}
         self.zoom_control_widgets: dict[str, Any] = {}
-        self.tooltip = tooltip.Tooltip(canvas)
         for event, handler in (("<MouseWheel>", self.on_wheel), ("<Button-4>", self.on_wheel),
                                ("<Button-5>", self.on_wheel), ("<ButtonPress-1>", self.on_press),
                                ("<B1-Motion>", self.on_drag), ("<ButtonRelease-1>", self.on_release),
                                ("<ButtonPress-2>", self.on_press), ("<B2-Motion>", self.on_drag),
                                ("<ButtonRelease-2>", self.on_release),
-                               ("<Double-ButtonRelease-1>", self.on_double_click), ("<Motion>", self.on_motion),
+                               ("<Double-ButtonRelease-1>", self.on_double_click),
                                ("<Configure>", self.on_resize)):
             canvas.bind(event, handler)
         self.action_menu = graph_canvas.NodeActionMenu(
@@ -184,6 +183,7 @@ class FileViewCanvas(graph_canvas.NodeAppearanceCanvas):
     # -- drawing ----------------------------------------------------------------------------
 
     def redraw(self) -> None:
+        self.hide_tooltip()
         self.canvas.delete("all")
         self.item_nodes = {}
         self.node_boxes = {}
@@ -327,7 +327,6 @@ class FileViewCanvas(graph_canvas.NodeAppearanceCanvas):
     def on_press(self, event: Any) -> None:
         self.drag_start = None if self.press_hierarchy(event) else (event.x, event.y)
         self._drag_offset, self.dragged = self.offset, False
-        self.tooltip.hide()
 
     def on_drag(self, event: Any) -> None:
         if self.drag_hierarchy(event):
@@ -361,13 +360,6 @@ class FileViewCanvas(graph_canvas.NodeAppearanceCanvas):
         node = self.node_at(event.x, event.y)
         if node is not None and not node.startswith("external:"):
             self.app.open_editor(node)
-
-    def on_motion(self, event: Any) -> None:
-        node = self.node_at(event.x, event.y)
-        if node is None:
-            self.tooltip.hide()
-        else:
-            self.tooltip.show(self.app.describe_node(node), event.x_root, event.y_root)
 
     def node_at(self, x: int, y: int) -> str | None:
         for item in reversed(self.canvas.find_overlapping(x - 2, y - 2, x + 2, y + 2)):
@@ -720,11 +712,17 @@ class App:
         self.tree.pack(fill=tk.BOTH, expand=True)
         self.tree.bind("<Double-Button-1>", self.on_tree_double_click)
         self.tree.bind("<<TreeviewSelect>>", self.on_tree_select)
+        self.tree_tooltip = tooltip.attach_objects(
+            self.tree, lambda _x, y: self.tree.identify_row(y) or None, self.describe_node)
         self.source_editor = source_editor.SourceEditor(
             self.side_views, project=lambda: self.project, busy=lambda: self.panel.busy,
             saved=self._editor_saved, failed=lambda *args, **kwargs: self.recovery.handle_failure(*args, **kwargs))
         self.side_views.add(self.source_editor.frame, text="Source Editor")
         self.view = FileViewCanvas(self.canvas, self)
+        for diagram in self._diagram_canvases():
+            def describe(node: str, diagram: Any = diagram) -> str:
+                return self.describe_node(node, getattr(diagram, "model", None))
+            diagram.tooltip = tooltip.attach_objects(diagram.canvas, diagram.node_at, describe)
         self.view.build_zoom_controls(file_toolbar).pack(side=tk.RIGHT)
         self.panel = step_panel.StepPanel(vertical, lambda action: self.steps.action(action))
         vertical.add(self.panel.frame, weight=0)
@@ -1150,6 +1148,7 @@ class App:
         self.config.save(self.config_path)
         self._fill_recent_menu()
         self.side_title.set("Entities")
+        self.tree_tooltip.hide()
         self.tree.delete(*self.tree.get_children())
         self._restore_provider(opened.root)
         if self.executables.choices and self.executables.selected is None:
@@ -1179,6 +1178,7 @@ class App:
         self._call_source_root = opened.root
         self.graph_focus_usr = None
         self.side_title.set("Entities")
+        self.tree_tooltip.hide()
         self.tree.delete(*self.tree.get_children())
         document = self.source_editor.document
         if document is not None and document.relative not in model.files and not self.source_editor.dirty:
@@ -1400,18 +1400,53 @@ class App:
             views.layout_file_view(self.opened.model, clustering), self.opened.libclang,
             self.opened.messages))
 
-    def describe_node(self, node_id: str) -> str:
+    def describe_node(self, node_id: str, model: DerivedModel | None = None) -> str:
         if self.displayed is None:
-            return node_id
+            return ""
+        model = model if model is not None else self.displayed.model
+        entity = model.entities.get(node_id.removeprefix("entity:"))
+        if entity is not None:
+            lines = [f"{entity.kind.value.title()}: {entity.qualified_name}"]
+            if entity.signature:
+                lines.append(entity.signature)
+            lines.append(f"{'Definition' if entity.is_definition else 'Declaration'}: {entity.file}:{entity.line}")
+            if entity.declaration_file and entity.declaration_file != entity.file:
+                lines.append("Declared in: " + entity.declaration_file)
+            lines.append("Status: " + entity.status)
+            if entity.brief:
+                lines.append(entity.brief)
+            if entity.satisfies:
+                lines.append("Requirements: " + ", ".join(entity.satisfies))
+            if entity.test_files:
+                lines.append("Tests: " + ", ".join(entity.test_files[:5]))
+            return "\n".join(lines)
+        if node_id.startswith("cluster:"):
+            cluster = next((c for c in self.displayed.clustering.clusters
+                            if c.id == node_id.removeprefix("cluster:")), None)
+            return (f"Cluster: {cluster.name}\n{len(cluster.files)} files\n" +
+                    "\n".join(cluster.files[:8]) + ("\n…" if len(cluster.files) > 8 else "")) if cluster else ""
+        if node_id.startswith("external-symbol:"):
+            library, _, index = node_id.removeprefix("external-symbol:").rpartition(":")
+            external = model.externals.get(library)
+            if external and index.isdigit() and int(index) < len(external.names):
+                return f"External symbol: {external.names[int(index)]}\nLibrary: {library}"
+            return ""
         if node_id.startswith("external:"):
             library = node_id.split(":", 1)[1]
-            names = self.displayed.model.externals[library].names
+            external = model.externals.get(library)
+            names = external.names if external else ()
             return f"{library}\n" + ", ".join(names[:12]) + (" …" if len(names) > 12 else "")
-        info = self.displayed.model.files.get(node_id)
-        entities = self.displayed.model.entities_in(node_id)
-        lines = [node_id, f"{info.unit}{' module ' + info.module if info and info.module else ''}" if info else ""]
+        file = node_id.removeprefix("file:")
+        info = model.files.get(file)
+        if info is None:
+            return ""
+        entities = model.entities_in(file)
+        lines = [f"File: {file}", f"{info.unit}{' module ' + info.module if info.module else ''}"]
         lines.append(f"{len(entities)} entities")
-        if info and info.errors:
+        lines.extend(f"{e.kind.value}: {e.qualified_name}" for e in entities[:6])
+        if len(entities) > 6:
+            lines.append("…")
+        if info.errors:
             lines.append(f"errors: {info.errors[0]}")
         return "\n".join(line for line in lines if line)
 
@@ -1426,6 +1461,7 @@ class App:
             return
         self.focus_graph_node(usr if selected_entity is not None else None)
         self.side_title.set(node_id)
+        self.tree_tooltip.hide()
         self.tree.delete(*self.tree.get_children())
         entities = sorted(self.displayed.model.entities_in(node_id), key=lambda e: e.line)
         parents = {e.usr: e for e in entities}

@@ -5162,3 +5162,32 @@ Verification:
   120 pixels left and 30 pixels down, its scrollbar followed, and a row click after scrolling still opened the
   correct source line. The existing diagram-drag and editor checks also passed. Screenshots and evidence are in
   `.icoda-test-artifacts/movable-hierarchy-final/`; the moved File and Class hierarchy screenshots were inspected.
+
+## 2026-09-20 — Object tooltips and simpler explanations on demand
+
+File, Call, Class, and Mind Map diagrams and the Entities list now show delayed object tooltips. They include
+available signatures, source locations, status, documentation, requirement links, and tests; file and cluster
+tooltips summarize their contents. Candidate Call View tooltips use the candidate model. Popups remain stable
+while the pointer moves within an object and close on leaving, clicking, scrolling, or redrawing the view.
+Hover text in diagram toolbars no longer resizes the canvas.
+
+The Rephrase button asks the selected provider to simplify the current proposal or pending approach. It uses
+the existing read-only provider invocation and changes only the explanation. Code, review edits, signature
+confirmation, and approval decisions are preserved. Cancellation, an empty reply, a provider failure, or a
+project change keeps the original text. Rephrasing does not start automatic approval or code repair.
+
+Verification:
+
+- **119 focused tests passed in 10.45 seconds** across application, step-controller, Class View, Mind Map,
+  expansion, and troubleshooting behavior. Checks cover object metadata and candidate models, deferred
+  publication of rewritten text, preserved review state, cancellation, failures, and stale callbacks.
+- Ruff on all changed Python files, mypy across 62 files, and `git diff --check` passed.
+- Native `tests/editor_gui_acceptance.py --output .icoda-test-artifacts/tooltips-rephrase-visible-final`
+  passed. Real Tk hover bindings showed file, class, method, and function popups across the diagrams and
+  Entities list, with stable popup identity during pointer motion and dismissal on leaving. The real Rephrase
+  button updated the displayed explanation through the asynchronous runner without changing source content.
+  This used a scripted provider response; no live LLM rewrite was run.
+- Visually inspected `object-tooltip.png` and `rephrased-step.png` in that output directory. The tooltip check
+  restores ordinary window stacking after earlier screenshot helpers pin the main window above floating
+  windows, and allows the native compositor to paint before capture. Existing hierarchy dragging, scrolling,
+  source navigation, editing, undo/redo, save, and reload acceptance checks also passed.

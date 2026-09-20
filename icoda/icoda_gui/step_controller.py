@@ -150,6 +150,42 @@ class StepController:
 
     # -- actions --------------------------------------------------------------------------
 
+    def rephrase(self) -> None:
+        """Ask for clearer review text without entering proposal generation or automatic approval."""
+        panel = self.window.panel
+        if "rephrase" not in panel.enabled_actions:
+            return
+        proposal, approach, project = self.proposal, self.approach, self.window.project
+        description = (proposal.response.rationale if proposal and proposal.response else
+                       approach.plan if approach and not panel.approach_approved else "")
+        if not description.strip():
+            return
+        runner = self._ensure_runner()
+        self.cancel_requested = False
+        runner.begin()
+        panel.set_busy(True, "making the step description easier to understand", cancellable=True)
+
+        def done(result: Any) -> None:
+            if self.window.project != project or self.proposal is not proposal or self.approach is not approach:
+                return
+            panel.set_busy(False)
+            if self.cancel_requested or isinstance(result, steps.StepCancelled):
+                self.window.status.set("Rephrasing cancelled — original description kept")
+                return
+            tasks.completion_ping(self.window.root)
+            if isinstance(result, Exception):
+                self.window.status.set("Could not rephrase — original description kept")
+                dialogs.show_error("Rephrase", str(result))
+                return
+            if proposal is not None and proposal.response is not None:
+                proposal.response = replace(proposal.response, rationale=result)
+            elif approach is not None:
+                approach.plan = result
+            panel.refresh_description()
+            self.window.status.set("Step description simplified")
+
+        self.window.run_async(lambda: runner.rephrase_description(description), done)
+
     def propose_approach(self, constraints: tuple[str, ...] = (), focus: tuple[str, ...] = ()) -> None:
         runner = self._ensure_runner()
         request = replace(self.window.panel.request(), constraints=constraints, focus=focus)

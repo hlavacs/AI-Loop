@@ -179,7 +179,7 @@ def test_panel_requires_and_records_signature_confirmation_with_exact_actions(tm
     panel.show(proposal)
 
     assert panel.enabled_actions == {
-        "propose", "confirm_signature", "reject", "adapt", "rebuild", "open_worktree", "undo", "commit_manual"}
+        "propose", "confirm_signature", "reject", "adapt", "rephrase", "rebuild", "open_worktree", "undo", "commit_manual"}
     assert "int b()" in panel.signature.get("1.0", "end")
     assert "long b(int value)" in panel.signature.get("1.0", "end")
     assert panel.signature_var.get() == "Signature changes: 1 — confirmation required"
@@ -187,7 +187,7 @@ def test_panel_requires_and_records_signature_confirmation_with_exact_actions(tm
     panel.confirm_signature(proposal)
 
     assert panel.enabled_actions == {
-        "propose", "approve", "reject", "adapt", "rebuild", "open_worktree", "undo", "commit_manual"}
+        "propose", "approve", "reject", "adapt", "rephrase", "rebuild", "open_worktree", "undo", "commit_manual"}
     assert panel.signature_var.get() == "Signature changes: 1 confirmed"
 
 
@@ -214,12 +214,12 @@ def test_panel_signature_confirmation_does_not_leak_to_different_proposal(tmp_pa
     panel.show(proposal_a)
     panel.confirm_signature(proposal_a)
     assert panel.enabled_actions == {
-        "propose", "approve", "reject", "adapt", "rebuild", "open_worktree", "undo", "commit_manual"}
+        "propose", "approve", "reject", "adapt", "rephrase", "rebuild", "open_worktree", "undo", "commit_manual"}
 
     panel.show(proposal_b)
 
     assert panel.enabled_actions == {
-        "propose", "confirm_signature", "reject", "adapt", "rebuild", "open_worktree", "undo", "commit_manual"}
+        "propose", "confirm_signature", "reject", "adapt", "rephrase", "rebuild", "open_worktree", "undo", "commit_manual"}
 
 
 def test_panel_shows_multi_target_batch_but_keeps_single_target_proposal_text(tmp_path: Path) -> None:
@@ -1091,7 +1091,7 @@ def test_panel_shows_only_the_phase_buttons_and_explains_the_grey_ones(tmp_path:
     assert panel.visible_actions == ()  # specification phase: nothing to press yet
     assert "save it" in panel.hint_var.get()
     panel.set_phase(persistence.ProjectPhase.ARCHITECTURE)
-    assert panel.visible_actions == ("propose", "approve", "reject", "adapt", "approve_architecture", "undo")
+    assert panel.visible_actions == ("propose", "approve", "reject", "adapt", "approve_architecture", "rephrase", "undo")
     assert "propose" in panel.enabled_actions and "approve" not in panel.enabled_actions
     assert panel.disabled_reasons["approve"] == "no proposal that builds and passes its tests"
     help_text = panel.tooltips["approve"]  # the tooltip text is built when the pointer rests on the button
@@ -1141,6 +1141,104 @@ def test_panel_prompt_and_reply_tabs_show_the_exchange(tmp_path: Path) -> None:
     panel.show_approach(fake_approach())
     assert panel.prompt_view.get("1.0", "end").startswith("approach prompt")
     assert "No reply" in panel.reply_view.get("1.0", "end")
+
+
+def test_rephrase_updates_only_description_and_keeps_review_decisions(tmp_path, monkeypatch):
+    window = Window(tmp_path)
+    pending, requests = [], []
+    window.run_async = lambda work, done: pending.append((work, done))
+    rewritten = "Add b so the app can calculate the next value.\n- Check it with the existing test."
+    runner = steps.StepRunner(tmp_path, window.config,
+                              invoke=lambda text, cwd: requests.append((text, cwd)) or rewritten)
+    controller = step_controller.StepController(window, lambda *a, **k: runner)
+    proposal = controller.proposal = fake_proposal(tmp_path)
+    previous = DerivedModel.from_json(proposal.model.to_json())
+    previous.entities["u:b"].signature = "long b()"
+    proposal.delta = steps.compute_delta(previous, proposal.model, ["m.cpp"])
+    window.panel.set_phase(persistence.ProjectPhase.ARCHITECTURE)
+    window.panel.show(proposal)
+    window.panel.confirm_signature(proposal)
+    controller.confirmed_signature_proposal = proposal
+    window.panel.auto_approve_var.set(True)
+    window.panel.entity_summary.insert("end", "Keep this review edit")
+    summary = window.panel.edited_entity_summary()
+    original_response = proposal.response
+    fields = {key: value for key, value in vars(proposal).items() if key != "response"}
+    monkeypatch.setattr(controller, "_consider_auto_approve", lambda **k: pytest.fail("Rephrase cannot approve"))
+    source = tmp_path / "m.cpp"
+    source.write_text("int b();\n")
+
+    controller.action("rephrase")
+    assert window.panel.busy and "rephrase" not in window.panel.enabled_actions
+    assert proposal.response is original_response and not requests
+    work, done = pending.pop()
+    result = work()
+    assert proposal.response is original_response  # Publication waits for the UI callback.
+    done(result)
+
+    assert proposal.response.rationale == rewritten
+    assert proposal.response.files is original_response.files and proposal.response.title == original_response.title
+    assert proposal.response.entities == original_response.entities and proposal.response.questions == ("Why?",)
+    assert {key: value for key, value in vars(proposal).items() if key != "response"} == fields
+    assert window.panel.signature_confirmed and controller.confirmed_signature_proposal is proposal
+    assert window.panel.edited_entity_summary() == summary
+    assert rewritten in window.panel.rationale.get("1.0", "end") and "Why?" in window.panel.rationale.get("1.0", "end")
+    assert source.read_text() == "int b();\n" and not runner.log.path.exists()
+    assert requests[0][1] == tmp_path and original_response.rationale in requests[0][0]
+    assert "Do not run tools or change files" in requests[0][0]
+    window.panel.show_step(steplog.StepRecord(9, "architecture", "approved", rationale="Old step"))
+    assert "rephrase" not in window.panel.enabled_actions
+
+
+@pytest.mark.parametrize("outcome", ["error", "empty", "cancelled", "stale"])
+def test_rephrase_keeps_original_on_failure_cancellation_or_project_change(tmp_path, monkeypatch, outcome):
+    window = Window(tmp_path)
+    pending, errors, pings = [], [], []
+    window.run_async = lambda work, done: pending.append((work, done))
+    monkeypatch.setattr(window.root, "bell", lambda: pings.append(True))
+    monkeypatch.setattr(step_controller.dialogs, "show_error", lambda *args: errors.append(args))
+
+    def invoke(text, cwd):
+        if outcome == "error":
+            raise OSError("connection reset")
+        if outcome == "cancelled":
+            runner.cancel_requested = True
+        return "" if outcome == "empty" else "Simpler text"
+
+    runner = steps.StepRunner(tmp_path, window.config, invoke=invoke)
+    controller = step_controller.StepController(window, lambda *a, **k: runner)
+    proposal = controller.proposal = fake_proposal(tmp_path)
+    original = proposal.response
+    window.panel.show(proposal)
+    controller.rephrase()
+    work, done = pending.pop()
+    try:
+        result = work()
+    except (steps.StepError, OSError) as exc:
+        result = exc
+    if outcome == "stale":
+        window.project = tmp_path / "other"
+    done(result)
+    assert proposal.response is original and not pending
+    assert bool(errors) == (outcome in {"error", "empty"})
+    assert bool(pings) == (outcome in {"error", "empty"})
+
+
+def test_rephrase_pending_approach_preserves_scope_and_does_not_approve(tmp_path):
+    window = Window(tmp_path)
+    runner = steps.StepRunner(tmp_path, window.config, invoke=lambda *_: "Find the item with one search.")
+    controller = step_controller.StepController(window, lambda *a, **k: runner)
+    approach = controller.approach = fake_approach()
+    window.panel.set_phase(persistence.ProjectPhase.IMPLEMENTATION)
+    assert "rephrase" not in window.panel.enabled_actions
+    window.panel.show_approach(approach)
+    controller.rephrase()
+    assert approach.plan == "Find the item with one search."
+    assert approach.entities == ("b",) and approach.files == ("m.cpp", "tests/m_test.cpp")
+    assert not window.panel.approach_approved and not runner.log.path.exists()
+    assert approach.plan in window.panel.approach_text.get("1.0", "end")
+    window.panel.show_approach(approach, approved=True)
+    assert "rephrase" not in window.panel.enabled_actions
 
 
 def test_controller_cancel_stops_the_runner_and_records_nothing(tmp_path: Path, monkeypatch: Any) -> None:

@@ -52,7 +52,7 @@ class MindMapCanvas(graph_canvas.GraphCanvas):
         )
         zoom.pack(side=tk.RIGHT)
         ttk.Label(bar, textvariable=self.summary_var, anchor="w").pack(side=tk.LEFT)
-        ttk.Label(bar, textvariable=self.hover_var, anchor="w", foreground="#555555").pack(
+        ttk.Label(bar, textvariable=self.hover_var, anchor="w", foreground="#555555", width=1).pack(
             side=tk.LEFT, fill=tk.X, expand=True, padx=(12, 0))
         self.toolbar_controls = controls
 
@@ -72,6 +72,7 @@ class MindMapCanvas(graph_canvas.GraphCanvas):
         return None if self.layout is None else (self.layout.width, self.layout.height)
 
     def redraw(self) -> None:
+        self.hide_tooltip()
         self.canvas.delete("all")
         self.item_nodes = {}
         if self.layout is None:

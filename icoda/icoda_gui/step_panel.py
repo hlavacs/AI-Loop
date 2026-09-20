@@ -24,21 +24,23 @@ from icoda_core import (
 )
 from icoda_gui import tooltip
 
-ACTIONS = ("propose_approach", "approve_approach", "propose", "approve_architecture", "approve",
+ACTIONS = ("propose_approach", "approve_approach", "propose", "approve_architecture", "approve", "rephrase",
            "confirm_signature", "reject", "adapt", "rebuild", "open_worktree", "undo", "commit_manual")
 LABELS = {"propose_approach": "Propose approach", "approve_approach": "Approve approach",
           "propose": "Propose", "approve": "Approve", "reject": "Reject…", "adapt": "Adapt…",
           "rebuild": "Rebuild", "open_worktree": "Open worktree", "undo": "Undo last step",
           "commit_manual": "Commit manual edits", "approve_architecture": "Approve architecture",
-          "confirm_signature": "Confirm signatures"}
+          "confirm_signature": "Confirm signatures", "rephrase": "Rephrase"}
 MORE_ACTIONS = ("rebuild", "open_worktree", "commit_manual")  # rarely needed: behind the More… button
 PHASE_ACTIONS: dict[str, tuple[str, ...]] = {
     prompt.ARCHITECTURE: ("propose", "approve", "confirm_signature", "reject", "adapt", "approve_architecture",
-                          "undo"),
+                          "rephrase", "undo"),
     prompt.IMPLEMENTATION: ("propose_approach", "approve_approach", "propose", "approve", "confirm_signature",
-                            "reject", "adapt", "undo"),
+                            "reject", "adapt", "rephrase", "undo"),
 }
 HELP = {
+    "rephrase": ("Explain the current proposal or approach in simpler language. The proposed code stays unchanged.",
+                 "needs a current step description and an available provider"),
     "propose_approach": ("Ask the agent how the current target should be implemented (prose only, no code).",
                          "needs an unimplemented target and no approach waiting for a decision"),
     "approve_approach": ("Accept the approach; the next Propose asks for the code and its tests.",
@@ -395,6 +397,14 @@ class StepPanel:
             self.set_details_visible(True)
             self.detail_notebook.select(self.approach_text.master)
 
+    def refresh_description(self) -> None:
+        """Update only the explanation, preserving review edits and signature confirmation."""
+        if self.proposal is not None and self.proposal.response is not None:
+            _set_text(self.rationale, _rationale_text(self.proposal))
+            self.set_details_visible(True)
+        elif self.approach is not None:
+            self.show_approach(self.approach, self.approach_approved)
+
     def show(self, proposal: steps.Proposal | None) -> None:
         """Present a proposal (or clear the panel) and enable the buttons that apply to it."""
         self.set_details_visible(proposal is not None)
@@ -602,6 +612,15 @@ class StepPanel:
                 return "a historical step is shown"
             if not (pending_approach or proposal_adaptable):
                 return "needs a usable proposal or a pending approach"
+        elif action == "rephrase":
+            if self.selected_iteration is not None:
+                return "a historical step is shown"
+            if not self.provider_ready:
+                return "choose an available provider first"
+            description = (self.proposal.response.rationale if self.proposal and self.proposal.response else
+                           self.approach.plan if pending_approach and self.approach else "")
+            if not description.strip():
+                return "no current step description"
         elif action in ("rebuild", "open_worktree"):
             if self.proposal is None:
                 return "no proposal"

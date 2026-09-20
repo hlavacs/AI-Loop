@@ -73,7 +73,7 @@ class CallViewCanvas(graph_canvas.GraphCanvas):
         depth_label.pack(side=tk.LEFT, padx=(10, 2))
         depth.pack(side=tk.LEFT)
         callers.pack(side=tk.LEFT, padx=10)
-        ttk.Label(controls, textvariable=self.hover_var, anchor="w", foreground="#555555").pack(side=tk.LEFT,
+        ttk.Label(controls, textvariable=self.hover_var, anchor="w", foreground="#555555", width=1).pack(side=tk.LEFT,
                                                                                                   fill=tk.X,
                                                                                                   expand=True)
         self.toolbar_controls = {"from-main": from_main, "depth-label": depth_label, "depth": depth,
@@ -143,6 +143,7 @@ class CallViewCanvas(graph_canvas.GraphCanvas):
     # -- drawing --------------------------------------------------------------------------
 
     def redraw(self) -> None:
+        self.hide_tooltip()
         self.canvas.delete("all")
         self.item_nodes = {}
         if self.layout is None:

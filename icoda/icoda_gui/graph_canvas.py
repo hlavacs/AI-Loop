@@ -12,7 +12,7 @@ from typing import Any
 from icoda_core import expansion
 from icoda_core.graph_filter import NodeDecision
 from icoda_core.node_status import NodeAppearance
-from icoda_gui import zoom_controls
+from icoda_gui import tooltip, zoom_controls
 
 SHOW_STEP = "show_step"
 PROPOSE_HERE = "propose_here"
@@ -143,6 +143,7 @@ class NodeAppearanceCanvas:
 
     def __init__(self) -> None:
         self.canvas: Any
+        self.tooltip: tooltip.Tooltip | None = None
         self.node_appearances: Mapping[str, NodeAppearance] = MappingProxyType({})
         self.node_decisions: Mapping[str, NodeDecision] = MappingProxyType({})
         self.expansion_result: expansion.ExpansionResult | None = None
@@ -303,6 +304,7 @@ class NodeAppearanceCanvas:
                                      (self.hierarchy_offset + len(visible)) / len(nodes))
 
     def hide_hierarchy(self) -> None:
+        self.hide_tooltip()
         self.hierarchy_bounds = None
         self.hierarchy_background = None
         self._hierarchy_drag_anchor = None
@@ -409,6 +411,10 @@ class NodeAppearanceCanvas:
 
     def redraw(self) -> None:
         raise NotImplementedError
+
+    def hide_tooltip(self) -> None:
+        if self.tooltip is not None:
+            self.tooltip.hide()
 
 
 class GraphCanvas(NodeAppearanceCanvas):

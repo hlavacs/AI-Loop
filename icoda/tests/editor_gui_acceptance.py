@@ -15,7 +15,7 @@ sys.path.insert(0, str(ROOT))
 
 from gui_acceptance import capture, load_application, require_visible
 
-from icoda_core import clusters, persistence, session, views
+from icoda_core import clusters, persistence, prompt, response, session, steps, views
 from icoda_core.model import DerivedModel, Edge, EdgeKind, Entity, FileInfo, Kind, merge_external_names
 
 SOURCE = """// Score Clamp: a small C++ example. 🎯
@@ -319,6 +319,117 @@ def verify_scrolling_and_dragging(root: tk.Tk, app: Any, output: Path) -> None:
     app._expansion_auto_expand = True
 
 
+def verify_object_tooltips(root: tk.Tk, app: Any, output: Path) -> None:
+    # Earlier screenshots pin the main window above floating windows on macOS.
+    # Restore ordinary application stacking before testing actual tooltip visibility.
+    root.attributes("-topmost", False)
+    root.lift()
+
+    def hover(widget: Any, tip: Any, x: int, y: int, expected: str) -> None:
+        # Exercise real Tk bindings without taking over the user's pointer during the hover delay.
+        tags = widget.bindtags()
+        guard = "tooltip-acceptance-events"
+        for event in ("<Motion>", "<Leave>"):
+            root.bind_class(guard, event, lambda event: None if event.send_event else "break")
+        widget.bindtags((guard, *tags))
+        try:
+            widget.event_generate("<Motion>", x=x, y=y, sendevent=True,
+                                  rootx=widget.winfo_rootx() + x, rooty=widget.winfo_rooty() + y)
+            deadline = time.monotonic() + 2
+            while tip.window is None and time.monotonic() < deadline:
+                root.update()
+                time.sleep(.02)
+            root.update()
+            assert tip.window is not None and tip.window.winfo_viewable(), (expected, str(widget), tip.message)
+            assert expected in tip.window.winfo_children()[0].cget("text"), tip.message
+            popup = tip.window
+            widget.event_generate("<Motion>", x=x + 1, y=y, sendevent=True,
+                                  rootx=widget.winfo_rootx() + x + 1, rooty=widget.winfo_rooty() + y)
+            root.update()
+            assert tip.window is popup  # Moving within a row must not recreate the popup.
+            if expected == "Method: ScoreClamp::clamp" and not (output / "object-tooltip.png").exists():
+                # Allow the native compositor to paint the newly mapped floating window.
+                for _ in range(15):
+                    root.update()
+                    time.sleep(.02)
+                capture(root, output / "object-tooltip.png", lift=False)
+                assert tip.window is popup and popup.winfo_viewable()
+            widget.event_generate("<Leave>", sendevent=True)
+            root.update()
+            assert tip.window is None and tip.pending is None
+        finally:
+            widget.bindtags(tags)
+            for event in ("<Motion>", "<Leave>"):
+                root.unbind_class(guard, event)
+            tip.hide()
+
+    for index, view in enumerate(app._expansion_canvases()):
+        app.views.select(index)
+        root.update()
+        for target, expected in (("main.cpp", "File: main.cpp"), ("clamp", "Class: ScoreClamp"),
+                                  ("clamp::clamp", "Method: ScoreClamp::clamp"), ("main", "Function: main")):
+            items = [item for item, node in view.item_nodes.items()
+                     if node == target and view.canvas.type(item) == "rectangle"]
+            x1, y1, x2, y2 = view.canvas.coords(items[-1])  # the hierarchy's copy of the object
+            hover(view.canvas, view.tooltip, int((x1 + x2) / 2), int((y1 + y2) / 2), expected)
+        # Also test a node in the diagram, where item IDs differ from hierarchy IDs.
+        target = ("main.cpp", "main", "clamp")[index]
+        expected = ("File: main.cpp", "Function: main", "Class: ScoreClamp")[index]
+        items = [item for item, node in view.item_nodes.items()
+                 if node == target and view.canvas.type(item) == "rectangle"]
+        x1, y1, x2, y2 = view.canvas.coords(items[0])
+        hover(view.canvas, view.tooltip, int((x1 + x2) / 2), int((y1 + y2) / 2), expected)
+
+    app.views.select(3)
+    view = app.mind_map_view
+    root.update()
+    for key in ("cluster:.", "file:main.cpp", "entity:clamp"):
+        view.activate_node(key)
+    root.update()
+    items = [item for item, node in view.item_nodes.items()
+             if node == "entity:clamp::clamp" and view.canvas.type(item) == "rectangle"]
+    x1, y1, x2, y2 = view.canvas.coords(items[0])
+    hover(view.canvas, view.tooltip, int((x1 + x2) / 2), int((y1 + y2) / 2), "Method: ScoreClamp::clamp")
+    app.select_node("main.cpp")
+    app.side_views.select(app.tree.master)
+    root.update()
+    x, y, width, height = app.tree.bbox("clamp::clamp")
+    hover(app.tree, app.tree_tooltip, x + width // 2, y + height // 2, "Method: ScoreClamp::clamp")
+    app.views.select(0)
+    app.side_views.select(app.source_editor.frame)
+
+
+def verify_rephrase_button(root: tk.Tk, app: Any, source: Path, output: Path) -> None:
+    original_source = source.read_text(encoding="utf-8")
+    simplified = "Keep scores between 0 and 100.\n- Return the nearest limit when a score is outside that range."
+    proposal = steps.Proposal(1, prompt.StepRequest(prompt.ARCHITECTURE, 1), source.parent,
+                              response=response.StepResponse("Clamp scores", "Normalize the bounded score domain.", ()),
+                              delta=steps.Delta((), (), (), ()), build=steps.BuildResult(True), test=steps.TestResult(True))
+    app.steps.runner = steps.StepRunner(source.parent, app.config, invoke=lambda *_args: simplified)
+    app.steps.proposal = proposal
+    app.panel.set_phase(persistence.ProjectPhase.ARCHITECTURE)
+    app.panel.set_project_facts(True, True, True)
+    app.panel.show(proposal)
+    root.update()
+    require_visible(root, {"rephrase": app.panel.buttons["rephrase"]})
+    original_bell = root.bell
+    app.root.bell = lambda **_kwargs: None
+    try:
+        app.panel.buttons["rephrase"].invoke()
+        deadline = time.monotonic() + 3
+        while app.panel.busy and time.monotonic() < deadline:
+            root.update()
+            time.sleep(.02)
+        assert not app.panel.busy and app.steps.proposal is proposal
+        assert simplified in app.panel.rationale.get("1.0", "end")
+        assert source.read_text(encoding="utf-8") == original_source
+        capture(root, output / "rephrased-step.png")
+    finally:
+        app.root.bell = original_bell
+    app.panel.show(None)
+    app.steps.proposal = None
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--output", type=Path, required=True)
@@ -363,6 +474,7 @@ def main() -> None:
         app.views.select(app.call_view.frame)
         click_node(root, app.call_view, "clamp::clamp")
         assert pane.text.index("insert") == "4.0"
+        verify_object_tooltips(root, app, args.output)
 
         # Unicode before the match must not shift the Text selection on Tcl 8 or 9.
         pane.query.set("score")
@@ -407,11 +519,13 @@ def main() -> None:
         pane.find()
         require_visible(root, pane.buttons)
         bounds = capture(root, args.output / "source-editor.png")
+        verify_rephrase_button(root, app, source, args.output)
         (args.output / "editor-gui.json").write_text(json.dumps({
             "passed": True, "bounds": bounds, "saved_source": str(source), "panel_layout": panel_layout,
             "checks": ["visible file boxes", "repeated Fit", "parent/child hierarchy order", "hierarchy collapse and source clicks",
                        "hierarchy scrollbar and wheel", "last row source navigation", "slow drag after a rapid second press",
                        "hierarchy header drag", "scrollbar and source clicks after moving the hierarchy",
+                       "object tooltip popups across all diagrams and the Entities list", "Rephrase button with scripted provider",
                        "file/class/function clicks", "Unicode find", "literal replace", "replace all",
                        "undo/redo", "unsaved navigation", "save", "analysis refresh", "reload"]}, indent=2) + "\n")
         print("PASS: real Tk source navigation, search/replace, undo/redo, save/reload, visible controls, screenshot")

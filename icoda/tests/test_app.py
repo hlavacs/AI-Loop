@@ -128,6 +128,26 @@ def test_describe_and_select_nodes(app_module, tmp_path: Path) -> None:
     assert "2 entities" in app.describe_node("src/a.cpp")
     assert "errors: expected" in app.describe_node("src/b.cpp")
     assert app.describe_node("external:std").startswith("std\nprintf")
+    assert app.describe_node("file:src/a.cpp") == app.describe_node("src/a.cpp")
+    entity = app.displayed.model.entities["u:A:f"]
+    entity.brief, entity.satisfies, entity.test_files = "Updates the object.", ("R-1",), ("tests/a.cpp",)
+    entity.declaration_file = "include/a.hpp"
+    description = app.describe_node("entity:u:A:f")
+    assert description == app.describe_node("u:A:f")
+    for expected in ("Method: A::f", "void f()", "src/a.cpp:5", "include/a.hpp", "Status: implemented",
+                     "Updates the object.", "Requirements: R-1", "Tests: tests/a.cpp"):
+        assert expected in description
+    assert "Class: A" in app.describe_node("u:A")
+    assert "Function: g" in app.describe_node("u:g")
+    assert "Cluster:" in app.describe_node("cluster:" + app.displayed.clustering.clusters[0].id)
+    assert "External symbol: printf" in app.describe_node("external-symbol:std:0")
+    assert app.describe_node("external-symbol:missing:0") == app.describe_node("unknown") == ""
+    candidate = DerivedModel.from_json(app.displayed.model.to_json())
+    candidate.entities["u:A:f"].signature = "void f(int value)"
+    candidate.add_entity(Entity("u:new", Kind.FUNCTION, "new_api", "new_api", "new.cpp", 7))
+    assert "void f(int value)" in app.describe_node("u:A:f", candidate)
+    assert "Function: new_api" in app.describe_node("u:new", candidate)
+    assert "void f()" in app.describe_node("u:A:f") and not app.describe_node("u:new")
     app.select_node("src/a.cpp")
     assert app.side_title.get() == "src/a.cpp"
     app.select_node("external:std")
