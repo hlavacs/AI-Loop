@@ -131,12 +131,12 @@ describe the separate AI-Loop application and are not ICODA plans or specificati
   `icoda/icoda_python.bash:choose_icoda_python`.
 - Auxiliary CLI entry points: `icoda/icoda_core/provider_check.py:main` and the analysis child process
   `icoda/icoda_core/session.py:main`. There is no TUI or web entry point; neither is planned.
-- Core package: 39 top-level Python modules under `icoda/icoda_core/`, counting every `*.py` file including
+- Core package: 40 top-level Python modules under `icoda/icoda_core/`, counting every `*.py` file including
   `__init__.py`, and including the phase/queue, grouping, coverage/rules/mind-map,
   common graph-status/filter/expansion, and Python-analysis slices added after the original baseline.
-- GUI package: 17 Python modules under `icoda/icoda_gui/`, including all six overview surfaces, the Troubleshooting tab, and their shared controls.
-- Tests: 61 Python test modules under `icoda/tests/`, counting the 56 top-level `test_*.py` modules plus the 5
-  `*_acceptance.py` programs (`gui`, `recovery_gui`, `simulation`, `performance`, and `real_provider`). Supporting `verify.py`,
+- GUI package: 18 Python modules under `icoda/icoda_gui/`, including all six overview surfaces, the Troubleshooting and Source Editor tabs, and their shared controls.
+- Tests: 63 Python test modules under `icoda/tests/`, counting the 57 top-level `test_*.py` modules plus the 6
+  `*_acceptance.py` programs (`gui`, `recovery_gui`, `editor_gui`, `simulation`, `performance`, and `real_provider`). Supporting `verify.py`,
   `conftest.py`, `tk_stub.py`, `diag_apple.py`, and the CMake/C++23 sample project are not included in that count.
 
 ## Capability matrix

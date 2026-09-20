@@ -25,10 +25,12 @@ class MindMapCanvas(graph_canvas.GraphCanvas):
     def __init__(self, parent: Any, select_step: Callable[[int], None],
                  resolve_actions: graph_canvas.ActionResolver | None = None,
                  dispatch_action: graph_canvas.ActionDispatcher | None = None,
-                 focus_node: Callable[[str | None], None] | None = None) -> None:
+                 focus_node: Callable[[str | None], None] | None = None,
+                 open_source: Callable[[str], None] | None = None) -> None:
         super().__init__(parent, resolve_actions, dispatch_action)
         self.select_step = select_step
         self.focus_node = focus_node
+        self.open_source = open_source
         self.tree: mind_map.MindMap | None = None
         self.layout: views.MindMapLayout | None = None
         self.state = mind_map.MindMapViewState()
@@ -152,6 +154,8 @@ class MindMapCanvas(graph_canvas.GraphCanvas):
             self.fit() if not self.user_zoomed else self.redraw()
         if node.introduced_iteration is not None:
             self.select_step(node.introduced_iteration)
+        if self.open_source is not None and (node.usr or node.file):
+            self.open_source(node.usr or node.file)
 
     def _save_state(self) -> None:
         if self.store is not None:

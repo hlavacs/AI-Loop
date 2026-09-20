@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 import sys
 import types
 from collections.abc import Iterator
@@ -56,20 +57,66 @@ class _Var:
 
 
 class _Text(_Widget):
-    """A text box that keeps its content: ``insert``, ``delete`` and ``get`` for whole-text use."""
+    """A small in-memory Text supporting source-editor character/line indices."""
 
     def __init__(self, *args: Any, **kwargs: Any) -> None:
         super().__init__(*args, **kwargs)
         self.content = ""
+        self.marks = {"insert": 0}
+        self.modified = False
+        self.tags: dict[str, list[tuple[int, int]]] = {}
+        self.tk = types.SimpleNamespace(call=lambda _string, _length, text: len(text))
+
+    def _offset(self, index: str) -> int:
+        index = str(index)
+        if index == "end":
+            return len(self.content) + 1
+        if index == "end-1c":
+            return len(self.content)
+        if index in self.marks:
+            return self.marks[index]
+        match = re.fullmatch(r"1\.0 \+ (\d+) chars", index)
+        if match:
+            return int(match.group(1))
+        line, column = index.split(".", 1)
+        rows = self.content.splitlines(keepends=True)
+        begin = sum(map(len, rows[:int(line) - 1]))
+        if column.endswith(" lineend"):
+            return begin + len(rows[int(line) - 1].rstrip("\n")) if int(line) <= len(rows) else len(self.content)
+        return min(len(self.content), begin + int(column))
 
     def insert(self, index: str, text: str) -> None:
-        self.content = text + self.content if str(index).startswith("1.0") else self.content + text
+        position = min(self._offset(index), len(self.content))
+        self.content = self.content[:position] + text + self.content[position:]
+        self.marks["insert"] = position + len(text)
+        self.modified = True
 
     def delete(self, start: str = "1.0", end: str = "end") -> None:
-        self.content = ""
+        begin, finish = self._offset(start), self._offset(end)
+        self.content = self.content[:begin] + self.content[finish:]
+        self.marks["insert"] = min(begin, len(self.content))
+        self.modified = True
 
     def get(self, start: str = "1.0", end: str = "end") -> str:
-        return self.content + ("\n" if str(end) == "end" else "")
+        return (self.content + "\n")[self._offset(start):self._offset(end)]
+
+    def mark_set(self, mark: str, index: str) -> None:
+        self.marks[mark] = self._offset(index)
+
+    def index(self, index: str) -> str:
+        prefix = self.content[:self._offset(index)]
+        return f"{prefix.count(chr(10)) + 1}.{len(prefix.rsplit(chr(10), 1)[-1])}"
+
+    def edit_modified(self, value: bool | None = None) -> bool:
+        if value is not None:
+            self.modified = value
+        return self.modified
+
+    def tag_add(self, name: str, start: str, end: str) -> None:
+        self.tags.setdefault(name, []).append((self._offset(start), self._offset(end)))
+
+    def tag_remove(self, name: str, start: str, end: str) -> None:
+        self.tags.pop(name, None)
 
 
 class _Tk(_Widget):
@@ -103,7 +150,7 @@ def install() -> None:
     ttk = _module("tkinter.ttk")
     filedialog = _module("tkinter.filedialog", askdirectory=lambda **kwargs: "", askopenfilename=lambda **kwargs: "")
     messagebox = _module("tkinter.messagebox", showerror=lambda *a, **k: None, showinfo=lambda *a, **k: None,
-                         askyesno=lambda *a, **k: False)
+                         askyesno=lambda *a, **k: False, askyesnocancel=lambda *a, **k: None)
     font = _module("tkinter.font")
     simpledialog = _module("tkinter.simpledialog", askstring=lambda *a, **k: None)
     for name, module in (("tkinter", root), ("tkinter.ttk", ttk), ("tkinter.filedialog", filedialog),

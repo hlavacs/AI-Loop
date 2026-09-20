@@ -1,4 +1,12 @@
 {
+  "source-editor.png": {
+    "size": [2736,1546],
+    "regions": [
+      {"box": [2108,239,2335,293], "focus": "Source Editor tab"},
+      {"box": [1640,351,2670,563], "focus": "Save, undo, redo, find and replace controls"},
+      {"box": [1644,653,2108,688], "focus": "Selected C++ method and highlighted search match"}
+    ]
+  },
   "specification-overview.png": {
     "size": [1120,680],
     "regions": [

@@ -240,6 +240,15 @@ def main(argv: list[str] | None = None) -> int:
         auto_approve_metrics = capture(root, args.output / "auto-approve.png")
         if bool(app.panel.auto_approve_var.get()) is not auto_approve_before:
             app.panel.auto_approve_check.invoke()
+        if set(app.opened.model.files) - app.view.node_boxes.keys():
+            raise RuntimeError("File View is missing source boxes")
+        if app.view._boxes_overlap():
+            raise RuntimeError("fitted source boxes overlap")
+        for file in app.opened.model.files:
+            left, top, right, bottom = app.view.node_boxes[file]
+            if left < 0 or top < 44 or right >= app.canvas.winfo_width() - 294 \
+                    or bottom >= app.canvas.winfo_height():
+                raise RuntimeError(f"fitted file box is hidden or clipped: {file}")
         file_metrics = capture(root, args.output / "file-view.png")
         pinned_cluster = next((cluster for cluster in app.opened.clustering.clusters
                                if len(cluster.files) >= 2), None)
@@ -268,12 +277,17 @@ def main(argv: list[str] | None = None) -> int:
                           if node.key == f"cluster:{pinned_cluster.id}"), None) if result is not None else None
             if label != "Pinned Application Core":
                 raise RuntimeError(f"{canvas_name} hierarchy did not render the renamed cluster")
-        cluster_x, cluster_y = app.view.to_screen(renamed_circle.cx, renamed_circle.cy)
+        cluster_item = next(item for item, node in app.view.item_nodes.items()
+                            if node == f"cluster:{pinned_cluster.id}" and app.canvas.type(item) == "rectangle")
+        left, top, right, bottom = app.canvas.coords(cluster_item)
+        cluster_x, cluster_y = (left + right) / 2, (top + bottom) / 2
         app.view.action_menu.open(SimpleNamespace(
             x=int(cluster_x), y=int(cluster_y),
             x_root=app.canvas.winfo_rootx() + int(cluster_x),
             y_root=app.canvas.winfo_rooty() + int(cluster_y)))
         root.update()
+        if app.view.action_menu.context is None or app.view.action_menu.context.cluster_id != pinned_cluster.id:
+            raise RuntimeError("the visible cluster row did not open its context menu")
         cluster_pin_rename_metrics = capture(root, args.output / "cluster-pin-rename.png", lift=False)
         app.view.action_menu.menu.unpost()
         source_cluster = next((cluster for cluster in app.opened.clustering.clusters

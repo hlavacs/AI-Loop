@@ -66,6 +66,29 @@ def test_arrow_endpoints_are_shortened() -> None:
     assert views.arrow_endpoints(a, b, margin=10) == (10, 0, 90, 0)
 
 
+def test_external_nodes_stay_near_files_independent_of_nominal_page_height() -> None:
+    model = small_model()
+    for height in (1000, 10000):
+        layout = views.layout_file_view(model, clusters.cluster_files(model), height=height)
+        files = [node for node in layout.nodes.values() if node.kind == "file"]
+        external = layout.nodes["external:std"]
+        assert external.y == max(node.y for node in files) + 90
+        assert min(node.x for node in files) <= external.x <= max(node.x for node in files)
+
+
+def test_compact_file_view_preserves_files_relations_and_original_layout() -> None:
+    model = small_model()
+    layout = views.layout_file_view(model, clusters.cluster_files(model))
+    positions = [(node.x, node.y) for node in layout.nodes.values()]
+    compact = views.compact_file_view(layout, columns=2, column_width=120, row_height=35)
+    assert compact.nodes.keys() == layout.nodes.keys()
+    assert compact.circles == layout.circles
+    assert compact.file_arrows == layout.file_arrows and not compact.cluster_arrows
+    assert len({(node.x, node.y) for node in compact.nodes.values()}) == len(layout.nodes)
+    assert {node.x for node in compact.nodes.values()} == {60, 180}
+    assert [(node.x, node.y) for node in layout.nodes.values()] == positions
+
+
 def call_model() -> DerivedModel:
     model = DerivedModel("/p")
     model.files["m.cpp"] = FileInfo("m.cpp")

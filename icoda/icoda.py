@@ -33,6 +33,7 @@ from icoda_core import (
     persistence,
     phases,
     session,
+    source_edit,
     source_watch,
     specification,
     steplog,
@@ -51,6 +52,7 @@ from icoda_gui import (
     mind_map_view,
     provider_field,
     screen,
+    source_editor,
     spec_editor,
     step_controller,
     step_panel,
@@ -60,7 +62,6 @@ from icoda_gui import (
     zoom_controls,
 )
 
-NODE_RADIUS = 6
 CLUSTER_LEVEL_BELOW = 1.6  # file-level arrows appear once zoomed in this far beyond the fit
 DOCS_ROOT = Path(__file__).resolve().parent
 DOCUMENTS = (("Getting started", "docs/GETTING_STARTED.md"), ("Tutorial", "docs/TUTORIAL.md"),
@@ -77,6 +78,8 @@ class FileViewCanvas(graph_canvas.NodeAppearanceCanvas):
         self.canvas = canvas
         self.app = app
         self.layout: views.FileViewLayout | None = None
+        self._original_layout: views.FileViewLayout | None = None
+        self.compact = False
         self.scale = 1.0
         self.fit_scale = 1.0
         self.user_zoomed = False
@@ -84,6 +87,7 @@ class FileViewCanvas(graph_canvas.NodeAppearanceCanvas):
         self.drag_start: tuple[int, int] | None = None
         self.dragged = False
         self.item_nodes: dict[int, str] = {}
+        self.node_boxes: dict[str, tuple[float, float, float, float]] = {}
         self.zoom_control_widgets: dict[str, Any] = {}
         self.tooltip = tooltip.Tooltip(canvas)
         for event, handler in (("<MouseWheel>", self.on_wheel), ("<Button-4>", self.on_wheel),
@@ -113,7 +117,7 @@ class FileViewCanvas(graph_canvas.NodeAppearanceCanvas):
         return (x * self.scale + self.offset[0], y * self.scale + self.offset[1])
 
     def show(self, layout: views.FileViewLayout) -> None:
-        self.layout = layout
+        self.layout = self._original_layout = layout
         self.user_zoomed = False
         self.scale, self.offset = 1.0, (0.0, 0.0)
         self.fit()
@@ -122,26 +126,51 @@ class FileViewCanvas(graph_canvas.NodeAppearanceCanvas):
     def fit(self) -> None:
         """Scale and centre the whole diagram — as drawn, labels included — inside the visible canvas."""
         self.user_zoomed = False
+        self.layout = self._original_layout or self.layout
+        self.compact = False
         if self.layout is None or not self.layout.nodes:
             self.redraw()
             return
         width = max(int(self.canvas.winfo_width() or 0), 200)
         height = max(int(self.canvas.winfo_height() or 0), 200)
-        self.expansion_layer_enabled = False
-        try:
-            for _ in range(2):  # label sizes depend on the scale, so measure, fit, and measure once more
-                self.redraw()
-                bounds = self.canvas.bbox("all") or (0, 0, width, height)
-                left, top, right, bottom = (float(v) for v in bounds)
-                drawn_width, drawn_height = max(right - left, 1.0), max(bottom - top, 1.0)
-                factor = min((width - 24) / drawn_width, (height - 24) / drawn_height)
-                self.scale *= factor
-                self.offset = (self.offset[0] * factor + (width - drawn_width * factor) / 2 - left * factor,
-                               self.offset[1] * factor + (height - drawn_height * factor) / 2 - top * factor)
-        finally:
-            self.expansion_layer_enabled = True
+        # The status legend and hierarchy use screen coordinates; neither belongs in the fitted graph bounds.
+        hierarchy = 306 if self.expansion_result is not None and self.expansion_result.graph.nodes else 0
+        available_width, available_height = max(width - hierarchy - 24, 100), max(height - 60, 100)
+        self._fit_graph(available_width, available_height)
+        if self._boxes_overlap():
+            column_width = max(box[2] - box[0] for box in self.node_boxes.values()) + 4
+            row_height = max(box[3] - box[1] for box in self.node_boxes.values()) + 8
+            columns = max(1, int((available_width + 4) / column_width))
+            self.layout = views.compact_file_view(self.layout, columns, column_width, row_height)
+            self.compact = True
+            self.scale, self.offset = 1.0, (0.0, 0.0)
+            self._fit_graph(available_width, available_height)
         self.fit_scale = self.scale
         self.redraw()
+
+    def _boxes_overlap(self) -> bool:
+        boxes = sorted(self.node_boxes.values())
+        for index, a in enumerate(boxes):
+            for b in boxes[index + 1:]:
+                if b[0] >= a[2]:
+                    break
+                if a[1] < b[3] and b[1] < a[3]:
+                    return True
+        return False
+
+    def _fit_graph(self, available_width: float, available_height: float) -> None:
+        for _ in range(6):  # text remains readable while node positions and edge geometry scale
+            self.redraw()
+            bounds = self.canvas.bbox("file-graph") or (0, 0, available_width, available_height)
+            left, top, right, bottom = (float(v) for v in bounds)
+            drawn_width, drawn_height = max(right - left, 1.0), max(bottom - top, 1.0)
+            factor = min(available_width / drawn_width, available_height / drawn_height)
+            factor = min(factor, zoom_controls.MAX_ZOOM / self.scale)
+            self.scale *= factor
+            self.offset = (self.offset[0] * factor + 12 + (available_width - drawn_width * factor) / 2 - left * factor,
+                           self.offset[1] * factor + 48 + (available_height - drawn_height * factor) / 2 - top * factor)
+            if abs(factor - 1.0) < 0.001:
+                break
 
     def on_resize(self, _event: Any) -> None:
         if not self.user_zoomed:
@@ -152,11 +181,14 @@ class FileViewCanvas(graph_canvas.NodeAppearanceCanvas):
     def redraw(self) -> None:
         self.canvas.delete("all")
         self.item_nodes = {}
+        self.node_boxes = {}
         if self.layout is None:
             return
         self._draw_circles()
-        self._draw_arrows()
         visible_count = self._draw_nodes()
+        self._draw_arrows()
+        self.canvas.tag_lower("file-edge")
+        self.canvas.addtag_all("file-graph")
         self.draw_filter_empty(visible_count)
         self.draw_appearance_key()
         self.draw_expansion_layer()
@@ -164,6 +196,8 @@ class FileViewCanvas(graph_canvas.NodeAppearanceCanvas):
     def _draw_circles(self) -> None:
         """The circles themselves are never drawn; a multi-file cluster shows its name in the empty centre."""
         assert self.layout is not None
+        if self.compact:
+            return  # cluster labels and actions remain in the hierarchy beside the compact file grid
         for circle in self.layout.circles:
             if len(circle.files) < 2 or not any(self.node_visible(file) for file in circle.files):
                 continue
@@ -174,7 +208,7 @@ class FileViewCanvas(graph_canvas.NodeAppearanceCanvas):
 
     def _draw_arrows(self) -> None:
         assert self.layout is not None
-        cluster_level = self.scale < self.fit_scale * CLUSTER_LEVEL_BELOW
+        cluster_level = not self.compact and self.scale < self.fit_scale * CLUSTER_LEVEL_BELOW
         clustering = self.app.opened.clustering if self.app.opened else None
         for arrow in self.layout.file_arrows:
             if not self.edge_visible(arrow.source, arrow.target):
@@ -197,26 +231,31 @@ class FileViewCanvas(graph_canvas.NodeAppearanceCanvas):
         return views.Node(circle.id, circle.name, circle.cx, circle.cy, circle.id, "cluster")
 
     def _draw_arrow(self, a: views.Node, b: views.Node, arrow: views.Arrow, base_width: float) -> None:
-        margin = 12 if a.kind == "file" else (self._radius_of(a) if a.kind == "cluster" else 30)
-        x0, y0, x1, y1 = views.arrow_endpoints(a, b, margin)
-        x1, y1 = self._shorten_end(x0, y0, x1, y1, b)
-        sx0, sy0 = self.to_screen(x0, y0)
-        sx1, sy1 = self.to_screen(x1, y1)
+        sx0, sy0 = self._edge_point(a, b)
+        sx1, sy1 = self._edge_point(b, a)
         if b.kind == "external":
             colour = self.edge_colour(a.id, b.id, "#c0c0c0")
-            self.canvas.create_line(sx0, sy0, sx1, sy1, fill=colour, width=1, arrow="last", dash=(2, 4))
+            self.canvas.create_line(sx0, sy0, sx1, sy1, fill=colour, width=1, arrow="last", dash=(2, 4),
+                                    tags="file-edge")
             return
         colour = self.edge_colour(a.id, b.id, views.ARROW_COLOURS[arrow.dominant])
         width = min(4.0, base_width + math.log2(arrow.weight) * 0.5)
-        self.canvas.create_line(sx0, sy0, sx1, sy1, fill=colour, width=width, arrow="last")
+        self.canvas.create_line(sx0, sy0, sx1, sy1, fill=colour, width=width, arrow="last", tags="file-edge")
         self.canvas.create_text((sx0 + sx1) / 2, (sy0 + sy1) / 2 - 6, text=arrow.badge, fill=colour,
-                                font=("TkDefaultFont", max(7, int(8 * self.scale))))
+                                font=("TkDefaultFont", max(7, int(8 * self.scale))), tags="file-edge")
 
-    def _shorten_end(self, x0: float, y0: float, x1: float, y1: float, b: views.Node) -> tuple[float, float]:
-        if b.kind != "cluster":
-            return x1, y1
-        _, _, ex, ey = views.arrow_endpoints(views.Node("", "", x0, y0, ""), b, self._radius_of(b))
-        return ex, ey
+    def _edge_point(self, node: views.Node, towards: views.Node) -> tuple[float, float]:
+        x, y = self.to_screen(node.x, node.y)
+        tx, ty = self.to_screen(towards.x, towards.y)
+        dx, dy = tx - x, ty - y
+        box = self.node_boxes.get(node.id)
+        if box is not None:
+            half_width, half_height = (box[2] - box[0]) / 2, (box[3] - box[1]) / 2
+            ratios = [size / abs(delta) for size, delta in ((half_width, dx), (half_height, dy)) if delta]
+            fraction = min(ratios, default=0.0)
+        else:
+            fraction = self._radius_of(node) * self.scale / (math.hypot(dx, dy) or 1)
+        return x + dx * fraction, y + dy * fraction
 
     def _radius_of(self, node: views.Node) -> float:
         assert self.layout is not None
@@ -230,31 +269,21 @@ class FileViewCanvas(graph_canvas.NodeAppearanceCanvas):
                 continue
             count += 1
             x, y = self.to_screen(node.x, node.y)
-            if node.kind == "external":
-                item = self.canvas.create_rectangle(
-                    x - 34, y - 12, x + 34, y + 12, fill=self.node_fill(node.id, "#f0f0f0"),
-                    outline=self.node_outline(node.id, "#8a8a8a"))
-                self.canvas.create_text(x, y, text=node.label,
-                                        fill=self.node_text_colour(node.id, "#505050"))
-            else:
-                fallback = "#d62728" if self._has_errors(node.id) else "#4c78a8"
-                fill = self.node_fill(node.id, fallback)
-                item = self.canvas.create_oval(x - NODE_RADIUS, y - NODE_RADIUS, x + NODE_RADIUS, y + NODE_RADIUS,
-                                               fill=fill, outline="")
-                self._draw_label(node, x, y)
-                self.draw_stale_marker(node.id, x + NODE_RADIUS, y - NODE_RADIUS)
+            label = self.canvas.create_text(x, y, text=node.label, fill=self.node_text_colour(node.id),
+                                            font=("TkDefaultFont", max(9, min(12, int(9 * self.scale)))))
+            bounds = self.canvas.bbox(label) or (x - 45, y - 8, x + 45, y + 8)
+            left, top, right, bottom = (float(v) for v in bounds)
+            box = (left - 8, top - 5, right + 8, bottom + 5)
+            self.node_boxes[node.id] = box
+            fallback = "#f0f0f0" if node.kind == "external" else "#aec7e8"
+            outline = "#d62728" if self._has_errors(node.id) else "#64748b"
+            item = self.canvas.create_rectangle(*box, fill=self.node_fill(node.id, fallback),
+                                                 outline=self.node_outline(node.id, outline))
+            self.canvas.tag_lower(item, label)
+            self.draw_stale_marker(node.id, box[2] - 3, box[1])
             self.item_nodes[item] = node.id
+            self.item_nodes[label] = node.id
         return count
-
-    def _draw_label(self, node: views.Node, x: float, y: float) -> None:
-        assert self.layout is not None
-        circle = next((c for c in self.layout.circles if c.id == node.cluster), None)
-        dx, dy = (node.x - circle.cx, node.y - circle.cy) if circle else (1.0, 0.0)
-        length = math.hypot(dx, dy) or 1.0
-        anchor = "w" if dx >= 0 else "e"
-        self.canvas.create_text(x + dx / length * 10, y + dy / length * 10, text=node.label, anchor=anchor,
-                                fill=self.node_text_colour(node.id),
-                                font=("TkDefaultFont", max(7, int(9 * self.scale))))
 
     def _has_errors(self, file: str) -> bool:
         opened = self.app.opened
@@ -361,6 +390,7 @@ class App:
                                                                                  + trace, self.project))
         self.run_async, self.run_on_ui = self.tasks.run_async, self.tasks.run_on_ui
         self._pending_analyses = 0
+        self._editor_refresh_pending: Path | None = None
         self._panel_busy_by_analysis = False
         self.watchdog: tasks.Watchdog | None = None
         if watchdog:  # a real window only: reports a frozen Tk thread with every thread's stack in the log
@@ -377,6 +407,7 @@ class App:
         self.steps = step_controller.StepController(self)
         self.recovery = troubleshooting.Troubleshooting(self)
         root.report_callback_exception = self._callback_error
+        root.protocol("WM_DELETE_WINDOW", self.close)
         root.bind("<FocusIn>", self._refresh_external_edits)
         self.panel.set_project_facts(False)
         if project is not None:
@@ -393,7 +424,7 @@ class App:
         file_menu.add_cascade(label="Open Recent", menu=self.recent_menu)
         file_menu.add_command(label="Reload", command=self.reload, accelerator=ACCELERATOR + "R")
         file_menu.add_separator()
-        file_menu.add_command(label="Quit", command=self.root.destroy, accelerator=ACCELERATOR + "Q")
+        file_menu.add_command(label="Quit", command=self.close, accelerator=ACCELERATOR + "Q")
         menubar.add_cascade(label="File", menu=file_menu)
         project_menu = tk.Menu(menubar, tearoff=0)
         project_menu.add_command(label="Specification…", command=self.edit_specification,
@@ -418,6 +449,7 @@ class App:
         view_menu.add_command(label="Mind Map", command=self.show_mind_map_view)
         view_menu.add_command(label="Coverage Overview", command=self.show_coverage_view)
         view_menu.add_command(label="Rule Issues", command=self.show_issue_view)
+        view_menu.add_command(label="Source Editor", command=lambda: self.side_views.select(self.source_editor.frame))
         view_menu.add_separator()
         view_menu.add_checkbutton(label="Recorded-test reachability colours", variable=self.coverage_mode_var,
                                   command=self.toggle_coverage_mode)
@@ -435,7 +467,7 @@ class App:
     def _bind_shortcuts(self) -> None:
         """Keyboard shortcuts for the menu entries that carry an accelerator (Command on macOS, Control elsewhere)."""
         for key, handler in (("n", self.ask_new_project), ("o", self.ask_open_project), ("r", self.reload),
-                             ("q", self.root.destroy), ("e", self.edit_specification), ("b", self.build_project),
+                             ("q", self.close), ("e", self.edit_specification), ("b", self.build_project),
                              ("Return", lambda: self.steps.action("propose"))):
             self.root.bind_all(f"<{MODIFIER}-{key}>", self._shortcut(handler))
 
@@ -623,7 +655,7 @@ class App:
         self.canvas.pack(fill=tk.BOTH, expand=True)
         self.views.add(file_view, text="File View")
         self.call_view = call_view.CallViewCanvas(
-            self.views, self.open_editor, self.graph_actions, self.dispatch_graph_action,
+            self.views, self.open_call_source, self.graph_actions, self.dispatch_graph_action,
             self.focus_graph_node)
         self.views.add(self.call_view.frame, text="Call View")
         self.class_view = class_view.ClassViewCanvas(
@@ -632,7 +664,7 @@ class App:
         self.views.add(self.class_view.frame, text="Class View")
         self.mind_map_view = mind_map_view.MindMapCanvas(
             self.views, self.select_step, self.graph_actions, self.dispatch_graph_action,
-            self.focus_graph_node)
+            self.focus_graph_node, self.select_node)
         self.views.add(self.mind_map_view.frame, text="Mind Map")
         self.coverage_view = coverage_view.CoverageOverview(self.views, self.open_editor)
         self.views.add(self.coverage_view.frame, text="Coverage")
@@ -647,9 +679,13 @@ class App:
                                                            model=self.config.model)
         self.provider_field.frame.pack(fill=tk.X, padx=4, pady=4)
         self.provider_field.on_change = self._provider_changed
+        self.side_views = ttk.Notebook(side)
+        self.side_views.pack(fill=tk.BOTH, expand=True, padx=4, pady=4)
+        entities = ttk.Frame(self.side_views)
+        self.side_views.add(entities, text="Entities")
         self.side_title = tk.StringVar(value="Entities")
-        ttk.Label(side, textvariable=self.side_title, anchor="w").pack(fill=tk.X, padx=4, pady=2)
-        self.tree = ttk.Treeview(side, columns=("kind", "line"), show="tree headings")
+        ttk.Label(entities, textvariable=self.side_title, anchor="w").pack(fill=tk.X, padx=4, pady=2)
+        self.tree = ttk.Treeview(entities, columns=("kind", "line"), show="tree headings")
         self.tree.heading("kind", text="kind")
         self.tree.heading("line", text="line")
         self.tree.column("kind", width=80)
@@ -657,6 +693,10 @@ class App:
         self.tree.pack(fill=tk.BOTH, expand=True)
         self.tree.bind("<Double-Button-1>", self.on_tree_double_click)
         self.tree.bind("<<TreeviewSelect>>", self.on_tree_select)
+        self.source_editor = source_editor.SourceEditor(
+            self.side_views, project=lambda: self.project, busy=lambda: self.panel.busy,
+            saved=self._editor_saved, failed=lambda *args, **kwargs: self.recovery.handle_failure(*args, **kwargs))
+        self.side_views.add(self.source_editor.frame, text="Source Editor")
         self.view = FileViewCanvas(self.canvas, self)
         self.view.build_zoom_controls(file_toolbar).pack(side=tk.RIGHT)
         self.panel = step_panel.StepPanel(vertical, lambda action: self.steps.action(action))
@@ -722,6 +762,9 @@ class App:
             return
         resolved = Path(path).expanduser().resolve()
         if self.project != resolved:
+            if not self.source_editor.clear():
+                return
+            self._editor_refresh_pending = None
             self.recovery.reset()
             self.steps.proposal = None
             self.steps.approach = None
@@ -753,6 +796,9 @@ class App:
         """Phase 0: create ``.icoda/`` and open the specification editor; saving it writes the step 0 skeleton."""
         if self.recovery.busy:
             return
+        if not self.source_editor.clear():
+            return
+        self._editor_refresh_pending = None
         self.recovery.reset()
         self.steps.proposal = None
         self.steps.approach = None
@@ -1172,10 +1218,15 @@ class App:
         return "\n".join(line for line in lines if line)
 
     def select_node(self, node_id: str) -> None:
-        """A click on a file lists its entities in the side panel (the Class View arrives in M4)."""
-        if self.opened is None or node_id.startswith("external:"):
+        """A file/entity click opens its source and retains the file's entity list in the adjacent tab."""
+        if self.opened is None or node_id.startswith(("external:", "cluster:")):
             return
-        self.focus_graph_node(None)
+        usr = node_id.removeprefix("entity:")
+        selected_entity = self.opened.model.entities.get(usr)
+        node_id = selected_entity.file if selected_entity is not None else node_id.removeprefix("file:")
+        if node_id not in self.opened.model.files:
+            return
+        self.focus_graph_node(usr if selected_entity is not None else None)
         self.side_title.set(node_id)
         self.tree.delete(*self.tree.get_children())
         entities = sorted(self.opened.model.entities_in(node_id), key=lambda e: e.line)
@@ -1185,6 +1236,7 @@ class App:
             label = entity.name + (f"  {entity.signature}" if entity.signature else "")
             self.tree.insert(parent, tk.END, iid=entity.usr, text=label, values=(entity.kind.value, entity.line),
                              open=True)
+        self.open_editor(node_id, selected_entity.line if selected_entity is not None else 1)
 
     def on_tree_select(self, _event: Any) -> None:
         """A selected function becomes the root of the Call View."""
@@ -1192,8 +1244,11 @@ class App:
             return
         for usr in self.tree.selection():
             if usr in self.opened.model.entities:
-                self.call_view.set_root(usr)
+                entity = self.opened.model.entities[usr]
+                if entity.kind in CALLABLE_KINDS:
+                    self.call_view.set_root(usr)
                 self.focus_graph_node(usr)
+                self.open_editor(entity.file, entity.line)
 
     def on_tree_double_click(self, _event: Any) -> None:
         if self.opened is None:
@@ -1203,11 +1258,51 @@ class App:
             if entity is not None:
                 self.open_editor(entity.file, entity.line)
 
-    def open_editor(self, file: str, line: int = 1) -> None:
-        if self.project is None:
+    def open_editor(self, file: str, line: int = 1, *, root: Path | None = None) -> None:
+        selected_root = root or self.project
+        if selected_root is None or file.startswith(("external:", "cluster:")):
             return
-        if not session.open_in_editor(self.project / file, line, self.config.editor):
-            self.status.set(f"could not open an editor for {file}")
+        if self.opened is not None:
+            entity = self.opened.model.entities.get(file.removeprefix("entity:"))
+            if entity is not None:
+                file, line = entity.file, entity.line
+        file = file.removeprefix("file:")
+        if self.source_editor.open_file(selected_root, file, line):
+            self.side_views.select(self.source_editor.frame)
+
+    def open_call_source(self, file: str, line: int = 1) -> None:
+        proposal = self.steps.proposal
+        candidate = proposal is not None and self.call_view.model is proposal.model
+        self.open_editor(file, line, root=proposal.worktree if candidate and proposal is not None else self.project)
+
+    def _editor_saved(self, document: source_edit.Document) -> None:
+        proposal = self.steps.proposal
+        if proposal is not None and document.root == proposal.worktree.resolve():
+            proposal.build, proposal.test = steps.BuildResult(), steps.TestResult()
+            proposal.error = ""
+            self.steps.confirmed_signature_proposal = None
+            self.panel.show(proposal)
+            self.status.set("Candidate source saved. Rebuild the candidate before approval.")
+        elif self.project is not None and document.root == self.project.resolve():
+            if proposal is not None:
+                proposal.error = "Project source changed. Commit manual edits and request a new proposal."
+                self.panel.show(proposal)
+            self._editor_refresh_pending = self.project
+            self.root.after(250, self._refresh_editor_save)
+            self.status.set("Source saved — refreshing analysis; changes remain uncommitted.")
+
+    def _refresh_editor_save(self) -> None:
+        if self._editor_refresh_pending != self.project or self._editor_refresh_pending is None:
+            return
+        if self.panel.busy:
+            self.root.after(250, self._refresh_editor_save)
+            return
+        self._editor_refresh_pending = None
+        self.reload()
+
+    def close(self) -> None:
+        if self.source_editor.confirm_saved():
+            self.root.destroy()
 
     def select_step(self, iteration: int) -> None:
         """Show the effective recorded step selected in the mind map."""

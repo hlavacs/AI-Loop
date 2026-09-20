@@ -4778,3 +4778,58 @@ Verification on macOS arm64 / Python 3.14.6:
 The user had already updated the installed Codex CLI. Verification did not update it again. No recovery test
 changed the user's `icoda-tests/Worktrees` project. Fresh-install platform qualification remains separate from
 this feature verification.
+
+## 2026-09-20 — Built-in source editor
+
+Added an upper-right Source Editor tab alongside Entities. File, class, function, hierarchy, and Mind Map
+selection open the corresponding source location. Editing includes literal case-sensitive/insensitive find,
+replace/replace all, undo/redo, save/reload, and keyboard shortcuts. Saves preserve UTF-8 BOM/newline conventions
+and file modes, use atomic replacement, and retain the buffer on failures or external-file conflicts. Unsaved
+buffers are guarded on navigation, project changes, close, and workflow actions. Candidate edits target the
+proposal worktree and invalidate its build/test/signature approval gates; main-project saves refresh analysis.
+
+Complete verification passed on macOS arm64 / Python 3.14.6, with evidence in
+`.icoda-test-artifacts/20260920-181259-410392`:
+
+- Ruff, mypy (64 files), compileall, and diff checks passed.
+- All **566 tests passed**, with **87.90% whole-tree coverage** against the 85% threshold.
+- Provider qualification, authenticated real-provider acceptance, C++ sample build/test, and source analysis passed.
+- The full GUI suite, recovery GUI suite, and new source-editor GUI suite passed. The editor scenario exercised
+  real mouse events on C++ file/class/function nodes, Unicode search, native undo/redo for replacement operations,
+  dirty-buffer navigation, disk save/reload, refresh scheduling, and unclipped controls.
+- The source-editor screenshot and updated handbook pages were visually inspected. The PDF includes the new
+  C++ editor screenshot with red rectangles around the tab, editing/search controls, and selected source line.
+
+Source editing is limited to UTF-8 text files up to 2 MiB inside the selected project or candidate worktree.
+Fresh-install Windows/Linux qualification is not implied by this macOS feature verification.
+
+## 2026-09-20 — File boxes visible beside the hierarchy
+
+Reproduced the reported Worktrees problem from a copy of the project's cached model and sources. Analysis
+contained all four files and seven entities. At 1200x760, every file marker lay underneath the fixed hierarchy
+panel: Fit was measuring the fixed status legend together with the graph and reserved no hierarchy space.
+
+File View now fits only tagged graph content beside the hierarchy and below the status legend. Files are
+labeled rectangles; both their labels and borders open the editor. Arrows meet rectangle edges, external nodes
+stay near the actual graph, and Fit stays bounded for a single-file project. When fitted boxes collide, the core
+provides a compact grid while preserving file identities, relations, and cluster metadata/actions.
+
+Verification:
+
+- The complete gate in `.icoda-test-artifacts/20260920-185742-033256` passed all stages: **567 tests**, **87.63%**
+  whole-tree coverage, C++ build/test, provider acceptance, analysis, and three GUI suites. Its screenshots
+  exposed overlapping labels in the larger sample, prompting the subsequent compact-grid adjustment.
+- After that adjustment, **59 focused tests** passed across application behavior, core geometry, appearance,
+  filtering, expansion, and editing. Ruff, mypy (61 files), and `git diff --check` passed.
+- Real-Tk captures of the four-file Worktrees copy and 13-file C++ sample were inspected. Every file box was
+  visible; the compact sample's rectangles did not overlap. The editor acceptance scenario passed in
+  `.icoda-test-artifacts/file-boxes/acceptance-complete`, including repeated Fit, a single-file zoom bound,
+  navigation, Unicode search/replace, undo/redo, and save/reload.
+- The final broader GUI run verified box visibility, cluster pin/rename/menu behavior, the file-to-cluster picker,
+  file zoom/pan, and call zoom/pan. It then stopped because macOS returned an almost blank desktop screenshot for
+  the native node menu (`32 colours`, variance `2.3`). This run is **not** claimed as a complete GUI pass; its
+  screenshots are retained in `.icoda-test-artifacts/file-boxes/verified-overviews`. The window-capture helper
+  now prefers currently visible owned windows over stale offscreen windows with matching titles.
+
+The user's `icoda-tests/Worktrees` repository remained clean. All reproduction and editing checks used copies
+or isolated fixtures.

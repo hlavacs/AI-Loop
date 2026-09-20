@@ -85,6 +85,8 @@ class StepController:
         self._start(work, done, activity, cancellable)
 
     def _start(self, work: Work, done: Done, activity: str = "working", cancellable: bool = False) -> None:
+        if hasattr(self.window, "source_editor") and not self.window.source_editor.confirm_saved():
+            return
         self.cancel_requested = False
         if self.runner is not None and hasattr(self.runner, "begin"):
             self.runner.begin()

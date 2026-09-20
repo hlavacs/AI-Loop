@@ -344,6 +344,38 @@ file, and shows the version and file locations.
 Keyboard shortcuts (Command on macOS, Control elsewhere): N new project, O open project, R reload, E specification,
 B build, Return propose the next step, Q quit; in the specification editor S saves and W closes.
 
+### Source editor
+
+The upper-right pane has **Entities** and **Source Editor** tabs. Click a file, class, or function in a diagram,
+the Mind Map, or the Entities list to open its source. Classes and functions jump to their declaration line,
+highlighted in yellow. Drag the pane dividers to give the editor more space.
+
+- **Open...** selects another file inside the current project or candidate worktree.
+- **Save** writes your edits; **Reload** reads the current disk version. **Undo** and **Redo** reverse edits,
+  including a complete Replace All operation.
+- **Find**, **Previous**, and **Next** search literal text and wrap around the file. **Match case** controls case
+  sensitivity. Enter a replacement and use **Replace** for the highlighted match or **All** for every match.
+- With the source editor focused, Command-S on macOS or Control-S elsewhere saves. Command/Control-F focuses Find,
+  Command-Option-F on macOS or Control-H elsewhere focuses Replace, and Command/Control-Z undoes.
+
+Navigating within the same file keeps unsaved edits. Opening another file, switching projects, closing ICODA,
+or starting a workflow operation offers Save, Discard, or Cancel if edits are pending. Saving project source
+refreshes the analysis and leaves the changes uncommitted; use **Project > Commit Manual Edits** to record them.
+If a build or generation operation is running, wait for it to finish before saving; your buffer is kept.
+
+When the Call View displays a proposal, its source opens from the candidate worktree. Saving those edits resets
+the proposal's build and test results; use **Rebuild** before approving. The path above the editor identifies
+which project or worktree is being edited.
+
+The editor accepts UTF-8 text files up to 2 MiB, preserves the existing newline convention and byte-order mark,
+and refuses to overwrite a file that changed on disk after opening. If saving fails after an automatic retry,
+the buffer remains available and **Troubleshooting** offers help. Project metadata under `.git` or `.icoda`
+cannot be edited here.
+
+![The Source Editor displaying a C++ method and its find and replace controls](docs/images/handbook/source-editor.png)
+
+*The red rectangles identify the Source Editor tab, editing and search controls, and the highlighted source line.*
+
 ### The step panel
 
 The lower panel is driven by the project's phase. One sentence above the buttons says what to do next; it changes
@@ -400,7 +432,7 @@ assurance or runtime execution filter.
 - Drag with the left or middle mouse button to pan.
 - Click `+` or `-` in the hierarchy panel to expand or collapse a level.
 - Hover over a node for source and status details.
-- Double-click a source entity to open it in the configured editor.
+- Click a file or source entity to open it in the upper-right Source Editor at its source line.
 - Right-click a node for actions that are valid in the current phase.
 
 ![Call graph with a one-hop neighborhood and distant nodes dimmed](docs/images/handbook/diagram-neighborhood-dimmed.png)
@@ -876,8 +908,8 @@ Global defaults and recent projects are stored at:
 - Linux: `${XDG_CONFIG_HOME:-~/.config}/icoda/config.json`
 - Windows: `%APPDATA%\ICODA\config.json`
 
-The `editor` value may be a command template containing `{file}` and `{line}`. Without one, ICODA uses VS Code when
-`code` is on `PATH`, then falls back to the operating system's default opener.
+Source navigation uses the built-in Source Editor. The legacy `editor` command-template setting is retained in
+configuration for compatibility; it does not change where diagram clicks open source files.
 
 ## 11. Troubleshooting
 

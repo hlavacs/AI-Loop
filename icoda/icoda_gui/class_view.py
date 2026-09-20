@@ -195,6 +195,12 @@ class ClassViewCanvas(graph_canvas.GraphCanvas):
             if self.focus_node is not None:
                 self.focus_node(self.selected)
             self.redraw()
+            entity = self.model.entities.get(self.selected) if self.model is not None and self.selected else None
+            if entity is not None:
+                self.open_editor(entity.file, entity.line)
+            elif self.model is not None and self.selected \
+                    and self.selected.removeprefix("file:") in self.model.files:
+                self.open_editor(self.selected.removeprefix("file:"), 1)
 
     def on_motion(self, event: Any) -> None:
         usr = self.node_at(event.x, event.y)

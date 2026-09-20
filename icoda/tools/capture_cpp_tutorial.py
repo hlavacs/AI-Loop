@@ -66,8 +66,9 @@ def capture_window(root: tk.Tk, path: Path) -> dict[str, int]:
            and window.get("kCGWindowAlpha", 1) > 0]
     if not own:
         raise RuntimeError("Could not locate this process's ICODA window for capture.")
-    named = [window for window in own if window.get("kCGWindowName") == root.title()]
     visible = [window for window in own if window.get("kCGWindowIsOnscreen")]
+    # Tk can leave an offscreen native window with the same title after a menu/stacking change.
+    named = [window for window in visible if window.get("kCGWindowName") == root.title()]
     window = min(named or visible or own, key=lambda item: (
         abs(item["kCGWindowBounds"]["Width"] - root.winfo_width())
         + abs(item["kCGWindowBounds"]["Height"] - root.winfo_height())))

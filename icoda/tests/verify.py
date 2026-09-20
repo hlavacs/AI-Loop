@@ -122,7 +122,7 @@ def commands(artifact: Path) -> list[tuple[str, list[str], dict[str, str] | None
         ("diff-check", ["git", "diff", "--check"], None),
         ("ruff", [python, "-m", "ruff", "check", "."], None),
         ("mypy", [python, "-m", "mypy", "icoda.py", "icoda_core", "icoda_gui", "tests/verify.py",
-                  "tests/gui_acceptance.py", "tests/recovery_gui_acceptance.py",
+                  "tests/gui_acceptance.py", "tests/recovery_gui_acceptance.py", "tests/editor_gui_acceptance.py",
                   "tests/real_provider_acceptance.py"], None),
         ("compileall", [python, "-m", "compileall", "-q", "icoda.py", "icoda_core", "icoda_gui", "tests"], None),
         ("providers", [python, "-m", "icoda_core.provider_check", "--output",
@@ -135,6 +135,8 @@ def commands(artifact: Path) -> list[tuple[str, list[str], dict[str, str] | None
         ("gui", gui_command(artifact), dict(os.environ, ICODA_TK_STUB="0")),
         ("gui-recovery", [*gui_command(artifact)[:-5], str(ROOT / "tests/recovery_gui_acceptance.py"),
                           "--output", str(artifact / "recovery-gui")], dict(os.environ, ICODA_TK_STUB="0")),
+        ("gui-editor", [*gui_command(artifact)[:-5], str(ROOT / "tests/editor_gui_acceptance.py"),
+                        "--output", str(artifact / "editor-gui")], dict(os.environ, ICODA_TK_STUB="0")),
     ]
 
 

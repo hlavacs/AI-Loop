@@ -25,6 +25,9 @@ the **Help** menu opens the same pages, and the sentence above the buttons in th
   Code Profile with language, library, style, and test conventions.
 - **Source analysis:** inspect files, calls, classes, and a hierarchical Mind Map. Filter, zoom, pan, and follow
   entities back to their source locations.
+- **Source editor:** click a file, class, or function to open its source in the upper-right **Source Editor** tab.
+  Edit, save, undo/redo, and find/replace text without leaving ICODA. Saving refreshes project analysis;
+  candidate worktree edits require a rebuild before approval.
 - **Controlled generation:** review architecture proposals, then approve an implementation approach before
   requesting code and tests. Work through a persisted queue or select the next target yourself.
 - **Build and test gates:** keep approval blocked when a proposal fails its configured checks. Review the source

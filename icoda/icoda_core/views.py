@@ -11,7 +11,7 @@ from __future__ import annotations
 
 import math
 from collections import defaultdict
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 
 from icoda_core import class_view, mind_map
 from icoda_core.clusters import Clustering
@@ -206,7 +206,16 @@ def layout_file_view(model: DerivedModel, clustering: Clustering, width: float =
     nodes: dict[str, Node] = {}
     for circle in circles:
         nodes.update(_place_files(circle, file_edges))
-    nodes.update(place_externals(model, width, height))
+    external_nodes = place_externals(model, width, height)
+    if nodes:
+        # Keep external libraries beside the actual file graph, not the bottom of an arbitrary 1000-unit page.
+        left, right = min(node.x for node in nodes.values()), max(node.x for node in nodes.values())
+        bottom = max(node.y for node in nodes.values())
+        span = max(right - left, 160.0)
+        for index, node in enumerate(external_nodes.values()):
+            node.x = (left + right - span) / 2 + span * (index + 1) / (len(external_nodes) + 1)
+            node.y = bottom + 90.0
+    nodes.update(external_nodes)
     arrows = _merge_arrows(model, file_edges)
     return FileViewLayout(circles, nodes, arrows, aggregate_to_clusters(arrows, clustering), width, height)
 
@@ -218,6 +227,18 @@ def entity_location_label(entity: Entity) -> str:
     if not entity.is_definition:
         return f"declaration {entity.declaration_file or entity.file} · no definition"
     return f"definition {entity.file}"
+
+
+def compact_file_view(layout: FileViewLayout, columns: int, column_width: float,
+                      row_height: float) -> FileViewLayout:
+    """Pack the same files and relations into rows when labeled boxes overlap in a narrow pane."""
+    columns = max(columns, 1)
+    nodes = {node.id: replace(node, x=(index % columns + .5) * column_width,
+                              y=(index // columns + .5) * row_height)
+             for index, node in enumerate(layout.nodes.values())}
+    rows = math.ceil(len(nodes) / columns)
+    return FileViewLayout(layout.circles, nodes, layout.file_arrows, [],
+                          columns * column_width, rows * row_height)
 
 
 def arrow_endpoints(a: Node, b: Node, margin: float = 12.0) -> tuple[float, float, float, float]:

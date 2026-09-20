@@ -218,9 +218,20 @@ orphaned `.state.json.*.tmp` file. Do not replace the good state file with the o
 
 ## Keyboard shortcuts do nothing
 
-The shortcuts use the Command key on macOS (⌘N, ⌘O, ⌘R, ⌘E, ⌘B, ⌘Return, ⌘S in the specification editor) and
+The shortcuts use the Command key on macOS (⌘N, ⌘O, ⌘R, ⌘E, ⌘B, ⌘Return, ⌘S in the source or specification editor) and
 Control elsewhere. They work when the ICODA window has the focus; inside a text box, ⌘Return / Ctrl+Return still
 proposes.
+
+## Source edits cannot be saved
+
+The Source Editor keeps the buffer if saving fails and retries the file operation once before showing the
+problem in Troubleshooting. If the file changed on disk, copy any edits you need to keep before using **Reload**
+to inspect the other version. ICODA will not overwrite that version automatically.
+
+Wait for a running build or generation operation to finish before saving. Candidate worktree edits reset the
+proposal's build and test results; run **Rebuild** before approval. Project edits stay uncommitted until you use
+**Project > Commit Manual Edits**. The built-in editor opens UTF-8 text files up to 2 MiB; use an external editor
+for other encodings or larger files.
 
 ## Verification (for maintainers)
 
