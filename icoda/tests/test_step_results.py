@@ -106,7 +106,10 @@ def test_provider_refuses_missing_binary_nonzero_exit_and_timeout(
     monkeypatch.setattr(steps.agent, "binary_available", lambda *_args: False)
     with pytest.raises(steps.StepError) as missing:
         runner._invoke_provider("prompt", tmp_path)
-    assert str(missing.value) == "chosen-tool is not on the PATH; sign in"
+    assert isinstance(missing.value, steps.ProviderError)
+    assert missing.value.diagnosis.code == "missing_tool"
+    assert "chosen-tool" in missing.value.diagnosis.detail
+    assert missing.value.diagnosis.attempts
 
     monkeypatch.setattr(steps.agent, "binary_available", lambda *_args: True)
     monkeypatch.setattr(
@@ -115,8 +118,9 @@ def test_provider_refuses_missing_binary_nonzero_exit_and_timeout(
     )
     with pytest.raises(steps.StepError) as failed:
         runner._invoke_provider("prompt", tmp_path)
-    assert str(failed.value) == (
-        "Test Provider failed (7): permission denied\nIf it asks for a login: sign in")
+    assert isinstance(failed.value, steps.ProviderError)
+    assert failed.value.diagnosis.detail == "permission denied"
+    assert "Retried" in failed.value.diagnosis.text()
 
     monkeypatch.setattr(
         steps.agent, "run_provider",
@@ -124,8 +128,9 @@ def test_provider_refuses_missing_binary_nonzero_exit_and_timeout(
     )
     with pytest.raises(steps.StepError) as timed_out:
         runner._invoke_provider("prompt", tmp_path)
-    assert str(timed_out.value) == (
-        "Test Provider timed out after 1800 seconds\nIf it asks for a login: sign in")
+    assert isinstance(timed_out.value, steps.ProviderError)
+    assert timed_out.value.diagnosis.code == "timeout"
+    assert "1800 seconds" in timed_out.value.diagnosis.detail
 
 
 @pytest.mark.parametrize(

@@ -1,5 +1,32 @@
 # Troubleshooting
 
+## Automatic recovery and the Troubleshooting tab
+
+ICODA attempts recovery before displaying an operational failure. While it works, the status reads
+**Trying automatic recovery**. Provider requests receive one read-only retry. When Codex explicitly reports
+that its CLI is too old for the selected model, ICODA checks the selected executable's installation and tries
+its supported updater (Homebrew for a Codex cask, otherwise `codex update` when supported), then retries the
+same model and request once. App-bundled executables are never overwritten. Cancel stops the active process.
+
+Failed proposals get one additional corrective request in their existing worktree. ICODA reruns the ordinary
+build, tests, analysis, and phase checks; only a passing candidate can be approved. Project build/test repairs
+use an isolated architecture candidate when a committed baseline exists. Existing uncommitted project or
+candidate edits are preserved. ICODA does not invent an approved implementation approach, reset corrupt
+workflow state, or commit manual edits as an automatic repair. Analysis failures trigger a rebuild and reanalysis.
+Other failures receive a CLI investigation when a project and provider are available. Attempts are bounded so
+persistent failures cannot create an endless loop.
+
+If recovery cannot finish, the **Troubleshooting** tab opens with a plain-language diagnosis and recovery
+result. **Details** reveals the diagnostic evidence. Use **Send** for a conversation with the selected CLI;
+the conversation includes the failure and previous messages and permits read-only investigation. You can
+select another installed **Binary/Model** if the failing provider cannot respond. Common credential forms are
+redacted from the troubleshooting context.
+
+Use **Open CLI** for an interactive session in the affected project or candidate worktree, with the failure
+context and the provider's normal approvals, when edits or login are needed. Return to ICODA and choose
+**Retry step** to run the failed operation and its checks again. Selecting a different project clears the chat.
+
+
 The cases below are the ones that came up while using ICODA, with what to do. Almost every problem leaves a trace
 in the log, so start there.
 
@@ -112,7 +139,7 @@ described in [LLM selection](../HANDBOOK.md#6-llm-selection) and [The first step
 **Project ▸ Build** and every proposal run the build gate: `cmake --preset debug` followed by `cmake --build
 --preset debug` for C++. For Python, ICODA discovers project source roots and runs `python -m compileall -q -x
 <excluded paths> <source roots>`; it does not assume that source is under `src`. The output is in the **Build** tab
-and in the error dialog (shortened; the full text is in the log).
+and in the Troubleshooting tab after recovery has been attempted (the full text is in the log).
 
 - **`CMake 3.28 or higher is required`**: update CMake.
 - **`clang-scan-deps` not found**, or errors about modules: the compiler must be able to build C++20 modules. On

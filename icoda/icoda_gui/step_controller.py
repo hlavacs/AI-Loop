@@ -20,6 +20,7 @@ from icoda_core import (
     implementation_queue,
     persistence,
     process,
+    recovery,
     session,
     specification,
     steps,
@@ -79,7 +80,7 @@ class StepController:
     def run(self, work: Work, done: Done, activity: str = "working", cancellable: bool = False) -> None:
         """Run ``work`` in the background with the panel busy; ``done`` gets the result on the Tk thread.
 
-        Errors go to the status bar, the panel and a small dialog; a cancel only to the status bar.
+        Errors enter the common recovery path; a cancel only updates the status bar.
         """
         self._start(work, done, activity, cancellable)
 
@@ -96,13 +97,27 @@ class StepController:
             elif isinstance(result, steps.DirtyTree):
                 self._offer_manual_commit(str(result), lambda: self._start(work, done, activity, cancellable))
             elif isinstance(result, Exception):
-                self.window.status.set(f"step failed: {str(result).splitlines()[0] if str(result) else result!r}")
-                self.window.panel.show_failure(str(result))
-                dialogs.show_error("ICODA", str(result))
+                self._failure(result, retry=lambda: self._start(work, done, activity, cancellable))
             else:
                 done(result)
 
         self.window.run_async(work, finished)
+
+    def _failure(self, error: Exception | str, **options: Any) -> None:
+        if hasattr(self.window, "recovery"):
+            if "repair" not in options and not isinstance(error, steps.ProviderError) \
+                    and recovery.diagnose(str(error)).code == "project_gate":
+                runner = self._ensure_runner()
+                proposal = self.proposal
+                options["repair"] = (lambda: runner.repair(proposal, str(error))) if proposal else (
+                    lambda: runner.repair_project(str(error)))
+                options["repaired"] = self._show_proposal
+                if proposal:
+                    options["cwd"] = proposal.worktree
+            self.window.recovery.handle_failure(error, **options)
+        else:
+            self.window.panel.show_failure(str(error))
+            dialogs.show_error("ICODA", str(error))
 
     def cancel(self) -> None:
         """Stop the running agent call, build or test; the worker ends with StepCancelled."""
@@ -111,6 +126,9 @@ class StepController:
         self.cancel_requested = True
         self.window.status.set("cancelling …")
         self.window.panel.set_activity("cancelling …")
+        if hasattr(self.window, "recovery") and self.window.recovery.busy:
+            self.window.recovery.cancel()
+            return
         if self.runner is not None and hasattr(self.runner, "cancel"):
             self.runner.cancel()
         else:
@@ -142,6 +160,7 @@ class StepController:
             self.window.status.set(f"step {approach.number}: approach ready — approve, reject or adapt")
         else:
             self.window.status.set(f"step {approach.number}: {approach.error}")
+            self._failure(approach.error, retry=self.propose_approach, attempted=approach.attempts > 0)
         self._consider_auto_approve(approach_round=True)
 
     def propose(self, constraints: tuple[str, ...] = (), focus: tuple[str, ...] = ()) -> None:
@@ -154,9 +173,17 @@ class StepController:
 
         self._start(work, self._show_proposal, "asking the agent for the next step", cancellable=True)
 
-    def _show_proposal(self, proposal: steps.Proposal) -> None:
+    def _show_proposal(self, proposal: steps.Proposal, *, recovery_attempted: bool = False) -> None:
         self.proposal = proposal
         self.confirmed_signature_proposal = None
+        if not proposal.ok and hasattr(self.window, "recovery"):
+            detail = proposal.error + "\n" + proposal.build.output + "\n" + proposal.test.output
+            runner = self._ensure_runner()
+            self._failure(detail, retry=self.rebuild, cwd=proposal.worktree,
+                          attempted=recovery_attempted,
+                          repair=lambda: runner.repair(proposal, detail),
+                          repaired=lambda fixed: self._show_proposal(fixed, recovery_attempted=True))
+            return
         self.window.panel.show(proposal)
         if proposal.model is not None and proposal.delta is not None:
             self.window.call_view.show_proposal(proposal.model, proposal.delta)
@@ -221,9 +248,14 @@ class StepController:
 
     def _show_test_result(self, result: steps.TestResult, selected: tuple[str, ...]) -> None:
         outcome = "passed" if result.ok is True else "failed" if result.ok is False else "did not run"
-        self.window.status.set(f"targeted tests {outcome}: {', '.join(selected)}")
         if result.ok is not True:
-            self.window.panel.show_failure(result.output or f"Targeted tests {outcome}.")
+            runner = self._ensure_runner()
+            self._failure(result.output or f"Targeted tests {outcome}.",
+                          retry=lambda: self.run_tests(selected),
+                          repair=lambda: runner.repair_project(result.output),
+                          repaired=self._show_proposal)
+        else:
+            self.window.status.set(f"targeted tests {outcome}: {', '.join(selected)}")
 
     def approve(self, automatic: bool = False) -> None:
         proposal = self.proposal

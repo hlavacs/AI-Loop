@@ -995,8 +995,9 @@ def test_controller_auto_approves_two_green_steps_then_halts_on_failed_test_gate
     code_records_before_failure = len(approved)
     app.steps.action("approve_approach")
     stopped = "the proposal test gate is not passing"
-    assert app.status.get() == "auto-approve paused: " + stopped
-    assert stopped in app.panel.auto_approve_note and stopped in app.panel.hint_var.get()
+    assert "Troubleshooting" in app.status.get()
+    assert stopped in app.panel.auto_approve_note
+    assert app.recovery.issue is not None
     assert app.panel.title_var.get().startswith("Step ")  # the proposal stays visible; the hint explains
     assert store.load_state().implementation_cursor == 2
     assert len(steplog.StepLog(store.steps_path).records()) == records_before_failure + 1

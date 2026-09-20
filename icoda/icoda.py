@@ -46,7 +46,6 @@ from icoda_gui import (
     call_view,
     class_view,
     coverage_view,
-    dialogs,
     graph_canvas,
     issue_view,
     mind_map_view,
@@ -57,6 +56,7 @@ from icoda_gui import (
     step_panel,
     tasks,
     tooltip,
+    troubleshooting,
     zoom_controls,
 )
 
@@ -375,6 +375,8 @@ class App:
         self.graph_filter_var.trace_add("write", self.apply_graph_filter)
         self.neighborhood_depth_var.trace_add("write", self.apply_graph_filter)
         self.steps = step_controller.StepController(self)
+        self.recovery = troubleshooting.Troubleshooting(self)
+        root.report_callback_exception = self._callback_error
         root.bind("<FocusIn>", self._refresh_external_edits)
         self.panel.set_project_facts(False)
         if project is not None:
@@ -716,8 +718,14 @@ class App:
             self.open_project(Path(chosen))
 
     def open_project(self, path: Path) -> None:
+        if self.recovery.busy:
+            return
         resolved = Path(path).expanduser().resolve()
         if self.project != resolved:
+            self.recovery.reset()
+            self.steps.proposal = None
+            self.steps.approach = None
+            self.steps.confirmed_signature_proposal = None
             self.expansion_state = frozenset()
             self._expansion_initialized = False
             self._expansion_auto_expand = True
@@ -743,6 +751,12 @@ class App:
 
     def new_project(self, path: Path) -> None:
         """Phase 0: create ``.icoda/`` and open the specification editor; saving it writes the step 0 skeleton."""
+        if self.recovery.busy:
+            return
+        self.recovery.reset()
+        self.steps.proposal = None
+        self.steps.approach = None
+        self.steps.confirmed_signature_proposal = None
         self.project = Path(path).expanduser().resolve()
         self._source_snapshot = None
         self.project.mkdir(parents=True, exist_ok=True)
@@ -810,9 +824,10 @@ class App:
                 self.open_project(project)
             else:
                 session.log_event("build failed (Project ▸ Build):\n" + result.output, project)
-                self.status.set("build failed — the output is in the step panel")
-                self.panel.show_failure("Build failed.\n\n" + result.output)
-                dialogs.show_error("ICODA", "The build failed.\n\n" + result.output)
+                runner = self.steps._ensure_runner()
+                self.recovery.handle_failure("Build failed.\n" + result.output, retry=self.build_project,
+                    repair=lambda: runner.repair_project(result.output),
+                    repaired=self.steps._show_proposal)
 
         self.steps.run(work, done, "building the project", cancellable=True)
 
@@ -867,11 +882,25 @@ class App:
         else:
             self._set_analysing(False)
         if isinstance(result, Exception):
-            log = (self.project or Path(".")) / ".icoda" / "icoda.log"
-            self.status.set(f"Analysis failed: {result!r}  (details in {log})")
-            dialogs.show_error("ICODA", f"{result!r}\n\nDetails: {log}")
+            self.recovery.handle_failure(result, retry=self.reload,
+                                         repair=self._recover_analysis, repaired=self.show)
         else:
             self.show(result)
+
+    def _recover_analysis(self) -> session.OpenedProject:
+        """Refresh the compile database and derived model once before reporting an analysis error."""
+        assert self.project is not None
+        built = steps.build_project(self.project)
+        if not built.ok:
+            raise steps.StepError("Analysis recovery could not build the project:\n" + built.output)
+        return session.open_project(self.project, self.config)
+
+    def _callback_error(self, _kind: type[BaseException], error: BaseException, trace: Any) -> None:
+        session.log_event("UI callback failed:\n" + "".join(traceback.format_exception(
+            type(error), error, trace)), self.project)
+        # An unknown callback may have been a save or another mutation: diagnosing it is safe,
+        # but rebuilding the view would not prove that the failed operation succeeded.
+        self.recovery.handle_failure(str(error), retry=self.reload)
 
     def show(self, opened: session.OpenedProject) -> None:
         """Present an opened project: canvas, status bar, recent list, configuration."""
@@ -909,9 +938,10 @@ class App:
                                             grouping_refusal)
         try:
             self.view.show(opened.layout)
-        except Exception:  # noqa: BLE001  (a drawing problem must not hide the rest of the window)
+        except Exception as exc:  # noqa: BLE001  (rebuild the view once before displaying a drawing failure)
             session.log_event("drawing failed:\n" + traceback.format_exc(), opened.root)
-            self.status.set("drawing failed (details in .icoda/icoda.log)")
+            self.recovery.handle_failure(exc, retry=self.reload,
+                                         repair=self._recover_analysis, repaired=self.show)
             return
         session.log_event(f"drawn: canvas {self.canvas.winfo_width()}x{self.canvas.winfo_height()}, "
                           f"{len(opened.layout.nodes)} nodes, scale {self.view.scale:.3f}, offset {self.view.offset}",

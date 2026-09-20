@@ -23,6 +23,7 @@ dev = [
     "ruff>=0.6,<1",
     "mypy>=1.11,<3",
     "wheel>=0.41,<1",
+    "setuptools>=68",
 ]
 
 [tool.setuptools]

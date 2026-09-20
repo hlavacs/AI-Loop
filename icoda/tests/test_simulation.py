@@ -288,13 +288,12 @@ class _LifecycleAssertions:
         self.app.steps.action("propose")
         _assert_stop(
             self.app, self.store, phase=persistence.ProjectPhase.SPECIFICATION,
-            title="Step failed — the project is in the specification phase",
+            title="Step failed — The project specification must be saved before proposing code.",
             delta="save the specification before proposing", source_diff="", live=set(), gate="none",
             queue=(), cursor=0, iterations=[],
         )
-        assert self.app.status.get() == (
-            "step failed: 'the project is in the specification phase; save the specification before proposing'"
-        )
+        assert "Troubleshooting" in self.app.status.get()
+        assert "specification phase" in self.app.recovery.issue.detail
         assert self.store.load_state() == before_request
         _assert_overviews(self.app, specification_phase=True)
 

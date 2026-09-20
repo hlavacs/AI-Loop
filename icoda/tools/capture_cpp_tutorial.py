@@ -34,8 +34,10 @@ from icoda_core import generator, implementation_queue, persistence, prompt, ses
 
 def capture_window(root: tk.Tk, path: Path) -> dict[str, int]:
     """Capture only this process's Tk window, even when another app covers it."""
-    root.update()
-    time.sleep(0.3)  # Let the native compositor publish a newly created or resized window.
+    # Let Tk and the compositor publish newly created/resized windows, including dialogs.
+    for _ in range(15):
+        root.update()
+        time.sleep(0.02)
     if sys.platform != "darwin":
         capture(root, path)
         return {"X": root.winfo_rootx(), "Y": root.winfo_rooty(),
@@ -61,16 +63,19 @@ def capture_window(root: tk.Tk, path: Path) -> dict[str, int]:
         foundation.CFRelease(data)
         foundation.CFRelease(windows)
     own = [window for window in descriptions if window.get("kCGWindowOwnerPID") == os.getpid()
-           and window.get("kCGWindowLayer") == 0]
+           and window.get("kCGWindowAlpha", 1) > 0]
     if not own:
         raise RuntimeError("Could not locate this process's ICODA window for capture.")
-    window = max(own, key=lambda item: (item["kCGWindowBounds"]["Width"] *
-                                      item["kCGWindowBounds"]["Height"]))
+    named = [window for window in own if window.get("kCGWindowName") == root.title()]
+    visible = [window for window in own if window.get("kCGWindowIsOnscreen")]
+    window = min(named or visible or own, key=lambda item: (
+        abs(item["kCGWindowBounds"]["Width"] - root.winfo_width())
+        + abs(item["kCGWindowBounds"]["Height"] - root.winfo_height())))
     subprocess.run(["screencapture", "-x", "-o", "-l", str(window["kCGWindowNumber"]), str(path)],
                    check=True)
     with Image.open(path) as screenshot:
         if screenshot.height < 500 or max(ImageStat.Stat(screenshot.convert("RGB")).var) < 20:
-            raise RuntimeError(f"Invalid ICODA window capture: {path.name}")
+            raise RuntimeError(f"Invalid ICODA window capture: {path.name} ({root.title()})")
     return {key: int(value) for key, value in window["kCGWindowBounds"].items()}
 
 

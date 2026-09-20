@@ -4744,3 +4744,37 @@ measurement. `RELEASE_MATRIX.md` still records Linux as the only qualified platf
 worktree was already dirty with the prior ICODA implementation at the start of this iteration; this iteration added
 only this verification-log entry, while its generated verification and screenshot evidence is ignored artifact
 data.
+
+## 2026-09-20 — Recovery before error reporting
+
+Added bounded provider recovery, corrective proposals that retain the normal build/test/phase gates, and a
+Troubleshooting tab with conversation history, provider switching, cancellation, retry, diagnostic evidence,
+and an interactive CLI launcher. Tests cover failed/unchanged updates, repeated failures, cancellation,
+worktree preservation, delayed error display, stale callbacks, terminal quoting, and the completion queue
+surviving a UI callback exception. Unknown UI failures are investigated; a successful redraw is not treated
+as proof that a failed save or other operation succeeded.
+
+Verification on macOS arm64 / Python 3.14.6:
+
+- The full verifier at `.icoda-test-artifacts/20260920-174713-662246` passed lint, mypy, compilation, provider
+  qualification, authenticated Codex 0.155.1 / `gpt-5.6-sol` acceptance, the C++ sample build/test, analysis,
+  546 pytest tests, and the new recovery GUI check. Whole-tree coverage was 87.88%. Its original GUI stage
+  exposed the screenshot helper's incorrect handling of floating macOS windows; that run's failed summary
+  is retained unchanged.
+- After correcting capture selection, standalone `tests/gui_acceptance.py` exited 0 and wrote its 38
+  screenshots plus `gui-state.json` to `.icoda-test-artifacts/recovery-final-overviews`. The native-menu
+  portion was slow but completed. The libclang dialog and the Troubleshooting window were visually inspected.
+- `tests/recovery_gui_acceptance.py` exercised recovery, two scripted conversational turns, candidate context,
+  visible controls, and the cleared busy state in real Tk. Its result and screenshot are in the full verifier's
+  `recovery-gui` directory. This GUI scenario uses a scripted provider; the separate authenticated provider
+  check above uses the real CLI.
+- Final regression rerun: **546 passed in 72.29 seconds**. Core/GUI package coverage was 91.75%; that narrower
+  coverage invocation does not measure the dynamically imported `icoda.py` entry point. The whole-tree number
+  above remains the applicable complete coverage result. After the final unknown-callback correction,
+  `tests/test_troubleshooting.py` and `tests/test_app.py` also passed together: **28 passed**.
+- Final Ruff, mypy, and `git diff --check` passed. The previously missing local wheel build backend was
+  installed and added to the development dependencies; wheel packaging tests pass.
+
+The user had already updated the installed Codex CLI. Verification did not update it again. No recovery test
+changed the user's `icoda-tests/Worktrees` project. Fresh-install platform qualification remains separate from
+this feature verification.

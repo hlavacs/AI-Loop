@@ -87,7 +87,13 @@ def capture(root: tk.Tk, path: Path, *, lift: bool = True) -> dict[str, float | 
     time.sleep(0.25)
     left, top = root.winfo_rootx(), root.winfo_rooty()
     width, height = root.winfo_width(), root.winfo_height()
-    image = ImageGrab.grab(bbox=(left, top, left + width, top + height))
+    if sys.platform == "darwin" and lift:
+        # Capture this process's window rather than another app covering its screen rectangle.
+        from tools.capture_cpp_tutorial import capture_window
+        capture_window(root, path)
+        image = Image.open(path).copy()
+    else:
+        image = ImageGrab.grab(bbox=(left, top, left + width, top + height))
     sample = image.convert("RGB").resize((96, 64))
     colours = sample.getcolors(maxcolors=96 * 64) or []
     variance = max(ImageStat.Stat(sample).var)

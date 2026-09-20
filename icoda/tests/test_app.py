@@ -62,19 +62,26 @@ def test_open_project_reports_truncated_state_without_tk_traceback(app_module, t
     worktree = store.dir / "worktree"
     worktree.mkdir()
     (worktree / "unfinished.py").write_text("proposal = 'not promoted'\n", encoding="utf-8")
-    shown: list[tuple[str, str]] = []
-    monkeypatch.setattr(app_module.dialogs, "show_error", lambda title, text: shown.append((title, text)))
     monkeypatch.setattr(app_module.threading, "Thread", ImmediateThread)
     app = app_module.App(
         app_module.tk.Tk(), config=persistence.UserConfig(), config_path=tmp_path / "config.json")
 
+    attempts = []
+    def repair():
+        attempts.append(True)
+        return ValueError("The persisted state is truncated; original bytes preserved.")
+    monkeypatch.setattr(app, "_recover_analysis", repair)
+    app.run_async = lambda work, done: done(work())
     app.open_project(project)
     app._poll()
 
     message = (f"cannot open project: {store.state_path} contains invalid JSON; refusing to replace the persisted "
                f"state with defaults; leftover proposal worktree preserved at {worktree}")
-    assert message in app.status.get()
-    assert shown == [("ICODA", f"ProjectStateError('{message}')\n\nDetails: {store.dir / 'icoda.log'}")]
+    assert attempts == [True]
+    assert "Troubleshooting" in app.status.get()
+    assert message in app.recovery.issue.detail
+    assert store.state_path.read_bytes() == truncated_state
+    assert (worktree / "unfinished.py").is_file()
 
 
 def test_open_project_shows_persisted_phase_after_analysis(app_module, tmp_path: Path, monkeypatch) -> None:
@@ -271,14 +278,19 @@ def test_build_menu_runs_the_build_gate_and_reloads_or_reports(app_module, tmp_p
     app.project = tmp_path
     results = [app_module.steps.BuildResult(True, "ok"), app_module.steps.BuildResult(False, "error: boom")]
     monkeypatch.setattr(app_module.steps, "build_project", lambda root: results.pop(0))
-    errors: list[str] = []
-    monkeypatch.setattr(app_module.dialogs, "show_error", lambda title, text: errors.append(text))
+    repairs = []
+    runner = app.steps._ensure_runner()
+    def repair(error):
+        repairs.append(error)
+        return ValueError("No isolated repair available")
+    monkeypatch.setattr(runner, "repair_project", repair)
 
     app.build_project()
     assert opened == [tmp_path] and app.status.get().startswith("build passed") and not app.panel.busy
     app.build_project()
-    assert opened == [tmp_path] and app.status.get().startswith("build failed")
-    assert errors and "boom" in errors[0] and "boom" in app.panel.details.get("1.0", "end")
+    assert opened == [tmp_path] and "Troubleshooting" in app.status.get()
+    assert repairs == ["error: boom"]
+    assert "boom" in app.recovery.issue.detail
     log = persistence.ProjectStore(tmp_path).dir / "icoda.log"
     assert "build passed (Project ▸ Build)" in log.read_text(encoding="utf-8")
     app.project = None

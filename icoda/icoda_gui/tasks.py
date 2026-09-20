@@ -52,8 +52,11 @@ class UiTasks:
             func(*args)
 
     def _poll(self) -> None:
-        self.drain()
-        self.root.after(self.interval, self._poll)
+        try:
+            self.drain()
+        finally:
+            # A Tk callback error enters recovery; its completion still needs this queue.
+            self.root.after(self.interval, self._poll)
 
 
 class Watchdog:

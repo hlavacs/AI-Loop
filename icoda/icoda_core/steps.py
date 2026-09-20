@@ -29,6 +29,7 @@ from icoda_core import (
     phases,
     prompt,
     python_analysis,
+    recovery,
     response,
     rules,
     session,
@@ -59,6 +60,14 @@ class StepError(RuntimeError):
 
 class DirtyTree(StepError):
     """Uncommitted changes in the working tree; commit them first (``commit_manual_edits``)."""
+
+
+class ProviderError(StepError):
+    """A provider failure after automatic recovery, with a human-readable diagnosis."""
+
+    def __init__(self, diagnosis: recovery.Diagnosis) -> None:
+        self.diagnosis = diagnosis
+        super().__init__(diagnosis.text() + "\n\nDetails:\n" + diagnosis.detail)
 
 
 class StepCancelled(StepError):
@@ -772,6 +781,48 @@ class StepRunner:
         self._build_and_parse(proposal)
         return proposal
 
+    def repair(self, proposal: Proposal, error: str) -> Proposal:
+        """Ask for one corrective candidate and run all normal gates in the existing worktree."""
+        self._check_cancelled()
+        request = replace(proposal.request, validation_error=recovery.redact(error)[-12000:])
+        text = (self._prompt(request) + "\n\nRecovery: inspect the current candidate in this worktree. "
+                "Return a minimal correction to this failure using the same JSON response contract. "
+                "Preserve its intended behavior and all tests. Do not weaken tests or verification gates.\n"
+                + recovery.redact(error)[-12000:])
+        reply = self.invoke(text, proposal.worktree)
+        self._check_cancelled()
+        parsed, invalid = response.parse_response(reply)
+        if parsed is None:
+            raise StepError("The repair response could not be used: " + invalid)
+        _apply_candidate_files(proposal.worktree, parsed.files)
+        original = proposal.response
+        files = {change.path: change for change in original.files} if original else {}
+        files.update({change.path: change for change in parsed.files})
+        proposal.response = replace(parsed, files=tuple(files.values()))
+        proposal.prompt_text, proposal.reply = text, reply
+        proposal.entities = parsed.entities
+        proposal.attempts += 1
+        return self.rebuild(proposal)
+
+    def repair_project(self, error: str) -> Proposal:
+        """Prepare an isolated repair for a project build; approval still promotes and commits it."""
+        self._check_cancelled()
+        if self.current_phase() != persistence.ProjectPhase.ARCHITECTURE:
+            raise StepError("An automatic project repair requires an architecture step. For implementation, "
+                            "repair the current approved approach's candidate in Troubleshooting.")
+        if not git.is_own_repository(self.root) or not self.log.records():
+            raise StepError("The initial project has no committed baseline for an isolated repair. "
+                            "Use Troubleshooting to correct its setup, then retry.")
+        self._require_clean()
+        worktree = self.store.dir / WORKTREE_DIR
+        if (worktree / ".git").exists() and not git.is_clean(worktree):
+            raise StepError("The existing candidate has uncommitted edits. Rebuild that candidate to repair it; "
+                            "the automatic project repair has preserved those edits.")
+        request = prompt.StepRequest(self.current_phase().value, self.log.next_number(),
+                                     "Fix the reported project build or test failure without changing its behavior.")
+        proposal = Proposal(request.number, request, self._fresh_worktree())
+        return self.repair(proposal, error)
+
     def _apply_and_check(self, proposal: Proposal) -> None:
         assert proposal.response is not None
         self._reset_worktree(proposal.worktree)
@@ -1069,20 +1120,18 @@ class StepRunner:
             raise StepError(f"unknown provider {self.provider_id!r}: choose a listed binary") from exc
         if not provider.enabled:
             raise StepError(f"{provider.label} is disabled; choose an enabled provider")
-        if not agent.binary_available(provider, self.binary or None):
-            raise StepError(f"{self.binary or provider.command} is not on the PATH; {provider.login_hint}")
-        result = agent.run_provider(provider, self.model_id or provider.default_model, prompt_text, cwd,
-                                    binary=self.binary or None, timeout=PROVIDER_TIMEOUT)
+        def progress(message: str) -> None:
+            session.log_event("automatic recovery: " + message, self.root)
+            self.progress(message)
+
+        outcome = recovery.invoke(provider, self.model_id or provider.default_model, prompt_text, cwd,
+                                  binary=self.binary or provider.command, timeout=PROVIDER_TIMEOUT,
+                                  progress=progress, cancelled=lambda: self.cancel_requested)
+        result = outcome.result
         if result.cancelled or self.cancel_requested:
             raise StepCancelled()
-        if result.timed_out:
-            detail = _tail(result.stderr or result.stdout)
-            suffix = f": {detail}" if detail else ""
-            raise StepError(f"{provider.label} timed out after {PROVIDER_TIMEOUT:g} seconds{suffix}\n"
-                            f"If it asks for a login: {provider.login_hint}")
         if not result.ok:
-            raise StepError(f"{provider.label} failed ({result.returncode}): {_tail(result.stderr or result.stdout)}"
-                            f"\nIf it asks for a login: {provider.login_hint}")
+            raise ProviderError(outcome.diagnosis or recovery.diagnose(result.stderr or result.stdout))
         return result.stdout
 
     def _author(self) -> tuple[str, str]:
