@@ -368,16 +368,19 @@ specification edits require confirmation before replacement.
 
 ### Choose an example or executable
 
-Use **Example / executable** at the top of the window to select the intended `main()` by its source path,
-for example `examples/renderer/main.cpp`. Selecting it opens that source and roots **Call View** at its entry
-point. **From main** returns to the selected example after you inspect another function. ICODA remembers the
-selection per project and restores it after reload or reopening; if its source was removed, it selects an
-available entry point. Separate C++ `main()` functions retain separate identities and call edges.
+Use **Example / executable** to select `examples/basic/main.cpp` or `tests/smoke_test.cpp`. With multiple
+executables, the code views stay empty until you select one. A sole executable is selected automatically.
+ICODA restores the choice per project after reload; choose again if it disappears or becomes ambiguous.
 
-For a configured CMake project, **Refresh examples** reads the actual executable target names, configurations,
-and output paths from CMake. The selector then shows the target, configuration, and main source file together.
-If several targets share a main source, explicitly choose the intended target/configuration before building
-or running. ICODA does not guess a binary filename from the source name.
+**File View**, **Class View**, **Call View**, **Mind Map**, **Coverage**, and **Issues** show only that executable
+and its library dependencies. Basic and smoke test therefore never appear together. Switching keeps the active
+tab, opens the chosen entry source, and roots Call View there; **From main** returns there. Library-only
+projects still display their library model.
+
+For configured CMake projects, **Refresh examples** reads target names, configurations, output paths, and library
+source membership. Before these are available, views follow analysed dependencies from the selected main.
+Refresh to include uncalled helpers. If several targets share a main, choose its target/configuration before
+Build or Run. ICODA uses the actual CMake executable path.
 
 - **Build** in this row builds the selected executable and its dependencies.
 - **Run** builds that target first, then launches the executable from the project directory. A failed build

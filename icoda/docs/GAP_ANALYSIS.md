@@ -135,7 +135,7 @@ describe the separate AI-Loop application and are not ICODA plans or specificati
   `__init__.py`, and including the phase/queue, grouping, coverage/rules/mind-map,
   common graph-status/filter/expansion, and Python-analysis slices added after the original baseline.
 - GUI package: 18 Python modules under `icoda/icoda_gui/`, including all six overview surfaces, the Troubleshooting and Source Editor tabs, and their shared controls.
-- Tests: 65 Python test modules under `icoda/tests/`, counting the 59 top-level `test_*.py` modules plus the 6
+- Tests: 66 Python test modules under `icoda/tests/`, counting the 59 top-level `test_*.py` modules plus the 7
   `*_acceptance.py` programs (`gui`, `recovery_gui`, `editor_gui`, `simulation`, `performance`, and `real_provider`). Supporting `verify.py`,
   `conftest.py`, `tk_stub.py`, `diag_apple.py`, and the CMake/C++23 sample project are not included in that count.
 

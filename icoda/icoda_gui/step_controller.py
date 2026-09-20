@@ -188,7 +188,7 @@ class StepController:
             return
         self.window.panel.show(proposal)
         if proposal.model is not None and proposal.delta is not None:
-            self.window.call_view.show_proposal(proposal.model, proposal.delta)
+            self.window.show_proposal_calls(proposal)
             self.window.show_call_view()
         if proposal.ok:
             self.window.status.set(f"step {proposal.number}: proposal ready — approve, reject or adapt")

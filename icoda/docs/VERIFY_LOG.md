@@ -5017,3 +5017,31 @@ Verification:
   and recovery controls. Evidence: `.icoda-test-artifacts/writable-prompt/gui-final2/recovery-gui.json` and screenshots.
 - Updated the handbook and troubleshooting guide. Regenerated the 97-page handbook (37 images), rendered pages
   20, 43, and 94 with Poppler, and visually checked the changed instructions and the native Prompt screenshot.
+
+## 2026-09-20 — Display one executable across all code views
+
+The Example / executable selector now scopes File, Class, Call, Mind Map, Coverage, and Issues together.
+Projects with multiple entry points require a choice before populating the views. A saved choice is restored
+when unambiguous; a sole executable is selected automatically. Library-only projects retain their library view.
+Switching keeps the active diagram tab, updates source navigation, and preserves unsaved-buffer protection.
+
+CMake target sources and library dependency sources establish the display scope, including uncalled helper
+files. Other executables used as build-order prerequisites are excluded. Without target metadata, the scope
+follows outgoing source dependencies and declaration/definition pairs from the chosen entry point. The complete
+analysis model remains available for workflow checks and recorded-test evidence; coverage displays only the
+selected executable's callable rows. Proposal Call View previews use the same scope and open candidate sources.
+
+Verification:
+
+- **616 tests passed in 89.37 seconds**. Ruff, mypy across 61 production files, and `git diff --check` passed.
+- Real CMake fixtures verify library membership, uncalled helpers, exclusion of other executable targets,
+  ambiguous target/configuration choices, and independent build/run behavior.
+- GUI regression tests verify every code view, mandatory choice, active-tab preservation, reload persistence,
+  hidden-node navigation, proposal previews, and candidate source editing. Python coverage and targeted test
+  actions retain recorded evidence even when the test source is outside the selected executable's display.
+- `tests/executable_scope_gui_acceptance.py` configured, built, and analysed a native C++ fixture with `basic`,
+  `smoke_test`, and a shared library. Real combobox events showed only basic's four files or smoke's three files,
+  preserved the active tab, and restored smoke after reload. Evidence and four screenshots are retained in
+  `.icoda-test-artifacts/executable-scope-final/`; basic File View and smoke Class View were visually inspected.
+- Updated the handbook and module-inventory evidence for the new native acceptance program. Regenerated the
+  97-page PDF (37 images), rendered and visually checked the revised selection instructions on page 18.

@@ -17,7 +17,7 @@ from icoda_core import (
     steps,
     toolchain,
 )
-from icoda_core.model import DerivedModel, Entity, FileInfo, Kind
+from icoda_core.model import DerivedModel, Edge, EdgeKind, Entity, FileInfo, Kind, merge_external_names
 
 
 @pytest.fixture
@@ -100,7 +100,7 @@ def test_shared_main_requires_explicit_target_selection(project) -> None:
 
 def test_cancel_after_build_does_not_launch_program(project, monkeypatch) -> None:
     root, model = project
-    ready = executables.operate(root, model, None, "refresh", lambda: False)
+    ready = executables.operate(root, model, executables.entries(model)[0], "refresh", lambda: False)
     original = process.run_bounded
     calls = []
 
@@ -114,6 +114,66 @@ def test_cancel_after_build_does_not_launch_program(project, monkeypatch) -> Non
     with pytest.raises(steps.StepCancelled):
         executables.operate(root, model, ready.selected, "run", lambda: False)
     assert len(calls) == 2 and all(command[0] == "cmake" for command in calls)
+
+
+def test_selection_is_required_and_ambiguous_saved_sources_are_not_guessed(project):
+    root, model = project
+    choices = executables.entries(model)
+    assert executables.choose(choices, None) is None
+    assert executables.choose(choices, ["removed.cpp", "", ""]) is None
+    assert executables.choose((choices[0],), None) == choices[0]
+    targets = tuple(executables.Target(name, "Debug", root / "build", root / name,
+                                       frozenset({str(root / choices[0].file)})) for name in ("one", "two"))
+    variants = executables.entries(model, targets)
+    assert executables.choose(variants, choices[0].key) is None
+    assert executables.choose(variants, variants[1].key) == variants[1]
+
+
+def test_scope_follows_dependencies_without_reverse_callers_or_other_mains(tmp_path):
+    model = DerivedModel(str(tmp_path), stale=True, stale_reason="source changed")
+    for file in ("examples/basic/main.cpp", "tests/smoke.cpp", "src/shared.cpp", "include/shared.hpp"):
+        model.files[file] = FileInfo(file)
+    for usr, file, name in (("basic", "examples/basic/main.cpp", "main"),
+                            ("smoke", "tests/smoke.cpp", "main"), ("shared", "src/shared.cpp", "run")):
+        model.add_entity(Entity(usr, Kind.FUNCTION, name, name, file, 1,
+                                declaration_file="include/shared.hpp" if usr == "shared" else ""))
+    model.add_edge(Edge(EdgeKind.INCLUDES, "examples/basic/main.cpp", "include/shared.hpp"))
+    model.add_edge(Edge(EdgeKind.CALLS, "smoke", "shared", "tests/smoke.cpp"))
+    model.add_edge(Edge(EdgeKind.CALLS, "smoke", "external:gtest", "tests/smoke.cpp"))
+    merge_external_names(model, "gtest", ["assert"])
+    before = model.to_json()
+    basic, smoke = executables.entries(model)
+    scoped = executables.scope_model(model, basic)
+    assert set(scoped.files) == {"examples/basic/main.cpp", "include/shared.hpp", "src/shared.cpp"}
+    assert set(scoped.entities) == {"basic", "shared"} and not scoped.externals
+    assert scoped.stale and scoped.stale_reason == "source changed"
+    tests = executables.scope_model(model, smoke)
+    assert set(tests.files) == {"tests/smoke.cpp", "src/shared.cpp", "include/shared.hpp"}
+    assert set(tests.externals) == {"gtest"}
+    empty = executables.scope_model(model, None)
+    assert not empty.files and not empty.entities and not empty.edges and not empty.externals
+    assert model.to_json() == before
+
+
+def test_cmake_scope_includes_library_and_uncalled_helpers_but_excludes_other_executable(project):
+    root, model = project
+    for file in ("shared.cpp", "first_helper.cpp", "second_helper.cpp"):
+        (root / file).write_text("// target source\n")
+        model.files[file] = FileInfo(file)
+    with (root / "CMakeLists.txt").open("a") as output:
+        output.write("add_library(shared STATIC shared.cpp)\n"
+                     "target_link_libraries(first PRIVATE shared)\n"
+                     "target_link_libraries(second PRIVATE shared)\n"
+                     "target_sources(first PRIVATE first_helper.cpp)\n"
+                     "target_sources(second PRIVATE second_helper.cpp)\n"
+                     "add_dependencies(first second)\n")
+    choices = executables.operate(root, model, None, "refresh", lambda: False).entries
+    first = next(entry for entry in choices if entry.target.name == "first")
+    second = next(entry for entry in choices if entry.target.name == "second")
+    assert set(executables.scope_model(model, first).files) == {
+        "examples/first/main.cpp", "shared.cpp", "first_helper.cpp"}
+    assert set(executables.scope_model(model, second).files) == {
+        "examples/second/main.cpp", "shared.cpp", "second_helper.cpp"}
 
 
 def test_legacy_main_history_and_queue_follow_the_original_file(tmp_path) -> None:

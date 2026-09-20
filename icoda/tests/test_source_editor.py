@@ -261,7 +261,8 @@ def test_candidate_source_edits_never_touch_project_and_invalidate_gates(app_mod
     proposal = steps.Proposal(1, prompt.StepRequest(prompt.ARCHITECTURE, 1), worktree,
                               model=app.opened.model, build=steps.BuildResult(True), test=steps.TestResult(True))
     app.steps.proposal = proposal
-    app.call_view.model = proposal.model
+    proposal.delta = steps.compute_delta(app.opened.model, proposal.model, [])
+    app.show_proposal_calls(proposal)
     app.open_call_source("src/a.cpp", 1)
     assert app.source_editor.document.root == worktree.resolve()
     app.source_editor.text.insert("end", "// edit\n")

@@ -502,6 +502,9 @@ class Window:
     def show_call_view(self) -> None:
         self.shown_call_view += 1
 
+    def show_proposal_calls(self, proposal: steps.Proposal) -> None:
+        self.call_view.show_proposal(proposal.model, proposal.delta)
+
 
 def signature_gate_controller(tmp_path: Path, monkeypatch: Any) \
         -> tuple[step_controller.StepController, steps.StepRunner, steps.Proposal]:

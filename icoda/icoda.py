@@ -24,6 +24,7 @@ from icoda_core import (
     analysis,
     clusters,
     coverage_index,
+    executables,
     expansion,
     generator,
     graph_filter,
@@ -369,6 +370,8 @@ class App:
         self.root = root
         self.project: Path | None = None
         self.opened: session.OpenedProject | None = None
+        self.displayed: session.OpenedProject | None = None
+        self._call_source_root: Path | None = None
         self.spec_editor: spec_editor.SpecificationEditor | None = None
         self._spec_editors: dict[Path, spec_editor.SpecificationEditor] = {}
         self.config_path = config_path or persistence.config_path()
@@ -926,10 +929,10 @@ class App:
                 editor.window.lift()
             else:
                 self._open_spec_editor(spec)
-            if self.opened is not None and self.opened.root == project:
+            if self.displayed is not None and self.displayed.root == project:
                 records = steplog.StepLog(persistence.ProjectStore(project).steps_path).records()
-                self.coverage_view.show(self.opened.model, records,
-                                        coverage_index.build_index(self.opened.model, records), spec)
+                self.coverage_view.show(self.displayed.model, records,
+                                        self.executable_coverage(self.displayed.model, records), spec)
             self.status.set("Specification reread from .icoda/specification.json")
             session.log_event("specification reread", project)
 
@@ -1113,39 +1116,80 @@ class App:
                                             target is not None and target == state.implementation_override,
                                             state.auto_approve, state.implementation_grouping,
                                             grouping_refusal)
+        self.executables.show(opened.root, opened.model)
         try:
-            self.view.show(opened.layout)
+            self.show_executable()
         except Exception as exc:  # noqa: BLE001  (rebuild the view once before displaying a drawing failure)
             session.log_event("drawing failed:\n" + traceback.format_exc(), opened.root)
             self.recovery.handle_failure(exc, retry=self.reload,
                                          repair=self._recover_analysis, repaired=self.show)
             return
+        assert self.displayed is not None
         session.log_event(f"drawn: canvas {self.canvas.winfo_width()}x{self.canvas.winfo_height()}, "
-                          f"{len(opened.layout.nodes)} nodes, scale {self.view.scale:.3f}, offset {self.view.offset}",
+                          f"{len(self.displayed.layout.nodes)} nodes, scale {self.view.scale:.3f}, offset {self.view.offset}",
                           opened.root)
         libclang = opened.libclang or "libclang: none found"
         notes = ("  |  " + "; ".join(opened.messages)) if opened.messages else ""
-        self.status.set(f"{opened.root.name}: {opened.summary}  |  {libclang}{notes}")
+        self.status.set(f"{opened.root.name}: {self.displayed.summary}  |  {libclang}{notes}")
         self.config.save(self.config_path)
         self._fill_recent_menu()
         self.side_title.set("Entities")
         self.tree.delete(*self.tree.get_children())
         self._restore_provider(opened.root)
-        self.call_view.show(opened.model)
-        self.executables.show(opened.root, opened.model)
-        self.class_view.show(opened.model)
-        log = steplog.StepLog(store.steps_path)
-        self.mind_map_view.show(opened.model, log, store, opened.clustering)
-        records = log.records()
-        coverage = coverage_index.build_index(opened.model, records)
-        self.refresh_graph_appearances(opened.model, state, records, coverage)
-        spec = specification.load(store.specification_path) if store.specification_path.is_file() else {}
-        self.coverage_view.show(opened.model, records, coverage, spec)
-        self.issue_view.show(opened.model, log)
+        if self.executables.choices and self.executables.selected is None:
+            self.status.set("Select an example / executable to display its code views.")
         self._source_snapshot = source_watch.snapshot_files(opened.root, opened.model.files)
         if not self.panel.details_visible:
             self._resize_step_panel()
         session.log_event("shown: window ready", opened.root)
+
+    def executable_model(self, model: DerivedModel) -> DerivedModel:
+        """Keep workflow analysis complete while every code view uses the selected executable."""
+        if not self.executables.choices and not executables.entries(model):
+            return model  # Library-only projects have no executable to select.
+        return executables.scope_model(model, self.executables.selected, root=self.project)
+
+    def show_executable(self) -> None:
+        """Repaint all code views from one executable projection, preserving the active tab."""
+        if self.opened is None:
+            return
+        opened = self.opened
+        store = persistence.ProjectStore(opened.root)
+        model = self.executable_model(opened.model)
+        clustering = clusters.cluster_files(model, store.load_layout())
+        layout = views.layout_file_view(model, clustering)
+        self.displayed = session.OpenedProject(opened.root, model, clustering, layout,
+                                               opened.libclang, opened.messages)
+        self._call_source_root = opened.root
+        self.graph_focus_usr = None
+        self.side_title.set("Entities")
+        self.tree.delete(*self.tree.get_children())
+        document = self.source_editor.document
+        if document is not None and document.relative not in model.files and not self.source_editor.dirty:
+            self.source_editor.clear()
+        self.view.show(layout)
+        self.call_view.show(model)
+        self.class_view.show(model)
+        log = steplog.StepLog(store.steps_path)
+        self.mind_map_view.show(model, log, store, clustering)
+        records = log.records()
+        coverage = self.executable_coverage(model, records)
+        self.refresh_graph_appearances(model, store.load_state(), records, coverage)
+        spec = specification.load(store.specification_path) if store.specification_path.is_file() else {}
+        self.coverage_view.show(model, records, coverage, spec)
+        self.issue_view.show(model, log)
+
+    def executable_coverage(self, model: DerivedModel, records: list[steplog.StepRecord]) -> coverage_index.CoverageIndex:
+        """Keep recorded test evidence while restricting the displayed callable rows."""
+        source = self.opened.model if self.opened is not None else model
+        complete = coverage_index.build_index(source, records)
+        entries = tuple(entry for entry in complete.entries if entry.usr in model.entities)
+        return coverage_index.CoverageIndex(entries, tuple(entry.usr for entry in entries if not entry.covered))
+
+    def show_proposal_calls(self, proposal: steps.Proposal) -> None:
+        if proposal.model is not None:
+            self.call_view.show_proposal(self.executable_model(proposal.model), proposal.delta)
+            self._call_source_root = proposal.worktree
 
     def _reload_after_specification_save(self) -> None:
         """Publish an edited truth through the ordinary asynchronous analysis/show path."""
@@ -1167,15 +1211,16 @@ class App:
     ) -> None:
         """Re-derive once and publish the same frozen mapping to all four diagrams."""
         if model is None:
-            model = self.opened.model if self.opened is not None else None
+            model = self.displayed.model if self.displayed is not None else None
         if model is None or self.project is None:
             return
+        model = self.executable_model(model)
         store = persistence.ProjectStore(self.project)
         state = state or store.load_state()
         records = records if records is not None else steplog.StepLog(store.steps_path).records()
-        coverage = coverage or coverage_index.build_index(model, records)
+        coverage = coverage or self.executable_coverage(model, records)
         appearances = node_status.derive(model, state, records, coverage)
-        clustering = self.opened.clustering if self.opened is not None else clusters.cluster_files(model)
+        clustering = self.displayed.clustering if self.displayed is not None else clusters.cluster_files(model)
         cluster_by_file = {file: cluster.id for cluster in clustering.clusters for file in cluster.files}
         cluster_names = {cluster.id: cluster.name for cluster in clustering.clusters}
         graph = graph_filter.project_graph(model, cluster_by_file, cluster_names)
@@ -1266,9 +1311,9 @@ class App:
 
     def graph_actions(self, node_id: str) -> graph_canvas.NodeActionContext | None:
         """Return core-derived history/test data and current controller enablement for a diagram node."""
-        if self.opened is None or self.project is None or self.mind_map_view.tree is None:
+        if self.displayed is None or self.project is None or self.mind_map_view.tree is None:
             return None
-        model, tree = self.opened.model, self.mind_map_view.tree
+        model, tree = self.displayed.model, self.mind_map_view.tree
         key = node_id if node_id.startswith(("entity:", "file:", "cluster:")) else \
             f"entity:{node_id}" if node_id in model.entities else f"file:{node_id}"
         node = tree.node_map().get(key)
@@ -1277,11 +1322,12 @@ class App:
         store = persistence.ProjectStore(self.project)
         state = store.load_state()
         target = node.usr if node.usr in model.entities else ""
-        tests = test_selection.select_tests(model, steplog.StepLog(store.steps_path), target) if target else ()
+        source = self.opened.model if self.opened is not None else model
+        tests = test_selection.select_tests(source, steplog.StepLog(store.steps_path), target) if target else ()
         callable_target = target in model.entities and model.entities[target].kind in CALLABLE_KINDS
         cluster_id = key.removeprefix("cluster:") if key.startswith("cluster:") else ""
         file_path = key.removeprefix("file:") if key.startswith("file:") else ""
-        cluster = next((item for item in self.opened.clustering.clusters if item.id == cluster_id), None)
+        cluster = next((item for item in self.displayed.clustering.clusters if item.id == cluster_id), None)
         layout = store.load_layout()
         enabled = self.panel.enabled_actions
         return graph_canvas.NodeActionContext(
@@ -1291,15 +1337,15 @@ class App:
             and bool({"propose_approach", "propose"} & enabled),
             not self.panel.busy,
             cluster_id,
-            clusters.cluster_is_pinned(layout, self.opened.clustering, cluster_id) if cluster_id else False,
+            clusters.cluster_is_pinned(layout, self.displayed.clustering, cluster_id) if cluster_id else False,
             cluster.name if cluster is not None else "",
             file_path,
-            tuple(sorted(item.id for item in self.opened.clustering.clusters)) if file_path else (),
+            tuple(sorted(item.id for item in self.displayed.clustering.clusters)) if file_path else (),
         )
 
     def dispatch_graph_action(self, action: str, context: graph_canvas.NodeActionContext) -> None:
         """Route the shared graph menu through step history or the existing step controller."""
-        if self.project is None or self.opened is None:
+        if self.project is None or self.opened is None or self.displayed is None:
             return
         if action == graph_canvas.SHOW_STEP and context.introducing_iteration is not None:
             self.select_step(context.introducing_iteration)
@@ -1311,7 +1357,7 @@ class App:
             self.steps.action("run_tests", context.tests)
         elif action == graph_canvas.PIN_CLUSTER:
             self._apply_cluster_layout(clusters.pin_cluster(
-                persistence.ProjectStore(self.project).load_layout(), self.opened.clustering, context.cluster_id))
+                persistence.ProjectStore(self.project).load_layout(), self.displayed.clustering, context.cluster_id))
         elif action == graph_canvas.UNPIN_CLUSTER:
             self._apply_cluster_layout(clusters.unpin_cluster(
                 persistence.ProjectStore(self.project).load_layout(), context.cluster_id))
@@ -1323,7 +1369,7 @@ class App:
                     persistence.ProjectStore(self.project).load_layout(), context.cluster_id, name))
         elif action == graph_canvas.PIN_FILE_TO_CLUSTER:
             self._apply_cluster_layout(clusters.pin_file(
-                persistence.ProjectStore(self.project).load_layout(), self.opened.clustering,
+                persistence.ProjectStore(self.project).load_layout(), self.displayed.clustering,
                 context.file_path, context.target_cluster_id))
 
     def _apply_cluster_layout(self, decision: clusters.LayoutDecision) -> None:
@@ -1339,14 +1385,14 @@ class App:
             self.opened.messages))
 
     def describe_node(self, node_id: str) -> str:
-        if self.opened is None:
+        if self.displayed is None:
             return node_id
         if node_id.startswith("external:"):
             library = node_id.split(":", 1)[1]
-            names = self.opened.model.externals[library].names
+            names = self.displayed.model.externals[library].names
             return f"{library}\n" + ", ".join(names[:12]) + (" …" if len(names) > 12 else "")
-        info = self.opened.model.files.get(node_id)
-        entities = self.opened.model.entities_in(node_id)
+        info = self.displayed.model.files.get(node_id)
+        entities = self.displayed.model.entities_in(node_id)
         lines = [node_id, f"{info.unit}{' module ' + info.module if info and info.module else ''}" if info else ""]
         lines.append(f"{len(entities)} entities")
         if info and info.errors:
@@ -1355,17 +1401,17 @@ class App:
 
     def select_node(self, node_id: str) -> None:
         """A file/entity click opens its source and retains the file's entity list in the adjacent tab."""
-        if self.opened is None or node_id.startswith(("external:", "cluster:")):
+        if self.displayed is None or node_id.startswith(("external:", "cluster:")):
             return
         usr = node_id.removeprefix("entity:")
-        selected_entity = self.opened.model.entities.get(usr)
+        selected_entity = self.displayed.model.entities.get(usr)
         node_id = selected_entity.file if selected_entity is not None else node_id.removeprefix("file:")
-        if node_id not in self.opened.model.files:
+        if node_id not in self.displayed.model.files:
             return
         self.focus_graph_node(usr if selected_entity is not None else None)
         self.side_title.set(node_id)
         self.tree.delete(*self.tree.get_children())
-        entities = sorted(self.opened.model.entities_in(node_id), key=lambda e: e.line)
+        entities = sorted(self.displayed.model.entities_in(node_id), key=lambda e: e.line)
         parents = {e.usr: e for e in entities}
         for entity in entities:
             parent = entity.parent if entity.parent in parents else ""
@@ -1407,9 +1453,7 @@ class App:
             self.side_views.select(self.source_editor.frame)
 
     def open_call_source(self, file: str, line: int = 1) -> None:
-        proposal = self.steps.proposal
-        candidate = proposal is not None and self.call_view.model is proposal.model
-        self.open_editor(file, line, root=proposal.worktree if candidate and proposal is not None else self.project)
+        self.open_editor(file, line, root=self._call_source_root or self.project)
 
     def _editor_saved(self, document: source_edit.Document) -> None:
         self._source_changed(document.root)

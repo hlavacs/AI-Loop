@@ -4,8 +4,9 @@ from __future__ import annotations
 
 import json
 import shlex
+from collections import defaultdict
 from collections.abc import Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any
 
@@ -20,6 +21,7 @@ class Target:
     build_dir: Path
     artifact: Path
     sources: frozenset[str]
+    dependency_sources: frozenset[str] = frozenset()
 
 
 @dataclass(frozen=True)
@@ -93,8 +95,9 @@ def read_targets(root: Path, directory: Path | None = None) -> tuple[Target, ...
         raise ValueError("The CMake target metadata belongs to another project. Refresh examples to rebuild it.")
     targets = []
     for config in model["configurations"]:
-        for reference in config.get("targets", []):
-            target = _json(reply / reference["jsonFile"])
+        by_id = {reference["id"]: _json(reply / reference["jsonFile"])
+                 for reference in config.get("targets", [])}
+        for target in by_id.values():
             if target["type"] != "EXECUTABLE" or not target.get("artifacts"):
                 continue
             sources = frozenset(str((source_root / source["path"]).resolve())
@@ -103,8 +106,27 @@ def read_targets(root: Path, directory: Path | None = None) -> tuple[Target, ...
                              if Path(item["path"]).name == target.get("nameOnDisk")),
                             target["artifacts"][0]["path"])
             targets.append(Target(target["name"], config["name"], directory,
-                                  (directory / artifact).resolve(), sources))
+                                  (directory / artifact).resolve(), sources,
+                                  _library_sources(target, by_id, source_root)))
     return tuple(targets)
+
+
+def _library_sources(target: dict[str, Any], by_id: dict[str, dict[str, Any]], root: Path) -> frozenset[str]:
+    """Collect library dependencies, excluding executables used only for build ordering."""
+    sources: set[str] = set()
+    seen: set[str] = set()
+    pending = [item["id"] for item in target.get("dependencies", [])]
+    while pending:
+        identifier = pending.pop()
+        if identifier in seen:
+            continue
+        seen.add(identifier)
+        dependency = by_id.get(identifier, {})
+        if not dependency.get("type", "").endswith("_LIBRARY"):
+            continue
+        sources.update(str((root / source["path"]).resolve()) for source in dependency.get("sources", []))
+        pending.extend(item["id"] for item in dependency.get("dependencies", []))
+    return frozenset(sources)
 
 
 def entries(model: DerivedModel, targets: tuple[Target, ...] = ()) -> tuple[Entry, ...]:
@@ -126,8 +148,43 @@ def entries(model: DerivedModel, targets: tuple[Target, ...] = ()) -> tuple[Entr
 
 def choose(choices: tuple[Entry, ...], key: Any) -> Entry | None:
     exact = next((entry for entry in choices if entry.key == key), None)
-    same_file = next((entry for entry in choices if isinstance(key, list) and key and entry.file == key[0]), None)
-    return exact or same_file or (choices[0] if choices else None)
+    same_file = [entry for entry in choices if isinstance(key, list) and key and entry.file == key[0]]
+    return exact or (same_file[0] if len(same_file) == 1 else choices[0] if len(choices) == 1 else None)
+
+
+def scope_model(model: DerivedModel, selected: Entry | None, *, root: Path | None = None) -> DerivedModel:
+    """Project one executable and its source dependencies without changing the analysis model."""
+    files: set[str] = set()
+    if selected is not None and selected.usr in model.entities:
+        base = root or Path(model.root)
+        sources = selected.target.sources | selected.target.dependency_sources if selected.target else frozenset()
+        files = {file for file in model.files if str((base / file).resolve()) in sources} | {selected.file}
+        allowed = set(model.files)
+        if selected.target:
+            allowed = files | {file for file in model.files if Path(file).suffix in analysis.HEADER_SUFFIXES}
+        allowed -= {entry.file for entry in entries(model) if entry.file != selected.file}
+        dependencies: dict[str, set[str]] = defaultdict(set)
+        for source, target, _kind in model.file_edges():
+            dependencies[source].add(target)
+        for entity in model.entities.values():
+            if entity.declaration_file:
+                dependencies[entity.declaration_file].add(entity.file)
+                dependencies[entity.file].add(entity.declaration_file)
+        pending = list(files)
+        files &= allowed
+        while pending:
+            for target in dependencies[pending.pop()] & allowed - files:
+                files.add(target)
+                pending.append(target)
+    entities = {usr: entity for usr, entity in model.entities.items() if entity.file in files}
+    endpoints = files | entities.keys()
+    edges = [edge for edge in model.edges if edge.source in endpoints
+             and (edge.target in endpoints or edge.target.startswith("external:"))
+             and (not edge.file or edge.file in files)]
+    externals = {edge.target.removeprefix("external:") for edge in edges if edge.target.startswith("external:")}
+    return replace(model, files={file: info for file, info in model.files.items() if file in files},
+                   entities=entities, edges=edges,
+                   externals={name: item for name, item in model.externals.items() if name in externals})
 
 
 def operate(root: Path, model: DerivedModel, selected: Entry | None, action: str,

@@ -34,7 +34,8 @@ class ExecutableSelector:
         self.combo.pack(side=tk.LEFT, fill=tk.X, expand=True, padx=(0, 6))
         self.combo.bind("<<ComboboxSelected>>", self.select)
         tooltip.attach(self.combo, "Choose the example's main source file. The selection is saved per project "
-                       "and used by Call View / From main and the Build and Run buttons here.")
+                       "and controls all code views, plus Build and Run. Select one executable to display its "
+                       "sources and library dependencies.")
         tooltip.attach(self.buttons["Refresh examples"], "Refresh CMake target names and configurations "
                        "from the project's configured build tree.")
         tooltip.attach(self.buttons["Run"], "Build the selected CMake target, then run its executable "
@@ -71,10 +72,9 @@ class ExecutableSelector:
         self.choices = choices
         self.combo.configure(values=[entry.label for entry in choices])
         self.selected = executables.choose(choices, key)
-        self.choice_var.set(self.selected.label if self.selected else "No entry points")
+        self.choice_var.set(self.selected.label if self.selected else
+                            "Select example / executable" if choices else "No entry points")
         self.window.call_view.entry_usr = self.selected.usr if self.selected else None
-        if self.selected:
-            self.window.call_view.set_root(self.selected.usr)
         self.update_controls()
 
     def select(self, _event: Any = None) -> None:
@@ -82,21 +82,23 @@ class ExecutableSelector:
         if self.window.panel.busy or chosen is None:
             return
         if not self.window.source_editor.confirm_saved():
-            self.choice_var.set(self.selected.label if self.selected else "No entry points")
+            self.choice_var.set(self.selected.label if self.selected else "Select example / executable")
             return
         self.selected = chosen
         self._save_selection()
         self.window.call_view.entry_usr = chosen.usr
-        self.window.call_view.set_root(chosen.usr)
+        self.window.show_executable()
         self.window.select_node(chosen.usr)
-        self.window.show_call_view()
         self.window.status.set(f"Selected {chosen.label}")
 
     def _save_selection(self) -> None:
-        if self.project is not None and self.selected is not None:
+        if self.project is not None:
             store = persistence.ProjectStore(self.project)
             ui = store.load_ui()
-            ui["executable"] = self.selected.key
+            if self.selected is not None:
+                ui["executable"] = self.selected.key
+            else:
+                ui.pop("executable", None)
             store.save_ui(ui)
 
     def update_controls(self) -> None:
@@ -159,8 +161,10 @@ class ExecutableSelector:
                 self._choices(result.entries, result.selected.key if result.selected else None)
                 if result.selected is None:  # ambiguity requires an explicit new selection
                     self.selected = None
+                    self.window.call_view.entry_usr = None
                     self.choice_var.set("Choose target / configuration")
                 self._save_selection()
+                self.window.show_executable()
                 self._output(result.output)
                 self.window.status.set(result.message)
                 session.log_event(result.message + "\n" + result.output, project)

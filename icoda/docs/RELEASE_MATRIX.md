@@ -16,7 +16,7 @@ system that was not executed.
 ## Platform-seam inventory
 
 The current source inventory contains 41 top-level Python modules under `icoda_core/`, counting every `*.py` file
-including `__init__.py`, and 65 Python test modules under `tests/`, counting 59 top-level `test_*.py` modules plus the 6 `*_acceptance.py` programs. Supporting test utilities and the sample project are excluded.
+including `__init__.py`, and 66 Python test modules under `tests/`, counting 59 top-level `test_*.py` modules plus the 7 `*_acceptance.py` programs. Supporting test utilities and the sample project are excluded.
 
 The required worktree-root platform-seam inventory command now produces:
 
