@@ -1,4 +1,4 @@
-"""Verify exclusive executable views in native Tk using a real CMake C++ project."""
+"""Verify exclusive executable and library views in native Tk using a real CMake C++ project."""
 from __future__ import annotations
 
 import argparse
@@ -18,8 +18,9 @@ from tools.capture_cpp_tutorial import capture_window
 
 def fixture(root: Path) -> None:
     files = {
-        "include/shared.hpp": "#pragma once\nclass Shared { public: int value() const; };\n",
-        "src/shared.cpp": '#include "shared.hpp"\nint Shared::value() const { return 42; }\n',
+        "include/shared.hpp": "#pragma once\nclass Shared { public: int value() const; };\nint unused_api();\n",
+        "src/shared.cpp": '#include "shared.hpp"\nint Shared::value() const { return 42; }\n'
+                          'int unused_api() { return 7; }\n',
         "examples/basic/main.cpp": '#include "shared.hpp"\nclass BasicExample {};\n'
                                    'int main() { return Shared{}.value() == 42 ? 0 : 1; }\n',
         "examples/basic/helper.cpp": "class BasicHelper {};\n",
@@ -67,19 +68,22 @@ def main() -> None:
         app.show(opened)
         root.update()
         selector = app.executables
-        assert len(selector.choices) == 2 and selector.selected is None
+        assert len(selector.choices) == 3 and selector.selected is None
         assert not app.view.layout.nodes and not app.class_view.model.files and not app.call_view.model.files
         observed = {}
         for name, main_file, classes in (
                 ("basic", "examples/basic/main.cpp", {"BasicExample", "BasicHelper", "Shared"}),
-                ("smoke_test", "tests/smoke_test.cpp", {"SmokeTest", "Shared"})):
+                ("smoke_test", "tests/smoke_test.cpp", {"SmokeTest", "Shared"}),
+                ("shared", "", {"Shared"})):
             app.views.select(app.class_view.frame)
             index = next(i for i, choice in enumerate(selector.choices) if choice.target.name == name)
             selector.combo.current(index)
             selector.combo.event_generate("<<ComboboxSelected>>")
             root.update()
             assert app.views.select() == str(app.class_view.frame)
-            expected = {main_file, "src/shared.cpp", "include/shared.hpp"}
+            expected = {"src/shared.cpp", "include/shared.hpp"}
+            if main_file:
+                expected.add(main_file)
             if name == "basic":
                 expected.add("examples/basic/helper.cpp")
             model = app.displayed.model
@@ -89,7 +93,26 @@ def main() -> None:
                     if entity.kind.value == "class"} == classes
             assert all(issue.file in expected for issue in app.issue_view.issues)
             assert all(entry.file in expected for entry in app.coverage_view.index.entries)
-            assert app.source_editor.document.relative == main_file
+            assert not selector.buttons["Build"].instate(["disabled"])
+            assert selector.buttons["Run"].instate(["disabled"]) == (name == "shared")
+            if main_file:
+                assert app.source_editor.document.relative == main_file
+            else:
+                assert app.source_editor.document is None
+                assert app.call_view.library_mode and app.call_view.root_usr is None
+                call_names = {node.label for node in app.call_view.layout.nodes.values()}
+                assert {"Shared::value", "unused_api"} <= call_names
+                assert "main" not in call_names
+                app.views.select(app.call_view.frame)
+                root.update()
+                capture_window(root, output / "shared-call.png")
+                api = next(entity for entity in model.entities.values() if entity.name == "unused_api")
+                app.call_view.set_root(api.usr)
+                assert set(app.call_view.layout.nodes) == {api.usr}
+                app.call_view.toolbar_controls["from-main"].invoke()
+                assert {node.label for node in app.call_view.layout.nodes.values()} == call_names
+                app.views.select(app.class_view.frame)
+                root.update()
             assert set(opened.model.files) > expected and opened.model.to_json() == original
             capture_window(root, output / f"{name}-class.png")
             app.views.select(0)
@@ -98,11 +121,12 @@ def main() -> None:
             capture_window(root, output / f"{name}-files.png")
             observed[name] = sorted(model.files)
         app.show(opened)
-        assert selector.selected.target.name == "smoke_test"
-        assert set(app.displayed.model.files) == set(observed["smoke_test"])
+        assert selector.selected.target.name == "shared"
+        assert set(app.displayed.model.files) == set(observed["shared"])
+        assert selector.buttons["Run"].instate(["disabled"])
         (output / "scope-gui.json").write_text(json.dumps({"passed": True, "views": observed,
                                                           "restored": selector.selected.label}, indent=2) + "\n")
-        print("PASS: native executable selection, all scoped views, shared library, active tab, and reload")
+        print("PASS: native executable/library selection, all scoped views, API roots, Build/Run controls, and reload")
     finally:
         root.destroy()
 

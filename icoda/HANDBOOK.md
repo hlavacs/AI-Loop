@@ -366,26 +366,28 @@ The adjacent **Reread specification** button reloads `.icoda/specification.json`
 specification editor. It also updates specification coverage without reanalysing the source. Unsaved
 specification edits require confirmation before replacement.
 
-### Choose an example or executable
+### Choose an executable or library
 
-Use **Example / executable** to select `examples/basic/main.cpp` or `tests/smoke_test.cpp`. With multiple
-executables, the code views stay empty until you select one. A sole executable is selected automatically.
+Use **Executable / library** to select an example, a smoke test, or a CMake library without `main()`.
+With multiple choices, the code views stay empty until you select one. A sole target is selected automatically.
 ICODA restores the choice per project after reload; choose again if it disappears or becomes ambiguous.
 
-**File View**, **Class View**, **Call View**, **Mind Map**, **Coverage**, and **Issues** show only that executable
-and its library dependencies. Basic and smoke test therefore never appear together. Switching keeps the active
-tab, opens the chosen entry source, and roots Call View there; **From main** returns there. Library-only
-projects still display their library model.
+**File View**, **Class View**, **Call View**, **Mind Map**, **Coverage**, and **Issues** show only that target and
+its library dependencies. Basic and smoke test remain separate. Switching keeps the active tab. Executables
+open their main source and root Call View there; **From main** returns there. Libraries start Call View from
+their analysed functions and methods together, including unused API functions. Select a function to explore
+its calls; **Library functions** restores the overview. This includes internal functions, not just exported symbols.
 
-For configured CMake projects, **Refresh examples** reads target names, configurations, output paths, and library
-source membership. Before these are available, views follow analysed dependencies from the selected main.
-Refresh to include uncalled helpers. If several targets share a main, choose its target/configuration before
-Build or Run. ICODA uses the actual CMake executable path.
+**Refresh targets** reads configured CMake targets, configurations, output paths, and source membership.
+Static, shared, module, object, and interface libraries reported by CMake are selectable without an entry point
+or executable artifact. Before target metadata is available, executable views follow dependencies from main;
+source-only projects without main keep their full library view. Refresh to discover libraries and uncalled helpers.
 
-- **Build** in this row builds the selected executable and its dependencies.
-- **Run** builds that target first, then launches the executable from the project directory. A failed build
-  prevents launch. Runs capture output and do not provide an interactive terminal or command-line arguments.
-- **Stop** cancels the active example operation and its subprocesses. Runs have a one-hour time limit.
+- **Build** builds the selected executable or library and its dependencies.
+- **Run** is disabled for libraries. For executables, it builds first, then launches the actual CMake artifact
+  from the project directory. Failed builds prevent launch. Runs capture output without an interactive terminal
+  or command-line arguments.
+- **Stop** cancels the active target operation and its subprocesses. Runs have a one-hour time limit.
 - **Output** opens the upper-right **Program output** tab, where commands and captured output appear after
   the operation finishes. Failures enter automatic recovery; unresolved problems appear in **Prompt**.
 
@@ -393,10 +395,9 @@ Selection and build/run controls wait while another operation is active. Unsaved
 usual Save/Discard/Cancel prompt. If saving starts analysis, wait for it to finish before pressing Build or Run
 again. The existing **Project > Build** command and proposal build/test gates continue checking the full project.
 
-Each C++ example must belong to its own CMake executable target, such as
-`add_executable(renderer examples/renderer/main.cpp)`. Configure the project with its normal build tools first.
-After adding an example externally, use **Refresh examples** to refresh CMake metadata, then **Reload project**
-to discover its entry point. Target discovery uses the
+Define executables with `add_executable(...)` and libraries with `add_library(...)`. Configure the project first.
+After adding a target externally, use **Refresh targets**, then **Reload project** to analyse its sources.
+If several targets share a main, select the target/configuration before Build or Run. Target discovery uses the
 [CMake file API](https://cmake.org/cmake/help/latest/manual/cmake-file-api.7.html).
 
 ### Source editor

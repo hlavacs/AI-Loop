@@ -122,3 +122,13 @@ def test_call_view_depth_and_callers() -> None:
     callers = views.layout_call_view(model, "u:c", depth=2, callers=True)
     assert {usr: n.level for usr, n in callers.nodes.items()} == {"u:c": 0, "u:a": 1, "u:main": 2}
     assert all(not e.loop for e in callers.edges if e.source == "u:main")
+
+
+def test_call_view_multiple_library_roots_keep_disconnected_apis_and_shared_callees() -> None:
+    model = call_model()
+    layout = views.layout_call_view(model, ("u:a", "u:b"), depth=1, selected="u:c")
+    assert {usr: node.level for usr, node in layout.nodes.items()} == {
+        "u:a": 0, "u:b": 0, "u:c": 1, "external:std": 1}
+    assert layout.path == {"u:a", "u:c"}
+    empty = views.layout_call_view(model, ())
+    assert not empty.nodes and not empty.edges and not empty.path

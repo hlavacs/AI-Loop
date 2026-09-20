@@ -1,4 +1,4 @@
-"""Compact project-wide entry-point selector and selected-target build/run actions."""
+"""Compact project-wide executable/library selector and selected-target build/run actions."""
 
 from __future__ import annotations
 
@@ -20,23 +20,24 @@ class ExecutableSelector:
         self.choices: tuple[executables.Entry, ...] = ()
         self.selected: executables.Entry | None = None
         self.running = False
-        self.choice_var = tk.StringVar(value="No entry points")
-        ttk.Label(bar, text="Example / executable:").pack(side=tk.LEFT, padx=(4, 4))
+        self.choice_var = tk.StringVar(value="No targets")
+        ttk.Label(bar, text="Executable / library:").pack(side=tk.LEFT, padx=(4, 4))
         self.buttons = {}
         for label, command in (("Output", self.show_output), ("Stop", self.stop),
                                ("Run", lambda: self.operate("run")),
                                ("Build", lambda: self.operate("build")),
-                               ("Refresh examples", lambda: self.operate("refresh"))):
+                               ("Refresh targets", lambda: self.operate("refresh"))):
             button = ttk.Button(bar, text=label, command=command)
             button.pack(side=tk.RIGHT, padx=(0, 4))
             self.buttons[label] = button
         self.combo = ttk.Combobox(bar, textvariable=self.choice_var, state="readonly", width=45)
         self.combo.pack(side=tk.LEFT, fill=tk.X, expand=True, padx=(0, 6))
         self.combo.bind("<<ComboboxSelected>>", self.select)
-        tooltip.attach(self.combo, "Choose the example's main source file. The selection is saved per project "
-                       "and controls all code views, plus Build and Run. Select one executable to display its "
-                       "sources and library dependencies.")
-        tooltip.attach(self.buttons["Refresh examples"], "Refresh CMake target names and configurations "
+        tooltip.attach(self.combo, "Choose one executable or library to display its sources and dependencies "
+                       "in all code views. The choice is saved per project. Libraries expose functions and methods "
+                       "without a main; "
+                       "Build is available for both, Run only for executables.")
+        tooltip.attach(self.buttons["Refresh targets"], "Refresh CMake target names and configurations "
                        "from the project's configured build tree.")
         tooltip.attach(self.buttons["Run"], "Build the selected CMake target, then run its executable "
                        "from the project directory. Output is captured; Stop cancels it.")
@@ -73,8 +74,8 @@ class ExecutableSelector:
         self.combo.configure(values=[entry.label for entry in choices])
         self.selected = executables.choose(choices, key)
         self.choice_var.set(self.selected.label if self.selected else
-                            "Select example / executable" if choices else "No entry points")
-        self.window.call_view.entry_usr = self.selected.usr if self.selected else None
+                            "Select executable / library" if choices else "No targets")
+        self._call_entry()
         self.update_controls()
 
     def select(self, _event: Any = None) -> None:
@@ -82,14 +83,20 @@ class ExecutableSelector:
         if self.window.panel.busy or chosen is None:
             return
         if not self.window.source_editor.confirm_saved():
-            self.choice_var.set(self.selected.label if self.selected else "Select example / executable")
+            self.choice_var.set(self.selected.label if self.selected else "Select executable / library")
             return
         self.selected = chosen
         self._save_selection()
-        self.window.call_view.entry_usr = chosen.usr
+        self._call_entry()
+        self.update_controls()
         self.window.show_executable()
-        self.window.select_node(chosen.usr)
+        if chosen.usr:
+            self.window.select_node(chosen.usr)
         self.window.status.set(f"Selected {chosen.label}")
+
+    def _call_entry(self) -> None:
+        self.window.call_view.entry_usr = self.selected.usr if self.selected else None
+        self.window.call_view.library_mode = bool(self.selected and self.selected.is_library)
 
     def _save_selection(self) -> None:
         if self.project is not None:
@@ -105,8 +112,10 @@ class ExecutableSelector:
         ready = self.project is not None and self.window.project == self.project and not self.window.panel.busy
         self.combo.configure(state="readonly" if ready and self.choices else "disabled")
         cmake = ready and (self.project / "CMakeLists.txt").is_file() if self.project else False
-        for label in ("Build", "Run", "Refresh examples"):
-            enabled = cmake and (label == "Refresh examples" or self.selected is not None)
+        for label in ("Build", "Run", "Refresh targets"):
+            enabled = cmake and (label == "Refresh targets" or self.selected is not None)
+            if label == "Run" and self.selected is not None and self.selected.is_library:
+                enabled = False
             self.buttons[label].state(["!disabled"] if enabled else ["disabled"])
         self.buttons["Stop"].state(["!disabled"] if self.running else ["disabled"])
 
@@ -129,6 +138,8 @@ class ExecutableSelector:
             return
         if action != "refresh" and self.selected is None:
             return
+        if action == "run" and self.selected is not None and self.selected.is_library:
+            return
         if not self.window.source_editor.confirm_saved():
             return
         if self.window.panel.busy:  # saving source may start analysis; wait for its current model
@@ -136,7 +147,7 @@ class ExecutableSelector:
         project, model, selected = self.project, self.model, self.selected
         self.running = True
         self.window.steps.cancel_requested = False
-        self.window.panel.set_busy(True, f"{action}: {selected.label if selected else 'examples'}", cancellable=True)
+        self.window.panel.set_busy(True, f"{action}: {selected.label if selected else 'targets'}", cancellable=True)
         self._output(f"{action.capitalize()} in progress. Output will appear when the operation finishes.\n")
         self.show_output()
         self.update_controls()
@@ -148,7 +159,7 @@ class ExecutableSelector:
                 return
             if isinstance(result, steps.StepCancelled):
                 self._output("Cancelled.\n")
-                self.window.status.set("Example operation cancelled")
+                self.window.status.set("Target operation cancelled")
             elif isinstance(result, Exception):
                 self._output("ICODA is attempting recovery. See Prompt if further input is needed.\n")
                 options: dict[str, Any] = {"retry": lambda: self.operate(action)}
@@ -161,7 +172,7 @@ class ExecutableSelector:
                 self._choices(result.entries, result.selected.key if result.selected else None)
                 if result.selected is None:  # ambiguity requires an explicit new selection
                     self.selected = None
-                    self.window.call_view.entry_usr = None
+                    self._call_entry()
                     self.choice_var.set("Choose target / configuration")
                 self._save_selection()
                 self.window.show_executable()

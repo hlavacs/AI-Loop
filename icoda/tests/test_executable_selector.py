@@ -178,3 +178,74 @@ def test_proposal_call_preview_obeys_selection_and_opens_candidate_source(app_mo
     monkeypatch.setattr(app, "open_editor", lambda file, line, **kwargs: opened_files.append((file, kwargs)))
     app.open_call_source("examples/first/main.cpp", 1)
     assert opened_files == [("examples/first/main.cpp", {"root": candidate})]
+
+
+def test_library_selection_scopes_all_views_shows_function_set_and_restores(app_module, tmp_path, monkeypatch):
+    app = app_module.App(app_module.tk.Tk(), config=persistence.UserConfig(), config_path=tmp_path / "c.json")
+    project = opened(tmp_path)
+    (tmp_path / "CMakeLists.txt").write_text("# fixture\n")
+    library_file = "library.cpp"
+    (tmp_path / library_file).write_text("int api() { return 0; }\nint unused() { return 1; }\n")
+    project.model.files[library_file] = FileInfo(library_file)
+    for name in ("api", "unused"):
+        project.model.add_entity(Entity(name, Kind.FUNCTION, name, name, library_file, 1))
+    target = executables.Target("library", "Debug", tmp_path / "build", tmp_path / "build/liblibrary.a",
+                                frozenset({str(tmp_path / library_file)}), kind="STATIC_LIBRARY")
+    monkeypatch.setattr(executables, "read_targets", lambda _root: (target,))
+    app.show(project)
+    selector = app.executables
+    assert selector.selected is None
+    library = next(entry for entry in selector.choices if entry.is_library)
+    states = {}
+    for name in ("Run", "Build"):
+        monkeypatch.setattr(selector.buttons[name], "state", lambda value, name=name: states.update({name: value}))
+    selector.choice_var.set(library.label)
+    selector.select()
+    assert states == {"Run": ["disabled"], "Build": ["!disabled"]}
+    assert set(app.displayed.model.files) == set(app.view.layout.nodes) == {library_file}
+    assert set(app.class_view.model.files) == set(app.call_view.model.files) == {library_file}
+    assert set(app.call_view.layout.nodes) == {"api", "unused"}
+    assert app.call_view.library_mode and app.call_view.root_usr is None
+    assert app.call_view.root_var.get() == "Library functions (2)"
+    assert set(app.coverage_view.index.entry_map()) == {"api", "unused"}
+    assert all(issue.file == library_file for issue in app.issue_view.issues)
+    assert "file:examples/first/main.cpp" not in app.mind_map_view.tree.node_map()
+    app.call_view.set_root("api")
+    assert set(app.call_view.layout.nodes) == {"api"}
+    app.call_view.from_main()
+    assert set(app.call_view.layout.nodes) == {"api", "unused"}
+    calls = []
+    monkeypatch.setattr(app, "run_async", lambda *args: calls.append(args))
+    selector.operate("run")
+    assert not calls
+    app.show(project)
+    assert selector.selected == library and set(app.call_view.layout.nodes) == {"api", "unused"}
+    candidate = DerivedModel.from_json(project.model.to_json())
+    candidate.root = str(tmp_path / "candidate")
+    candidate.add_entity(Entity("new_api", Kind.FUNCTION, "new_api", "new_api", library_file, 3))
+    proposal = steps.Proposal(1, prompt.StepRequest(prompt.ARCHITECTURE, 1), tmp_path / "candidate",
+                             model=candidate, delta=steps.compute_delta(project.model, candidate, []))
+    app.show_proposal_calls(proposal)
+    assert set(app.call_view.layout.nodes) == {"api", "unused", "new_api"}
+    selector.choice_var.set(next(entry.label for entry in selector.choices if entry.usr == "first"))
+    selector.select()
+    assert states["Run"] == ["!disabled"] and not app.call_view.library_mode
+    assert app.call_view.root_usr == "first" and set(app.call_view.layout.nodes) == {"first"}
+    selector.clear()
+    assert not app.call_view.library_mode
+
+
+def test_library_without_callables_has_empty_call_graph(app_module, tmp_path, monkeypatch):
+    app = app_module.App(app_module.tk.Tk(), config=persistence.UserConfig(), config_path=tmp_path / "c.json")
+    project = opened(tmp_path)
+    project.model.files["types.hpp"] = FileInfo("types.hpp")
+    project.model.add_entity(Entity("Type", Kind.CLASS, "Type", "Type", "types.hpp", 1))
+    target = executables.Target("types", "", tmp_path / "build", None,
+                                frozenset({str(tmp_path / "types.hpp")}), kind="INTERFACE_LIBRARY")
+    monkeypatch.setattr(executables, "read_targets", lambda _root: (target,))
+    app.show(project)
+    selector = app.executables
+    selector.choice_var.set(next(entry.label for entry in selector.choices if entry.is_library))
+    selector.select()
+    assert set(app.class_view.layout.nodes) == {"Type"}
+    assert not app.call_view.layout.nodes and app.call_view.root_var.get() == "Library functions (0)"

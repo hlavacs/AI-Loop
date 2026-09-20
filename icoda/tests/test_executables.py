@@ -174,6 +174,60 @@ def test_cmake_scope_includes_library_and_uncalled_helpers_but_excludes_other_ex
         "examples/first/main.cpp", "shared.cpp", "first_helper.cpp"}
     assert set(executables.scope_model(model, second).files) == {
         "examples/second/main.cpp", "shared.cpp", "second_helper.cpp"}
+    shared = next(entry for entry in choices if entry.target.name == "shared")
+    assert shared.is_library and not shared.usr and not shared.file
+    assert set(executables.scope_model(model, shared).files) == {"shared.cpp"}
+
+
+@pytest.mark.parametrize("kind", ["STATIC", "SHARED", "MODULE", "OBJECT", "INTERFACE"])
+def test_library_targets_without_main_are_selectable_and_buildable(project, kind):
+    root, model = project
+    suffix = ".hpp" if kind == "INTERFACE" else ".cpp"
+    source = "api" + suffix
+    (root / source).write_text("int api() { return 42; }\nint unused_api() { return 7; }\n")
+    model.files[source] = FileInfo(source)
+    for name in ("api", "unused_api"):
+        model.add_entity(Entity(name, Kind.FUNCTION, name, name, source, 1))
+    with (root / "CMakeLists.txt").open("a") as output:
+        output.write(f"add_library(api {kind} {source})\n")
+    choices = executables.operate(root, model, None, "refresh", lambda: False).entries
+    library = next(entry for entry in choices if entry.is_library)
+    assert library.label == f"api [Debug] — {kind.lower()} library"
+    assert executables.choose(choices, library.key) == library
+    assert executables.choose(choices, ["", "deleted_library", "Debug"]) is None
+    scoped = executables.scope_model(model, library)
+    assert set(scoped.files) == {source} and set(scoped.entities) == {"api", "unused_api"}
+    # The same library remains selectable in a project with no main functions at all.
+    only = executables.entries(scoped, executables.read_targets(root))
+    assert only == (library,) and executables.choose(only, None) == library
+    built = executables.operate(root, model, library, "build", lambda: False)
+    assert built.selected == library and built.message == "api: build passed"
+    assert "--target api" in built.output
+    assert not (root / "bin/custom/renamed_program").exists()
+    with pytest.raises(steps.StepError, match="library has no executable"):
+        executables.operate(root, model, library, "run", lambda: False)
+    if kind == "INTERFACE":
+        assert library.target.artifact is None
+
+
+def test_library_scope_keeps_transitive_dependencies_and_candidate_sources(project):
+    root, model = project
+    for name in ("api", "helper", "unrelated"):
+        (root / f"{name}.cpp").write_text(f"int {name}() {{ return 0; }}\n")
+        model.files[f"{name}.cpp"] = FileInfo(f"{name}.cpp")
+        model.add_entity(Entity(name, Kind.FUNCTION, name, name, f"{name}.cpp", 1))
+    with (root / "CMakeLists.txt").open("a") as output:
+        output.write("add_library(helper STATIC helper.cpp)\nadd_library(api STATIC api.cpp)\n"
+                     "add_library(unrelated STATIC unrelated.cpp)\n"
+                     "target_link_libraries(api PRIVATE helper)\nadd_dependencies(api second)\n")
+    choices = executables.operate(root, model, None, "refresh", lambda: False).entries
+    library = next(entry for entry in choices if entry.target.name == "api")
+    assert executables.choose(choices, ["", "removed", "Debug"]) is None
+    candidate = DerivedModel.from_json(model.to_json())
+    candidate.root = str(root / "candidate")
+    scoped = executables.scope_model(candidate, library, root=root)
+    assert set(scoped.files) == {"api.cpp", "helper.cpp"}
+    assert set(scoped.entities) == {"api", "helper"}
 
 
 def test_legacy_main_history_and_queue_follow_the_original_file(tmp_path) -> None:

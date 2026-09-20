@@ -5045,3 +5045,30 @@ Verification:
   `.icoda-test-artifacts/executable-scope-final/`; basic File View and smoke Class View were visually inspected.
 - Updated the handbook and module-inventory evidence for the new native acceptance program. Regenerated the
   97-page PDF (37 images), rendered and visually checked the revised selection instructions on page 18.
+
+## 2026-09-20 — Select libraries without main
+
+The Executable / library selector includes CMake static, shared, module, object, and interface library targets.
+Libraries are identified by target and configuration independently of a main function or executable artifact.
+All code views use the selected library's sources and library dependencies; executable callers and unrelated
+libraries remain outside the scope. Multiple targets require a choice, and library choices survive reloads.
+
+Call View displays the library's analysed functions and methods together, including unused API functions and
+internal functions. A function can become the focused root; Library functions restores the complete overview.
+The same behavior applies to candidate previews. Build operates on the selected library; Run is disabled in
+the UI and rejected by the core operation before attempting configuration or launch.
+
+Verification:
+
+- **625 tests passed in 93.64 seconds**. Ruff, mypy across 61 production files, and `git diff --check` passed.
+- Real CMake fixtures configured and built each of the five library kinds, including interface targets without
+  artifacts. They verify unused functions, library-only selection, transitive dependencies, candidate paths,
+  exclusion of unrelated sources, and no fallback to an arbitrary library after a saved target disappears.
+- GUI regression checks cover all scoped views, several function roots, empty callable sets, executable/library
+  switching, saved selection, candidate API additions, and Build/Run state.
+- Native Tk acceptance passed using real combobox events with basic, smoke_test, and shared. The selected
+  library displayed only its header and implementation, exposed Shared::value and unused_api in Call View,
+  enabled Build, disabled Run, and restored the library after reload. Evidence and screenshots are retained
+  in `.icoda-test-artifacts/library-scope/`; the library Call View was visually inspected.
+- Updated the handbook and regenerated its 97-page PDF (37 images). Rendered and visually checked the selector
+  instructions on page 18 and the following page using Poppler.

@@ -13,7 +13,7 @@ from tkinter import ttk
 from typing import Any
 
 from icoda_core import views
-from icoda_core.model import DerivedModel
+from icoda_core.model import CALLABLE_KINDS, DerivedModel
 from icoda_gui import graph_canvas, zoom_controls
 
 BOX_WIDTH, BOX_HEIGHT = 200.0, 30.0
@@ -34,6 +34,7 @@ class CallViewCanvas(graph_canvas.GraphCanvas):
         self.layout: views.CallViewLayout | None = None
         self.root_usr: str | None = None
         self.entry_usr: str | None = None
+        self.library_mode = False
         self.selected: str | None = None
         self.added: set[str] = set()
         self.changed: set[str] = set()
@@ -84,7 +85,9 @@ class CallViewCanvas(graph_canvas.GraphCanvas):
              changed: set[str] | None = None) -> None:
         self.model = model
         self.added, self.changed = added or set(), changed or set()
-        self.root_usr = root or (self.entry_usr if self.entry_usr in model.entities else views.default_root(model))
+        self.root_usr = root or (None if self.library_mode else
+                                 self.entry_usr if self.entry_usr in model.entities else views.default_root(model))
+        self.toolbar_controls["from-main"].configure(text="Library functions" if self.library_mode else "From main")
         self.user_zoomed = False
         self.relayout()
 
@@ -104,7 +107,7 @@ class CallViewCanvas(graph_canvas.GraphCanvas):
     def from_main(self) -> None:
         if self.model is not None:
             entry = self.entry_usr if self.entry_usr in self.model.entities else views.default_root(self.model)
-            self.root_usr, self.user_zoomed = entry, False
+            self.root_usr, self.user_zoomed = None if self.library_mode else entry, False
             self.relayout()
 
     def controls_changed(self) -> None:
@@ -113,14 +116,19 @@ class CallViewCanvas(graph_canvas.GraphCanvas):
 
     def relayout(self) -> None:
         """Lay the graph out again; fit it unless the developer has zoomed or panned."""
-        if self.model is None or self.root_usr is None:
+        if self.model is None or (self.root_usr is None and not self.library_mode):
             self.layout = None
+            self.root_var.set("")
+            self.item_nodes = {}
             self.canvas.delete("all")
             return
-        self.layout = views.layout_call_view(self.model, self.root_usr, int(self.depth_var.get() or 3),
+        roots = tuple(entity.usr for entity in sorted(self.model.entities.values(),
+                                                      key=lambda e: (e.qualified_name, e.usr))
+                      if entity.kind in CALLABLE_KINDS) if self.root_usr is None else (self.root_usr,)
+        self.layout = views.layout_call_view(self.model, roots, int(self.depth_var.get() or 3),
                                              bool(self.callers_var.get()), self.selected)
-        root = self.layout.nodes[self.root_usr]
-        self.root_var.set(root.label + (" (callers)" if self.callers_var.get() else ""))
+        label = self.layout.nodes[self.root_usr].label if self.root_usr else f"Library functions ({len(roots)})"
+        self.root_var.set(label + (" (callers)" if self.callers_var.get() else ""))
         if self.user_zoomed:
             self.redraw()
         else:

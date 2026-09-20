@@ -416,12 +416,13 @@ def default_root(model: DerivedModel) -> str | None:
     return callables[0].usr if callables else None
 
 
-def layout_call_view(model: DerivedModel, root: str, depth: int = 3, callers: bool = False,
+def layout_call_view(model: DerivedModel, root: str | tuple[str, ...], depth: int = 3, callers: bool = False,
                      selected: str | None = None) -> CallViewLayout:
-    """Breadth-first over the call graph from ``root``: one column per level, discovery order within a level."""
-    levels: dict[str, int] = {root: 0}
+    """Breadth-first from one entry or a library's function set, one column per call depth."""
+    roots = (root,) if isinstance(root, str) else root
+    levels: dict[str, int] = dict.fromkeys(roots, 0)
     parents: dict[str, str] = {}
-    queue = [root]
+    queue = list(levels)
     while queue:
         usr = queue.pop(0)
         if levels[usr] >= depth:
@@ -435,9 +436,9 @@ def layout_call_view(model: DerivedModel, root: str, depth: int = 3, callers: bo
     nodes = _call_nodes(model, levels)
     edges = _call_edges(model, levels, callers)
     path = _path_to(parents, selected) if selected in levels else set()
-    width = COLUMN_WIDTH * (max(levels.values()) + 1)
-    height = ROW_HEIGHT * max(list(levels.values()).count(level) for level in set(levels.values()))
-    return CallViewLayout(root, nodes, edges, path, width, height)
+    width = COLUMN_WIDTH * (max(levels.values(), default=0) + 1)
+    height = ROW_HEIGHT * max((list(levels.values()).count(level) for level in set(levels.values())), default=1)
+    return CallViewLayout(roots[0] if roots else "", nodes, edges, path, width, height)
 
 
 def _call_nodes(model: DerivedModel, levels: dict[str, int]) -> dict[str, CallNode]:
