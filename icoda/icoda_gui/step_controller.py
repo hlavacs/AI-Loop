@@ -26,7 +26,7 @@ from icoda_core import (
     steps,
     test_selection,
 )
-from icoda_gui import dialogs
+from icoda_gui import dialogs, tasks
 
 Work = Callable[[], Any]
 Done = Callable[[Any], None]
@@ -84,7 +84,8 @@ class StepController:
         """
         self._start(work, done, activity, cancellable)
 
-    def _start(self, work: Work, done: Done, activity: str = "working", cancellable: bool = False) -> None:
+    def _start(self, work: Work, done: Done, activity: str = "working", cancellable: bool = False,
+               *, notify: bool = False) -> None:
         if hasattr(self.window, "source_editor") and not self.window.source_editor.confirm_saved():
             return
         self.cancel_requested = False
@@ -94,12 +95,16 @@ class StepController:
 
         def finished(result: Any) -> None:
             self.window.panel.set_busy(False)
+            if notify and not self.cancel_requested \
+                    and not isinstance(result, (steps.StepCancelled, steps.DirtyTree)):
+                tasks.completion_ping(self.window.root)
             if isinstance(result, steps.StepCancelled):
                 self.window.status.set("cancelled — nothing was recorded")
             elif isinstance(result, steps.DirtyTree):
-                self._offer_manual_commit(str(result), lambda: self._start(work, done, activity, cancellable))
+                self._offer_manual_commit(str(result),
+                                          lambda: self._start(work, done, activity, cancellable, notify=notify))
             elif isinstance(result, Exception):
-                self._failure(result, retry=lambda: self._start(work, done, activity, cancellable))
+                self._failure(result, retry=lambda: self._start(work, done, activity, cancellable, notify=notify))
             else:
                 done(result)
 
@@ -153,7 +158,7 @@ class StepController:
             runner.prepare()
             return runner.propose_approach(request)
 
-        self._start(work, self._show_approach, "asking the agent for an approach", cancellable=True)
+        self._start(work, self._show_approach, "asking the agent for an approach", cancellable=True, notify=True)
 
     def _show_approach(self, approach: steps.Approach) -> None:
         self.approach = approach
@@ -173,7 +178,7 @@ class StepController:
             runner.prepare()
             return runner.propose(request)
 
-        self._start(work, self._show_proposal, "asking the agent for the next step", cancellable=True)
+        self._start(work, self._show_proposal, "asking the agent for the next step", cancellable=True, notify=True)
 
     def _show_proposal(self, proposal: steps.Proposal, *, recovery_attempted: bool = False) -> None:
         self.proposal = proposal

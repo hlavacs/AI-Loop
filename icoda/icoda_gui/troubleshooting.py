@@ -9,7 +9,7 @@ from tkinter import ttk
 from typing import Any
 
 from icoda_core import agent, process, recovery, session, source_watch, steps, terminal
-from icoda_gui import provider_field
+from icoda_gui import provider_field, tasks
 
 
 class Troubleshooting:
@@ -154,16 +154,24 @@ class Troubleshooting:
         self.window.status.set("Trying automatic recovery…")
         token = self.generation
         issue, project = self.issue, self.project
+        llm_requested = False
+
+        def request_started() -> None:
+            nonlocal llm_requested
+            llm_requested = True
 
         def work() -> Any:
             if repair is not None:
+                request_started()
                 return repair()
-            return self._investigate(issue, selection, project)
+            return self._investigate(issue, selection, project, request_started)
 
         def done(result: Any) -> None:
             if token != self.generation:
                 return
             self._set_busy(False)
+            if llm_requested and not self.cancelled and not isinstance(result, steps.StepCancelled):
+                tasks.completion_ping(self.window.root)
             if self.cancelled or isinstance(result, steps.StepCancelled):
                 self._present("Recovery was cancelled. You can continue the investigation here.")
             elif not isinstance(result, Exception) and repaired is not None and getattr(result, "ok", True):
@@ -193,7 +201,7 @@ class Troubleshooting:
         self.window.run_async(work, done)
 
     def _investigate(self, issue: recovery.Diagnosis, selection: provider_field.ProviderSelection,
-                     project: Path | None) -> str:
+                     project: Path | None, request_started: Callable[[], None]) -> str:
         """Ask for evidence-based recovery when there is no deterministic repair handler."""
         if issue.code == "workflow":
             return "Checked the workflow prerequisites. " + issue.next_step
@@ -205,6 +213,7 @@ class Troubleshooting:
         question = ("Diagnose this failure and identify the smallest fix. Run read-only checks when useful. "
                     "Explain what can be repaired.")
         request = recovery.conversation_prompt(issue, [("Developer", question)], project)
+        request_started()
         result = recovery.invoke(provider, selection.model or provider.default_model, request, project,
                                  binary=selection.binary, timeout=120, cancelled=lambda: self.cancelled).result
         if result.cancelled:
@@ -300,6 +309,7 @@ class Troubleshooting:
                 self._append("ICODA", "Conversation request cancelled.")
                 return
             if isinstance(result, Exception):
+                tasks.completion_ping(self.window.root)
                 self.issue = recovery.diagnose(str(result))
                 self._append("ICODA", self.issue.text())
                 self._controls()
@@ -307,6 +317,7 @@ class Troubleshooting:
             if result.result.cancelled:
                 self._append("ICODA", "Conversation request cancelled.")
                 return
+            tasks.completion_ping(self.window.root)
             if result.result.ok:
                 answer = result.result.stdout
             else:

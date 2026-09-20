@@ -5112,3 +5112,35 @@ Verification:
   visible scrollbars, wheel scrolling, the scrollbar's actual registered callback, source navigation from the
   last row, and a real click immediately followed by a 30-event slow drag. All existing editor checks passed.
   Evidence and screenshots are in `.icoda-test-artifacts/hierarchy-scroll-final/`.
+
+## 2026-09-20 — Play a short sound when an LLM request finishes
+
+Prompt replies, approach/proposal requests, and automatic LLM recovery now play the system notification sound
+from their UI completion callbacks, including requests that finish with an error. Cancelled requests and stale
+Prompt/recovery callbacks remain silent, as do ordinary approval, terminal-launch, and build/test operations.
+Internal retries produce only the request's final completion notification.
+
+Verification:
+
+- **68 focused tests passed in 10.57 seconds** across troubleshooting and step-controller GUI behavior.
+  Checks cover one ping per reply, UI-callback timing, success/error/cancellation, stale project callbacks,
+  approaches/proposals, recovery, workflow preconditions, and silent non-LLM actions.
+- Ruff, mypy for the three changed production modules, and `git diff --check` passed.
+- A native Tk check invoked one system bell through `UiTasks` on the main UI thread after a separate worker
+  completed, then closed its temporary window.
+
+## 2026-09-20 — Simpler step descriptions and a visible editor filename
+
+Proposal and approach prompts now ask for everyday language: one short summary, then up to three brief points
+covering the change, checks, and important decisions. Titles use a short action. Required scope, estimates,
+and trade-offs remain part of the request. This guidance applies to newly generated descriptions.
+
+The source editor shows the filename in a bold heading, with an unsaved marker when needed. The project and
+relative path remain underneath and are available in a tooltip, so a long path cannot hide the filename.
+
+Verification:
+
+- **74 existing prompt, source-editor, and step-controller tests passed in 10.66 seconds**.
+- Ruff, mypy for both changed production modules, and `git diff --check` passed.
+- Native `tests/editor_gui_acceptance.py` passed navigation, editing, undo/redo, saving, and reloading checks.
+  Visually checked the filename heading in `.icoda-test-artifacts/editor-filename/source-editor.png`.

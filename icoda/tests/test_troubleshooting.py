@@ -33,6 +33,8 @@ def complete(pending):
 def test_prompt_works_before_any_failure_and_keeps_history(app_module, tmp_path, monkeypatch):
     app, pending = window(app_module, tmp_path)
     calls = []
+    pings = []
+    monkeypatch.setattr(app.root, "bell", lambda: pings.append(True))
 
     def invoke(provider, model, request, cwd, **kwargs):
         calls.append((request, cwd))
@@ -43,7 +45,12 @@ def test_prompt_works_before_any_failure_and_keeps_history(app_module, tmp_path,
         app.recovery.input.insert("end", question)
         assert app.recovery._send_shortcut() == "break"
         assert app.recovery.busy and len(pending) == 1
-        complete(pending)
+        before = len(pings)
+        work, done = pending.pop()
+        result = work()
+        assert len(pings) == before  # The worker never calls Tk or plays sound.
+        done(result)
+        assert len(pings) == before + 1
     assert app.recovery.issue is None and not app.panel.busy
     assert all(cwd == tmp_path for _, cwd in calls)
     assert "Explain this project" in calls[1][0] and "Start with main.cpp." in calls[1][0]
@@ -53,6 +60,8 @@ def test_prompt_works_before_any_failure_and_keeps_history(app_module, tmp_path,
 @pytest.mark.parametrize("outcome", ["success", "failure", "cancelled", "exception"])
 def test_prompt_applies_edits_and_refreshes_even_after_partial_failure(app_module, tmp_path, monkeypatch, outcome):
     app, pending = window(app_module, tmp_path)
+    pings = []
+    monkeypatch.setattr(app.root, "bell", lambda: pings.append(True))
     original = tmp_path / "app.cppm"
     original.write_text("int run();\n")
     app.source_editor.open_file(tmp_path, original.name)
@@ -72,6 +81,7 @@ def test_prompt_applies_edits_and_refreshes_even_after_partial_failure(app_modul
     app.recovery.input.insert("end", "Rename app.cppm according to the specification")
     app.recovery.send()
     complete(pending)
+    assert pings == ([] if outcome == "cancelled" else [True])
     assert (tmp_path / "app.cpp").exists() and not original.exists()
     assert changed == [tmp_path] and not app.panel.busy
     assert app.source_editor.document is None  # The clean editor no longer points at a deleted file.
@@ -130,6 +140,7 @@ def test_refresh_failure_keeps_prompt_conversation(app_module, tmp_path):
 
 def test_stale_prompt_completion_cannot_refresh_a_different_project(app_module, tmp_path, monkeypatch):
     app, pending = window(app_module, tmp_path)
+    monkeypatch.setattr(app.root, "bell", lambda: pytest.fail("Stale request must not ping"))
     monkeypatch.setattr(app, "_source_changed", lambda _: pytest.fail("Stale edit callback"))
 
     def invoke(*args, **kwargs):
@@ -197,6 +208,7 @@ def test_prompt_project_switch_clears_context_and_restores_provider(app_module, 
 def test_open_cli_before_failure_includes_draft_and_conversation(app_module, tmp_path, monkeypatch):
     from icoda_gui import troubleshooting
     app, pending = window(app_module, tmp_path)
+    monkeypatch.setattr(app.root, "bell", lambda: pytest.fail("Opening a terminal must not ping"))
     calls = []
     monkeypatch.setattr(troubleshooting.terminal, "open_cli", lambda command, cwd: calls.append((command, cwd)))
     app.recovery.history.extend([("Developer", "Explain main.cpp"), ("Assistant", "It starts the app.")])
@@ -216,13 +228,16 @@ def test_open_cli_before_failure_includes_draft_and_conversation(app_module, tmp
 def test_repair_precedes_error_ui_and_success_is_silent(app_module, tmp_path, monkeypatch):
     app, pending = window(app_module, tmp_path)
     shown, repairs, recovered = [], [], []
+    pings = []
+    monkeypatch.setattr(app.root, "bell", lambda: pings.append(True))
     monkeypatch.setattr(app.panel, "show_failure", shown.append)
     app.recovery.handle_failure("build failed", repair=lambda: repairs.append(True) or "fixed",
                                 repaired=recovered.append)
-    assert not shown and app.recovery.busy and not repairs
+    assert not shown and app.recovery.busy and not repairs and not pings
     assert "Trying automatic recovery" in app.status.get()
     complete(pending)
     assert not shown and repairs == [True] and recovered == ["fixed"]
+    assert pings == [True]
     assert not app.panel.busy and not app.recovery.busy
 
 
@@ -276,6 +291,7 @@ def test_conversation_keeps_history_and_candidate_directory(app_module, tmp_path
 
 def test_cancellation_and_project_reset_discard_stale_callbacks(app_module, tmp_path, monkeypatch):
     app, pending = window(app_module, tmp_path)
+    monkeypatch.setattr(app.root, "bell", lambda: pytest.fail("Cancelled recovery must not ping"))
     stopped = []
     monkeypatch.setattr(steps, "cancel_running", lambda: 0)
     from icoda_gui import troubleshooting
@@ -289,6 +305,20 @@ def test_cancellation_and_project_reset_discard_stale_callbacks(app_module, tmp_
     app.recovery.cancel()
     complete(pending)
     assert "cancelled" in app.recovery.transcript.get("1.0", "end")
+
+
+@pytest.mark.parametrize("outcome", ["success", "cancelled", "workflow"])
+def test_investigation_pings_only_for_completed_llm_calls(app_module, tmp_path, monkeypatch, outcome):
+    app, pending = window(app_module, tmp_path)
+    pings = []
+    monkeypatch.setattr(app.root, "bell", lambda: pings.append(True))
+    monkeypatch.setattr(recovery, "invoke", lambda *args, **kwargs: recovery.RecoveryResult(
+        ProcessResult([], 0, "Check the include path.", "", cancelled=outcome == "cancelled")))
+    error = "specification phase: save the specification" if outcome == "workflow" else "compiler error"
+    app.recovery.handle_failure(error)
+    assert not pings
+    complete(pending)
+    assert pings == ([True] if outcome == "success" else [])
 
 
 def test_failed_proposal_is_not_rendered_before_repair(app_module, tmp_path, monkeypatch):

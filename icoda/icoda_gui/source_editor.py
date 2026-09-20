@@ -9,6 +9,7 @@ from tkinter import filedialog, messagebox, ttk
 from typing import Any
 
 from icoda_core import source_edit
+from icoda_gui import tooltip
 
 
 class SourceEditor:
@@ -18,13 +19,20 @@ class SourceEditor:
         self.frame = ttk.Frame(parent)
         self.document: source_edit.Document | None = None
         self.loading = False
+        self.filename_var = tk.StringVar(value="No file open")
         self.path_var = tk.StringVar(value="Select a file, class, or function to edit its source.")
         self.info = tk.StringVar(value="")
         self.query, self.replacement = tk.StringVar(value=""), tk.StringVar(value="")
         self.match_case = tk.BooleanVar(value=False)
         self._match: tuple[int, int] | None = None
         self.buttons: dict[str, Any] = {}
-        ttk.Label(self.frame, textvariable=self.path_var, anchor="w", width=1).pack(fill=tk.X, padx=5, pady=3)
+        self.filename_label = ttk.Label(self.frame, textvariable=self.filename_var, anchor="w", width=1,
+                                        font=("TkDefaultFont", 11, "bold"))
+        self.filename_label.pack(fill=tk.X, padx=5, pady=(3, 0))
+        path_label = ttk.Label(self.frame, textvariable=self.path_var, anchor="w", width=1)
+        path_label.pack(fill=tk.X, padx=5, pady=(0, 3))
+        for label in (self.filename_label, path_label):
+            tooltip.attach(label, self.path_var.get)
         row = ttk.Frame(self.frame)
         row.pack(fill=tk.X, padx=4)
         for name, callback in (("Open…", self.choose_file), ("Save", self.save), ("Reload", self.reload),
@@ -94,7 +102,8 @@ class SourceEditor:
 
     def _state(self) -> None:
         doc = self.document
-        self.path_var.set((f"{doc.root.name}: {doc.relative}" + (" • unsaved" if self.dirty else ""))
+        self.filename_var.set((doc.path.name + (" • unsaved" if self.dirty else "")) if doc else "No file open")
+        self.path_var.set(f"{doc.root.name}: {doc.relative}"
                           if doc else "Select a file, class, or function to edit its source.")
         for name, button in self.buttons.items():
             enabled = name == "Open…" or doc is not None

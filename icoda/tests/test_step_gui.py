@@ -612,6 +612,8 @@ def test_controller_signature_confirmation_does_not_authorize_different_proposal
 
 def test_controller_runs_the_protocol_through_the_window(tmp_path: Path, monkeypatch: Any) -> None:
     window = Window(tmp_path)
+    pings: list[bool] = []
+    monkeypatch.setattr(window.root, "bell", lambda: pings.append(True))
     runners: list[FakeRunner] = []
 
     def factory(*args: Any, **kwargs: Any) -> FakeRunner:
@@ -624,6 +626,7 @@ def test_controller_runs_the_protocol_through_the_window(tmp_path: Path, monkeyp
     controller = step_controller.StepController(window, factory)
     window.panel.request_var.set("add b")
     controller.action("propose")
+    assert len(pings) == 1
     runner = runners[0]
     assert runner.calls == ["prepare", "propose:add b:"] and (runner.binary, runner.model_id) == ("claude", "m")
     assert window.panel.proposal is runner.proposal and window.shown_call_view == 1
@@ -639,6 +642,7 @@ def test_controller_runs_the_protocol_through_the_window(tmp_path: Path, monkeyp
         '\"app::b\" to \"app::small_b\"; entity 1 signature changed from \"int b()\" to \"int small_b()\".'
     )
     controller.action("approve")
+    assert len(pings) == 2  # Adaptation completed; approval itself stays silent.
     assert runner.calls[-1] == "approve" and window.reloads == 0 and window.panel.proposal is None
     assert window.step_models == [cast(steps.Proposal, runner.proposal).model]
     assert "approved and committed: Add b" in window.status.get()
@@ -651,6 +655,7 @@ def test_controller_runs_the_protocol_through_the_window(tmp_path: Path, monkeyp
     runner.dirty = True
     controller.action("propose")
     assert "uncommitted changes" in window.status.get() and len(runners) == 1
+    assert len(pings) == 3  # Rejection and the dirty-tree preflight do not ping.
     assert views.default_root(model_with_calls()) == "u:main"
 
 
@@ -864,8 +869,10 @@ def test_controller_existing_panel_buttons_preserve_the_empty_focus_request(tmp_
     assert expected_approach_request.focus == ()
 
 
-def test_controller_runs_approach_approval_before_code(tmp_path: Path) -> None:
+def test_controller_runs_approach_approval_before_code(tmp_path: Path, monkeypatch: Any) -> None:
     window = Window(tmp_path)
+    pings: list[bool] = []
+    monkeypatch.setattr(window.root, "bell", lambda: pings.append(True))
     window.panel.set_phase(persistence.ProjectPhase.IMPLEMENTATION)
     window.panel.set_implementation_queue("b", 1)
     runners: list[FakeRunner] = []
@@ -883,10 +890,12 @@ def test_controller_runs_approach_approval_before_code(tmp_path: Path) -> None:
     assert runner.calls == ["prepare", "propose_approach::"]
     assert window.panel.approach is runner.approach and "approach ready" in window.status.get()
     controller.action("approve_approach")
+    assert pings == [True]
     assert runner.calls[-1] == "approve_approach"
     assert window.panel.approach_approved and "code-and-test round" in window.status.get()
     controller.action("propose")
     assert runner.calls[-2:] == ["prepare", "propose::"]
+    assert pings == [True, True]
 
 
 def test_controller_persists_a_developer_batch_size_change(tmp_path: Path) -> None:
@@ -1134,8 +1143,9 @@ def test_panel_prompt_and_reply_tabs_show_the_exchange(tmp_path: Path) -> None:
     assert "No reply" in panel.reply_view.get("1.0", "end")
 
 
-def test_controller_cancel_stops_the_runner_and_records_nothing(tmp_path: Path) -> None:
+def test_controller_cancel_stops_the_runner_and_records_nothing(tmp_path: Path, monkeypatch: Any) -> None:
     window = Window(tmp_path)
+    monkeypatch.setattr(window.root, "bell", lambda: pytest.fail("Cancelled step must not ping"))
     cancelled: list[str] = []
 
     class CancellableRunner(FakeRunner):

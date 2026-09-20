@@ -6,12 +6,21 @@ import queue
 import sys
 import threading
 import time
+import tkinter as tk
 import traceback
 from collections.abc import Callable
 from typing import Any
 
 Work = Callable[[], Any]
 Done = Callable[[Any], None]
+
+
+def completion_ping(root: Any) -> None:
+    """Play the system notification sound from a completion callback on the Tk thread."""
+    try:
+        root.bell()
+    except tk.TclError:
+        pass  # Closing the window must not turn a completed request into an error.
 
 
 class UiTasks:

@@ -17,6 +17,14 @@ from icoda_core.model import CALLABLE_KINDS, DerivedModel, EdgeKind, Entity, Kin
 ARCHITECTURE = persistence.ProjectPhase.ARCHITECTURE.value
 IMPLEMENTATION = persistence.ProjectPhase.IMPLEMENTATION.value
 MAX_SUBSET_FILES = 40
+STEP_DESCRIPTION_STYLE = (
+    "Use simple, everyday language in the step description. Start with one short sentence saying what will "
+    "change and why it helps. Then use up to three short bullet points for how it works, how it will be checked, "
+    "and any important limitation or decision. Prefer concrete actions and short sentences. Avoid jargon, "
+    "unexplained abbreviations, and long lists of implementation details. Keep exact file and function names "
+    "when needed, and explain technical terms briefly. Include required scope, estimates, and trade-offs "
+    "concisely. Example: 'Check for empty input so the function returns a clear error.'"
+)
 
 
 @dataclass(frozen=True)
@@ -118,10 +126,10 @@ def _approach_step_text(request: StepRequest, model: DerivedModel) -> str:
 
 def _approach_format_text() -> str:
     return ("Reply with a single JSON object (no code fence or surrounding prose) with exactly these fields:\n"
-            '{\n "plan": "prose implementation plan including trade-offs and estimated line count",\n'
+            '{\n "plan": "short, plain-language plan including trade-offs and estimated line count",\n'
             ' "entities": ["qualified entity name"],\n "files": ["project/relative/path"]\n}\n'
             "`entities` and `files` describe expected scope only. Do not include file contents, source code, "
-            "patches, diffs, or commands.")
+            "patches, diffs, or commands.\n\nFor `plan`: " + STEP_DESCRIPTION_STYLE)
 
 
 def _issues_text(issues: Sequence[rules.Issue]) -> str:
@@ -261,10 +269,11 @@ def _format_text() -> str:
     schema = response.load_schema()
     return ("Reply with a single JSON object (no code fence, no prose around it) matching this schema:\n" +
             json.dumps(schema["properties"], indent=1) +
-            "\n\nRules: `title` is one line for the commit message; `rationale` explains the step in prose; "
+            "\n\nRules: `title` is a short, plain-language action on one line for the commit message; "
+            "`rationale` explains the step; "
             "`files` lists every file the step creates, changes or deletes, with paths relative to the project "
             "root and the complete new content; `entities` summarises what the step introduces; `questions` "
-            "is for what only the developer can answer.")
+            "is for what only the developer can answer.\n\nFor `rationale`: " + STEP_DESCRIPTION_STYLE)
 
 
 # --------------------------------------------------------------------------- model subset
