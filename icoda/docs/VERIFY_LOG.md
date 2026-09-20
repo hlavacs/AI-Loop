@@ -4882,3 +4882,23 @@ Verification evidence is retained in `.icoda-test-artifacts/reload-compact`:
   checked programmatically. No manual screenshot-based GUI pass is claimed for this change.
 - The PDF was regenerated (96 pages, 37 images); its updated reload and review-panel instructions were rendered
   with Poppler and visually inspected.
+
+## 2026-09-20 — Remove the remaining review-header whitespace
+
+Moved Show details / Hide details onto the existing action row. The idle panel no longer reserves separate
+title/status rows or inactive implementation controls. Real result titles and build/test/signature status
+share one line. Collapsed height follows phase, progress text, and window-size changes; repeated resize
+requests are coalesced, and the expanded review divider remains adjustable.
+
+Verification:
+
+- **96 focused tests passed** across application behavior, source editing, step controls, and Prompt/recovery.
+  Ruff, mypy (61 files), and `git diff --check` passed.
+- Native widget checks in `.icoda-test-artifacts/compact-header` measured **88 px idle / 320 px expanded** at
+  1200x760, compared with the previous **164 / 396 px**. Both states reclaim a further **76 px**.
+- Checked implementation controls and phase buttons for clipping, a one-line result/status row, returning
+  from multi-line progress messages, resizing the window, retained Summary edits, and automatic result
+  expansion. The isolated reload scenario still discovered an external C++ function and preserved dirty edits.
+- The handbook PDF was regenerated (96 pages, 37 images); its revised panel instructions were rendered with
+  Poppler and visually inspected. Desktop screenshots remain unavailable without computer-use permission;
+  the application checks use native widget geometry rather than a manual visual pass.

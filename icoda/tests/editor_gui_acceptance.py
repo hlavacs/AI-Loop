@@ -55,6 +55,11 @@ def verify_compact_panel(root: tk.Tk, app: Any) -> dict[str, int]:
     compact = app.panel.frame.winfo_height()
     graph_height = app.canvas.winfo_height()
     assert not app.panel.review_panes.winfo_ismapped()
+    assert not app.panel.summary_row.winfo_ismapped()
+    assert app.panel.details_toggle.master == app.panel.action_row
+    if app.panel.phase_var.get() != persistence.ProjectPhase.IMPLEMENTATION.value:
+        assert not app.panel.queue_row.winfo_ismapped()
+        assert compact <= 110, f"Idle header still reserves too much height: {compact}"
     app.panel.set_details_visible(True)
     root.update()
     expanded = app.panel.frame.winfo_height()
@@ -71,6 +76,38 @@ def verify_compact_panel(root: tk.Tk, app: Any) -> dict[str, int]:
     root.update()
     assert app.panel.edited_entity_summary() == contents
     app.panel.show(None)
+    root.update()
+    # A temporary multi-line activity must not leave an empty gap after it ends.
+    app.panel.set_busy(True, "building\nchecking source\nchecking tests", cancellable=True)
+    root.update()
+    require_visible(root, {"cancel": app.panel.cancel_button, "details-toggle": app.panel.details_toggle})
+    app.panel.set_busy(False)
+    root.update()
+    assert abs(app.panel.frame.winfo_height() - compact) <= 8
+    assert app.panel.frame.winfo_height() <= app.panel.frame.winfo_reqheight() + 8
+    phase = app.panel.phase_var.get()
+    app.panel.set_phase(persistence.ProjectPhase.IMPLEMENTATION)
+    root.update()
+    assert app.panel.queue_row.winfo_ismapped()
+    require_visible(root, {"batch-size": app.panel.batch_size_spinbox,
+                           "scope": app.panel.scope_combobox, "grouping": app.panel.grouping_combobox,
+                           "auto-approve": app.panel.auto_approve_check, "details-toggle": app.panel.details_toggle,
+                           **{name: app.panel.buttons[name] for name in app.panel.visible_actions}})
+    app.panel.set_phase(phase)
+    root.update()
+    assert abs(app.panel.frame.winfo_height() - compact) <= 8
+    app.panel.show_failure("Example build failure")
+    app.panel.set_details_visible(False)
+    root.update()
+    assert app.panel.summary_row.winfo_ismapped() and app.panel.summary_row.winfo_height() <= 30
+    assert app.panel.frame.winfo_height() <= compact + app.panel.summary_row.winfo_height() + 8
+    app.panel.show(None)
+    root.update()
+    geometry = root.geometry()
+    root.geometry(f"{root.winfo_width()}x{root.winfo_height() - 80}")
+    root.update()
+    assert app.panel.frame.winfo_height() <= app.panel.frame.winfo_reqheight() + 8
+    root.geometry(geometry)
     root.update()
     require_visible(root, {"reload-project": app.reload_button, "show-details": app.panel.details_toggle})
     return {"compact_height": compact, "expanded_height": expanded, "released_height": expanded - compact}

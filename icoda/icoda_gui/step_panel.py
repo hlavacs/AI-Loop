@@ -132,7 +132,8 @@ class StepPanel:
                                                 textvariable=self.max_entities_var)
         self.max_entities_spinbox.pack(side=tk.LEFT, padx=(2, 10))
         self.tooltips["max_entities"] = tooltip.attach(self.max_entities_spinbox, CONTROL_HELP["max_entities"])
-        ttk.Label(request_row, text="Batch size").pack(side=tk.LEFT)
+        self.batch_size_label = ttk.Label(request_row, text="Batch size")
+        self.batch_size_label.pack(side=tk.LEFT)
         self.batch_size_spinbox = ttk.Spinbox(request_row, from_=1, to=20, width=3,
                                                textvariable=self.batch_size_var,
                                                command=self._batch_size_changed)
@@ -140,9 +141,9 @@ class StepPanel:
         self.batch_size_spinbox.bind("<Return>", self._batch_size_changed)
         self.batch_size_spinbox.bind("<FocusOut>", self._batch_size_changed)
         self.tooltips["batch_size"] = tooltip.attach(self.batch_size_spinbox, CONTROL_HELP["batch_size"])
-        queue_row = ttk.Frame(self.frame)
+        queue_row = self.queue_row = ttk.Frame(self.frame)
         queue_row.pack(fill=tk.X, padx=4, pady=(0, 2))
-        self.queue_label = ttk.Label(queue_row, textvariable=self.queue_var, anchor="w")
+        self.queue_label = ttk.Label(queue_row, textvariable=self.queue_var, anchor="w", width=1)
         self.queue_label.pack(side=tk.LEFT, fill=tk.X, expand=True)
         ttk.Label(queue_row, text="Scope").pack(side=tk.LEFT, padx=(8, 2))
         self.scope_combobox = ttk.Combobox(
@@ -160,8 +161,12 @@ class StepPanel:
         self.hint_label = ttk.Label(self.frame, textvariable=self.hint_var, anchor="w", justify="left",
                                     wraplength=1200, foreground="#1f4e79")
         self.hint_label.pack(fill=tk.X, padx=6, pady=(2, 2))
+        self.hint_label.bind("<Configure>", self._hint_resized)
         self.action_row = ttk.Frame(self.frame)
         self.action_row.pack(fill=tk.X, padx=4, pady=(0, 2))
+        self.details_toggle = ttk.Button(self.action_row, text="Hide details", command=self.toggle_details)
+        self.details_toggle.pack(side=tk.RIGHT, padx=(6, 0))
+        tooltip.attach(self.details_toggle, "Show or hide the review details to give the graph and editor more space.")
         for action in ACTIONS:
             self.buttons[action] = ttk.Button(self.action_row, text=LABELS[action], command=self._pressed(action))
             self.tooltips[action] = tooltip.attach(self.buttons[action], self._help_for(action))
@@ -174,22 +179,22 @@ class StepPanel:
         self.cancel_button = ttk.Button(self.action_row, text="Cancel", command=self._pressed("cancel"))
         self.tooltips["cancel"] = tooltip.attach(self.cancel_button, CONTROL_HELP["cancel"])
         self.progress = ttk.Progressbar(self.action_row, mode="indeterminate", length=160)
-        self.activity_label = ttk.Label(self.action_row, textvariable=self.activity_var, foreground="#1f77b4")
+        self.activity_label = ttk.Label(self.action_row, textvariable=self.activity_var, foreground="#1f77b4",
+                                        anchor="w", width=1)
 
     def _build_texts(self) -> None:
-        title_row = ttk.Frame(self.frame)
-        title_row.pack(fill=tk.X, padx=4)
-        self.details_toggle = ttk.Button(title_row, text="Hide details", command=self.toggle_details)
-        self.details_toggle.pack(side=tk.RIGHT, padx=(6, 0))
-        tooltip.attach(self.details_toggle, "Show or hide the review details to give the graph and editor more space.")
-        ttk.Label(title_row, textvariable=self.title_var, font=("TkDefaultFont", 11, "bold"),
-                  anchor="w").pack(side=tk.LEFT, fill=tk.X, expand=True)
-        status_row = ttk.Frame(self.frame)
-        status_row.pack(fill=tk.X, padx=4)
-        ttk.Label(status_row, textvariable=self.build_status_var).pack(side=tk.LEFT, padx=(0, 16))
-        ttk.Label(status_row, textvariable=self.test_status_var).pack(side=tk.LEFT, padx=(0, 16))
-        self.signature_label = ttk.Label(status_row, textvariable=self.signature_var)
+        self.summary_row = ttk.Frame(self.frame)
+        self.summary_row.pack(fill=tk.X, padx=4)
+        status = ttk.Frame(self.summary_row)
+        status.pack(side=tk.RIGHT, padx=(8, 0))
+        ttk.Label(status, textvariable=self.build_status_var).pack(side=tk.LEFT, padx=(0, 16))
+        ttk.Label(status, textvariable=self.test_status_var).pack(side=tk.LEFT, padx=(0, 16))
+        self.signature_label = ttk.Label(status, textvariable=self.signature_var)
         self.signature_label.pack(side=tk.LEFT)
+        title = ttk.Label(self.summary_row, textvariable=self.title_var, font=("TkDefaultFont", 11, "bold"),
+                           anchor="w", width=1)
+        title.pack(side=tk.LEFT, fill=tk.X, expand=True)
+        tooltip.attach(title, self.title_var.get)
         paned = self.review_panes = ttk.PanedWindow(self.frame, orient=tk.HORIZONTAL)
         paned.pack(fill=tk.BOTH, expand=True, padx=4, pady=(2, 4))
         self.rationale = _scrolled_text(paned, wrap="word")
@@ -218,6 +223,30 @@ class StepPanel:
 
     def toggle_details(self) -> None:
         self.set_details_visible(not self.details_visible)
+
+    def _hint_resized(self, event: Any) -> None:
+        """Wrap guidance to the available width and release height when it becomes shorter."""
+        self.hint_label.configure(wraplength=max(1, event.width))
+        self._fit_collapsed()
+
+    def _fit_collapsed(self) -> None:
+        if not self.details_visible and self.on_details_visibility is not None:
+            self.on_details_visibility()
+
+    def _arrange_header(self) -> None:
+        if self.phase_var.get() == prompt.IMPLEMENTATION:
+            self.queue_row.pack(fill=tk.X, padx=4, pady=(0, 2), before=self.hint_label)
+            self.batch_size_label.pack(side=tk.LEFT)
+            self.batch_size_spinbox.pack(side=tk.LEFT, padx=(2, 0))
+        else:
+            self.queue_row.pack_forget()
+            self.batch_size_label.pack_forget()
+            self.batch_size_spinbox.pack_forget()
+        if self.title_var.get() != "No proposal":
+            self.summary_row.pack(fill=tk.X, padx=4, after=self.action_row)
+        else:
+            self.summary_row.pack_forget()
+        self._fit_collapsed()
 
     def set_details_visible(self, visible: bool) -> None:
         """Collapsing the review pane retains every tab and any edited summary."""
@@ -500,6 +529,7 @@ class StepPanel:
         self.activity_var.set(activity)
         if self.busy:
             self.hint_var.set(guidance.next_step(self._situation()))
+            self._fit_collapsed()
 
     def _update_buttons(self) -> None:
         """Enable, explain and show the buttons of the phase; then refresh the hint line."""
@@ -514,6 +544,7 @@ class StepPanel:
             button.state(["!disabled"] if reason is None else ["disabled"])
         self._arrange_action_row()
         self.hint_var.set(guidance.next_step(self._situation()))
+        self._arrange_header()
 
     def _signature_confirmation_required(self) -> bool:
         usable = self.proposal is not None and self.proposal.ok
@@ -583,9 +614,9 @@ class StepPanel:
             widget.pack_forget()
         if self.busy:
             self.progress.pack(side=tk.LEFT, padx=(2, 8), pady=2)
-            self.activity_label.pack(side=tk.LEFT, padx=(0, 8))
             if self.cancellable:
                 self.cancel_button.pack(side=tk.LEFT, padx=2)
+            self.activity_label.pack(side=tk.LEFT, fill=tk.X, expand=True, padx=(0, 8))
             self.visible_actions = ()
             return
         actions = [action for action in PHASE_ACTIONS.get(self.phase_var.get(), ())

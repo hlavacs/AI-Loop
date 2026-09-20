@@ -705,14 +705,23 @@ class App:
         self.panel = step_panel.StepPanel(vertical, lambda action: self.steps.action(action))
         vertical.add(self.panel.frame, weight=0)
         self.panel.on_details_visibility = self._resize_step_panel
+        self._step_panel_resize_pending = False
+        vertical.bind("<Configure>", lambda _event: self.panel._fit_collapsed())
         self._resize_step_panel()
 
     def _resize_step_panel(self) -> None:
         """Give space released by the review details back to the graph and editor."""
+        if self._step_panel_resize_pending:
+            return
+        self._step_panel_resize_pending = True
+
         def resize() -> None:
+            self._step_panel_resize_pending = False
             height = self.main_panes.winfo_height()
             if height > 1:
-                self.main_panes.sashpos(0, max(180, height - self.panel.frame.winfo_reqheight() - 6))
+                position = max(180, height - self.panel.frame.winfo_reqheight() - 6)
+                if abs(self.main_panes.sashpos(0) - position) > 1:
+                    self.main_panes.sashpos(0, position)
         self.root.after_idle(resize)
 
     def _build_graph_controls(self, parent: Any) -> None:

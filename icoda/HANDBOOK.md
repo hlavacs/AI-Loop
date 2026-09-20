@@ -396,9 +396,13 @@ opens this same tab if it needs your help. Switching projects clears the convers
 ### The step panel
 
 The review details start collapsed when there is no proposal, leaving more height for diagrams and the source
-editor. **Show details** and **Hide details**, beside the step title, toggle the lower review area without losing
+editor. **Show details** and **Hide details**, at the right of the action row, toggle the lower review area without losing
 its content or your Summary edits. A new proposal, approach, selected historical step, or failure opens it
 automatically. You can still drag the horizontal divider to choose the review area's height.
+
+The collapsed panel fits its visible controls without reserving empty rows. Queue and batch controls appear
+only during implementation. When a result is available, its title, build/test status, and signature status share
+one line. Returning from a longer progress message or resizing the window releases any unused height.
 
 The lower panel is driven by the project's phase. One sentence above the buttons says what to do next; it changes
 with every event (analysis running, proposal ready, signature confirmation needed, approach approved, queue empty,

@@ -223,14 +223,18 @@ def main(argv: list[str] | None = None) -> int:
             raise RuntimeError("a button outside the phase is still mapped")
         require_visible(root, {**{action: app.panel.buttons[action] for action in app.panel.visible_actions},
                                "more": app.panel.more_button, "hint": app.panel.hint_label,
-                               "batch-size": app.panel.batch_size_spinbox,
-                               "implementation-scope": app.panel.scope_combobox,
-                               "implementation-grouping": app.panel.grouping_combobox,
-                               "auto-approve": app.panel.auto_approve_check,
+                               "details-toggle": app.panel.details_toggle,
                                "filter": app.graph_filter_entry,
                                "neighborhood": app.neighborhood_spinbox,
                                "collapse-all": app.collapse_all_button,
                                **app.view.zoom_control_widgets})
+        if app.panel.phase_var.get() == prompt.IMPLEMENTATION:
+            require_visible(root, {"batch-size": app.panel.batch_size_spinbox,
+                                   "implementation-scope": app.panel.scope_combobox,
+                                   "implementation-grouping": app.panel.grouping_combobox,
+                                   "auto-approve": app.panel.auto_approve_check})
+        else:
+            assert not app.panel.queue_row.winfo_ismapped()
         auto_approve_before = bool(app.panel.auto_approve_var.get())
         if app.panel.phase_var.get() == prompt.IMPLEMENTATION:
             app.panel.auto_approve_check.invoke()
