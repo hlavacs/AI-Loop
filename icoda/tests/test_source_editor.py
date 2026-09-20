@@ -125,6 +125,22 @@ def test_editor_navigation_retains_edits_and_save(tmp_path):
     assert "unsaved" in path.read_text() and not pane.dirty and len(saved) == 1 and not failed
 
 
+def test_refresh_preserves_cursor_and_does_not_reset_unchanged_buffer(tmp_path, monkeypatch):
+    pane, path, _saved, failed = editor(tmp_path)
+    installed = []
+    original_install = pane._install
+    monkeypatch.setattr(pane, "_install", lambda *args: (installed.append(True), original_install(*args)))
+    pane.refresh()
+    assert not installed
+    path.write_text(path.read_text().replace("return 1", "return 2"))
+    pane.refresh()
+    assert installed == [True] and "return 2" in pane.content()
+    assert pane.text.index("insert") == "3.0" and not pane.dirty and not failed
+    path.unlink()
+    pane.refresh()
+    assert len(failed) == 1 and "return 2" in pane.content()
+
+
 def test_file_switch_cancel_discard_and_save(tmp_path, monkeypatch):
     pane, path, saved, failed = editor(tmp_path)
     second = tmp_path / "other.cpp"

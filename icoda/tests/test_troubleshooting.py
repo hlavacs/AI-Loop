@@ -12,6 +12,7 @@ def window(app_module, tmp_path):
                          config_path=tmp_path / "config.json")
     app.project = tmp_path
     app.provider_field.set("codex", "gpt-6-astra")
+    app.recovery.set_project(tmp_path)
     pending = []
     app.run_async = lambda work, done: pending.append((work, done))
     return app, pending
@@ -24,6 +25,92 @@ def complete(pending):
     except Exception as exc:  # noqa: BLE001  (simulate UiTasks result delivery)
         result = exc
     done(result)
+
+
+def test_prompt_works_before_any_failure_and_keeps_history(app_module, tmp_path, monkeypatch):
+    app, pending = window(app_module, tmp_path)
+    calls = []
+
+    def invoke(provider, model, request, cwd, **kwargs):
+        calls.append((request, cwd))
+        return recovery.RecoveryResult(ProcessResult([], 0, "Start with main.cpp.", ""))
+
+    monkeypatch.setattr(recovery, "invoke", invoke)
+    for question in ("Explain this project", "Which function should I inspect?"):
+        app.recovery.input.insert("end", question)
+        assert app.recovery._send_shortcut() == "break"
+        assert app.recovery.busy and len(pending) == 1
+        complete(pending)
+    assert app.recovery.issue is None and not app.panel.busy
+    assert all(cwd == tmp_path for _, cwd in calls)
+    assert "Explain this project" in calls[1][0] and "Start with main.cpp." in calls[1][0]
+    assert "Diagnosis:" not in calls[0][0] and "failure" not in calls[0][0]
+
+
+def test_prompt_controls_follow_input_project_provider_and_busy_state(app_module, tmp_path, monkeypatch):
+    app, pending = window(app_module, tmp_path)
+    states = {}
+    for label, button in app.recovery.buttons.items():
+        monkeypatch.setattr(button, "state", lambda flags, label=label:
+                            states.update({label: "disabled" not in flags}))
+    app.recovery._controls()
+    assert states == {"Send": False, "Open CLI": True, "Cancel": False,
+                      "Retry step": False, "Details": False}
+    app.recovery.input.insert("end", "Explain main.cpp")
+    app.recovery._input_changed()
+    assert states["Send"]
+    app.panel.set_busy(True, "building")
+    assert not any(states.values())
+    app.recovery.send()
+    app.recovery.open_cli()
+    assert not pending
+    app.panel.set_busy(False)
+    assert states["Send"] and states["Open CLI"]
+    app.recovery.provider.set("unrecognized-agent")
+    assert not states["Send"] and not states["Open CLI"]
+    app.recovery.provider.set("codex")
+    assert states["Send"]
+    app.recovery.input.delete("1.0", "end")
+    app.recovery._input_changed()
+    assert not states["Send"]
+    app.recovery.reset()
+    assert not any(states.values())
+
+
+def test_prompt_project_switch_clears_context_and_restores_provider(app_module, tmp_path):
+    app, _pending = window(app_module, tmp_path)
+    app.recovery.history.append(("Developer", "old project question"))
+    app.recovery.input.insert("end", "old draft")
+    app.recovery.set_project(tmp_path)
+    assert app.recovery.history and app.recovery.input.get("1.0", "end").strip()
+    other = tmp_path / "other"
+    app.project = other
+    app.provider_field.set("claude", "project-model")
+    app.recovery.set_project(other)
+    assert not app.recovery.history and not app.recovery.input.get("1.0", "end").strip()
+    assert app.recovery.cwd == other and app.recovery.issue is None
+    assert app.recovery.provider.selection().model == "project-model"
+    app.provider_field.set("codex", "new-project-model")
+    assert app.recovery.provider.selection().model == "new-project-model"
+
+
+def test_open_cli_before_failure_includes_draft_and_conversation(app_module, tmp_path, monkeypatch):
+    from icoda_gui import troubleshooting
+    app, pending = window(app_module, tmp_path)
+    calls = []
+    monkeypatch.setattr(troubleshooting.terminal, "open_cli", lambda command, cwd: calls.append((command, cwd)))
+    app.recovery.history.extend([("Developer", "Explain main.cpp"), ("Assistant", "It starts the app.")])
+    app.recovery.input.insert("end", "Add a command-line option")
+    app.recovery.open_cli()
+    assert app.recovery.busy
+    complete(pending)
+    command, cwd = calls[0]
+    assert cwd == tmp_path and "on-request" in command
+    assert all(text in command[-1] for text in ("Explain main.cpp", "It starts the app.",
+                                               "Add a command-line option"))
+    assert "Diagnosis:" not in command[-1] and "Do not modify files" not in command[-1]
+    assert "Retry step" not in app.recovery.transcript.get("1.0", "end")
+    assert app.recovery.input.get("1.0", "end").strip() == "Add a command-line option"
 
 
 def test_repair_precedes_error_ui_and_success_is_silent(app_module, tmp_path, monkeypatch):
@@ -47,7 +134,7 @@ def test_failed_repair_shows_tab_once_and_keeps_retry(app_module, tmp_path, monk
                                 retry=lambda: retried.append(True))
     assert not shown
     complete(pending)
-    assert len(shown) == 1 and "Troubleshooting" in app.status.get()
+    assert len(shown) == 1 and "Prompt" in app.status.get()
     assert "no fix found" in app.recovery.transcript.get("1.0", "end")
     assert not pending
     app.recovery.provider.set("claude", "claude-opus-4-6")
@@ -130,7 +217,7 @@ def test_recovery_callback_failure_does_not_recurse(app_module, tmp_path):
     app.recovery.handle_failure("drawing failed", repair=lambda: "repaired", repaired=broken_view)
     complete(pending)
     assert not pending and not app.recovery.busy
-    assert "Troubleshooting" in app.status.get()
+    assert "Prompt" in app.status.get()
 
 
 def test_terminal_launch_is_off_ui_thread_and_uses_candidate(app_module, tmp_path, monkeypatch):
@@ -190,5 +277,5 @@ def test_ui_callback_exception_keeps_completion_queue_alive(app_module, tmp_path
     app._recover_analysis = lambda: pytest.fail("reanalysis cannot prove that an unknown save succeeded")
     app._callback_error(ValueError, ValueError("save failed"), None)
     complete(_pending)
-    assert "Troubleshooting" in app.status.get()
+    assert "Prompt" in app.status.get()
     assert "save permission" in app.recovery.transcript.get("1.0", "end")

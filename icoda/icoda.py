@@ -406,6 +406,9 @@ class App:
         self.neighborhood_depth_var.trace_add("write", self.apply_graph_filter)
         self.steps = step_controller.StepController(self)
         self.recovery = troubleshooting.Troubleshooting(self)
+        self.panel.activity_var.trace_add("write", lambda *_args: self._update_reload_button())
+        self.status.trace_add("write", lambda *_args: self._update_reload_button())
+        self._update_reload_button()
         root.report_callback_exception = self._callback_error
         root.protocol("WM_DELETE_WINDOW", self.close)
         root.bind("<FocusIn>", self._refresh_external_edits)
@@ -637,7 +640,7 @@ class App:
         return lambda: self.open_project(path)
 
     def _build_panel(self) -> None:
-        vertical = ttk.PanedWindow(self.root, orient=tk.VERTICAL)
+        vertical = self.main_panes = ttk.PanedWindow(self.root, orient=tk.VERTICAL)
         vertical.pack(fill=tk.BOTH, expand=True)
         paned = ttk.PanedWindow(vertical, orient=tk.HORIZONTAL)
         vertical.add(paned, weight=4)
@@ -700,7 +703,17 @@ class App:
         self.view = FileViewCanvas(self.canvas, self)
         self.view.build_zoom_controls(file_toolbar).pack(side=tk.RIGHT)
         self.panel = step_panel.StepPanel(vertical, lambda action: self.steps.action(action))
-        vertical.add(self.panel.frame, weight=1)
+        vertical.add(self.panel.frame, weight=0)
+        self.panel.on_details_visibility = self._resize_step_panel
+        self._resize_step_panel()
+
+    def _resize_step_panel(self) -> None:
+        """Give space released by the review details back to the graph and editor."""
+        def resize() -> None:
+            height = self.main_panes.winfo_height()
+            if height > 1:
+                self.main_panes.sashpos(0, max(180, height - self.panel.frame.winfo_reqheight() - 6))
+        self.root.after_idle(resize)
 
     def _build_graph_controls(self, parent: Any) -> None:
         ttk.Label(parent, text="Filter:").pack(side=tk.LEFT)
@@ -726,6 +739,12 @@ class App:
     def _build_statusbar(self) -> None:
         bar = ttk.Frame(self.root)
         bar.pack(fill=tk.X, side=tk.BOTTOM)
+        self.reload_button = ttk.Button(bar, text="Reload project", command=self.reload)
+        self.reload_button.pack(side=tk.LEFT, padx=(4, 6), pady=2)
+        self.reload_button.state(["disabled"])
+        self.reload_tooltip = tooltip.attach(
+            self.reload_button, "Reload source and project metadata after external changes (" + ACCELERATOR
+            + "R). Unsaved source-editor changes are kept. Available when no operation is running.")
         ttk.Label(bar, textvariable=self.language_var, anchor="e").pack(side=tk.RIGHT, padx=6, pady=2)
         self.status_progress = ttk.Progressbar(bar, mode="indeterminate", length=110)
         ttk.Label(bar, textvariable=self.status, anchor="w").pack(side=tk.LEFT, fill=tk.X, expand=True, padx=6,
@@ -776,6 +795,7 @@ class App:
             self._source_snapshot = None
             self.panel.show(None)
         self.project = resolved
+        self.recovery.set_project(self.project)
         self.language_var.set(f"Language: {analysis.detect_language(self.project)}")
         self.root.title(f"ICODA — {self.project.name}")
         self.status.set(f"Analysing {self.project} …")
@@ -804,6 +824,7 @@ class App:
         self.steps.approach = None
         self.steps.confirmed_signature_proposal = None
         self.project = Path(path).expanduser().resolve()
+        self.recovery.set_project(self.project)
         self._source_snapshot = None
         self.project.mkdir(parents=True, exist_ok=True)
         persistence.ProjectStore(self.project).ensure()
@@ -896,8 +917,17 @@ class App:
         self.status.set("test command set to: " + (shlex.join(command) or "(none — tests are skipped)"))
 
     def reload(self) -> None:
-        if self.project is not None:
-            self.open_project(self.project)
+        """Refresh external changes without interrupting work or discarding editor changes."""
+        if self.project is None or self.panel.busy:
+            return
+        editor = self.source_editor
+        if editor.document is not None and editor.document.root == self.project.resolve():
+            editor.refresh()
+        self.open_project(self.project)
+
+    def _update_reload_button(self) -> None:
+        enabled = self.project is not None and not self.panel.busy
+        self.reload_button.state(["!disabled"] if enabled else ["disabled"])
 
     def _refresh_external_edits(self, _event: Any) -> None:
         """Re-analyse externally edited source when the application regains focus (not while a step runs)."""
@@ -952,6 +982,7 @@ class App:
         """Present an opened project: canvas, status bar, recent list, configuration."""
         self.opened = opened
         self.project = opened.root
+        self.recovery.set_project(self.project)
         session.log_event("showing: model ready, updating the window", opened.root)
         self.language_var.set(f"Language: {analysis.detect_language(opened.root)}")
         store = persistence.ProjectStore(opened.root)
@@ -1011,6 +1042,8 @@ class App:
         self.coverage_view.show(opened.model, records, coverage, spec)
         self.issue_view.show(opened.model, log)
         self._source_snapshot = source_watch.snapshot_files(opened.root, opened.model.files)
+        if not self.panel.details_visible:
+            self._resize_step_panel()
         session.log_event("shown: window ready", opened.root)
 
     def _reload_after_specification_save(self) -> None:
@@ -1114,6 +1147,8 @@ class App:
             store.save_ui({**store.load_ui(), "provider": selection.to_dict()})
         if hasattr(self, "panel"):
             self.panel.set_project_facts(self.project is not None, self.panel.has_model, self._provider_ready())
+        if hasattr(self, "recovery"):
+            self.recovery.follow_provider()
 
     def _provider_ready(self) -> bool:
         """A known agent is chosen and its command-line tool is installed."""

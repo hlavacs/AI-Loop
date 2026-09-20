@@ -78,7 +78,7 @@ def test_open_project_reports_truncated_state_without_tk_traceback(app_module, t
     message = (f"cannot open project: {store.state_path} contains invalid JSON; refusing to replace the persisted "
                f"state with defaults; leftover proposal worktree preserved at {worktree}")
     assert attempts == [True]
-    assert "Troubleshooting" in app.status.get()
+    assert "Prompt" in app.status.get()
     assert message in app.recovery.issue.detail
     assert store.state_path.read_bytes() == truncated_state
     assert (worktree / "unfinished.py").is_file()
@@ -288,7 +288,7 @@ def test_build_menu_runs_the_build_gate_and_reloads_or_reports(app_module, tmp_p
     app.build_project()
     assert opened == [tmp_path] and app.status.get().startswith("build passed") and not app.panel.busy
     app.build_project()
-    assert opened == [tmp_path] and "Troubleshooting" in app.status.get()
+    assert opened == [tmp_path] and "Prompt" in app.status.get()
     assert repairs == ["error: boom"]
     assert "boom" in app.recovery.issue.detail
     log = persistence.ProjectStore(tmp_path).dir / "icoda.log"
@@ -410,3 +410,29 @@ def test_a_reload_during_a_step_keeps_the_step_busy_state(app_module, tmp_path: 
     app._source_snapshot = ()
     app._refresh_external_edits(None)  # not busy: a focus refresh may reload
     assert app._pending_analyses == 1
+
+
+def test_reload_button_refreshes_external_source_but_keeps_unsaved_edits(app_module, tmp_path, monkeypatch):
+    app = app_module.App(app_module.tk.Tk(), config=persistence.UserConfig(), config_path=tmp_path / "c.json")
+    source = tmp_path / "main.cpp"
+    source.write_text("int main() { return 0; }\n")
+    app.project = tmp_path
+    assert app.source_editor.open_file(tmp_path, "main.cpp")
+    opened = []
+    monkeypatch.setattr(app, "open_project", opened.append)
+    reload = app.reload_button.kwargs["command"]
+    source.write_text("int main() { return 1; }\n")
+    reload()
+    assert opened == [tmp_path] and "return 1;" in app.source_editor.content()
+    app.source_editor.text.insert("end", "// unsaved\n")
+    source.write_text("int main() { return 2; }\n")
+    reload()
+    assert len(opened) == 2 and "unsaved" in app.source_editor.content()
+    assert app.source_editor.dirty and "return 2;" in source.read_text()
+    app.panel.set_busy(True, "building")
+    reload()
+    assert len(opened) == 2
+    app.panel.set_busy(False)
+    app.project = None
+    reload()
+    assert len(opened) == 2

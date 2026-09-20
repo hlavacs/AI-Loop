@@ -48,6 +48,34 @@ def click_node(root: tk.Tk, view: Any, node: str) -> None:
     raise AssertionError(f"no visible node for {node}")
 
 
+def verify_compact_panel(root: tk.Tk, app: Any) -> dict[str, int]:
+    """The idle review pane releases height, and toggling it preserves the edited summary."""
+    app.panel.show(None)
+    root.update()
+    compact = app.panel.frame.winfo_height()
+    graph_height = app.canvas.winfo_height()
+    assert not app.panel.review_panes.winfo_ismapped()
+    app.panel.set_details_visible(True)
+    root.update()
+    expanded = app.panel.frame.winfo_height()
+    assert app.panel.review_panes.winfo_ismapped() and expanded >= compact + 90, (compact, expanded)
+    assert app.canvas.winfo_height() <= graph_height - 90
+    app.panel.entity_summary.insert("end", "Retain this summary edit")
+    contents = app.panel.edited_entity_summary()
+    app.panel.set_details_visible(False)
+    root.update()
+    assert abs(app.panel.frame.winfo_height() - compact) <= 8, (
+        compact, expanded, app.panel.frame.winfo_height(), app.panel.frame.winfo_reqheight())
+    assert abs(app.canvas.winfo_height() - graph_height) <= 8, (graph_height, app.canvas.winfo_height())
+    app.panel.set_details_visible(True)
+    root.update()
+    assert app.panel.edited_entity_summary() == contents
+    app.panel.show(None)
+    root.update()
+    require_visible(root, {"reload-project": app.reload_button, "show-details": app.panel.details_toggle})
+    return {"compact_height": compact, "expanded_height": expanded, "released_height": expanded - compact}
+
+
 def verify_file_boxes(root: tk.Tk, app: Any, output: Path) -> None:
     """A Worktrees-shaped model must stay visible beside the fixed hierarchy, even after repeated Fit."""
     project = output.resolve() / "four-files"
@@ -113,6 +141,7 @@ def main() -> None:
     root = tk.Tk()
     try:
         app = load_application().App(root, config=persistence.UserConfig(), config_path=args.output / "config.json")
+        panel_layout = verify_compact_panel(root, app)
         verify_file_boxes(root, app, args.output)
         app.show(opened)
         root.update()
@@ -179,7 +208,7 @@ def main() -> None:
         require_visible(root, pane.buttons)
         bounds = capture(root, args.output / "source-editor.png")
         (args.output / "editor-gui.json").write_text(json.dumps({
-            "passed": True, "bounds": bounds, "saved_source": str(source),
+            "passed": True, "bounds": bounds, "saved_source": str(source), "panel_layout": panel_layout,
             "checks": ["visible file boxes", "repeated Fit", "file/class/function clicks", "Unicode find", "literal replace", "replace all",
                        "undo/redo", "unsaved navigation", "save", "analysis refresh", "reload"]}, indent=2) + "\n")
         print("PASS: real Tk source navigation, search/replace, undo/redo, save/reload, visible controls, screenshot")

@@ -809,10 +809,10 @@ class StepRunner:
         self._check_cancelled()
         if self.current_phase() != persistence.ProjectPhase.ARCHITECTURE:
             raise StepError("An automatic project repair requires an architecture step. For implementation, "
-                            "repair the current approved approach's candidate in Troubleshooting.")
+                            "repair the current approved approach's candidate in Prompt.")
         if not git.is_own_repository(self.root) or not self.log.records():
             raise StepError("The initial project has no committed baseline for an isolated repair. "
-                            "Use Troubleshooting to correct its setup, then retry.")
+                            "Use Prompt to correct its setup, then retry.")
         self._require_clean()
         worktree = self.store.dir / WORKTREE_DIR
         if (worktree / ".git").exists() and not git.is_clean(worktree):

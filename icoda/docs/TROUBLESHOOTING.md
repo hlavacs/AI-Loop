@@ -1,6 +1,12 @@
 # Troubleshooting
 
-## Automatic recovery and the Troubleshooting tab
+## Automatic recovery and the Prompt tab
+
+The **Prompt** tab is available whenever a project is open, including before any error occurs. Choose an enabled
+**Binary/Model**, type a message, and click **Send** (Command/Control-Return). Send supports questions and read-only
+inspection. It is disabled for an empty message or while another operation is running. **Open CLI** opens an
+interactive session with the conversation and your unsent prompt for edits using the provider's normal approvals.
+**Retry step** and **Details** require a failed operation and stay disabled during ordinary conversations.
 
 ICODA attempts recovery before displaying an operational failure. While it works, the status reads
 **Trying automatic recovery**. Provider requests receive one read-only retry. When Codex explicitly reports
@@ -16,11 +22,11 @@ workflow state, or commit manual edits as an automatic repair. Analysis failures
 Other failures receive a CLI investigation when a project and provider are available. Attempts are bounded so
 persistent failures cannot create an endless loop.
 
-If recovery cannot finish, the **Troubleshooting** tab opens with a plain-language diagnosis and recovery
+If recovery cannot finish, the **Prompt** tab opens with a plain-language diagnosis and recovery
 result. **Details** reveals the diagnostic evidence. Use **Send** for a conversation with the selected CLI;
 the conversation includes the failure and previous messages and permits read-only investigation. You can
 select another installed **Binary/Model** if the failing provider cannot respond. Common credential forms are
-redacted from the troubleshooting context.
+redacted from the conversation context.
 
 Use **Open CLI** for an interactive session in the affected project or candidate worktree, with the failure
 context and the provider's normal approvals, when edits or login are needed. Return to ICODA and choose
@@ -139,7 +145,7 @@ described in [LLM selection](../HANDBOOK.md#6-llm-selection) and [The first step
 **Project ▸ Build** and every proposal run the build gate: `cmake --preset debug` followed by `cmake --build
 --preset debug` for C++. For Python, ICODA discovers project source roots and runs `python -m compileall -q -x
 <excluded paths> <source roots>`; it does not assume that source is under `src`. The output is in the **Build** tab
-and in the Troubleshooting tab after recovery has been attempted (the full text is in the log).
+and in the Prompt tab after recovery has been attempted (the full text is in the log).
 
 - **`CMake 3.28 or higher is required`**: update CMake.
 - **`clang-scan-deps` not found**, or errors about modules: the compiler must be able to build C++20 modules. On
@@ -225,7 +231,7 @@ proposes.
 ## Source edits cannot be saved
 
 The Source Editor keeps the buffer if saving fails and retries the file operation once before showing the
-problem in Troubleshooting. If the file changed on disk, copy any edits you need to keep before using **Reload**
+problem in Prompt. If the file changed on disk, copy any edits you need to keep before using **Reload**
 to inspect the other version. ICODA will not overwrite that version automatically.
 
 Wait for a running build or generation operation to finish before saving. Candidate worktree edits reset the

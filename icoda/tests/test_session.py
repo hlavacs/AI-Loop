@@ -11,12 +11,14 @@ from icoda_core import persistence, session, toolchain
 SAMPLE = Path(__file__).resolve().parent / "sample_project"
 
 
-def test_open_sample_project_produces_layout_and_remembers_it(tmp_path: Path) -> None:
+def test_open_sample_project_produces_layout_and_remembers_it(tmp_path: Path, monkeypatch) -> None:
     if not toolchain.candidates():
         pytest.skip("no libclang available")
     from test_analysis import _ensure_built  # type: ignore[import-not-found]
 
     _ensure_built(SAMPLE)
+    # GUI acceptance saves cluster pins in this shared sample; test its default clustering independently.
+    monkeypatch.setattr(persistence.ProjectStore, "load_layout", lambda self: persistence.Layout())
     config = persistence.UserConfig()
     opened = session.open_project(SAMPLE, config, in_process=True)
     assert opened.libclang is not None and not opened.model.stale

@@ -344,6 +344,10 @@ file, and shows the version and file locations.
 Keyboard shortcuts (Command on macOS, Control elsewhere): N new project, O open project, R reload, E specification,
 B build, Return propose the next step, Q quit; in the specification editor S saves and W closes.
 
+The **Reload project** button beside the status message at the bottom refreshes source and project metadata
+after external edits. It also refreshes a clean source-editor buffer while keeping its current line. Unsaved
+editor changes remain intact. The button is unavailable while an operation is running or no project is open.
+
 ### Source editor
 
 The upper-right pane has **Entities** and **Source Editor** tabs. Click a file, class, or function in a diagram,
@@ -369,14 +373,32 @@ which project or worktree is being edited.
 
 The editor accepts UTF-8 text files up to 2 MiB, preserves the existing newline convention and byte-order mark,
 and refuses to overwrite a file that changed on disk after opening. If saving fails after an automatic retry,
-the buffer remains available and **Troubleshooting** offers help. Project metadata under `.git` or `.icoda`
+the buffer remains available and **Prompt** offers help. Project metadata under `.git` or `.icoda`
 cannot be edited here.
 
 ![The Source Editor displaying a C++ method and its find and replace controls](docs/images/handbook/source-editor.png)
 
 *The red rectangles identify the Source Editor tab, editing and search controls, and the highlighted source line.*
 
+### Prompt
+
+Open the **Prompt** tab beside the diagram tabs to talk to the selected CLI about the current project. It is
+available as soon as a project is open; no error needs to occur first. Select **Binary/Model**, type a message,
+and click **Send** or press Command/Control-Return. Follow-up messages include the conversation history.
+**Send** permits questions and read-only inspection. **Open CLI** opens an interactive session for edits with
+the provider's normal approvals, carrying the conversation and any unsent prompt into the terminal.
+
+**Send** becomes available when the message contains text and an enabled provider is selected. While ICODA is
+busy, wait for the operation to finish; **Cancel** stops an active Prompt request. **Retry step** and **Details**
+become available when an unresolved failure supplies a retry action or diagnostic evidence. Automatic recovery
+opens this same tab if it needs your help. Switching projects clears the conversation and draft.
+
 ### The step panel
+
+The review details start collapsed when there is no proposal, leaving more height for diagrams and the source
+editor. **Show details** and **Hide details**, beside the step title, toggle the lower review area without losing
+its content or your Summary edits. A new proposal, approach, selected historical step, or failure opens it
+automatically. You can still drag the horizontal divider to choose the review area's height.
 
 The lower panel is driven by the project's phase. One sentence above the buttons says what to do next; it changes
 with every event (analysis running, proposal ready, signature confirmation needed, approach approved, queue empty,
@@ -975,7 +997,7 @@ the test command is valid. For a few-line group, every member also needs reachab
 
 ### External edits are not reflected
 
-Return focus to ICODA or choose **File > Reload**. ICODA snapshots analysed source files and reloads when the window
+Return focus to ICODA, click **Reload project**, or choose **File > Reload**. ICODA snapshots analysed source files and reloads when the window
 regains focus after a real source change. A changed body can demote a previously tested entity to implemented until
 tests establish fresh evidence.
 

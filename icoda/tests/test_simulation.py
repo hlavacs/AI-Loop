@@ -292,7 +292,7 @@ class _LifecycleAssertions:
             delta="save the specification before proposing", source_diff="", live=set(), gate="none",
             queue=(), cursor=0, iterations=[],
         )
-        assert "Troubleshooting" in self.app.status.get()
+        assert "Prompt" in self.app.status.get()
         assert "specification phase" in self.app.recovery.issue.detail
         assert self.store.load_state() == before_request
         _assert_overviews(self.app, specification_phase=True)

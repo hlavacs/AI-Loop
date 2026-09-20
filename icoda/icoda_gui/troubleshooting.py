@@ -16,7 +16,7 @@ class Troubleshooting:
     def __init__(self, window: Any) -> None:
         self.window = window
         self.frame = ttk.Frame(window.views)
-        window.views.add(self.frame, text="Troubleshooting")
+        window.views.add(self.frame, text="Prompt")
         self.issue: recovery.Diagnosis | None = None
         self.history: list[tuple[str, str]] = []
         self.retry: Callable[[], None] | None = None
@@ -27,19 +27,19 @@ class Troubleshooting:
         self.cancelled = False
         self.finishing = False
         self.pending: list[tuple[Exception | str, dict[str, Any], Path | None]] = []
-        self.summary = tk.StringVar(value="Recovery and direct CLI help appear here when an operation fails.")
+        self.summary = tk.StringVar(value="Open a project to ask the CLI questions in Prompt.")
         ttk.Label(self.frame, textvariable=self.summary, wraplength=850, justify="left").pack(
             fill=tk.X, padx=8, pady=6)
         selection = window.provider_field.selection()
         self.provider = provider_field.ProviderField(self.frame, agent.load_providers(),
                                                     binary=selection.binary, model=selection.model)
         self.provider.frame.pack(fill=tk.X, padx=8)
-        ttk.Label(self.frame, text="Use another Binary/Model here if the failing provider cannot respond.",
+        ttk.Label(self.frame, text="Send asks questions and inspects files. Open CLI allows interactive edits.",
                   anchor="w").pack(fill=tk.X, padx=8, pady=2)
         self.transcript = self._text(self.frame, 12, editable=False)
         self.input = self._text(self.frame, 3, editable=True)
-        self.input.bind("<Control-Return>", lambda _event: self.send())
-        self.input.bind("<Command-Return>", lambda _event: self.send())
+        self.input.bind("<Control-Return>", self._send_shortcut)
+        self.input.bind("<Command-Return>", self._send_shortcut)
         row = ttk.Frame(self.frame)
         row.pack(side=tk.BOTTOM, fill=tk.X, padx=8, pady=4)
         self.input.master.pack(side=tk.BOTTOM, fill=tk.X, padx=8)
@@ -50,6 +50,9 @@ class Troubleshooting:
                                ("Details", self.details)):
             self.buttons[label] = ttk.Button(row, text=label, command=command)
             self.buttons[label].pack(side=tk.LEFT, padx=(0, 6))
+        self.input.bind("<<Modified>>", self._input_changed)
+        self.provider.on_change = self._controls
+        window.panel.activity_var.trace_add("write", lambda *_args: self._controls())
         self._controls()
 
     @staticmethod
@@ -70,13 +73,41 @@ class Troubleshooting:
         self.transcript.see("end")
 
     def _controls(self) -> None:
+        idle = not self.busy and not self.window.panel.busy
+        selection = self.provider.selection()
+        provider = provider_field.resolve_provider(self.provider.providers, selection.binary)
+        ready = idle and self.cwd is not None and provider is not None and provider.enabled
+        enabled = {"Send": ready and bool(self.input.get("1.0", "end").strip()),
+                   "Open CLI": ready, "Cancel": self.busy,
+                   "Retry step": idle and self.retry is not None and self.project == self.window.project,
+                   "Details": idle and self.issue is not None}
         for label, button in self.buttons.items():
-            enabled = self.busy if label == "Cancel" else not self.busy and self.issue is not None
-            if label in {"Send", "Open CLI"}:
-                enabled = enabled and self.cwd is not None
-            if label == "Retry step":
-                enabled = enabled and self.retry is not None
-            button.state(["!disabled"] if enabled else ["disabled"])
+            button.state(["!disabled"] if enabled[label] else ["disabled"])
+
+    def _input_changed(self, _event: Any = None) -> None:
+        if self.input.edit_modified():
+            self.input.edit_modified(False)
+            self._controls()
+
+    def _send_shortcut(self, _event: Any = None) -> str:
+        self.send()
+        return "break"  # Do not also run the application's Propose shortcut.
+
+    def set_project(self, project: Path) -> None:
+        """Enable ordinary conversations on project open, preserving them across reloads."""
+        if self.project == project:
+            return
+        self.reset()
+        self.project = self.cwd = project
+        self.follow_provider()
+        self.summary.set(f"Ask about {project.name}, review code, or discuss a change with the selected CLI.")
+        self._controls()
+
+    def follow_provider(self) -> None:
+        """Use the project's provider until a conversation or recovery has started."""
+        if not self.history and self.issue is None and not self.busy:
+            selection = self.window.provider_field.selection()
+            self.provider.set(selection.binary, selection.model)
 
     def reset(self) -> None:
         """Invalidate callbacks and conversations when the project changes."""
@@ -91,7 +122,7 @@ class Troubleshooting:
         self.transcript.delete("1.0", "end")
         self.transcript.configure(state="disabled")
         self.input.delete("1.0", "end")
-        self.summary.set("Recovery and direct CLI help appear here when an operation fails.")
+        self.summary.set("Open a project to ask the CLI questions in Prompt.")
         self._controls()
 
     def handle_failure(self, error: Exception | str, *, retry: Callable[[], None] | None = None,
@@ -188,7 +219,7 @@ class Troubleshooting:
         if proposal is not None and not proposal.ok:
             self.window.panel.show(proposal)
             self.window.steps._consider_auto_approve()
-        self.window.status.set("Recovery needs your input — see Troubleshooting")
+        self.window.status.set("Recovery needs your input — see Prompt")
         self.window.panel.show_failure(self.issue.text())
         self._append("ICODA diagnosis", self.issue.text())
         self._append("Recovery result", outcome)
@@ -224,7 +255,7 @@ class Troubleshooting:
                 process.cancel_running()
 
     def send(self) -> None:
-        if self.busy or self.window.panel.busy or self.issue is None or self.cwd is None:
+        if self.busy or self.window.panel.busy or self.cwd is None:
             return
         message = self.input.get("1.0", "end").strip()
         if not message:
@@ -274,17 +305,21 @@ class Troubleshooting:
         self.retry()
 
     def open_cli(self) -> None:
-        if self.busy or self.window.panel.busy or self.issue is None or self.cwd is None:
+        if self.busy or self.window.panel.busy or self.cwd is None:
             return
         selection = self.provider.selection()
         if not selection.provider_id:
             self._append("ICODA", "Select an enabled Binary first.")
             return
         provider = agent.find_provider(agent.load_providers(), selection.provider_id)
-        context = ("Help me resolve this ICODA failure in the current project/worktree. "
-                   "Inspect the cause and make the smallest fix with my normal CLI approvals. "
-                   "Preserve tests and do not commit or change ICODA metadata.\n" + self.issue.text()
-                   + "\nError evidence:\n" + self.issue.detail[-8000:])
+        if not provider.enabled:
+            self._append("ICODA", "This provider is disabled. Choose an enabled provider.")
+            return
+        history = list(self.history)
+        draft = self.input.get("1.0", "end").strip()
+        if draft:
+            history.append(("Developer", draft))
+        context = recovery.conversation_prompt(self.issue, history, self.cwd, interactive=True)
         cwd = self.cwd
 
         def work() -> None:
@@ -303,8 +338,9 @@ class Troubleshooting:
                 self._append("ICODA", "Could not open the terminal: " + str(result)
                              + "\nYou can continue using Send in this tab.")
                 return
-            self._append("ICODA", "Opened the interactive CLI. After the fix, return here and Retry step "
-                         "to run the checks again.")
+            self._append("ICODA", "Opened the interactive CLI. " + (
+                "After the fix, return here and Retry step to run the checks again." if self.retry is not None
+                else "Return here when you are ready to continue in ICODA."))
         self.window.run_async(work, done)
 
     def details(self) -> None:

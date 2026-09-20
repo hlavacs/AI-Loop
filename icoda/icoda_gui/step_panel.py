@@ -111,6 +111,8 @@ class StepPanel:
         self.provider_ready = True
         self.auto_approve_note = ""
         self.tooltips: dict[str, tooltip.Tooltip] = {}
+        self.details_visible = True
+        self.on_details_visibility: Callable[[], None] | None = None
         self._build_request_row()
         self._build_texts()
         self.show(None)
@@ -175,15 +177,20 @@ class StepPanel:
         self.activity_label = ttk.Label(self.action_row, textvariable=self.activity_var, foreground="#1f77b4")
 
     def _build_texts(self) -> None:
-        ttk.Label(self.frame, textvariable=self.title_var, font=("TkDefaultFont", 11, "bold"),
-                  anchor="w").pack(fill=tk.X, padx=4)
+        title_row = ttk.Frame(self.frame)
+        title_row.pack(fill=tk.X, padx=4)
+        self.details_toggle = ttk.Button(title_row, text="Hide details", command=self.toggle_details)
+        self.details_toggle.pack(side=tk.RIGHT, padx=(6, 0))
+        tooltip.attach(self.details_toggle, "Show or hide the review details to give the graph and editor more space.")
+        ttk.Label(title_row, textvariable=self.title_var, font=("TkDefaultFont", 11, "bold"),
+                  anchor="w").pack(side=tk.LEFT, fill=tk.X, expand=True)
         status_row = ttk.Frame(self.frame)
         status_row.pack(fill=tk.X, padx=4)
         ttk.Label(status_row, textvariable=self.build_status_var).pack(side=tk.LEFT, padx=(0, 16))
         ttk.Label(status_row, textvariable=self.test_status_var).pack(side=tk.LEFT, padx=(0, 16))
         self.signature_label = ttk.Label(status_row, textvariable=self.signature_var)
         self.signature_label.pack(side=tk.LEFT)
-        paned = ttk.PanedWindow(self.frame, orient=tk.HORIZONTAL)
+        paned = self.review_panes = ttk.PanedWindow(self.frame, orient=tk.HORIZONTAL)
         paned.pack(fill=tk.BOTH, expand=True, padx=4, pady=(2, 4))
         self.rationale = _scrolled_text(paned, wrap="word")
         paned.add(self.rationale.master, weight=3)
@@ -208,6 +215,22 @@ class StepPanel:
         self.detail_notebook.add(self.prompt_view.master, text="Prompt")
         self.detail_notebook.add(self.reply_view.master, text="Reply")
         paned.add(self.detail_notebook, weight=2)
+
+    def toggle_details(self) -> None:
+        self.set_details_visible(not self.details_visible)
+
+    def set_details_visible(self, visible: bool) -> None:
+        """Collapsing the review pane retains every tab and any edited summary."""
+        if visible == self.details_visible:
+            return
+        self.details_visible = visible
+        if visible:
+            self.review_panes.pack(fill=tk.BOTH, expand=True, padx=4, pady=(2, 4))
+        else:
+            self.review_panes.pack_forget()
+        self.details_toggle.configure(text="Hide details" if visible else "Show details")
+        if self.on_details_visibility is not None:
+            self.on_details_visibility()
 
     def _pressed(self, action: str) -> Callable[[], None]:
         return lambda: self.on_action(action)
@@ -339,9 +362,13 @@ class StepPanel:
         _set_text(self.approach_text, text)
         self.auto_approve_note = ""
         self._update_buttons()
+        if approach is not None:
+            self.set_details_visible(True)
+            self.detail_notebook.select(self.approach_text.master)
 
     def show(self, proposal: steps.Proposal | None) -> None:
         """Present a proposal (or clear the panel) and enable the buttons that apply to it."""
+        self.set_details_visible(proposal is not None)
         self.selected_iteration = None
         self.proposal = proposal
         self.signature_confirmed = False
@@ -398,6 +425,7 @@ class StepPanel:
 
     def show_adaptation_problems(self, problems: tuple[str, ...]) -> None:
         """Keep the edited text intact and make deterministic parse problems visible."""
+        self.set_details_visible(True)
         _set_text(self.details, adaptation.problems_text(problems))
         self.detail_notebook.select(self.entity_summary.master)
 
@@ -419,6 +447,7 @@ class StepPanel:
 
     def show_step(self, record: steplog.StepRecord) -> None:
         """Select one persisted historical step for review from the mind map."""
+        self.set_details_visible(True)
         self.selected_iteration = record.number
         self.proposal = None
         self.signature_confirmed = False
@@ -440,6 +469,8 @@ class StepPanel:
 
     def show_failure(self, text: str) -> None:
         """A step that raised: the whole message in the details box, buttons as before."""
+        self.set_details_visible(True)
+        self.detail_notebook.select(self.details.master)
         self.title_var.set("Step failed — " + (text.strip().splitlines()[0] if text.strip() else "no details"))
         _set_text(self.details, text)
         self._update_buttons()

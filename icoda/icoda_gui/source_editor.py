@@ -235,6 +235,22 @@ class SourceEditor:
             return
         self._install(document)
 
+    def refresh(self) -> None:
+        """Refresh a clean buffer after external edits; retain drafts and unchanged undo history."""
+        if self.document is None or self.dirty:
+            return
+        root, file = self.document.root, self.document.relative
+        line = int(self.text.index("insert").split(".")[0])
+
+        def install(document: source_edit.Document) -> None:
+            if self.document is not None and document.original != self.document.original:
+                self._install(document, line)
+
+        try:
+            install(source_edit.Document.load(root, file))
+        except (OSError, ValueError) as exc:
+            self._failure(exc, lambda: source_edit.Document.load(root, file), install, self.refresh, root)
+
     def undo(self, redo: bool = False) -> None:
         try:
             if redo:

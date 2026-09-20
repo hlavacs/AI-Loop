@@ -59,6 +59,25 @@ def fake_approach() -> steps.Approach:
     )
 
 
+def test_review_details_collapse_without_losing_edits_and_reopen_for_results(tmp_path):
+    panel = step_panel.StepPanel(tk.Tk(), lambda _action: None)
+    assert not panel.details_visible
+    panel.show(fake_proposal(tmp_path))
+    assert panel.details_visible
+    panel.entity_summary.insert("end", "Keep this manual summary edit")
+    panel.toggle_details()
+    assert not panel.details_visible
+    panel.toggle_details()
+    assert "Keep this manual summary edit" in panel.edited_entity_summary()
+    panel.show(None)
+    assert not panel.details_visible
+    panel.show_approach(fake_approach())
+    assert panel.details_visible
+    panel.toggle_details()
+    panel.show_failure("Build failed: missing include")
+    assert panel.details_visible and "missing include" in panel.details.get("1.0", "end")
+
+
 def test_panel_shows_proposals_and_requests(tmp_path: Path) -> None:
     pressed: list[str] = []
     panel = step_panel.StepPanel(tk.Tk(), pressed.append)
@@ -995,7 +1014,7 @@ def test_controller_auto_approves_two_green_steps_then_halts_on_failed_test_gate
     code_records_before_failure = len(approved)
     app.steps.action("approve_approach")
     stopped = "the proposal test gate is not passing"
-    assert "Troubleshooting" in app.status.get()
+    assert "Prompt" in app.status.get()
     assert stopped in app.panel.auto_approve_note
     assert app.recovery.issue is not None
     assert app.panel.title_var.get().startswith("Step ")  # the proposal stays visible; the hint explains

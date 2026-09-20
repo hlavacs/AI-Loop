@@ -4833,3 +4833,52 @@ Verification:
 
 The user's `icoda-tests/Worktrees` repository remained clean. All reproduction and editing checks used copies
 or isolated fixtures.
+
+## 2026-09-20 — Prompt tab available before failures
+
+Renamed the Troubleshooting tab to Prompt. Its Send and Open CLI controls previously required an existing
+diagnosis, leaving normal project questions disabled. Project opening now initializes conversation context;
+typing, provider selection, and operation completion refresh the controls. Retry step and Details still require
+failure context. General questions retain conversation history without inventing a diagnosis, and Open CLI
+receives the history and unsent draft. Project switches clear both. The Send shortcut consumes its key event
+so it cannot also trigger the global Propose action.
+
+Verification evidence is retained in `.icoda-test-artifacts/prompt-tab`:
+
+- The new pre-failure conversation regression failed before the fix and passed afterward.
+- The complete pytest suite passed: **572 tests in 69.42 seconds**. The first run exposed persistent cluster pins
+  from an earlier GUI scenario in the shared sample; the default-clustering test now supplies an empty layout
+  without changing the saved sample settings. The final recovery/Prompt subset also passed **35 tests**.
+- Native Tk acceptance passed in `final-gui`, using four scripted provider turns: ordinary conversation before
+  any error, follow-up history, enabled/disabled buttons, busy-state transitions, keyboard submission without a
+  workflow action, project switching, and unresolved recovery. No external provider call was needed for this UI
+  regression; actual terminal invocation is covered with an intercepted launcher in the unit tests.
+- Ruff, mypy (60 files), and `git diff --check` passed.
+- The handbook PDF was regenerated (96 pages, 37 images). Updated Prompt and recovery pages were rendered with
+  Poppler and visually inspected; the existing screenshot highlight rectangles remain intact.
+
+## 2026-09-20 — Visible project reload and compact review panel
+
+Added Reload project beside the status message. It uses the existing asynchronous project analysis, stays
+disabled while work is running or no project is open, refreshes externally changed clean editor buffers at
+their current line, and preserves unsaved buffers and unchanged undo history. The menu and shortcut use the
+same guarded reload path.
+
+Review details now start collapsed with no proposal. Show details / Hide details retain tab contents and
+Summary edits; new proposals, approaches, historical selections, and failures reveal the review area.
+Released height goes to the diagrams and source editor, while the divider remains adjustable.
+
+Verification evidence is retained in `.icoda-test-artifacts/reload-compact`:
+
+- **575 pytest tests passed in 73.39 seconds**; Ruff, mypy (60 files), and `git diff --check` passed.
+- An isolated native Tk scenario measured the panel at **164 px collapsed / 396 px expanded** in a 1200x760
+  window, returning **232 px** to the upper panes. It checked toggling both before and after project opening,
+  preserved Summary edits, visible controls, and automatic expansion for a diagnostic.
+- The scenario edited a C++ source outside ICODA, reloaded it through the application handler, and confirmed
+  that analysis discovered the new function and the clean editor refreshed at its original line. A second
+  external edit confirmed that a dirty editor buffer remained intact. Reload availability followed analysis
+  busy state. No user project was changed.
+- Desktop computer-use permissions were unavailable; native widget geometry and application behavior were
+  checked programmatically. No manual screenshot-based GUI pass is claimed for this change.
+- The PDF was regenerated (96 pages, 37 images); its updated reload and review-panel instructions were rendered
+  with Poppler and visually inspected.
