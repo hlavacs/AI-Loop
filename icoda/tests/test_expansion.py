@@ -91,6 +91,46 @@ def test_three_levels_reveal_class_members_and_reuse_their_appearance() -> None:
     assert decision.appearance is not None and decision.appearance.status == "stub"
 
 
+def test_hierarchy_keeps_each_cluster_file_and_class_with_its_descendants() -> None:
+    result = _derive(frozenset({"cluster:engine", "cluster:ui", "file:src/widget.cpp",
+                               "file:src/worker.cpp", "u:widget", "external:std"}))
+    assert [node.key for node in result.graph.nodes] == [
+        "cluster:engine", "file:src/worker.cpp", "entity:u:work",
+        "cluster:ui", "file:src/widget.cpp", "entity:u:widget", "entity:u:run", "entity:u:helper",
+        "external:std", "external-symbol:std:0", "external-symbol:std:1"]
+
+
+def test_hierarchy_groups_sibling_files_and_nested_classes_in_source_order() -> None:
+    model, _graph, _decisions, appearances = _facts()
+    # Deliberately insert nested members out of order and define a method in a different file.
+    model.add_entity(Entity("u:nested_run", Kind.METHOD, "start", "Widget::Nested::start",
+                            "src/worker.cpp", 10, parent="u:nested"))
+    model.add_entity(Entity("u:nested", Kind.CLASS, "Nested", "Widget::Nested",
+                            "src/widget.cpp", 5, parent="u:widget"))
+    graph = graph_filter.project_graph(model, {file: "shared" for file in reversed(model.files)})
+    decisions = graph_filter.derive(model, graph, appearances)
+    expanded = frozenset({"cluster:shared", *model.files, "u:widget", "u:nested"})
+    result = expansion.derive(model, graph, decisions, appearances, expanded)
+    keys = [node.key for node in result.graph.nodes]
+    assert keys == ["cluster:shared", "file:src/widget.cpp", "entity:u:widget", "entity:u:run",
+                    "entity:u:nested", "entity:u:nested_run", "entity:u:helper",
+                    "file:src/worker.cpp", "entity:u:work", "external:std"]
+    collapsed = expansion.derive(model, graph, decisions, appearances, expanded - {"u:widget"})
+    assert [node.key for node in collapsed.graph.nodes] == [
+        key for key in keys if key not in {"entity:u:run", "entity:u:nested", "entity:u:nested_run"}]
+    assert expansion.derive(model, graph, decisions, appearances, expanded).graph == result.graph
+
+
+def test_hierarchy_keeps_visible_descendants_when_parent_is_filtered() -> None:
+    model, graph, decisions, appearances = _facts()
+    decisions = dict(decisions)
+    decisions["entity:u:widget"] = graph_filter.NodeDecision(hidden=True)
+    result = expansion.derive(model, graph, decisions, appearances,
+                              frozenset({"cluster:ui", "file:src/widget.cpp", "u:widget"}))
+    assert [node.key for node in result.graph.nodes] == [
+        "cluster:engine", "cluster:ui", "file:src/widget.cpp", "entity:u:run", "entity:u:helper", "external:std"]
+
+
 def test_container_without_children_and_unknown_or_leaf_state_entries_are_inert() -> None:
     model, graph, decisions, appearances = _facts()
     model.files["src/empty.cpp"] = FileInfo("src/empty.cpp")

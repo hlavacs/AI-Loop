@@ -87,6 +87,7 @@ class FileViewCanvas(graph_canvas.NodeAppearanceCanvas):
         self.user_zoomed = False
         self.offset = (0.0, 0.0)
         self.drag_start: tuple[int, int] | None = None
+        self._drag_offset = self.offset
         self.dragged = False
         self.item_nodes: dict[int, str] = {}
         self.node_boxes: dict[str, tuple[float, float, float, float]] = {}
@@ -97,7 +98,7 @@ class FileViewCanvas(graph_canvas.NodeAppearanceCanvas):
                                ("<B1-Motion>", self.on_drag), ("<ButtonRelease-1>", self.on_release),
                                ("<ButtonPress-2>", self.on_press), ("<B2-Motion>", self.on_drag),
                                ("<ButtonRelease-2>", self.on_release),
-                               ("<Double-Button-1>", self.on_double_click), ("<Motion>", self.on_motion),
+                               ("<Double-ButtonRelease-1>", self.on_double_click), ("<Motion>", self.on_motion),
                                ("<Configure>", self.on_resize)):
             canvas.bind(event, handler)
         self.action_menu = graph_canvas.NodeActionMenu(
@@ -177,6 +178,8 @@ class FileViewCanvas(graph_canvas.NodeAppearanceCanvas):
     def on_resize(self, _event: Any) -> None:
         if not self.user_zoomed:
             self.fit()
+        else:
+            self.redraw()
 
     # -- drawing ----------------------------------------------------------------------------
 
@@ -185,6 +188,7 @@ class FileViewCanvas(graph_canvas.NodeAppearanceCanvas):
         self.item_nodes = {}
         self.node_boxes = {}
         if self.layout is None:
+            self.hide_hierarchy()
             return
         self._draw_circles()
         visible_count = self._draw_nodes()
@@ -313,24 +317,26 @@ class FileViewCanvas(graph_canvas.NodeAppearanceCanvas):
             self.zoom(max(self.fit_scale, 1.0) / self.scale)
 
     def on_wheel(self, event: Any) -> str:
+        if self.scroll_hierarchy_at(event):
+            return "break"
         delta = getattr(event, "delta", 0) or (120 if getattr(event, "num", 0) == 4 else -120)
         self.zoom(zoom_controls.ZOOM_IN if delta > 0 else zoom_controls.ZOOM_OUT,
                   (float(event.x), float(event.y)))
         return "break"
 
     def on_press(self, event: Any) -> None:
-        self.drag_start, self.dragged = (event.x, event.y), False
+        self.drag_start = None if self.in_hierarchy(event.x, event.y) else (event.x, event.y)
+        self._drag_offset, self.dragged = self.offset, False
         self.tooltip.hide()
 
     def on_drag(self, event: Any) -> None:
         if self.drag_start is None:
             return
         dx, dy = event.x - self.drag_start[0], event.y - self.drag_start[1]
-        if abs(dx) + abs(dy) > 3:
-            self.dragged = True
-            self.user_zoomed = True
-        self.offset = (self.offset[0] + dx, self.offset[1] + dy)
-        self.drag_start = (event.x, event.y)
+        if not self.dragged and abs(dx) + abs(dy) <= 3:
+            return
+        self.dragged, self.user_zoomed = True, True
+        self.offset = (self._drag_offset[0] + dx, self._drag_offset[1] + dy)
         self.redraw()
 
     def on_release(self, event: Any) -> None:
@@ -344,6 +350,9 @@ class FileViewCanvas(graph_canvas.NodeAppearanceCanvas):
         self.drag_start = None
 
     def on_double_click(self, event: Any) -> None:
+        self.drag_start = None
+        if self.dragged:
+            return
         node = self.node_at(event.x, event.y)
         if node is not None and not node.startswith("external:"):
             self.app.open_editor(node)
@@ -356,7 +365,9 @@ class FileViewCanvas(graph_canvas.NodeAppearanceCanvas):
             self.tooltip.show(self.app.describe_node(node), event.x_root, event.y_root)
 
     def node_at(self, x: int, y: int) -> str | None:
-        for item in self.canvas.find_overlapping(x - 2, y - 2, x + 2, y + 2):
+        for item in reversed(self.canvas.find_overlapping(x - 2, y - 2, x + 2, y + 2)):
+            if item == self.hierarchy_background:
+                return None
             if item in self.item_nodes:
                 return self.item_nodes[item]
         return None

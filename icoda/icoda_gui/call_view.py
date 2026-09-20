@@ -121,6 +121,7 @@ class CallViewCanvas(graph_canvas.GraphCanvas):
             self.root_var.set("")
             self.item_nodes = {}
             self.canvas.delete("all")
+            self.hide_hierarchy()
             return
         roots = tuple(entity.usr for entity in sorted(self.model.entities.values(),
                                                       key=lambda e: (e.qualified_name, e.usr))
@@ -145,6 +146,7 @@ class CallViewCanvas(graph_canvas.GraphCanvas):
         self.canvas.delete("all")
         self.item_nodes = {}
         if self.layout is None:
+            self.hide_hierarchy()
             return
         for edge in self.layout.edges:
             if self.edge_visible(edge.source, edge.target):
@@ -233,6 +235,9 @@ class CallViewCanvas(graph_canvas.GraphCanvas):
         self.hover_var.set("" if node is None else f"{node.label} {node.signature}{location}  {node.brief}".strip())
 
     def on_double_click(self, event: Any) -> None:
+        self.drag_start = None
+        if self.dragged:
+            return
         usr = self.node_at(event.x, event.y)
         entity = self.model.entities.get(usr) if self.model is not None and usr else None
         if entity is not None:

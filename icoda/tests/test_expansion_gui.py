@@ -69,6 +69,85 @@ def test_three_canvases_share_one_result_and_identical_expanded_node_sets(
     assert _sets(app) == collapsed
 
 
+def test_hierarchy_rows_render_each_file_and_its_contents_together(app_module, tmp_path, monkeypatch):
+    app = _app(app_module, tmp_path)
+    for canvas in app._expansion_canvases():
+        rows = []
+        monkeypatch.setattr(canvas, "_draw_expansion_row", lambda node, *_args, rows=rows: rows.append(node))
+        canvas.draw_expansion_layer()
+        keys = [node.key for node in rows]
+        first_file = keys.index("file:src/app.cpp")
+        assert keys[first_file:first_file + 4] == [
+            "file:src/app.cpp", "entity:u:type", "entity:u:run", "entity:u:far"]
+        assert keys[keys.index("file:tests/app_test.cpp") + 1] == "entity:u:test"
+        assert canvas.node_fill("u:test") == "#aec7e8"
+
+
+def test_long_hierarchy_scrolls_without_zooming_or_panning_and_clamps_after_collapse(
+        app_module, tmp_path, monkeypatch):
+    app = _app(app_module, tmp_path)
+    for index in range(60):
+        app.opened.model.add_entity(Entity(f"u:api{index}", Kind.FUNCTION, f"api{index}", f"api{index}",
+                                           "src/app.cpp", 10 + index))
+    app.show(app.opened)
+    for canvas in app._expansion_canvases():
+        rows = []
+        monkeypatch.setattr(canvas, "_draw_expansion_row", lambda node, *_args, rows=rows: rows.append(node.key))
+        before = (canvas.scale, canvas.offset)
+        left, top, _right, _bottom = canvas.hierarchy_bounds
+        canvas.on_wheel(SimpleNamespace(x=left + 40, y=top + 40, delta=-120, num=0))
+        assert canvas.hierarchy_offset == 3
+        assert (canvas.scale, canvas.offset) == before
+        rows.clear()
+        canvas.scroll_hierarchy("moveto", "1")
+        assert len(rows) == canvas.hierarchy_page_size
+        assert rows[-1] == canvas.expansion_result.graph.nodes[-1].key
+        assert rows[0] != canvas.expansion_result.graph.nodes[0].key
+        maximum = canvas.hierarchy_offset
+        canvas.scroll_hierarchy("scroll", "1", "pages")
+        assert canvas.hierarchy_offset == maximum
+        canvas.scroll_hierarchy("scroll", "-1", "pages")
+        assert canvas.hierarchy_offset == maximum - canvas.hierarchy_page_size + 1
+        canvas.scroll_hierarchy("moveto", "-1")
+        assert canvas.hierarchy_offset == 0
+        canvas.on_press(SimpleNamespace(x=left + 40, y=top + 40))
+        canvas.on_drag(SimpleNamespace(x=left + 80, y=top + 80))
+        assert (canvas.scale, canvas.offset) == before
+        canvas.scroll_hierarchy("moveto", "1")
+    app.collapse_all()
+    assert all(canvas.hierarchy_offset == 0 for canvas in app._expansion_canvases())
+    for canvas in app._expansion_canvases():
+        canvas.expansion_layer_enabled = False
+        canvas.redraw()
+        assert canvas.hierarchy_bounds is None
+
+
+def test_slow_diagram_drags_accumulate_and_survive_resize(app_module, tmp_path):
+    app = _app(app_module, tmp_path)
+    for canvas in app._diagram_canvases():
+        before = canvas.offset
+        canvas.on_press(SimpleNamespace(x=100, y=100))
+        for distance in range(1, 31):
+            canvas.on_drag(SimpleNamespace(x=100 + distance, y=100))
+        assert canvas.offset == (before[0] + 30, before[1])
+        assert canvas.dragged and canvas.user_zoomed
+        canvas.on_release(SimpleNamespace(x=130, y=100, num=1))
+        canvas.on_resize(None)
+        assert canvas.offset == (before[0] + 30, before[1])
+        assert canvas.drag_start is None
+
+
+def test_hierarchy_clicks_do_not_select_diagram_nodes_underneath(app_module, tmp_path, monkeypatch):
+    app = _app(app_module, tmp_path)
+    for canvas in app._expansion_canvases():
+        canvas.hierarchy_background = 20
+        canvas.item_nodes = {10: "underlying", 30: "hierarchy-row"}
+        monkeypatch.setattr(canvas.canvas, "find_overlapping", lambda *args: (10, 20, 30))
+        assert canvas.node_at(600, 100) == "hierarchy-row"
+        monkeypatch.setattr(canvas.canvas, "find_overlapping", lambda *args: (10, 20))
+        assert canvas.node_at(600, 100) is None
+
+
 def test_shared_affordance_click_dispatches_without_changing_plain_click_contract(
         app_module, tmp_path: Path) -> None:
     app = _app(app_module, tmp_path)

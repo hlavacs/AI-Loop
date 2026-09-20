@@ -106,11 +106,24 @@ def derive(model: DerivedModel, graph: Graph, decisions: NodeDecisionMap,
     )
     visible = _visible_nodes(hierarchy, indexed_decisions, accepted)
     expansion_decisions = _decisions(hierarchy, indexed_decisions, appearances, accepted, visible)
-    nodes = tuple(node for key, node in hierarchy.nodes.items() if key in visible)
+    nodes = _ordered_visible_nodes(hierarchy, visible)
     edges = _expanded_edges(graph, hierarchy, expansion_decisions)
     return ExpansionResult(
         ExpandedGraph(nodes, edges), MappingProxyType(expansion_decisions),
         hierarchy.aliases, accepted)
+
+
+def _ordered_visible_nodes(hierarchy: _Hierarchy, visible: frozenset[str]) -> tuple[ExpansionNode, ...]:
+    """Keep each file/class and all its descendants together, including through filtered parents."""
+    roots = [key for key, node in hierarchy.nodes.items() if node.parent not in hierarchy.nodes]
+    pending = list(reversed(roots))
+    ordered = []
+    while pending:
+        key = pending.pop()
+        if key in visible:
+            ordered.append(hierarchy.nodes[key])
+        pending.extend(reversed(hierarchy.children[key]))
+    return tuple(ordered)
 
 
 def _hierarchy(model: DerivedModel, graph: Graph) -> _Hierarchy:

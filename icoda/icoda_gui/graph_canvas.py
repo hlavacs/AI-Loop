@@ -150,6 +150,11 @@ class NodeAppearanceCanvas:
         self.item_nodes: dict[int, str] = {}
         self.expansion_items: dict[int, str] = {}
         self.expansion_layer_enabled = True
+        self.hierarchy_scrollbar: Any | None = None
+        self.hierarchy_offset = 0
+        self.hierarchy_page_size = 1
+        self.hierarchy_bounds: tuple[float, float, float, float] | None = None
+        self.hierarchy_background: Any | None = None
         self.coverage_mode = False
         self.globally_stale = False
         self.stale_reason = ""
@@ -256,37 +261,79 @@ class NodeAppearanceCanvas:
         return self.expansion_result.graph.node_keys if self.expansion_result is not None else frozenset()
 
     def draw_expansion_layer(self) -> None:
-        """Draw the shared in-diagram hierarchy and its only expand/collapse affordance."""
+        """Draw a bounded hierarchy viewport with scrolling independent of the diagram."""
         self.expansion_items = {}
         if (not self.expansion_layer_enabled or self.expansion_result is None
                 or not self.expansion_result.graph.nodes):
+            self.hide_hierarchy()
             return
         nodes = self.expansion_result.graph.nodes
         left = max(12.0, float(self.canvas.winfo_width()) - 294.0)
         top, width, row_height = 48.0, 280.0, 27.0
-        bottom = top + 25.0 + row_height * len(nodes)
-        self.canvas.create_rectangle(left, top, left + width, bottom, fill="#ffffff",
-                                     outline="#d1d5db", width=1)
+        self.hierarchy_page_size = max(1, int((self.canvas.winfo_height() - top - 25 - 12) // row_height))
+        self.hierarchy_offset = min(self.hierarchy_offset, max(0, len(nodes) - self.hierarchy_page_size))
+        visible = nodes[self.hierarchy_offset:self.hierarchy_offset + self.hierarchy_page_size]
+        bottom = top + 25.0 + row_height * len(visible)
+        self.hierarchy_bounds = (left, top, left + width, bottom)
+        self.hierarchy_background = self.canvas.create_rectangle(
+            left, top, left + width, bottom, fill="#ffffff", outline="#d1d5db", width=1)
         self.canvas.create_text(left + 8, top + 12, anchor="w", text="Hierarchy — click + / −",
                                 fill="#4b5563", font=("TkDefaultFont", 9, "bold"))
         positions = {
             node.key: (left + 8 + min(node.depth, 5) * 16.0,
                        top + 25.0 + row * row_height + row_height / 2)
-            for row, node in enumerate(nodes)
+            for row, node in enumerate(visible)
         }
-        self._draw_expansion_edges(positions)
-        for row, node in enumerate(nodes):
-            self._draw_expansion_row(node, left, top + 25.0 + row * row_height, width, row_height)
+        self._draw_hierarchy_branches(positions)
+        for row, node in enumerate(visible):
+            self._draw_expansion_row(node, left, top + 25.0 + row * row_height, width - 18, row_height)
+        if self.hierarchy_scrollbar is None:
+            self.hierarchy_scrollbar = ttk.Scrollbar(self.canvas, orient=tk.VERTICAL, command=self.scroll_hierarchy)
+        self.hierarchy_scrollbar.place(x=left + width - 17, y=top + 25, width=16, height=bottom - top - 25)
+        self.hierarchy_scrollbar.set(self.hierarchy_offset / len(nodes),
+                                     (self.hierarchy_offset + len(visible)) / len(nodes))
 
-    def _draw_expansion_edges(self, positions: Mapping[str, tuple[float, float]]) -> None:
+    def hide_hierarchy(self) -> None:
+        self.hierarchy_bounds = None
+        self.hierarchy_background = None
+        self.hierarchy_offset = 0
+        self.expansion_items = {}
+        if self.hierarchy_scrollbar is not None:
+            self.hierarchy_scrollbar.place_forget()
+
+    def in_hierarchy(self, x: int, y: int) -> bool:
+        if self.hierarchy_bounds is None:
+            return False
+        left, top, right, bottom = self.hierarchy_bounds
+        return left <= x <= right and top <= y <= bottom
+
+    def scroll_hierarchy(self, action: str, amount: str, unit: str = "units") -> None:
+        total = len(self.expansion_result.graph.nodes) if self.expansion_result else 0
+        if action == "moveto":
+            offset = round(float(amount) * total)
+        else:
+            step = max(1, self.hierarchy_page_size - 1) if unit == "pages" else 1
+            offset = self.hierarchy_offset + int(amount) * step
+        self.hierarchy_offset = max(0, min(offset, total - self.hierarchy_page_size))
+        self.redraw()
+
+    def scroll_hierarchy_at(self, event: Any) -> bool:
+        if not self.in_hierarchy(event.x, event.y):
+            return False
+        upwards = getattr(event, "delta", 0) > 0 or getattr(event, "num", 0) == 4
+        self.scroll_hierarchy("scroll", "-3" if upwards else "3")
+        return True
+
+    def _draw_hierarchy_branches(self, positions: Mapping[str, tuple[float, float]]) -> None:
+        """Connect rows to their parents; dependency arrows belong to the main diagram."""
         assert self.expansion_result is not None
-        targets = {node.key: node.target_id for node in self.expansion_result.graph.nodes}
-        for edge in self.expansion_result.graph.edges:
-            if edge.source not in positions or edge.target not in positions:
+        for node in self.expansion_result.graph.nodes:
+            if node.key not in positions or node.parent is None or node.parent not in positions:
                 continue
-            colour = self.edge_colour(targets[edge.source], targets[edge.target], "#94a3b8")
-            self.canvas.create_line(*positions[edge.source], *positions[edge.target],
-                                    fill=colour, arrow=tk.LAST, dash=(2, 3))
+            parent_x, parent_y = positions[node.parent]
+            child_x, child_y = positions[node.key]
+            self.canvas.create_line(parent_x, parent_y, parent_x, child_y, child_x, child_y,
+                                    fill="#cbd5e1")
 
     def _draw_expansion_row(self, node: expansion.ExpansionNode, left: float, top: float,
                             width: float, height: float) -> None:
@@ -340,6 +387,7 @@ class GraphCanvas(NodeAppearanceCanvas):
         self.offset, self.user_zoomed = (0.0, 0.0), False
         self.item_nodes: dict[int, str] = {}
         self.drag_start: tuple[int, int] | None = None
+        self._drag_offset = self.offset
         self.dragged = False
         self.resolve_actions, self.dispatch_action = resolve_actions, dispatch_action
 
@@ -351,7 +399,7 @@ class GraphCanvas(NodeAppearanceCanvas):
             ("<ButtonPress-1>", self.on_press), ("<B1-Motion>", self.on_drag),
             ("<ButtonRelease-1>", self.on_release), ("<ButtonPress-2>", self.on_press),
             ("<B2-Motion>", self.on_drag), ("<ButtonRelease-2>", self.on_release),
-            ("<Double-Button-1>", self.on_double_click), ("<Motion>", self.on_motion),
+            ("<Double-ButtonRelease-1>", self.on_double_click), ("<Motion>", self.on_motion),
             ("<Configure>", self.on_resize),
         )
         for event, handler in bindings:
@@ -372,7 +420,7 @@ class GraphCanvas(NodeAppearanceCanvas):
         return None
 
     def on_double_click(self, event: Any) -> None:
-        return None
+        self.drag_start = None
 
     def to_screen(self, x: float, y: float) -> tuple[float, float]:
         return (x * self.scale + self.offset[0], y * self.scale + self.offset[1])
@@ -396,9 +444,13 @@ class GraphCanvas(NodeAppearanceCanvas):
     def on_resize(self, _event: Any) -> None:
         if not self.user_zoomed:
             self.fit()
+        else:
+            self.redraw()
 
     def node_at(self, x: int, y: int) -> str | None:
-        for item in self.canvas.find_overlapping(x - 1, y - 1, x + 1, y + 1):
+        for item in reversed(self.canvas.find_overlapping(x - 1, y - 1, x + 1, y + 1)):
+            if item == self.hierarchy_background:
+                return None
             if item in self.item_nodes:
                 return self.item_nodes[item]
         return None
@@ -423,21 +475,23 @@ class GraphCanvas(NodeAppearanceCanvas):
             self.zoom(max(self.fit_scale, 1.0) / self.scale)
 
     def on_wheel(self, event: Any) -> str:
+        if self.scroll_hierarchy_at(event):
+            return "break"
         zoom_in = getattr(event, "delta", 0) > 0 or getattr(event, "num", 0) == 4
         self.zoom(zoom_controls.ZOOM_IN if zoom_in else zoom_controls.ZOOM_OUT,
                   (float(event.x), float(event.y)))
         return "break"
 
     def on_press(self, event: Any) -> None:
-        self.drag_start, self.dragged = (event.x, event.y), False
+        self.drag_start = None if self.in_hierarchy(event.x, event.y) else (event.x, event.y)
+        self._drag_offset, self.dragged = self.offset, False
 
     def on_drag(self, event: Any) -> None:
         if self.drag_start is None:
             return
         dx, dy = event.x - self.drag_start[0], event.y - self.drag_start[1]
-        if abs(dx) + abs(dy) > 3:
-            self.dragged = True
-        self.offset = (self.offset[0] + dx, self.offset[1] + dy)
-        self.drag_start = (event.x, event.y)
-        self.user_zoomed = True
+        if not self.dragged and abs(dx) + abs(dy) <= 3:
+            return
+        self.dragged, self.user_zoomed = True, True
+        self.offset = (self._drag_offset[0] + dx, self._drag_offset[1] + dy)
         self.redraw()

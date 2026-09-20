@@ -158,6 +158,133 @@ def verify_file_boxes(root: tk.Tk, app: Any, output: Path) -> None:
     root.geometry(geometry)
 
 
+def verify_file_hierarchy(root: tk.Tk, app: Any, output: Path) -> None:
+    """Functions stay beneath their file/class, with working source and collapse clicks."""
+    project = output.resolve() / "hierarchy"
+    model = DerivedModel(str(project))
+    for name in ("renderer", "scene"):
+        file = f"src/{name}.cpp"
+        path = project / file
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(f"class {name.title()} {{\npublic:\n    int value() {{ return 1; }}\n}};\n"
+                        f"int {name}_value() {{ return {name.title()}{{}}.value(); }}\n")
+        model.files[file] = FileInfo(file)
+        model.add_entity(Entity(name, Kind.CLASS, name.title(), name.title(), file, 1))
+        model.add_entity(Entity(name + "::value", Kind.METHOD, "value", name.title() + "::value", file, 3,
+                                parent=name))
+        model.add_entity(Entity(name + "_value", Kind.FUNCTION, name + "_value", name + "_value", file, 5))
+        model.add_edge(Edge(EdgeKind.CALLS, name + "_value", name + "::value", file, 5))
+    model.add_edge(Edge(EdgeKind.CALLS, "renderer_value", "scene_value", "src/renderer.cpp", 5))
+    clustering = clusters.cluster_files(model)
+    app.show(session.OpenedProject(project, model, clustering, views.layout_file_view(model, clustering), None))
+    app.views.select(0)
+    root.update()
+
+    def rows() -> dict[str, tuple[float, float]]:
+        return {target: tuple(app.canvas.coords(item)) for item, target in app.view.item_nodes.items()
+                if app.canvas.type(item) == "text" and app.canvas.itemcget(item, "text").startswith(
+                    ("file  ", "class  ", "method  ", "function  "))}
+
+    positions = rows()
+    for name in ("renderer", "scene"):
+        file = f"src/{name}.cpp"
+        ordered = [positions[node] for node in (file, name, name + "::value", name + "_value")]
+        assert all(a[1] < b[1] for a, b in pairwise(ordered)), ordered
+        assert ordered[0][0] < ordered[1][0] < ordered[2][0]
+        assert ordered[1][0] == ordered[3][0]
+    assert positions["renderer_value"][1] < positions["src/scene.cpp"][1]
+    click_node(root, app.view, "renderer::value")
+    assert app.source_editor.document.relative == "src/renderer.cpp"
+    assert app.source_editor.text.index("insert") == "3.0"
+    key = "file:src/renderer.cpp"
+    item = next(item for item, target in app.view.expansion_items.items() if target == key)
+    x, y = app.canvas.coords(item)[:2]
+    app.canvas.event_generate("<ButtonPress-1>", x=int(x + 4), y=int(y + 4))
+    app.canvas.event_generate("<ButtonRelease-1>", x=int(x + 4), y=int(y + 4))
+    root.update()
+    assert "renderer::value" not in rows() and "scene::value" in rows()
+    app.toggle_graph_expansion(key)
+    root.update()
+    assert rows() == positions
+    capture(root, output / "file-hierarchy.png")
+    app.source_editor.clear()
+    # The next independent fixture starts with its own hierarchy fully expanded.
+    app._expansion_initialized = False
+    app._expansion_auto_expand = True
+
+
+def verify_scrolling_and_dragging(root: tk.Tk, app: Any, output: Path) -> None:
+    project = output.resolve() / "scrolling"
+    project.mkdir(parents=True, exist_ok=True)
+    source = project / "api.cpp"
+    source.write_text("class API {\npublic:\n" + "".join(
+        f"    int value_{index:02}() {{ return {index}; }}\n" for index in range(60)) + "};\n")
+    model = DerivedModel(str(project))
+    model.files["api.cpp"] = FileInfo("api.cpp")
+    model.add_entity(Entity("api", Kind.CLASS, "API", "API", "api.cpp", 1))
+    for index in range(60):
+        name = f"value_{index:02}"
+        model.add_entity(Entity(name, Kind.METHOD, name, "API::" + name, "api.cpp", index + 3, parent="api"))
+    clustering = clusters.cluster_files(model)
+    app.show(session.OpenedProject(project, model, clustering, views.layout_file_view(model, clustering), None))
+    for index, view in enumerate(app._expansion_canvases()):
+        app.views.select(index)
+        root.update()
+        view.fit()
+        root.update()
+        assert view.hierarchy_scrollbar.winfo_ismapped()
+        left, top, _right, bottom = view.hierarchy_bounds
+        assert bottom <= view.canvas.winfo_height()
+        before = (view.scale, view.offset)
+        view.canvas.event_generate("<MouseWheel>", x=int(left + 80), y=int(top + 80), delta=-120)
+        root.update()
+        assert view.hierarchy_offset == 3 and (view.scale, view.offset) == before
+        # Invoke the actual scrollbar's registered command, including both endpoints.
+        command = view.hierarchy_scrollbar.cget("command")
+        root.tk.call(command, "moveto", "1")
+        root.update()
+        assert abs(view.hierarchy_scrollbar.get()[1] - 1.0) < .001
+        items = [item for item, target in view.item_nodes.items()
+                 if target == "value_59" and view.canvas.type(item) == "rectangle"]
+        x1, y1, x2, y2 = view.canvas.coords(items[-1])
+        x, y = int((x1 + x2) / 2), int((y1 + y2) / 2)
+        assert top < y < view.canvas.winfo_height()
+        view.canvas.event_generate("<ButtonPress-1>", x=x, y=y)
+        view.canvas.event_generate("<ButtonRelease-1>", x=x, y=y)
+        root.update()
+        assert app.source_editor.document.relative == "api.cpp" and app.source_editor.text.index("insert") == "62.0"
+        assert (view.scale, view.offset) == before
+        root.tk.call(command, "moveto", "0")
+        root.update()
+        assert view.hierarchy_offset == 0
+        # A click followed immediately by a slow drag must still start a new pan gesture.
+        before_offset = view.offset
+        timestamp = 10000 + index * 2000
+        view.canvas.event_generate("<ButtonPress-1>", x=80, y=150, time=timestamp)
+        view.canvas.event_generate("<ButtonRelease-1>", x=80, y=150, time=timestamp + 20)
+        root.update()
+        view.canvas.event_generate("<ButtonPress-1>", x=80, y=150, time=timestamp + 100)
+        for distance in range(1, 31):
+            view.canvas.event_generate("<B1-Motion>", x=80 + distance, y=150,
+                                       time=timestamp + 100 + distance)
+            root.update()
+        view.canvas.event_generate("<ButtonRelease-1>", x=110, y=150, time=timestamp + 150)
+        root.update()
+        assert view.dragged and view.user_zoomed
+        assert view.offset == (before_offset[0] + 30, before_offset[1])
+        view.on_resize(None)
+        assert view.offset == (before_offset[0] + 30, before_offset[1])
+        root.tk.call(command, "moveto", "1")
+        root.update()
+        capture(root, output / f"hierarchy-scroll-{index}.png")
+    app.collapse_all()
+    root.update()
+    assert all(view.hierarchy_offset == 0 for view in app._expansion_canvases())
+    app.source_editor.clear()
+    app._expansion_initialized = False
+    app._expansion_auto_expand = True
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--output", type=Path, required=True)
@@ -180,6 +307,8 @@ def main() -> None:
         app = load_application().App(root, config=persistence.UserConfig(), config_path=args.output / "config.json")
         panel_layout = verify_compact_panel(root, app)
         verify_file_boxes(root, app, args.output)
+        verify_file_hierarchy(root, app, args.output)
+        verify_scrolling_and_dragging(root, app, args.output)
         app.show(opened)
         root.update()
         for _ in range(12):
@@ -246,7 +375,9 @@ def main() -> None:
         bounds = capture(root, args.output / "source-editor.png")
         (args.output / "editor-gui.json").write_text(json.dumps({
             "passed": True, "bounds": bounds, "saved_source": str(source), "panel_layout": panel_layout,
-            "checks": ["visible file boxes", "repeated Fit", "file/class/function clicks", "Unicode find", "literal replace", "replace all",
+            "checks": ["visible file boxes", "repeated Fit", "parent/child hierarchy order", "hierarchy collapse and source clicks",
+                       "hierarchy scrollbar and wheel", "last row source navigation", "slow drag after a rapid second press",
+                       "file/class/function clicks", "Unicode find", "literal replace", "replace all",
                        "undo/redo", "unsaved navigation", "save", "analysis refresh", "reload"]}, indent=2) + "\n")
         print("PASS: real Tk source navigation, search/replace, undo/redo, save/reload, visible controls, screenshot")
     finally:

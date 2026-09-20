@@ -5072,3 +5072,43 @@ Verification:
   in `.icoda-test-artifacts/library-scope/`; the library Call View was visually inspected.
 - Updated the handbook and regenerated its 97-page PDF (37 images). Rendered and visually checked the selector
   instructions on page 18 and the following page using Poppler.
+
+## 2026-09-20 — Keep hierarchy contents beneath their files and classes
+
+The shared hierarchy previously rendered model insertion order: clusters, all files, then all entities. Its
+indentation described ownership, but functions appeared together below the file list. The core now traverses
+parents before their children, keeping each complete file/class subtree together in source order. All three
+diagram hierarchies share that ordering. Parent-child branch lines make the nesting visible; function status
+colors, source navigation, filtering, and expand/collapse behavior are preserved.
+
+Verification:
+
+- **629 tests passed in 89.74 seconds**. Expansion, GUI, and source-navigation cases cover multiple clusters and
+  sibling files, nested classes, methods defined in a different file, filtered parents, and collapse/re-expand.
+- Ruff, mypy across 61 production files, and `git diff --check` passed.
+- Native `tests/editor_gui_acceptance.py` verified the on-screen row positions and indentation for two files,
+  their classes, methods, and free functions. A real method click opened the correct source line; a real collapse
+  click hid only the selected file's contents, and re-expanding restored the original row positions. The existing
+  source-editor acceptance checks also passed. Evidence is in `.icoda-test-artifacts/hierarchy-order/`; the
+  `file-hierarchy.png` screenshot was visually inspected.
+
+## 2026-09-20 — Scroll the hierarchy and reliably drag diagrams
+
+Each File, Call, and Class hierarchy now has a native vertical scrollbar and a bounded row viewport.
+The mouse wheel inside the hierarchy scrolls its rows independently of diagram zoom. Scroll positions are
+clamped when rows collapse or the view resizes; hidden rows cannot receive clicks. Hit testing prioritizes
+the hierarchy over diagram nodes behind it, and pressing inside the hierarchy does not start a diagram pan.
+
+Diagram dragging measures total movement from the press position, so a sequence of small mouse movements
+correctly becomes a drag and remains positioned after resizing. Double-click handling runs on release, allowing
+a rapid second press to start another drag. Drag releases do not open source as accidental double-clicks.
+
+Verification:
+
+- **632 tests passed in 89.24 seconds**. Cases cover scrollbar endpoints and page steps, wheel/zoom separation, collapse clamping,
+  hierarchy hit priority, and slow cumulative drags across all four diagrams.
+- Ruff, mypy across 61 production files, and `git diff --check` passed.
+- Native `tests/editor_gui_acceptance.py` used a class with 60 methods in File, Call, and Class View. It verified
+  visible scrollbars, wheel scrolling, the scrollbar's actual registered callback, source navigation from the
+  last row, and a real click immediately followed by a 30-event slow drag. All existing editor checks passed.
+  Evidence and screenshots are in `.icoda-test-artifacts/hierarchy-scroll-final/`.
