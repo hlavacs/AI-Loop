@@ -10,8 +10,8 @@ design and its history; this file is the practical guide for using and maintaini
 New users should start with the two-page `docs/GETTING_STARTED.md`, then `docs/TUTORIAL.md`; `docs/TROUBLESHOOTING.md`
 collects the usual problems and their fixes. The **Help** menu in ICODA opens all of them.
 
-The screenshots are real Tk captures produced from deterministic acceptance fixtures. They show both C++ and
-Python projects so that the workflow is not mistaken for a language-specific design.
+The examples, tutorial, and screenshots in this handbook use C++. Screenshots are real Tk captures from
+acceptance fixtures and the Score Clamp tutorial project. Red rectangles identify the areas being discussed.
 
 ## 1. The ICODA mental model
 
@@ -131,20 +131,21 @@ At every point the sentence above the buttons in the lower panel names the next 
 Saving the first specification creates only files that do not already exist. It generates either a C++ CMake
 skeleton or a Python skeleton according to the Code Profile, then moves the project into the `architecture` phase.
 
-An empty directory initially receives the C++ defaults. To create a Python project, select `Python` and review all
-language-dependent Code Profile fields before saving. A practical Python profile is:
+An empty directory receives the C++ defaults. For Score Clamp, the full tutorial included in this PDF, use:
 
-| Field | Typical value |
+| Field | Tutorial value |
 |---|---|
-| Standard | `3.12` |
-| Test framework | `pytest` |
-| Test runner | `python -m pytest` |
-| Test files | `tests/test_<module>.py` |
-| Source extension | `.py` |
-| Module naming | `snake_case` |
-| Class naming | `PascalCase` |
-| Function naming | `snake_case` |
-| Libraries | `PyPI dependencies declared in pyproject.toml` |
+| Language / Standard | C++ / 23 |
+| C++20 modules | Enabled |
+| Test framework | CTest with standalone C++ test executables |
+| Test runner | ctest --preset debug |
+| Test files | tests/<subsystem>_test.cpp |
+| Source extension | .cppm |
+| Module / Class / Function naming | snake_case / PascalCase / snake_case |
+| Libraries | C++ standard library only |
+
+The tutorial gives exact specification values, review steps, complete C++ source and tests, and expected output.
+Its runnable reference project is `docs/examples/score-clamp/`.
 
 ### Open an existing CMake project
 
@@ -317,14 +318,14 @@ C++ example:
 bool cancel(JobId id);
 ```
 
-Python example:
+For multiple requirements, put each exact identifier in its own tag:
 
-```python
-def cancel(job_id: JobId) -> bool:
-    """Cancel a queued job.
-
-    @satisfies R-4
-    """
+```cpp
+/// @brief Keep a score in the inclusive range 0 to 100.
+/// @satisfies R-1
+/// @satisfies R-2
+/// @satisfies R-3
+static int clamp(int value);
 ```
 
 Matching is exact; text similarity is not used. Because goal IDs are positional, avoid reordering goals casually
@@ -419,7 +420,7 @@ items explain that the action is not valid for the current node or workflow stat
 **File View** shows project files, dependency clusters, typed relations, and external libraries. Clicking a file
 lists its entities in the right sidebar. Cluster names and pins are persisted.
 
-![Python project in File View with files, class, methods, and functions](docs/images/handbook/python-file-view.png)
+![C++ Score Clamp project in File View with module, entry point, and tests](docs/images/handbook/cpp-file-view.png)
 
 *File View joins dependency structure with the expandable source hierarchy.*
 
@@ -434,7 +435,7 @@ added and changed entities receive distinct outlines.
 **Class View** shows classes and structs with fields and methods. It distinguishes inheritance, composition,
 aggregation, and usage relations. Callable members include their implementation status.
 
-![Python Class View showing an implemented method and its signature](docs/images/handbook/python-class-view.png)
+![C++ Class View showing ScoreClamp and its implemented static method](docs/images/handbook/cpp-class-view.png)
 
 *Class View makes member signatures and implementation status reviewable as architecture.*
 
@@ -540,7 +541,7 @@ The hard 50-line function limit is a gate, not advice: `_quality_refusal` reject
 function above `FUNCTION_LINE_HARD_MAX`, and `approve` repeats the same check so a post-review change cannot bypass
 it. Functions from 31 through 50 lines receive only the 30-line guideline warning.
 
-![Architecture proposal with a bounded three-entity delta and passing gates](docs/images/handbook/sim-04-architecture-approve.png)
+![C++ architecture proposal adding ScoreClamp and its method with passing gates](docs/images/handbook/cpp-architecture-proposal.png)
 
 *A live architecture proposal exposes both the structural change and its gate status before approval.*
 
@@ -580,7 +581,7 @@ checks passed; they do not prove the change meets the specification.
 - **More... > Open worktree** opens the proposal checkout for manual inspection or editing.
 - **More... > Rebuild** reruns build, tests, parsing, and delta computation after a manual worktree edit.
 
-![Rejected architecture proposal retained with its reason and review evidence](docs/images/handbook/sim-03-architecture-reject.png)
+![Rejected C++ architecture proposal retained with its reason and review evidence](docs/images/handbook/cpp-architecture-rejected.png)
 
 *Rejection is a recorded decision; its reason becomes feedback for the next attempt.*
 
@@ -597,7 +598,7 @@ When the skeleton is adequate and no live proposal is waiting for a decision, pr
 confirmation, ICODA records the phase transition, constructs the implementation queue, reloads the project, and
 enables the implementation controls.
 
-![Architecture complete with the implementation queue ready](docs/images/handbook/sim-05-architecture-gate.png)
+![C++ architecture complete with the implementation queue ready](docs/images/handbook/cpp-architecture-gate.png)
 
 *Approving architecture is an explicit phase gate, not an incidental result of approving one proposal.*
 
@@ -669,7 +670,7 @@ invalidates it. The approach round does not modify source files.
 On approval, ICODA repeats build and tests in the real project before committing. It advances the queue cursor only
 after all gates pass and the commit path succeeds. The approved approach is then cleared for the next target.
 
-![Implementation proposal with changed code, a new focused test, and passing gates](docs/images/handbook/sim-07-normalize-build-test.png)
+![C++ clamp implementation and boundary tests with passing gates](docs/images/handbook/cpp-implementation-tests.png)
 
 *The second round makes source, tests, model delta, and gate results reviewable together.*
 
@@ -736,157 +737,87 @@ reopen the project.
 These examples begin in the repository's `icoda` directory with an authenticated `codex` or `claude` command.
 Provider prose and titles vary, but the commands, GUI labels, gates, and quoted status text below are deterministic.
 
-### Worked example A: new Python project from first launch to approval
+### Worked example A: new C++ project from first launch to approval
 
-This run creates a disposable formatter project, takes it through analysis and architecture, and approves one
-implementation step.
+Follow the **Full C++ tutorial: Score Clamp from specification to a running program** later in this PDF for the
+complete walkthrough. Its Markdown source is [Tutorial](docs/TUTORIAL.md), and the runnable reference project is
+`docs/examples/score-clamp/`.
 
-1. Prepare the pinned installation and an empty project directory:
+Score Clamp maps any integer to 0 through 100 and prints `scores: 0 42 100` for three demonstration inputs.
+It uses a C++23 module, a small static method, a thin entry point, and two CTests, with no external C++ libraries.
 
-   ```bash
-   cd /absolute/path/to/repository/icoda
-   python3 -m venv .icoda-venv
-   .icoda-venv/bin/python -m pip install -e '.[dev]' -c constraints.txt
-   project_dir="$(mktemp -d /tmp/icoda-formatter.XXXXXX)"
-   printf '%s\n' "$project_dir"
-   ./icoda.bash
+1. Prepare ICODA's pinned environment and a module-capable C++ toolchain. Create an empty folder through
+   **File > New Project...**.
+2. Enter title `ScoreClamp`, two use cases (clamp a score and run the demonstration), and four requirements for
+   low, in-range, and high scores plus console output. Use the tutorial's C++ Code Profile.
+3. Validate, save, and build. Inspect `src/app/app.cppm`, `src/main.cpp`, `tests/smoke_test.cpp`, and the presets.
+4. Request `app::ScoreClamp` with a static `int clamp(int value)` stub. Keep application behavior unchanged.
+   Inspect the delta and source diff; require passing build and test gates, then approve.
+5. Explicitly **Approve architecture**. Keep one entity per implementation step.
+6. Approve a prose approach for `std::clamp(value, 0, 100)` plus nine boundary/extreme cases and idempotence
+   checks. Propose the code, inspect it, and approve after both gates pass.
+7. Complete the two rounds for `app::run` and application `main` as well. Add the `demo` CTest for executable
+   output. Continue until the implementation queue is empty.
+8. Run the program and both CTests independently, then inspect Git history and requirement traceability.
+
+The full tutorial supplies exact field values, copyable provider requests, complete final C++ sources, output
+checks, and recovery instructions. Provider prose may vary; observable behavior is the acceptance criterion.
+
+### Worked example B: split a C++ function refused by the 50-line gate
+
+Use a separate disposable C++ project titled `LineGate`. Specify one use case, `Classify a value`, and a
+requirement to return -1 for negative integers, 0 for zero, and 1 for positive integers. Use the Score Clamp
+C++23 module/CTest profile and keep the hard maximum at 50 lines.
+
+1. Build the generated skeleton. Request a stub `int app::classify(int value)` in `src/app/app.cppm`, with its
+   Doxygen requirement tag. Approve the architecture proposal after both gates pass, then **Approve architecture**.
+2. Select classify as the current target. For this deliberate gate exercise, request 51 source lines from the
+   function signature through its closing brace, using repeated explicit branches. Approve the approach, then
+   propose its code.
+3. If a 51-line candidate is returned, ICODA refuses it with a message of this form:
+
+   > `app::classify is 51 lines; split it below the hard maximum of 50.`
+
+   The exact name and line count depend on the returned source. **Approve** stays disabled. This is proposal-time
+   enforcement by `_quality_refusal`, not an Issues warning. If the provider returns a shorter function instead,
+   the oversized-function refusal has not been exercised.
+4. Use **Adapt...**: `Replace repeated branches with a small classifier. Keep every function within 50 lines,
+   preserve sign classification, and test negative, zero, positive, minimum, and maximum int values.`
+5. A complete implementation of this small behavior is:
+
+   ```cpp
+   int classify(int value) {
+       return (value > 0) - (value < 0);
+   }
    ```
 
-   The terminal prints the directory to select, then the main window opens. Before a project is selected the status
-   line is `No project open`, and the hint starts `Open a project (File ▸ Open Project…)`.
-
-2. In **LLM**, set **Binary** to the authenticated `codex` or `claude` command and choose a **Model**. Choose
-   **File ▸ New Project…**, select the printed empty directory, and observe the status
-   `New project <directory-name>: write the specification and save it` and the Specification window.
-
-3. Enter these exact values, using **Add** after the use case, each requirement, and the decision:
-
-   - **Overview** — Title: `Formatter`; Description: `Normalize one line of text.`
-   - **Scope** — Goals: `trim leading and trailing whitespace`; Not in scope: `file input`; Not allowed:
-     `third-party packages`; Done when: `normalize has a passing unit test`.
-   - **Use cases** — Title: `Normalize a line`; Details: `Return a line without surrounding whitespace.` The list
-     assigns `UC-1`.
-   - **Requirements** — `normalize removes surrounding whitespace`, priority `must`, use case `UC-1`; and
-     `normalize has a unit test`, priority `must`, use case `UC-1`. The list assigns `R-1` and `R-2`.
-   - **Decisions** — Title: `Standard library only`; Rationale: `No dependency is needed.`
-   - **Code profile** — choose Language `Python`; keep Test runner `python -m pytest`, Max function lines `30`, and
-     Hard max function lines `50`.
-
-4. Press **Validate**. The message beside the buttons is exactly `valid`. Press **Save**. The message becomes
-   `saved`, and the confirmation begins `Specification saved and the project skeleton written (5 files).` Press
-   **Yes** at `Build it now?`. The status temporarily reads `build passed — analysing the project …`; after analysis,
-   the **File View** contains `src/formatter.py` and `tests/test_formatter.py`, and the phase label is `architecture`.
-
-5. In **Request**, type `Add a stub normalize(value: str) -> str method to Formatter and its test shape; do not
-   implement the method.` Press **Propose**. The hint successively reports `Working: asking the agent for the next
-   step.`, `step 1: building the proposal`, `step 1: testing the proposal`, and `step 1: parsing the proposal`.
-   Review **Delta**, **Diff**, **Build**, and **Tests**. A usable result shows `Build: passed` and `Tests: passed`;
-   its `normalize` body is a stub. If the title says `no usable proposal`, use the named error in **Adapt…** and
-   repeat until those two gate labels pass.
-
-6. Press **Approve**. ICODA promotes the isolated worktree, rebuilds and retests the real project, records the step,
-   creates an `icoda(architecture) step 1: ...` commit, and refreshes the diagrams. Press **Approve architecture**,
-   then **Yes** at `Approve the architecture and begin implementation?`. The phase label becomes `implementation`,
-   and the queue line starts `Current target:` and ends `— 1 remaining` for the new stub.
-
-7. Press **Propose approach**. In **Approach**, require `return value.strip()` and a pytest test for padded and clean
-   strings; use **Adapt…** if needed. A usable plan starts `Awaiting developer approval`. Press **Approve approach**;
-   it changes to `Approved`, and the hint ends `Press Propose to get the code and its tests.`
-
-8. Press **Propose**. Inspect the implementation and test, then require `Build: passed` and `Tests: passed`. Press
-   **Approve**. The approved code is in the project and Git history; after the last stub is completed the queue reads
-   `Implementation queue: empty — no unimplemented functions`. The **Coverage** view reports recorded test
-   reachability: it projects successful recorded test identifiers through analysed calls and is not runtime or
-   branch coverage.
-
-### Worked example B: split a Python function refused by the 50-line gate
-
-This example deliberately requests an oversized implementation so the proposal-time gate is visible, then accepts
-the split version. Use another empty directory and start ICODA:
-
-```bash
-cd /absolute/path/to/repository/icoda
-project_dir="$(mktemp -d /tmp/icoda-line-gate.XXXXXX)"
-printf '%s\n' "$project_dir"
-./icoda.bash
-```
-
-1. Choose **File ▸ New Project…** and the printed directory. Create a Python specification titled `Line Gate` with
-   goal `classify input lines`, one use case `Classify a line`, requirement `classify returns a category for every
-   input`, and done condition `classification tests pass`. Keep Hard max function lines `50`; press **Validate**,
-   **Save**, and **Yes**. Observe `valid`, then `saved`, then `build passed — analysing the project …` and phase
-   `architecture`.
-
-2. Request `Add a stub classify(value: str) -> str method to LineGate.` Press **Propose**, require `Build: passed`
-   and `Tests: passed`, then **Approve**. Press **Approve architecture** and confirm. The phase becomes
-   `implementation`, with `LineGate.classify` in `Current target:`.
-
-3. Press **Propose approach** and request one deliberately long implementation: `For this gate exercise, make
-   classify exactly 51 source lines including its def line, with repeated explicit branches, plus a passing test.`
-   Press **Approve approach**, then **Propose**. ICODA may retry the provider up to three times, feeding the same
-   deterministic rule error back. The rejected proposal title ends with the exact refusal form:
-
-   > `LineGate.classify is 51 lines; split it below the hard maximum of 50.`
-
-   **Approve** stays grey. This is proposal-time enforcement by `_quality_refusal`, not an Issues warning. If the
-   provider pre-emptively splits the function, use **Adapt…** to reiterate the 51-line exercise; do not approve it.
-
-4. Press **Adapt…** and enter `Split classify into small private helpers; keep classify and every helper at or below
-   50 source lines, preserve the approved behavior, and test the public method.` Press **Propose** if the adapted
-   response is not started automatically. The accepted candidate shows no `hard maximum of 50` error and shows
-   `Build: passed` and `Tests: passed`.
-
-5. Review the helper signatures and **Diff**, press **Confirm signatures** if that button appears, then press
-   **Approve**. Approval invokes `_quality_refusal` again against the candidate model before promotion; passing that
-   second check, rebuild, and tests creates the implementation commit. The hard 50-line function limit therefore
-   blocks both proposal time and approval time, while the split version completes the same queue target.
+   For genuinely longer behavior, extract focused private helpers. Do not compress statements onto one line to
+   evade the limit.
+6. Require passing build and CTest gates, review any signature changes, and approve. The hard 50-line function
+   limit is checked again before promotion. Complete remaining skeleton targets in their own review rounds.
 
 ### Worked example C: CMake/C++ with `CMAKE_PRESET`
 
-This run uses the generated C++20-module skeleton and the exact `steps.CMAKE_PRESET` build path.
+Use a new Score Clamp project from example A. ICODA's generated C++ skeleton contains debug and release presets;
+its proposal gates select `steps.CMAKE_PRESET = "debug"`.
 
-```bash
-cd /absolute/path/to/repository/icoda
-project_dir="$(mktemp -d /tmp/icoda-cmake-preset.XXXXXX)"
-printf '%s\n' "$project_dir"
-./icoda.bash
-```
-
-1. Choose **File ▸ New Project…** and the printed directory. Enter title `Preset Counter`, goal `increment a
-   counter`, one use case `Increment once`, requirement `increment returns the next value`, and done condition
-   `CTest passes`. Keep Code profile Language `C++`, C++20 modules enabled, and Test runner
-   `ctest --preset debug`. Press **Validate**, **Save**, and **Yes**. The confirmation says the skeleton wrote
-   `11 files`.
-
-2. **Project ▸ Build** calls the C++ gate selected by `CMAKE_PRESET = "debug"`:
-
-   ```text
-   cmake --preset debug
-   cmake --build --preset debug
-   ```
-
-   Success briefly shows `build passed — analysing the project …`. The generated preset writes
-   `build/debug/compile_commands.json`; after analysis, **File View** contains `src/main.cpp` and
-   `src/app/app.cppm`. Failure instead shows `build failed — the output is in the step panel`; use the exact remedy
-   in [Troubleshooting](docs/TROUBLESHOOTING.md), then choose **Project ▸ Build** again.
-
-3. Request `Add a stub app::increment(int value) function and a CTest smoke assertion; do not implement the
-   function.` Press **Propose**. The proposal repeats the configure and build commands above and then runs the
-   separately configured `ctest --preset debug` test gate. Require `Build: passed` and `Tests: passed`, inspect the
-   module diff, and press **Approve**. The project rebuild repeats those gates before the architecture commit.
-
-4. To observe the same generated project independently, close no windows and type in another terminal:
+1. Save and build the skeleton. For direct terminal commands, select the same compiler as the GUI. On macOS,
+   set `CC` and `CXX` to Homebrew LLVM before the first configure, as shown in the full tutorial.
+2. Run the stages independently from the project root:
 
    ```bash
-   cd "$project_dir"
    cmake --preset debug
    cmake --build --preset debug
    ctest --preset debug
    ```
 
-   CMake ends the configure with `Build files have been written to: .../build/debug`, the build exits successfully,
-   and CTest ends with `100% tests passed, 0 tests failed out of 1`. Those are the configure, build, and test stages
-   ICODA gates separately; the preset name is not inferred from the directory.
+3. Check `build/debug/compile_commands.json` and reload ICODA. **File View** shows the module, main, and test files.
+4. Propose the ScoreClamp architecture addition. Its worktree uses the same configure/build stages and a
+   separate CTest gate. Inspect **Build** and **Tests** before approving.
+5. To reproduce only the build stage through the generated helper, run `./build.sh debug build-only`
+   (Windows: `build.cmd debug build-only`), followed by `ctest --preset debug`.
+6. The initial skeleton has one `smoke` test; the completed tutorial has `smoke` and `demo`. Inspect the registered
+   tests and require zero failures rather than assuming a fixed test count for every project.
 
 ## 10. Git, persistence, and recovery
 
@@ -1079,9 +1010,9 @@ Do not treat a screenshot's existence as visual verification. The acceptance scr
 variation, visible controls, and graph content; maintainers should also inspect captures affected by a GUI change
 for clipping, overlap, unreadable labels, incorrect state, and stale output.
 
-![Completed lifecycle with all analysed callables reached by recorded test identifiers](docs/images/handbook/sim-10-terminal-overview.png)
+![Completed C++ lifecycle with the queue empty and coverage evidence visible](docs/images/handbook/cpp-terminal-overview.png)
 
-*The deterministic lifecycle ends only after the queue is empty and recorded test identifiers reach every callable.*
+*The C++ tutorial ends with an empty queue; Coverage separately reports requirement links and recorded test reachability.*
 
 ### Focused acceptance scripts
 

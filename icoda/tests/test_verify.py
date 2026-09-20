@@ -191,8 +191,8 @@ def test_handbook_preserves_production_safety_vocabulary_and_worked_examples() -
         "recorded test reachability", "50-line", "MAX_RESPONSE_BYTES", "constraints.txt",
     ))
     assert all(heading in handbook for heading in (
-        "### Worked example A: new Python project from first launch to approval",
-        "### Worked example B: split a Python function refused by the 50-line gate",
+        "### Worked example A: new C++ project from first launch to approval",
+        "### Worked example B: split a C++ function refused by the 50-line gate",
         "### Worked example C: CMake/C++ with `CMAKE_PRESET`",
     ))
 

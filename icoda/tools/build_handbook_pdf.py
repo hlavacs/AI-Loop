@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import io
+import json
 import re
 import textwrap
 import zlib
@@ -19,6 +20,7 @@ SOURCES = (
     ROOT / "docs" / "TROUBLESHOOTING.md",
 )
 OUTPUT = ROOT / "output" / "pdf" / "ICODA-Handbook.pdf"
+HIGHLIGHTS = ROOT / "tools" / "handbook_highlights.json"
 BUILD_INVOCATION = ".icoda-venv/bin/python tools/build_handbook_pdf.py"
 
 A4 = (595.28, 841.89)
@@ -26,6 +28,71 @@ A4_LANDSCAPE = (A4[1], A4[0])
 IMAGE_RE = re.compile(r"^!\[(?P<caption>.+)]\((?P<path>[^)]+)\)$")
 HEADING_RE = re.compile(r"^(?P<marks>#{1,3})\s+(?P<title>.+)$")
 TABLE_RULE_RE = re.compile(r"^\|?(?:\s*:?-+:?\s*\|)+\s*$")
+LIST_RE = re.compile(r"^(?P<indent> *)(?P<marker>[-*+]|\d+[.)]) +(?P<body>.*)$")
+# Standard PDF Helvetica advances in 1/1000 em, for WinAnsi bytes 32 through 255.
+# Keep the offline builder independent of installed fonts and extra PDF packages.
+HELVETICA_WIDTHS = (
+    278, 278, 355, 556, 556, 889, 667, 191, 333, 333, 389, 584, 278, 333, 278, 278,
+    556, 556, 556, 556, 556, 556, 556, 556, 556, 556, 278, 278, 584, 584, 584, 556,
+    1015, 667, 667, 722, 722, 667, 611, 778, 722, 278, 500, 667, 556, 833, 722, 778,
+    667, 778, 722, 667, 611, 722, 667, 944, 667, 667, 611, 278, 278, 278, 469, 556,
+    333, 556, 556, 500, 556, 556, 278, 556, 556, 222, 222, 500, 222, 833, 556, 556,
+    556, 556, 333, 500, 278, 556, 500, 722, 500, 500, 500, 334, 260, 334, 584, 350,
+    556, 350, 222, 556, 333, 1000, 556, 556, 333, 1000, 667, 333, 1000, 350, 611, 350,
+    350, 222, 222, 333, 333, 350, 556, 1000, 333, 1000, 500, 333, 944, 350, 500, 667,
+    278, 333, 556, 556, 556, 556, 260, 556, 333, 737, 370, 556, 584, 333, 737, 333,
+    400, 584, 333, 333, 333, 556, 537, 278, 333, 333, 365, 556, 834, 834, 834, 611,
+    667, 667, 667, 667, 667, 667, 1000, 722, 667, 667, 667, 667, 278, 278, 278, 278,
+    722, 722, 778, 778, 778, 778, 778, 584, 778, 722, 722, 722, 722, 667, 667, 611,
+    556, 556, 556, 556, 556, 556, 889, 500, 556, 556, 556, 556, 278, 278, 278, 278,
+    556, 556, 556, 556, 556, 556, 556, 584, 611, 556, 556, 556, 556, 500, 556, 500,
+)
+HELVETICA_BOLD_WIDTHS = (
+    278, 333, 474, 556, 556, 889, 722, 238, 333, 333, 389, 584, 278, 333, 278, 278,
+    556, 556, 556, 556, 556, 556, 556, 556, 556, 556, 333, 333, 584, 584, 584, 611,
+    975, 722, 722, 722, 722, 667, 611, 778, 722, 278, 556, 722, 611, 833, 722, 778,
+    667, 778, 722, 667, 611, 722, 667, 944, 667, 667, 611, 333, 278, 333, 584, 556,
+    333, 556, 611, 556, 611, 556, 333, 611, 611, 278, 278, 556, 278, 889, 611, 611,
+    611, 611, 389, 556, 333, 611, 556, 778, 556, 556, 500, 389, 280, 389, 584, 350,
+    556, 350, 278, 556, 500, 1000, 556, 556, 333, 1000, 667, 333, 1000, 350, 611, 350,
+    350, 278, 278, 500, 500, 350, 556, 1000, 333, 1000, 556, 333, 944, 350, 500, 667,
+    278, 333, 556, 556, 556, 556, 280, 556, 333, 737, 370, 556, 584, 333, 737, 333,
+    400, 584, 333, 333, 333, 611, 556, 278, 333, 333, 365, 556, 834, 834, 834, 611,
+    722, 722, 722, 722, 722, 722, 1000, 722, 667, 667, 667, 667, 278, 278, 278, 278,
+    722, 722, 778, 778, 778, 778, 778, 584, 778, 722, 722, 722, 722, 667, 667, 611,
+    556, 556, 556, 556, 556, 556, 889, 556, 556, 556, 556, 556, 278, 278, 278, 278,
+    611, 611, 611, 611, 611, 611, 611, 584, 611, 611, 611, 611, 611, 556, 611, 556,
+)
+
+
+def _list_item(lines: list[str], index: int) -> tuple[list[str], int]:
+    """Dedent a whole item, retaining its paragraphs, nested lists and code blocks."""
+    match = LIST_RE.match(lines[index])
+    assert match is not None
+    content_indent = match.start("body")
+    item = [match.group("body")]
+    index += 1
+    after_blank = False
+    while index < len(lines):
+        line = lines[index]
+        if not line.strip():
+            item.append("")
+            after_blank = True
+            index += 1
+            continue
+        indentation = len(line) - len(line.lstrip())
+        if indentation < content_indent:
+            # Markdown allows unindented soft continuations of the first paragraph,
+            # but a blank line or a new block ends that lazy continuation.
+            if after_blank or LIST_RE.match(line) or HEADING_RE.match(line) \
+                    or IMAGE_RE.match(line) or line.startswith(("```", "|", ">")):
+                break
+            item.append(line.strip())
+        else:
+            item.append(line[content_indent:])
+        after_blank = False
+        index += 1
+    return item, index
 
 
 def _plain_markdown(value: str) -> str:
@@ -36,7 +103,7 @@ def _plain_markdown(value: str) -> str:
     return value.strip()
 
 
-def _pdf_text(value: str) -> bytes:
+def _encoded_text(value: str) -> bytes:
     replacements = {
         "\u2010": "-",
         "\u2011": "-",
@@ -51,8 +118,20 @@ def _pdf_text(value: str) -> bytes:
     }
     for source, target in replacements.items():
         value = value.replace(source, target)
-    encoded = value.encode("cp1252", errors="replace")
+    return value.encode("cp1252", errors="replace")
+
+
+def _pdf_text(value: str) -> bytes:
+    encoded = _encoded_text(value)
     return encoded.replace(b"\\", b"\\\\").replace(b"(", b"\\(").replace(b")", b"\\)")
+
+
+def _text_width(text: str, *, font: str, size: float) -> float:
+    encoded = _encoded_text(text)
+    if font == "F4":
+        return len(encoded) * size * 0.60
+    widths = HELVETICA_BOLD_WIDTHS if font == "F2" else HELVETICA_WIDTHS
+    return sum(widths[code - 32] for code in encoded if code >= 32) * size / 1000
 
 
 @dataclass
@@ -80,6 +159,12 @@ class Page:
             f"q {width:.2f} 0 0 {height:.2f} {x:.2f} {y:.2f} cm /{name} Do Q\n".encode()
         )
 
+    def highlight(self, x: float, y: float, width: float, height: float) -> None:
+        """Draw an unfilled red vector rectangle without affecting other page content."""
+        self.commands.append(
+            f"q 1 0 0 RG 1.4 w {x:.2f} {y:.2f} {width:.2f} {height:.2f} re S Q\n".encode()
+        )
+
 
 @dataclass(frozen=True)
 class PdfImage:
@@ -98,6 +183,7 @@ class MarkdownRenderer:
         self._next_number = first_page
         self._page: Page | None = None
         self._y = 0.0
+        self._highlights = json.loads(HIGHLIGHTS.read_text(encoding="utf-8"))
 
     def _decorate(self, page: Page) -> None:
         page.text(48, page.height - 27, "ICODA / ILLUSTRATED HANDBOOK", font="F2", size=7.5)
@@ -123,15 +209,29 @@ class MarkdownRenderer:
 
     def _wrapped(self, text: str, *, size: float, indent: float = 0, font: str = "F1") -> list[str]:
         available = A4[0] - 104 - indent
-        average_width = size * (0.60 if font == "F4" else 0.50)
-        columns = max(18, int(available / average_width))
-        return textwrap.wrap(
-            text,
-            width=columns,
-            break_long_words=True,
-            break_on_hyphens=False,
-            replace_whitespace=False,
-        ) or [""]
+        lines: list[str] = []
+        line = ""
+        for chunk in re.findall(r"\s*\S+", text):
+            if line and _text_width(line + chunk, font=font, size=size) > available:
+                lines.append(line.rstrip())
+                line = chunk.lstrip()
+            else:
+                line += chunk
+            # Split only tokens too wide for an entire line (for example, a long path).
+            while _text_width(line, font=font, size=size) > available:
+                width = 0.0
+                cut = 0
+                for character in line:
+                    width += _text_width(character, font=font, size=size)
+                    if width > available:
+                        break
+                    cut += 1
+                cut = max(1, cut)
+                lines.append(line[:cut])
+                line = line[cut:]
+        if line:
+            lines.append(line.rstrip())
+        return lines or [""]
 
     def paragraph(
         self,
@@ -143,17 +243,22 @@ class MarkdownRenderer:
         indent: float = 0,
         before: float = 0,
         after: float = 6,
+        marker: str | None = None,
     ) -> None:
         text = _plain_markdown(text)
         lines = self._wrapped(text, size=size, indent=indent, font=font)
         page = self._ensure_space(before + leading * len(lines) + after)
         self._y -= before
+        if marker is not None:
+            marker_width = _text_width(marker, font=font, size=size)
+            page.text(52 + indent - 6 - marker_width, self._y, marker, font=font, size=size)
         for line in lines:
             page.text(52 + indent, self._y, line, font=font, size=size)
             self._y -= leading
         self._y -= after
 
-    def heading(self, level: int, title: str) -> None:
+    def heading(self, level: int, title: str, *, following: str = "",
+                following_code: list[str] | None = None) -> None:
         title = _plain_markdown(title)
         styles = {
             1: ("F2", 20.0, 25.0, 10.0, 11.0),
@@ -162,7 +267,15 @@ class MarkdownRenderer:
         }
         font, size, leading, before, after = styles[level]
         lines = self._wrapped(title, size=size, font=font)
-        page = self._ensure_space(before + leading * len(lines) + after + 12)
+        following_lines = self._wrapped(_plain_markdown(following), size=9.2) if following else []
+        keep_next = max(4 * 12.2, len(following_lines) * 12.2 + 6)
+        if following_code is not None:
+            listing_height = len(self._code_lines(following_code)) * 9.6 + 14
+            group_height = len(following_lines) * 12.2 + 6 + listing_height
+            heading_height = before + leading * len(lines) + after
+            if heading_height + group_height <= A4[1] - 103:
+                keep_next = max(keep_next, group_height)
+        page = self._ensure_space(before + leading * len(lines) + after + keep_next)
         if level <= 2:
             self.toc.append((level, title, page.number))
         self._y -= before
@@ -171,23 +284,31 @@ class MarkdownRenderer:
             self._y -= leading
         self._y -= after
 
-    def code(self, lines: list[str]) -> None:
-        page = self._ensure_space(15)
-        page.line(52, self._y + 5, A4[0] - 52, self._y + 5)
+    def _code_lines(self, lines: list[str], *, indent: float = 0) -> list[str]:
+        return [
+            line
+            for raw_line in lines or [""]
+            for line in self._wrapped(raw_line.expandtabs(4), size=7.4,
+                                      indent=indent + 8, font="F4")
+        ]
+
+    def code(self, lines: list[str], *, indent: float = 0) -> None:
+        wrapped = self._code_lines(lines, indent=indent)
+        height = len(wrapped) * 9.6 + 14
+        page = self._ensure_space(height if height <= A4[1] - 103 else 15)
+        page.line(52 + indent, self._y + 5, A4[0] - 52, self._y + 5)
         self._y -= 5
-        for raw_line in lines or [""]:
-            wrapped = self._wrapped(raw_line.expandtabs(4), size=7.4, indent=8, font="F4")
-            for line in wrapped:
-                page = self._ensure_space(10)
-                page.text(60, self._y, line, font="F4", size=7.4)
-                self._y -= 9.6
+        for line in wrapped:
+            page = self._ensure_space(10)
+            page.text(60 + indent, self._y, line, font="F4", size=7.4)
+            self._y -= 9.6
         page = self._ensure_space(9)
-        page.line(52, self._y + 3, A4[0] - 52, self._y + 3)
+        page.line(52 + indent, self._y + 3, A4[0] - 52, self._y + 3)
         self._y -= 7
 
-    def table_row(self, line: str) -> None:
+    def table_row(self, line: str, *, indent: float = 0) -> None:
         cells = [cell.strip() for cell in line.strip().strip("|").split("|")]
-        self.paragraph(" | ".join(cells), font="F4", size=7.2, leading=9.2, after=2)
+        self.paragraph(" | ".join(cells), font="F4", size=7.2, leading=9.2, after=2, indent=indent)
 
     def figure(self, source: Path, path_text: str, caption: str) -> None:
         from PIL import Image as PillowImage
@@ -218,7 +339,28 @@ class MarkdownRenderer:
         scale = min(max_width / image.width, max_height / image.height)
         width = image.width * scale
         height = image.height * scale
-        page.place_image(image.name, (page.width - width) / 2, 62, width, height)
+        x, y = (page.width - width) / 2, 62
+        page.place_image(image.name, x, y, width, height)
+        # Boxes use top-left coordinates in the manifest's reference image size.
+        # Keep screenshots untouched and scale the overlays with each placed image.
+        annotation = self._highlights[image.path.name]
+        reference_width, reference_height = annotation["size"]
+        if reference_width <= 0 or reference_height <= 0 or \
+                reference_width * image.height != reference_height * image.width:
+            raise ValueError(f"highlight reference size does not match {image.path}")
+        if not annotation["regions"]:
+            raise ValueError(f"screenshot has no highlight regions: {image.path}")
+        for region in annotation["regions"]:
+            left, top, right, bottom = region["box"]
+            if not (0 <= left < right <= reference_width and
+                    0 <= top < bottom <= reference_height):
+                raise ValueError(f"invalid highlight box for {image.path}: {region}")
+            page.highlight(
+                x + left / reference_width * width,
+                y + (reference_height - bottom) / reference_height * height,
+                (right - left) / reference_width * width,
+                (bottom - top) / reference_height * height,
+            )
         clean_caption = _plain_markdown(caption)
         caption_width = min(len(clean_caption) * 4.4, page.width - 80)
         page.text((page.width - caption_width) / 2, 45, clean_caption, font="F3", size=8.2)
@@ -228,13 +370,31 @@ class MarkdownRenderer:
     def document(self, source: Path) -> None:
         if self.pages:
             self.page_break()
-        lines = source.read_text(encoding="utf-8").splitlines()
+        lines = source.read_text(encoding="utf-8").expandtabs(4).splitlines()
+        self._blocks(lines, source)
+
+    def _blocks(self, lines: list[str], source: Path, *, indent: float = 0,
+                marker: str | None = None) -> None:
         index = 0
+        ordered_number: int | None = None
         while index < len(lines):
             line = lines[index]
             if not line.strip():
                 index += 1
                 continue
+            list_match = LIST_RE.match(line)
+            if list_match:
+                token = list_match.group("marker")
+                if token[0].isdigit():
+                    ordered_number = int(token[:-1]) if ordered_number is None else ordered_number + 1
+                    item_marker = f"{ordered_number}."
+                else:
+                    ordered_number = None
+                    item_marker = "\u2022"
+                item, index = _list_item(lines, index)
+                self._blocks(item, source, indent=indent + 24, marker=item_marker)
+                continue
+            ordered_number = None
             if line.startswith("```"):
                 index += 1
                 code_lines: list[str] = []
@@ -243,8 +403,15 @@ class MarkdownRenderer:
                     index += 1
                 if index == len(lines):
                     raise ValueError(f"unterminated Markdown code fence in {source}")
-                self.code(code_lines)
+                self.code(code_lines, indent=indent)
                 index += 1
+                continue
+            if line.startswith(">"):
+                quote = []
+                while index < len(lines) and lines[index].startswith(">"):
+                    quote.append(lines[index][1:].lstrip())
+                    index += 1
+                self.paragraph(" ".join(quote), indent=indent + 12, font="F3")
                 continue
             image_match = IMAGE_RE.match(line)
             if image_match:
@@ -253,19 +420,34 @@ class MarkdownRenderer:
                 continue
             heading_match = HEADING_RE.match(line)
             if heading_match:
-                self.heading(len(heading_match.group("marks")), heading_match.group("title"))
+                following_index = index + 1
+                while following_index < len(lines) and not lines[following_index].strip():
+                    following_index += 1
+                following = []
+                for candidate in lines[following_index:]:
+                    if not candidate.strip() or candidate.startswith(("```", "|", ">", "#")) \
+                            or LIST_RE.match(candidate) or IMAGE_RE.match(candidate):
+                        break
+                    following.append(candidate.strip())
+                code_index = following_index + len(following)
+                while code_index < len(lines) and not lines[code_index].strip():
+                    code_index += 1
+                following_code = None
+                if code_index < len(lines) and lines[code_index].startswith("```"):
+                    following_code = []
+                    for candidate in lines[code_index + 1:]:
+                        if candidate.startswith("```"):
+                            break
+                        following_code.append(candidate)
+                self.heading(len(heading_match.group("marks")), heading_match.group("title"),
+                             following=" ".join(following), following_code=following_code)
                 index += 1
                 continue
             if TABLE_RULE_RE.match(line):
                 index += 1
                 continue
             if line.lstrip().startswith("|"):
-                self.table_row(line)
-                index += 1
-                continue
-            if re.match(r"^\s*(?:[-*+] |\d+\. )", line):
-                marker, body = line.lstrip().split(" ", 1)
-                self.paragraph(f"{marker} {body}", indent=12, after=3)
+                self.table_row(line, indent=indent)
                 index += 1
                 continue
             paragraph = [line.strip()]
@@ -274,16 +456,18 @@ class MarkdownRenderer:
                 candidate = lines[index]
                 if (
                     not candidate.strip()
-                    or candidate.startswith("```")
+                    or candidate.startswith(("```", ">"))
                     or IMAGE_RE.match(candidate)
                     or HEADING_RE.match(candidate)
                     or candidate.lstrip().startswith("|")
-                    or re.match(r"^\s*(?:[-*+] |\d+\. )", candidate)
+                    or LIST_RE.match(candidate)
                 ):
                     break
                 paragraph.append(candidate.strip())
                 index += 1
-            self.paragraph(" ".join(paragraph))
+            self.paragraph(" ".join(paragraph), indent=indent, marker=marker,
+                           after=3 if marker is not None else 6)
+            marker = None
 
 
 def _title_page() -> Page:
@@ -291,7 +475,7 @@ def _title_page() -> Page:
     page.text(58, 650, "ICODA", font="F2", size=38)
     page.text(58, 605, "Illustrated Handbook", font="F2", size=27)
     page.line(58, 583, A4[0] - 58, 583)
-    page.text(58, 548, "Production guide, tutorials, and troubleshooting", size=13)
+    page.text(58, 548, "C++ reference, complete tutorial, and troubleshooting", size=13)
     page.text(58, 510, "ICODA 0.1.0", font="F2", size=11)
     page.text(58, 190, "Built offline from the accepted Markdown documentation", size=10)
     page.text(58, 170, "HANDBOOK.md / GETTING_STARTED.md / TUTORIAL.md / TROUBLESHOOTING.md", size=8)

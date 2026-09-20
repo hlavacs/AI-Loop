@@ -8,7 +8,7 @@ You decide what to build, approve implementation approaches, and review code bef
 derives its architecture views from the source code and verifies proposals in an isolated Git worktree.
 
 **Users** start with [Getting started](docs/GETTING_STARTED.md) (two pages: install, first project, first step),
-then the [Tutorial](docs/TUTORIAL.md) (one small program from specification to tested code) and
+then the [Tutorial](docs/TUTORIAL.md) (the complete C++ Score Clamp example) and
 [Troubleshooting](docs/TROUBLESHOOTING.md). The [Handbook](HANDBOOK.md) is the complete reference. Inside ICODA,
 the **Help** menu opens the same pages, and the sentence above the buttons in the lower panel says what to do next.
 
@@ -173,10 +173,10 @@ For users:
 | Guide | Contents |
 |---|---|
 | [Getting started](docs/GETTING_STARTED.md) | Install, the first project, the first step — two pages |
-| [Tutorial](docs/TUTORIAL.md) | One small program from specification to tested code, step by step |
+| [Tutorial](docs/TUTORIAL.md) | Complete C++ Score Clamp walkthrough, source, CTest tests, and expected output |
 | [Troubleshooting](docs/TROUBLESHOOTING.md) | The problems people meet, their fixes, and where the log is |
 | [Handbook](HANDBOOK.md) | Every view, control and file; the reference |
-| [Illustrated PDF handbook](output/pdf/ICODA-Handbook.pdf) | The four user guides with 32 screenshots in one searchable PDF |
+| [Illustrated PDF handbook](output/pdf/ICODA-Handbook.pdf) | The four user guides with annotated C++ screenshots in one searchable PDF |
 
 Build the PDF entirely offline from the current handbook, getting-started guide, tutorial, troubleshooting guide,
 and their committed screenshots. Run this command from `icoda/`:
@@ -184,6 +184,18 @@ and their committed screenshots. Run this command from `icoda/`:
 ```bash
 .icoda-venv/bin/python tools/build_handbook_pdf.py
 ```
+
+The complete C++ tutorial reference is in `docs/examples/score-clamp/`. To regenerate its screenshots with
+deterministic provider replies and real C++ build, CTest, and analysis gates, use a new empty project directory:
+
+```bash
+.icoda-venv/bin/python tools/capture_cpp_tutorial.py \
+  --project /tmp/icoda-score-clamp-capture --output /tmp/icoda-score-clamp-images
+```
+
+The capture tool does not call a provider service. Review its PNGs, copy the accepted images into
+`docs/images/handbook/`, and merge their reviewed rectangle coordinates into `tools/handbook_highlights.json`
+before rebuilding the PDF.
 
 For maintainers:
 

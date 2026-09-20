@@ -161,7 +161,7 @@ required quality refusal, not an advisory issue. `StepRunner._quality_refusal` c
 after the proposal is parsed, and approval calls `_quality_refusal` again so an altered or stale over-limit
 candidate cannot be promoted. Split the function into focused helpers, keep the original and every new function
 at 50 source lines or fewer, add tests for the same behaviour, and propose again. The worked procedure is
-[Worked example B](../HANDBOOK.md#worked-example-b-split-a-python-function-refused-by-the-50-line-gate).
+[Worked example B](../HANDBOOK.md#worked-example-b-split-a-c-function-refused-by-the-50-line-gate).
 
 ## Saving the specification is refused
 

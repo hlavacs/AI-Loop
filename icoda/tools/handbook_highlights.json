@@ -1,0 +1,247 @@
+{
+  "specification-overview.png": {
+    "size": [1120,680],
+    "regions": [
+      {"box": [35,42,1083,69], "focus": "Project title"},
+      {"box": [35,73,1083,115], "focus": "Project purpose and audience"}
+    ]
+  },
+  "specification-scope.png": {
+    "size": [1120,680],
+    "regions": [
+      {"box": [34,40,1083,104], "focus": "Goals"},
+      {"box": [34,194,1083,240], "focus": "Not in scope"},
+      {"box": [34,335,1083,384], "focus": "Not allowed"},
+      {"box": [34,476,1083,523], "focus": "Done when"}
+    ]
+  },
+  "specification-use-cases.png": {
+    "size": [1120,680],
+    "regions": [
+      {"box": [36,44,362,128], "focus": "Stable use-case IDs and alternate paths"},
+      {"box": [375,77,1078,145], "focus": "Selected use-case title and details"},
+      {"box": [36,580,270,608], "focus": "Add, New, and Remove controls"}
+    ]
+  },
+  "specification-requirements.png": {
+    "size": [1120,680],
+    "regions": [
+      {"box": [36,43,362,147], "focus": "Requirement IDs"},
+      {"box": [375,77,1078,169], "focus": "Title, priority, and use-case references"},
+      {"box": [375,173,1078,212], "focus": "Measurable requirement details"}
+    ]
+  },
+  "specification-decisions.png": {
+    "size": [1120,680],
+    "regions": [
+      {"box": [36,44,362,128], "focus": "Architecture decisions"},
+      {"box": [375,77,1078,146], "focus": "Selected decision and rationale"}
+    ]
+  },
+  "specification-code-profile.png": {
+    "size": [1120,680],
+    "regions": [
+      {"box": [35,42,1083,153], "focus": "Language, standard, modules, and platforms"},
+      {"box": [35,157,1083,251], "focus": "Test framework, runner, and files"},
+      {"box": [35,258,1083,383], "focus": "Source extensions and naming conventions"},
+      {"box": [35,390,1083,503], "focus": "Libraries, function limits, and style rules"}
+    ]
+  },
+  "diagram-filtered.png": {
+    "size": [1400,720],
+    "regions": [
+      {"box": [3,2,240,30], "focus": "Stub status filter"},
+      {"box": [445,171,778,270], "focus": "Matching stub and hierarchy"}
+    ]
+  },
+  "diagram-neighborhood-dimmed.png": {
+    "size": [1400,720],
+    "regions": [
+      {"box": [245,2,442,30], "focus": "One-hop neighborhood control"},
+      {"box": [84,156,778,333], "focus": "Bright selected neighborhood and dimmed distant nodes"}
+    ]
+  },
+  "cluster-pin-rename.png": {
+    "size": [1400,720],
+    "regions": [
+      {"box": [494,169,773,198], "focus": "Pinned cluster with its persistent renamed title"}
+    ]
+  },
+  "uncertain-dynamic-call.png": {
+    "size": [1400,720],
+    "regions": [
+      {"box": [28,96,323,128], "focus": "Root, depth, and caller controls"},
+      {"box": [358,205,453,280], "focus": "Solid call and uncertain dashed dynamic call"}
+    ]
+  },
+  "mind-map.png": {
+    "size": [1400,720],
+    "regions": [
+      {"box": [204,126,647,195], "focus": "Expanded cluster-to-file-to-function path with status, requirement, and step provenance"},
+      {"box": [204,198,389,332], "focus": "Expandable cluster nodes"}
+    ]
+  },
+  "requirements-coverage.png": {
+    "size": [1400,720],
+    "regions": [
+      {"box": [32,73,782,214], "focus": "Specification traceability with covered and uncovered requirements"},
+      {"box": [32,265,782,349], "focus": "Separate recorded test reachability section"}
+    ]
+  },
+  "rule-issues.png": {
+    "size": [1400,720],
+    "regions": [
+      {"box": [32,73,782,114], "focus": "Advisory issue totals and source-opening instruction"},
+      {"box": [32,121,782,257], "focus": "Severity, rule, remedy, and source location including missing test evidence"}
+    ]
+  },
+  "diagram-coverage-colours.png": {
+    "size": [1400,720],
+    "regions": [
+      {"box": [33,133,519,158], "focus": "Recorded reachability colour legend"},
+      {"box": [84,158,729,207], "focus": "Red unreached root and green reached node"},
+      {"box": [710,159,727,178], "focus": "Stale evidence warning marker"}
+    ]
+  },
+  "provider-selection.png": {
+    "size": [1368,741],
+    "regions": [
+      {"box": [793,23,1038,52], "focus": "Provider executable"},
+      {"box": [1044,23,1360,52], "focus": "Provider-specific model"},
+      {"box": [793,52,981,74], "focus": "Resolved provider identity"}
+    ]
+  },
+  "proposal-delta.png": {
+    "size": [1400,720],
+    "regions": [
+      {"box": [619,560,1368,655], "focus": "Delta tab listing added entities and affected file"}
+    ]
+  },
+  "structured-adaptation.png": {
+    "size": [1400,720],
+    "regions": [
+      {"box": [619,560,1368,655], "focus": "Editable structured entity summary"},
+      {"box": [620,482,714,510], "focus": "Adapt action using the edited summary"}
+    ]
+  },
+  "proposal-source-diff.png": {
+    "size": [1400,720],
+    "regions": [
+      {"box": [619,560,1368,655], "focus": "Source diff tab and exact candidate patch"}
+    ]
+  },
+  "signature-confirmation.png": {
+    "size": [1400,720],
+    "regions": [
+      {"box": [271,482,529,510], "focus": "Disabled Approve and required Confirm signatures action"},
+      {"box": [207,533,494,556], "focus": "Signature confirmation gate"},
+      {"box": [619,560,1368,655], "focus": "Previous and proposed declarations"}
+    ]
+  },
+  "implementation-queue-override.png": {
+    "size": [1400,720],
+    "regions": [
+      {"box": [2,424,308,449], "focus": "Overridden current target and remaining queue"},
+      {"box": [683,422,951,450], "focus": "Single-entity scope for the override"}
+    ]
+  },
+  "few-line-grouping.png": {
+    "size": [1400,720],
+    "regions": [
+      {"box": [2,424,366,449], "focus": "Exact two-member group and remaining queue"},
+      {"box": [952,422,1178,450], "focus": "Few-line group selection"},
+      {"box": [1267,391,1398,423], "focus": "Batch size bound"},
+      {"box": [619,560,1368,655], "focus": "Required recorded test evidence for each group member"}
+    ]
+  },
+  "implementation-approach.png": {
+    "size": [1400,720],
+    "regions": [
+      {"box": [2,424,301,449], "focus": "Current implementation target"},
+      {"box": [158,451,315,481], "focus": "Approve approach action"},
+      {"box": [619,560,1368,672], "focus": "Prose approach and expected entities awaiting approval"}
+    ]
+  },
+  "auto-approve.png": {
+    "size": [1400,720],
+    "regions": [
+      {"box": [1186,422,1398,450], "focus": "Enabled automatic approval option"},
+      {"box": [2,511,710,534], "focus": "Reason automatic approval has stopped"}
+    ]
+  },
+  "proposal-targeted-tests.png": {
+    "size": [1400,720],
+    "regions": [
+      {"box": [2,512,510,556], "focus": "Passed build and failed test gate"},
+      {"box": [271,482,368,510], "focus": "Approval disabled by the failed gate"},
+      {"box": [619,560,1368,655], "focus": "Exact targeted test selection"}
+    ]
+  },
+  "libclang-chooser.png": {
+    "size": [900,540],
+    "regions": [
+      {"box": [13,48,477,151], "focus": "Automatic detection and discovered library choices"},
+      {"box": [13,160,650,211], "focus": "Active saved library versus currently loaded library"},
+      {"box": [719,222,799,250], "focus": "Apply selected library"}
+    ]
+  },
+  "cpp-architecture-proposal.png": {
+    "size": [1360,752],
+    "regions": [
+      {"box": [555,544,1340,664], "focus": "ScoreClamp type, method, and architecture entity budget"},
+      {"box": [2,517,200,541], "focus": "Passing build and test gates"}
+    ]
+  },
+  "cpp-architecture-rejected.png": {
+    "size": [1360,752],
+    "regions": [
+      {"box": [2,580,520,617], "focus": "Recorded rejection reason"},
+      {"box": [555,544,1340,636], "focus": "Architecture phase and rejected decision in retained history"}
+    ]
+  },
+  "cpp-architecture-gate.png": {
+    "size": [1360,752],
+    "regions": [
+      {"box": [1,386,155,413], "focus": "Implementation phase after explicit architecture approval"},
+      {"box": [1,416,375,441], "focus": "Current C++ callable and remaining queue"},
+      {"box": [3,464,160,498], "focus": "Begin the first implementation approach"}
+    ]
+  },
+  "cpp-implementation-approach.png": {
+    "size": [1360,752],
+    "regions": [
+      {"box": [1,416,375,441], "focus": "Current clamp implementation target"},
+      {"box": [158,464,316,498], "focus": "Approve the prose approach"},
+      {"box": [555,544,1340,706], "focus": "Plan, expected entities, and files"}
+    ]
+  },
+  "cpp-implementation-tests.png": {
+    "size": [1360,752],
+    "regions": [
+      {"box": [2,517,200,541], "focus": "Passing C++ implementation build and test gates"},
+      {"box": [555,544,1340,622], "focus": "Changed clamp method and C++ test file"},
+      {"box": [409,464,507,498], "focus": "Approve the implementation"}
+    ]
+  },
+  "cpp-file-view.png": {
+    "size": [1360,752],
+    "regions": [
+      {"box": [449,174,738,418], "focus": "Expandable C++ module, entry point, tests, class, and functions"}
+    ]
+  },
+  "cpp-class-view.png": {
+    "size": [1360,752],
+    "regions": [
+      {"box": [303,69,399,94], "focus": "Class View tab"},
+      {"box": [166,252,610,373], "focus": "ScoreClamp type and implemented static method signature"}
+    ]
+  },
+  "cpp-terminal-overview.png": {
+    "size": [1360,752],
+    "regions": [
+      {"box": [2,560,390,584], "focus": "Empty C++ implementation queue"},
+      {"box": [30,102,744,286], "focus": "Goal and requirements linked to C++ code"},
+      {"box": [30,300,744,445], "focus": "Separate recorded test reachability without reaching identifiers"}
+    ]
+  }
+}

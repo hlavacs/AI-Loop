@@ -67,7 +67,7 @@ must already be logged in — ICODA never asks for keys or passwords.
 - **Use cases**: things a user does with the program, one per entry. Fill in the fields and press **Add**.
 - **Requirements**: testable statements. Give each a priority and the use cases it belongs to.
 - **Decisions**: choices that are already made, so that the agent does not reopen them.
-- **Code profile**: the language (C++ or Python), the standard, the test framework, and the size limits.
+- **Code profile**: use C++23 with C++20 modules for the handbook examples; choose the test framework and size limits.
 
 Every field has a tooltip with an example: rest the pointer on its label. A small first project needs one use
 case, three requirements and no decisions. Press **Save** (Ctrl+S / ⌘S). ICODA writes the project skeleton and
@@ -137,6 +137,6 @@ log and the proposal worktree. The rest is ordinary Git history.
 
 ## Where to go next
 
-- **Tutorial** (`docs/TUTORIAL.md`): one small program from specification to implemented code, step by step.
+- **Tutorial** (`docs/TUTORIAL.md`): the complete C++ Score Clamp example, from specification through reviewed implementation, CTest, and a running executable.
 - **Handbook** (`HANDBOOK.md`): every view, control and file, plus the maintainer material.
 - **Troubleshooting** (`docs/TROUBLESHOOTING.md`): the problems people actually meet, and their fixes.
