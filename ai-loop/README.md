@@ -17,7 +17,7 @@ AI-Loop is useful for work that is too large for one prompt:
 
 AI-Loop works best when the goal is clear and the result can be checked with a command. Product decisions, credentials, destructive operations, and unclear requirements still need human attention.
 
-The Specification editor uses ICODA's authoring fields: Overview, Scope, Use Cases, Requirements, Decisions, and Code profile. See the [specification field guide](docs/SPECIFICATION_FIELDS.md) for their meanings, JSON import, and compatibility with older drafts. AI-Loop retains its verification and approval workflow for autonomous jobs.
+The Specification editor matches ICODA's six authoring tabs and entry workflow, including direct forms with Add, New and Remove for use cases, requirements and decisions. See the [specification field guide](docs/SPECIFICATION_FIELDS.md) for editing, validation, rereading, JSON import and compatibility with older drafts. AI-Loop's verification and approval controls are grouped separately under **Execution & review**.
 
 ## Why keep the job state?
 

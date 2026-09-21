@@ -698,10 +698,8 @@ def test_editor_can_embed_in_specification_tab_with_json_controls(
         assert all(
             str(widget.cget("yscrollcommand"))
             for widget in (
-                editor.summary_text,
                 editor.objectives_text,
                 editor.stakeholders_text,
-                *editor.scope_widgets.values(),
                 editor.open_questions_text,
             )
         )
@@ -714,46 +712,24 @@ def test_editor_can_embed_in_specification_tab_with_json_controls(
 
 
 @pytest.mark.skipif(not os.environ.get("DISPLAY"), reason="requires a Tk display")
-def test_editor_field_help_includes_current_feedback(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    try:
-        import tkinter as tk
-    except ImportError:
-        pytest.skip("Tk is not installed")
-    try:
-        root = tk.Tk()
-    except tk.TclError:
-        pytest.skip("Tk cannot connect to a display")
+def test_editor_authoring_fields_have_icoda_hover_help(tmp_path: Path) -> None:
+    import tkinter as tk
+    root = tk.Tk()
     root.withdraw()
-
-    shown: list[str] = []
-    import ai_loop.specification_gui as specification_gui
-
-    monkeypatch.setattr(
-        specification_gui.messagebox,
-        "showinfo",
-        lambda _title, text, **_kwargs: shown.append(text),
-    )
-
     try:
         editor = open_specification_editor(
-            root,
-            service=SpecificationService(tmp_path / "loop.sqlite3", tmp_path / "artifacts"),
-            repository_path=tmp_path,
+            root, service=SpecificationService(tmp_path / "loop.sqlite3", tmp_path / "artifacts"),
+            repository_path=tmp_path, run_background=lambda work, done, **kw: done(work(), None),
         )
-        editor.help_buttons["title"].invoke()
-        assert "Empty" in shown[-1]
-
-        editor.title_var.set("TBD")
-        editor._finish_scheduled_assessment()
-        editor.help_buttons["title"].invoke()
-        assert "replace placeholder" in shown[-1]
-
-        editor.title_var.set("Appointment reminder delivery")
-        editor._finish_scheduled_assessment()
-        editor.help_buttons["title"].invoke()
-        assert "Looks good" in shown[-1]
+        for form in (editor.overview, editor.scope, editor.profile, *(page.form for page in editor.records.values())):
+            for field in form.fields:
+                assert form.widgets[field.key]._specification_hint == field.hint
+                assert form.labels[field.key]._specification_hint == field.hint
+                assert form.widgets[field.key].bind("<Enter>")
+        assert "title" not in editor.help_buttons
+        assert editor.save_button.cget("text") == "Save"
+        assert editor.validate_button.cget("text") == "Validate"
+        assert editor.reread_button.cget("text") == "Reread specification"
         editor.window.destroy()
     finally:
         root.destroy()
@@ -805,41 +781,10 @@ def test_editor_renders_on_demand_help_and_load_example_control(
         assert editor.process_help_button.cget("text") == "How this works"
         editor.process_help_button.invoke()
         assert shown[-1][1] == PROCESS_OVERVIEW_TEXT
-        assert {
-            "title",
-            "summary",
-            "objectives",
-            "stakeholders",
-            "in_scope",
-            "out_of_scope",
-            "assumptions",
-            "constraints",
-            "dependencies",
-            "use_cases",
-            "requirements",
-            "risks",
-            "verification",
-            "decisions",
-            "open_questions",
-        } <= set(editor.help_buttons)
-        assert all(
-            label.cget("text") == SPECIFICATION_FIELD_LABELS[key]
-            for key, label in editor.field_labels.items()
-        )
-        assert all(
-            button.cget("text") == "?"
-            for button in editor.help_buttons.values()
-        )
-        assert all(
-            widget.winfo_manager() == ""
-            for widgets in editor.additional_field_widgets.values()
-            for widget in widgets
-        )
-        editor.additional_fields_buttons["Overview"].invoke()
-        assert all(
-            widget.winfo_manager() == "grid"
-            for widget in editor.additional_field_widgets["Overview"]
-        )
+        assert {"objectives", "stakeholders", "in_scope", "assumptions", "constraints", "dependencies", "risks", "verification", "open_questions"} <= set(editor.help_buttons)
+        assert not editor.additional_fields_buttons
+        assert len(editor.notebook.tabs()) == 6
+        assert len(editor.execution_notebook.tabs()) == 5
 
         load_buttons = [
             widget
@@ -1084,11 +1029,9 @@ def test_staged_editor_smoke_uses_initial_goal_and_all_tabs(tmp_path: Path) -> N
         )
         assert editor.summary_text.get("1.0", "end-1c") == "Exact optional goal text"
         assert tuple(editor.tabs) == EDITOR_STAGES
-        labels = [
-            editor.notebook.tab(editor.tabs[stage], "text").lstrip("! ")
-            for stage in EDITOR_STAGES
-        ]
-        assert labels == list(EDITOR_STAGES)
+        labels = [editor.notebook.tab(tab, "text") for tab in editor.notebook.tabs()]
+        assert labels == ["Overview", "Scope", "Use cases", "Requirements", "Decisions", "Code profile"]
+        assert [editor.execution_notebook.tab(editor.tabs[stage], "text").lstrip("! ") for stage in EDITOR_STAGES[6:]] == list(EDITOR_STAGES[6:])
         assert "Approve the specification" in editor.deferred_var.get()
         assert str(editor.start_button.cget("state")) == "disabled"
 

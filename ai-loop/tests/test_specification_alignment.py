@@ -272,13 +272,11 @@ def test_profile_editor_switch_save_load_and_requirement_links(tmp_path: Path) -
         editor._load_record_into_widgets()
         assert editor._collect_record() == editor.record
         editor.profile_vars["language"].set("Python")
-        editor._change_profile_language()
-        assert editor._collect_record()["code_profile"] == default_code_profile(
-            "Python"
-        )
+        # Like ICODA, selecting a language preserves the other entered settings.
+        expected_profile = {**default_code_profile(), "language": "Python"}
+        assert editor._collect_record()["code_profile"] == expected_profile
         editor.profile_vars["max_methods"].set("22")
         editor.profile_vars["language"].set("C++")
-        editor._change_profile_language()
         assert editor._collect_record()["code_profile"]["max_methods"] == 22
         editor.profile_vars["max_methods"].set("invalid")
         editor._refresh_assessment()

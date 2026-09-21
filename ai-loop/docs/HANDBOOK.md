@@ -1,6 +1,6 @@
 # AI-Loop Specification Handbook
 
-The current editor uses ICODA's six authoring sections. See the [current specification field guide](SPECIFICATION_FIELDS.md) for the fields, code profiles and JSON import. The screenshots and detailed authoring examples below describe the earlier version 1.0 layout; its extended fields remain available under More fields. The verification and approval workflow still applies.
+The current editor matches ICODA's six authoring tabs and direct-entry workflow. See the [current specification field guide](SPECIFICATION_FIELDS.md) for the controls, fields, code profiles and JSON import. The screenshots and detailed authoring examples below describe the earlier version 1.0 layout; its extended fields remain available under **Execution & review → Legacy fields**. The verification and approval workflow still applies in the separate **Execution & review** area.
 
 AI-Loop turns an agreed specification into planned, implemented, and verified work. This guide covers the
 Specification screen from the first blank draft through `Start Implementation`.

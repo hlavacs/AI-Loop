@@ -9,6 +9,7 @@ in :mod:`ai_loop.specifications` and :mod:`ai_loop.specification_workflow`.
 from __future__ import annotations
 
 import copy
+import sys
 import threading
 from pathlib import Path
 from typing import Any, Callable, Mapping, Sequence
@@ -22,7 +23,11 @@ except (ImportError, RuntimeError):  # pragma: no cover - platform dependent
     filedialog = None  # type: ignore[assignment]
     messagebox = None  # type: ignore[assignment]
 
-from ai_loop.specification_fields import CODE_PROFILE_SCHEMA, default_code_profile, editor_record
+from ai_loop.specification_fields import editor_record, expand_aligned_record
+from ai_loop.specification_authoring import (
+    FieldSet, RecordListPage, OVERVIEW_FIELDS, SCOPE_FIELDS, RECORD_FIELDS,
+    PROFILE_FIELDS, HIDDEN_PROFILE_KEYS, SAVE_HINT, attach_hint,
+)
 from ai_loop.elicitation import (
     CompletedElicitation,
     ElicitationEngine,
@@ -35,6 +40,7 @@ from ai_loop.specification_workflow import (
     WorkflowIssue,
     approve,
     assess_specification,
+    owning_stage_for_path,
     create_draft,
     return_to_draft,
     save_draft,
@@ -42,6 +48,8 @@ from ai_loop.specification_workflow import (
 )
 from ai_loop.specifications import (
     SpecificationDocument,
+    SpecificationValidationError,
+    structural_issues,
     SpecificationService,
     StoredSpecificationVersion,
 )
@@ -1197,6 +1205,8 @@ class SpecificationEditor:
             SpecificationDocument.empty(summary=initial_goal if initial_goal else "")
         )
         self._busy = False
+        self._assessment_after_id: str | None = None
+        self._source_file: Path | None = None
         self._implementation_job_id: str | None = None
         self._implementation_start_in_flight = False
         self._selector_rows: dict[str, dict[str, Any]] = {}
@@ -1220,21 +1230,21 @@ class SpecificationEditor:
         self._build_tabs()
         self._build_actions()
         self._load_record_into_widgets()
-        self._assessment_after_id: str | None = None
         self.window.bind("<KeyRelease>", self._schedule_assessment, add="+")
-        self.title_var.trace_add("write", self._schedule_assessment)
-        for widget in (
-            self.summary_text,
-            self.objectives_text,
-            self.stakeholders_text,
-            *self.scope_widgets.values(),
-            self.open_questions_text,
-            *self.profile_texts.values(),
-        ):
+        for form in (self.overview, self.scope, self.profile, *(page.form for page in self.records.values())):
+            for variable in form.vars.values():
+                variables = variable.values() if isinstance(variable, dict) else (variable,)
+                for item in variables:
+                    item.trace_add("write", self._schedule_assessment)
+            for widget in form.texts.values():
+                widget.edit_modified(False)
+                widget.bind("<<Modified>>", self._on_text_modified, add="+")
+        for widget in (*self.legacy_widgets.values(), self.open_questions_text):
             widget.edit_modified(False)
             widget.bind("<<Modified>>", self._on_text_modified, add="+")
-        for variable in self.profile_vars.values():
-            variable.trace_add("write", self._schedule_assessment)
+        modifier = "Command" if sys.platform == "darwin" else "Control"
+        self.window.bind(f"<{modifier}-s>", lambda _event: self.save_draft())
+        self.window.bind(f"<{modifier}-w>", lambda _event: self.close())
         self._refresh_assessment()
         self.refresh_specifications()
 
@@ -1309,30 +1319,66 @@ class SpecificationEditor:
         )
 
     def _build_tabs(self) -> None:
-        self.notebook = ttk.Notebook(self.window)
-        self.notebook.grid(row=1, column=0, sticky="nsew", padx=10)
+        self.views = ttk.Notebook(self.window)
+        self.views.grid(row=1, column=0, sticky="nsew", padx=6, pady=6)
+        self.authoring_view = ttk.Frame(self.views)
+        self.execution_view = ttk.Frame(self.views)
+        for view in (self.authoring_view, self.execution_view):
+            view.columnconfigure(0, weight=1)
+            view.rowconfigure(0, weight=1)
+        self.views.add(self.authoring_view, text="Specification")
+        self.views.add(self.execution_view, text="Execution & review")
+        self.notebook = ttk.Notebook(self.authoring_view)
+        self.notebook.grid(row=0, column=0, sticky="nsew")
+        self.execution_notebook = ttk.Notebook(self.execution_view)
+        self.execution_notebook.grid(row=0, column=0, sticky="nsew")
         self.tabs: dict[str, Any] = {}
         self._stage_scroll_canvases: dict[str, Any] = {}
         for stage in EDITOR_STAGES:
-            frame = ttk.Frame(self.notebook, padding=10)
+            book = self.notebook if stage in EDITOR_STAGES[:6] else self.execution_notebook
+            frame = ttk.Frame(book, padding=6)
             frame.columnconfigure(0, weight=1)
             frame.rowconfigure(0, weight=1)
-            self.notebook.add(frame, text=f"  {stage}")
+            book.add(frame, text="Use cases" if stage == "Use Cases" else stage)
             self.tabs[stage] = frame
-        self._build_overview_tab()
-        self._build_scope_tab()
-        self._build_collection_tab("Use Cases", "use_cases", USE_CASE_FIELDS, ("id", "title"))
-        self._build_collection_tab(
-            "Requirements", "requirements", REQUIREMENT_FIELDS, ("id", "priority", "title")
-        )
+        self.overview = FieldSet(self._scrollable_stage_body("Overview"), OVERVIEW_FIELDS)
+        self.scope = FieldSet(self._scrollable_stage_body("Scope"), SCOPE_FIELDS)
+        self.records: dict[str, RecordListPage] = {}
+        for stage, section in (("Use Cases", "use_cases"), ("Requirements", "requirements"), ("Decisions", "decisions")):
+            self.records[section] = RecordListPage(self.tabs[stage], section, RECORD_FIELDS[section], self._schedule_assessment)
+        self.profile = FieldSet(self._scrollable_stage_body("Code profile"), PROFILE_FIELDS)
+        self.title_var = self.overview.vars["title"]
+        self.title_entry = self.overview.widgets["title"]
+        self.summary_text = self.overview.texts["summary"]
+        self.scope_widgets = self.scope.texts
+        self.profile_vars = self.profile.vars
+        self.profile_texts = self.profile.texts
         self._build_collection_tab("Risks", "risks", RISK_FIELDS, ("id", "severity", "title"))
-        self._build_collection_tab(
-            "Verification", "verification", VERIFICATION_FIELDS, ("id", "automation", "title")
-        )
-        self._build_collection_tab("Decisions", "decisions", DECISION_FIELDS, ("id", "title"))
-        self._build_code_profile_tab()
+        self._build_collection_tab("Verification", "verification", VERIFICATION_FIELDS, ("id", "automation", "title"))
         self._build_choices_tab()
         self._build_review_tab()
+        self._build_legacy_tab()
+
+    def _build_legacy_tab(self) -> None:
+        tab = ttk.Frame(self.execution_notebook, padding=10)
+        tab.columnconfigure(1, weight=1)
+        self.execution_notebook.add(tab, text="Legacy fields")
+        self.legacy_widgets = {
+            key: self._labeled_text(tab, row, key, height=3)
+            for row, key in enumerate(("objectives", "stakeholders", "in_scope", "assumptions", "constraints", "dependencies"))
+        }
+        self.objectives_text = self.legacy_widgets["objectives"]
+        self.stakeholders_text = self.legacy_widgets["stakeholders"]
+        actions = ttk.Frame(tab)
+        actions.grid(row=6, column=0, columnspan=2, sticky="ew")
+        for section, fields in (("use_cases", USE_CASE_FIELDS), ("requirements", REQUIREMENT_FIELDS), ("decisions", DECISION_FIELDS)):
+            ttk.Button(actions, text=f"Edit {section.replace('_', ' ')} details",
+                       command=lambda key=section, group=fields: self._edit_selected_collection(key, group)).pack(side="left", padx=3)
+
+    def _show_stage(self, stage: str) -> None:
+        book = self.notebook if stage in EDITOR_STAGES[:6] else self.execution_notebook
+        self.views.select(self.authoring_view if book is self.notebook else self.execution_view)
+        book.select(self.tabs[stage])
 
     @staticmethod
     def _responsive_wraplength(
@@ -1436,138 +1482,6 @@ class SpecificationEditor:
         self._field_row_widgets[key].append(holder)
         parent.rowconfigure(row, weight=1)
         return widget
-
-    def _hide_additional_stage_fields(self, parent: Any, stage: str, row: int) -> None:
-        widgets = [
-            widget
-            for key in ADDITIONAL_STAGE_FIELD_KEYS[stage]
-            for widget in self._field_row_widgets[key]
-        ]
-        rows = [
-            (parent, int(self._field_row_widgets[key][0].grid_info()["row"]))
-            for key in ADDITIONAL_STAGE_FIELD_KEYS[stage]
-        ]
-        for widget in widgets:
-            widget.grid_remove()
-        for container, row_number in rows:
-            container.rowconfigure(row_number, weight=0)
-        self.additional_field_widgets[stage] = widgets
-        self.additional_field_rows[stage] = rows
-        button = ttk.Button(
-            parent,
-            text=f"More fields ({len(ADDITIONAL_STAGE_FIELD_KEYS[stage])})",
-            command=lambda: self._toggle_stage_fields(stage),
-        )
-        button.grid(row=row, column=0, columnspan=2, sticky="w", pady=(7, 0))
-        self.additional_fields_buttons[stage] = button
-
-    def _toggle_stage_fields(self, stage: str) -> None:
-        button = self.additional_fields_buttons[stage]
-        showing = button.cget("text").startswith("Fewer")
-        for widget in self.additional_field_widgets[stage]:
-            if showing:
-                widget.grid_remove()
-            else:
-                widget.grid()
-        for container, row_number in self.additional_field_rows[stage]:
-            container.rowconfigure(row_number, weight=0 if showing else 1)
-        button.configure(
-            text=(
-                f"More fields ({len(ADDITIONAL_STAGE_FIELD_KEYS[stage])})"
-                if showing
-                else "Fewer fields"
-            )
-        )
-
-    def _build_overview_tab(self) -> None:
-        tab = self._scrollable_stage_body("Overview")
-        tab.columnconfigure(1, weight=1)
-        self._field_label(tab, 0, "title")
-        self.title_var = tk.StringVar()
-        self.title_entry = ttk.Entry(tab, textvariable=self.title_var)
-        self.title_entry.grid(row=0, column=1, sticky="ew", pady=4)
-        self._field_row_widgets["title"].append(self.title_entry)
-        self.summary_text = self._labeled_text(tab, 1, "summary", height=7)
-        self.objectives_text = self._labeled_text(tab, 2, "objectives")
-        self.stakeholders_text = self._labeled_text(tab, 3, "stakeholders")
-        self._hide_additional_stage_fields(tab, "Overview", 4)
-
-    def _build_scope_tab(self) -> None:
-        tab = self._scrollable_stage_body("Scope")
-        tab.columnconfigure(1, weight=1)
-        self.scope_widgets: dict[str, Any] = {}
-        for row, key in enumerate(
-            ("goals", "out_of_scope", "not_allowed", "done_when", "in_scope", "assumptions", "constraints", "dependencies")
-        ):
-            self.scope_widgets[key] = self._labeled_text(tab, row, key)
-        self._hide_additional_stage_fields(tab, "Scope", 8)
-
-    def _build_code_profile_tab(self) -> None:
-        tab = self._scrollable_stage_body("Code profile")
-        tab.columnconfigure(1, weight=1)
-        self.profile_vars: dict[str, Any] = {}
-        self.profile_texts: dict[str, Any] = {}
-        for row, (key, rule) in enumerate(CODE_PROFILE_SCHEMA["properties"].items()):
-            path = f"code_profile.{key}"
-            if rule.get("type") == "array":
-                self.profile_texts[key] = self._labeled_text(tab, row, path, height=3)
-                continue
-            self._field_label(tab, row, path)
-            variable = tk.BooleanVar() if rule.get("type") == "boolean" else tk.StringVar()
-            self.profile_vars[key] = variable
-            widget: Any
-            if "enum" in rule:
-                widget = ttk.Combobox(tab, textvariable=variable, values=rule["enum"], state="readonly")
-                widget.bind("<<ComboboxSelected>>", self._change_profile_language)
-            elif rule.get("type") == "boolean":
-                widget = ttk.Checkbutton(tab, variable=variable)
-            else:
-                widget = ttk.Entry(tab, textvariable=variable)
-            widget.grid(row=row, column=1, sticky="ew", pady=4)
-            self._field_row_widgets[path].append(widget)
-
-    def _load_code_profile(self, profile: Mapping[str, Any]) -> None:
-        self._loaded_profile = copy.deepcopy(dict(profile))
-        self._profile_language = str(profile.get("language", ""))
-        for key, variable in self.profile_vars.items():
-            value = profile.get(key, False if key == "modules" else "")
-            variable.set(value)
-        for key, widget in self.profile_texts.items():
-            self._set_text(widget, format_list_text(profile.get(key, [])))
-
-    def _collect_code_profile(self) -> dict[str, Any]:
-        profile = copy.deepcopy(self._loaded_profile)
-        for key, rule in CODE_PROFILE_SCHEMA["properties"].items():
-            value: Any
-            if key in self.profile_texts:
-                value = list(parse_list_text(self.profile_texts[key].get("1.0", "end-1c")))
-            else:
-                value = self.profile_vars[key].get()
-                if rule.get("type") == "integer" and value != "":
-                    try:
-                        value = int(value)
-                    except ValueError:
-                        pass  # Preserve invalid input so Review can identify its field.
-            if key in profile or value not in ("", [], False) or key in ("language", "standard"):
-                profile[key] = value
-        return profile
-
-    def _change_profile_language(self, _event: Any = None) -> None:
-        profile = self._collect_code_profile()
-        language = profile["language"]
-        old_defaults = default_code_profile(self._profile_language) if self._profile_language in ("C++", "Python") else {}
-        new_defaults = default_code_profile(language)
-        for key in CODE_PROFILE_SCHEMA["properties"]:
-            if key == "language":
-                continue
-            if (key not in profile or profile[key] == old_defaults.get(key)
-                    or (not old_defaults and profile[key] in ("", [], False))):
-                if key in new_defaults:
-                    profile[key] = new_defaults[key]
-                else:
-                    profile.pop(key, None)
-        self._load_code_profile(profile)
-        self._schedule_assessment()
 
     def _build_collection_tab(
         self,
@@ -1709,24 +1623,32 @@ class SpecificationEditor:
         scrollbar.grid(row=1, column=1, sticky="ns")
 
     def _build_actions(self) -> None:
-        footer = ttk.Frame(self.window, padding=10)
-        footer.grid(row=2, column=0, sticky="ew")
+        bar = ttk.Frame(self.window)
+        bar.grid(row=2, column=0, sticky="ew", padx=6, pady=(0, 6))
+        self.problems = tk.StringVar(value="")
+        self.reread_button = ttk.Button(bar, text="Reread specification", command=self.reread_specification)
+        self.reread_button.pack(side="left", padx=(0, 6))
+        attach_hint(self.reread_button, "Reread the saved specification after external edits. You will be asked before discarding unsaved changes.")
+        self.close_button = ttk.Button(bar, text="Close", command=self.close)
+        if not self._embedded:
+            self.close_button.pack(side="right", padx=(4, 0))
+        self.save_button = ttk.Button(bar, text="Save", command=self.save_draft)
+        self.save_button.pack(side="right", padx=(4, 0))
+        self.validate_button = ttk.Button(bar, text="Validate", command=self.validate)
+        self.validate_button.pack(side="right", padx=(4, 0))
+        attach_hint(self.close_button, "Close the editor; unsaved changes are asked about.")
+        attach_hint(self.save_button, SAVE_HINT)
+        attach_hint(self.validate_button, "Check the specification without saving.")
+        ttk.Label(bar, textvariable=self.problems, foreground="#c00000", anchor="w", wraplength=420).pack(side="left", fill="x", expand=True)
+        footer = ttk.Frame(self.execution_view, padding=10)
+        footer.grid(row=1, column=0, sticky="ew")
         footer.columnconfigure(0, weight=1)
-        self.deferred_var = tk.StringVar(
-            value="Approve the specification to enable implementation."
-        )
-        deferred_label = ttk.Label(
-            footer,
-            textvariable=self.deferred_var,
-            justify="left",
-        )
+        self.deferred_var = tk.StringVar(value="Approve the specification to enable implementation.")
+        deferred_label = ttk.Label(footer, textvariable=self.deferred_var, justify="left")
         deferred_label.grid(row=0, column=0, sticky="ew", pady=(0, 6))
         self._bind_responsive_wrap(deferred_label, footer, margin=20)
         actions = ttk.Frame(footer)
         actions.grid(row=1, column=0, sticky="e")
-        self.close_button = ttk.Button(actions, text="Close", command=self.close)
-        if not self._embedded:
-            self.close_button.pack(side="right")
         self.start_button = ttk.Button(
             actions,
             text="Start Implementation",
@@ -1746,8 +1668,6 @@ class SpecificationEditor:
         self.submit_button.pack(side="right", padx=(0, 6))
         self.analyze_button = ttk.Button(actions, text="Analyze", command=self.analyze)
         self.analyze_button.pack(side="right", padx=(0, 6))
-        self.save_button = ttk.Button(actions, text="Save Draft", command=self.save_draft)
-        self.save_button.pack(side="right", padx=(0, 6))
         self.action_buttons = (
             self.save_button,
             self.submit_button,
@@ -1769,29 +1689,35 @@ class SpecificationEditor:
 
     def _load_record_into_widgets(self) -> None:
         self.record = editor_record(self.record)
-        self._load_code_profile(self.record["code_profile"])
-        self.title_var.set(self.record["title"])
-        self._set_text(self.summary_text, self.record["summary"])
-        self._set_text(self.objectives_text, format_list_text(self.record["objectives"]))
-        self._set_text(self.stakeholders_text, format_list_text(self.record["stakeholders"]))
-        for key, widget in self.scope_widgets.items():
+        self.overview.set(self.record)
+        self.scope.set(self.record)
+        for section, page in self.records.items():
+            page.load(self.record[section])
+        profile = self.record["code_profile"]
+        self.profile.set(profile)
+        self.hidden_profile = {key: copy.deepcopy(profile[key]) for key in HIDDEN_PROFILE_KEYS if key in profile}
+        for key, widget in self.legacy_widgets.items():
             self._set_text(widget, format_list_text(self.record[key]))
         self._set_text(self.open_questions_text, format_list_text(self.record["open_questions"]))
         self._refresh_collection_trees()
+        self._loaded_record = self._collect_record()
+        self.problems.set("")
 
     def _collect_record(self) -> dict[str, Any]:
         result = copy.deepcopy(self.record)
-        result["code_profile"] = self._collect_code_profile()
-        result["title"] = self.title_var.get()
-        result["summary"] = self.summary_text.get("1.0", "end-1c")
-        result["objectives"] = list(parse_list_text(self.objectives_text.get("1.0", "end-1c")))
-        result["stakeholders"] = list(parse_list_text(self.stakeholders_text.get("1.0", "end-1c")))
-        for key, widget in self.scope_widgets.items():
+        result.update({"title": "", "summary": "", **self.overview.get()})
+        result.update({field.key: [] for field in SCOPE_FIELDS})
+        result.update(self.scope.get())
+        result["code_profile"] = {**self.hidden_profile, **self.profile.get()}
+        for section, page in self.records.items():
+            result[section] = page.values()
+        for key, widget in self.legacy_widgets.items():
             result[key] = list(parse_list_text(widget.get("1.0", "end-1c")))
-        result["open_questions"] = list(
-            parse_list_text(self.open_questions_text.get("1.0", "end-1c"))
-        )
-        return result
+        result["open_questions"] = list(parse_list_text(self.open_questions_text.get("1.0", "end-1c")))
+        return expand_aligned_record(result)
+
+    def changed(self) -> bool:
+        return self._collect_record() != self._loaded_record or any(page.pending_entry() for page in self.records.values())
 
     def _current_document(self) -> SpecificationDocument:
         return record_to_document(self._collect_record(), worktree=self.repository_path)
@@ -1799,6 +1725,7 @@ class SpecificationEditor:
     def _edit_collection(
         self, key: str, fields: Sequence[_Field], index: int | None
     ) -> None:
+        self.record = self._collect_record()
         initial = None if index is None else self.record[key][index]
         if index is None and key in {"use_cases", "requirements", "decisions"}:
             prefix = {"use_cases": "UC", "requirements": "R", "decisions": "D"}[key]
@@ -1828,10 +1755,17 @@ class SpecificationEditor:
             self.record[key].append(result)
         else:
             self.record[key][index] = result
+        if key in self.records:
+            self.records[key].load(self.record[key])
         self._refresh_collection_trees()
         self._refresh_assessment()
 
     def _selected_index(self, key: str) -> int | None:
+        if key in self.records:
+            index = self.records[key].current
+            if index is None:
+                messagebox.showinfo("Select a record", "Select the record in its specification tab first.", parent=self.window)
+            return index
         tree, _columns = self.collection_trees[key]
         selected = tree.selection()
         if not selected:
@@ -1885,7 +1819,7 @@ class SpecificationEditor:
         record = self._collect_record()
         try:
             if (self.snapshot is not None and self.snapshot.document.schema_version == "1.0"
-                    and record == editor_record(self.snapshot.document.to_dict())):
+                    and not self.changed()):
                 document = self.snapshot.document
             else:
                 document = record_to_document(record, worktree=self.repository_path, validate=False)
@@ -1925,7 +1859,8 @@ class SpecificationEditor:
                 for key in feedback_keys_by_stage[stage]
             )
             marker = "!" if routed[stage] or advisory_attention else " "
-            self.notebook.tab(frame, text=f"{marker} {stage}")
+            if stage not in EDITOR_STAGES[:6]:
+                self.execution_notebook.tab(frame, text=f"{marker} {stage}")
         self.review_tree.delete(*self.review_tree.get_children())
         for index, issue in enumerate(assessment.issues):
             self.review_tree.insert(
@@ -1982,7 +1917,10 @@ class SpecificationEditor:
         if self.snapshot is None:
             return True
         try:
-            return self._collect_record() != editor_record(self.snapshot.document.to_dict())
+            if self.snapshot.document.schema_version == "1.0":
+                return self.changed()
+            return (any(page.pending_entry() for page in self.records.values())
+                    or self._current_document().canonical_json() != self.snapshot.document.canonical_json())
         except Exception:
             return True
 
@@ -1990,7 +1928,7 @@ class SpecificationEditor:
         status = self.snapshot.status if self.snapshot else "new"
         dirty = self._has_unsaved_edits()
         states = {
-            self.save_button: status in {"new", "draft", "approved"},
+            self.save_button: status in {"new", "draft", "review", "approved"},
             self.submit_button: status == "draft" and not dirty,
             self.return_button: status == "review",
             self.approve_button: (
@@ -2019,6 +1957,8 @@ class SpecificationEditor:
             self.load_specification_button,
         ):
             button.configure(state="disabled" if self._busy else "normal")
+        self.validate_button.configure(state="disabled" if self._busy else "normal")
+        self.reread_button.configure(state="normal" if not self._busy and (self.snapshot is not None or self._source_file is not None) else "disabled")
         self.resolve_button.configure(
             state="normal"
             if not self._busy and any(c.get("status") == "unresolved" for c in self.suggested_choices)
@@ -2099,6 +2039,9 @@ class SpecificationEditor:
     def load_example(self) -> None:
         """Replace the editor contents with a new, unsaved worked example."""
 
+        if self.changed() and not messagebox.askyesno("Load example", "Discard unsaved specification edits and load the example?", parent=self.window):
+            return
+        self._source_file = None
         self.snapshot = None
         self._implementation_job_id = None
         self.suggested_choices = []
@@ -2116,6 +2059,77 @@ class SpecificationEditor:
             "before Start Implementation can be enabled."
         )
         self._refresh_assessment()
+
+    def validate(self) -> list[str]:
+        """Check the entered specification, without requiring execution approval."""
+        record = self._collect_record()
+        problems: list[tuple[str, str]] = []
+        if not record["title"].strip():
+            problems.append(("Overview", "Overview: title must not be empty"))
+        for section, page in self.records.items():
+            for item in record[section]:
+                if not item.get("title", "").strip():
+                    stage = owning_stage_for_path(section)
+                    problems.append((stage, f"{stage} {item['id']}: {page.fields[0].label.lower()} must not be empty"))
+        try:
+            document = record_to_document(record, worktree=self.repository_path, validate=False)
+            problems.extend((owning_stage_for_path(issue.path), f"{issue.path}: {issue.message}")
+                            for issue in structural_issues(document, worktree=self.repository_path))
+        except SpecificationValidationError as exc:
+            problems.extend((owning_stage_for_path(issue.path), f"{issue.path}: {issue.message}") for issue in exc.issues)
+        except (TypeError, ValueError) as exc:
+            path = str(exc).split(" ", 1)[0]
+            problems.append((owning_stage_for_path(path), str(exc)))
+        if problems:
+            shown = "; ".join(message for _stage, message in problems[:3])
+            self.problems.set(shown + (f" … ({len(problems)} problems)" if len(problems) > 3 else ""))
+            self._show_stage(problems[0][0])
+        else:
+            self.problems.set("valid")
+        return [message for _stage, message in problems]
+
+    def confirm_reread(self) -> bool:
+        return not self.changed() or messagebox.askyesno(
+            "Reread specification", "Discard unsaved specification edits and reread the saved specification?",
+            parent=self.window,
+        )
+
+    def reread_specification(self) -> None:
+        if self._busy or not self.confirm_reread():
+            return
+        if self._source_file is not None:
+            try:
+                record = savefile_to_record(self._source_file.read_bytes())
+            except Exception as exc:
+                self.problems.set(str(exc))
+                return
+            self.snapshot = None
+            self.suggested_choices = []
+            self._implementation_job_id = None
+            self.selector_var.set("New specification")
+            self.record = record
+            self._load_record_into_widgets()
+            self._refresh_suggested_choices()
+            self._refresh_assessment()
+            self.problems.set("reread")
+            return
+        if self.snapshot is None:
+            return
+        spec_id = self.snapshot.specification_id
+        def work():
+            return self.service.load(spec_id), self.service.list_decisions(spec_id)
+        def done(result, error):
+            if error:
+                self.problems.set(error)
+                return
+            self.snapshot, self.suggested_choices = result
+            self.record = document_to_record(self.snapshot.document)
+            self._load_record_into_widgets()
+            self._refresh_suggested_choices()
+            self._show_snapshot_status()
+            self._refresh_assessment()
+            self.problems.set("reread")
+        self._background(work, done, label="Reread specification")
 
     def test_specification(self) -> None:
         """Analyze the complete current draft without changing workflow state."""
@@ -2151,7 +2165,9 @@ class SpecificationEditor:
                 "Save specification failed", str(exc), parent=self.window
             )
             return
+        self._source_file = Path(selected)
         self.status_var.set(f"Specification saved to {selected}")
+        self._update_actions()
 
     def load_specification(self) -> None:
         """Load a saved draft into the editor without changing workflow state."""
@@ -2171,6 +2187,9 @@ class SpecificationEditor:
             )
             return
 
+        if self.changed() and not messagebox.askyesno("Load specification", "Discard unsaved specification edits and load this file?", parent=self.window):
+            return
+        self._source_file = Path(selected)
         self.snapshot = None
         self._implementation_job_id = None
         self.suggested_choices = []
@@ -2189,6 +2208,12 @@ class SpecificationEditor:
 
     def _on_selector_changed(self, _event: Any = None) -> None:
         label = self.selector_var.get()
+        if self.changed() and not messagebox.askyesno("Open specification", "Discard unsaved specification edits and open another specification?", parent=self.window):
+            self.refresh_specifications(select_id=self.snapshot.specification_id if self.snapshot else None)
+            if self.snapshot is None:
+                self.selector_var.set("New specification")
+            return
+        self._source_file = None
         if label == "New specification":
             self.snapshot = None
             self._implementation_job_id = None
@@ -2231,7 +2256,9 @@ class SpecificationEditor:
             )
         self._update_actions()
 
-    def save_draft(self) -> None:
+    def save_draft(self, *, on_saved: Callable[[], None] | None = None) -> None:
+        if self._busy or self.validate():
+            return
         try:
             document = self._current_document()
         except Exception as exc:
@@ -2239,6 +2266,7 @@ class SpecificationEditor:
             self._refresh_assessment()
             return
         current_id = self.snapshot.specification_id if self.snapshot else None
+        source = self.snapshot
 
         def work() -> StoredSpecificationVersion:
             if current_id is None:
@@ -2249,6 +2277,10 @@ class SpecificationEditor:
                     creator=self.creator,
                     change_summary="Initial GUI draft",
                 )
+            if source is not None and source.status == "review":
+                if document.canonical_json() == source.document.canonical_json():
+                    return source
+                return_to_draft(self.service, current_id)
             return save_draft(
                 self.service,
                 current_id,
@@ -2257,7 +2289,7 @@ class SpecificationEditor:
                 change_summary="GUI draft revision",
             )
 
-        self._run_lifecycle(work, "Save Draft")
+        self._run_lifecycle(work, "Save", preserve_editor=True, on_saved=on_saved)
 
     def analyze(self) -> None:
         """Run read-only elicitation away from Tk, then open the modal review."""
@@ -2499,8 +2531,12 @@ class SpecificationEditor:
         self._background(work, done, label="Start Implementation")
 
     def _run_lifecycle(
-        self, work: Callable[[], StoredSpecificationVersion], label: str
+        self, work: Callable[[], StoredSpecificationVersion], label: str,
+        *, preserve_editor: bool = False, on_saved: Callable[[], None] | None = None,
     ) -> None:
+        submitted_record = self._collect_record() if preserve_editor else None
+        submitted_forms = {key: page.form.get() for key, page in self.records.items()}
+
         def done(result: Any, error: str | None) -> None:
             if error:
                 messagebox.showerror(label, error, parent=self.window)
@@ -2509,10 +2545,21 @@ class SpecificationEditor:
                 return
             self.snapshot = result
             self.record = document_to_record(result.document)
-            self._load_record_into_widgets()
+            if preserve_editor:
+                self._source_file = None  # Reread follows this saved project revision.
+                # Only the submitted values were saved. Typing can continue
+                # while the background write runs and must remain unsaved.
+                self._loaded_record = submitted_record
+                self.problems.set("saved")
+            else:
+                self._load_record_into_widgets()
             self._show_snapshot_status()
             self._refresh_assessment()
-            self.refresh_specifications(select_id=result.specification_id)
+            if (on_saved is not None and self._collect_record() == submitted_record
+                    and {key: page.form.get() for key, page in self.records.items()} == submitted_forms):
+                on_saved()
+            else:
+                self.refresh_specifications(select_id=result.specification_id)
 
         self._background(work, done, label=label)
 
@@ -2579,6 +2626,15 @@ class SpecificationEditor:
                 parent=self.window,
             )
             return
+        if self.changed() and messagebox.askyesno("Specification", "Save the changes before closing?", parent=self.window):
+            self.save_draft(on_saved=self._finish_close)
+            return
+        self._finish_close()
+
+    def _finish_close(self) -> None:
+        if self._assessment_after_id is not None:
+            self.window.after_cancel(self._assessment_after_id)
+            self._assessment_after_id = None
         if not self._embedded:
             self.window.destroy()
         if self._on_close_callback is not None:
