@@ -22,6 +22,7 @@ from icoda_core import (
     steplog,
     steps,
 )
+from icoda_core.model import Entity
 from icoda_gui import tooltip
 
 ACTIONS = ("propose_approach", "approve_approach", "propose", "approve_architecture", "approve", "rephrase",
@@ -213,7 +214,7 @@ class StepPanel:
         self.prompt_view = _scrolled_text(self.detail_notebook, wrap="word", font=("TkFixedFont", 10))
         self.reply_view = _scrolled_text(self.detail_notebook, wrap="word", font=("TkFixedFont", 10))
         self.detail_notebook.add(self.approach_text.master, text="Approach")
-        self.detail_notebook.add(self.details.master, text="Delta")
+        self.detail_notebook.add(self.details.master, text="Code details")
         self.detail_notebook.add(self.signature.master, text="Signatures")
         self.detail_notebook.add(self.entity_summary.master, text="Summary")
         self.detail_notebook.add(self.source_diff.master, text="Diff")
@@ -408,6 +409,8 @@ class StepPanel:
     def show(self, proposal: steps.Proposal | None) -> None:
         """Present a proposal (or clear the panel) and enable the buttons that apply to it."""
         self.set_details_visible(proposal is not None)
+        if proposal is not None:
+            self.detail_notebook.select(self.details.master)
         self.selected_iteration = None
         self.proposal = proposal
         self.signature_confirmed = False
@@ -694,7 +697,35 @@ def _rationale_text(proposal: steps.Proposal) -> str:
 
 def _delta_text(proposal: steps.Proposal) -> str:
     assert proposal.delta is not None
-    text = proposal.delta.summary()
+    delta = proposal.delta
+    text = (f"{len(delta.added)} entities added, {len(delta.changed)} changed, "
+            f"{len(delta.removed)} removed, {len(delta.renamed)} renamed.\n\n"
+            "Affected files:\n" + "\n".join(f"- {file}" for file in delta.files))
+    changes: dict[str, list[str]] = {file: [] for file in delta.files}
+    signatures = {change.usr: change for change in delta.signature_changes}
+    for action, entities in (("ADD", delta.added), ("CHANGE", delta.changed), ("REMOVE", delta.removed)):
+        for entity in sorted(entities, key=lambda e: (e.file, e.line, e.qualified_name)):
+            lines = _entity_change_lines(action, entity)
+            if entity.usr in signatures:
+                signature = signatures[entity.usr]
+                lines.extend((f"    Previous: {signature.previous_signature}",
+                              f"    Proposed: {signature.proposed_signature}"))
+            changes.setdefault(entity.file, []).extend(lines)
+    for pair in delta.renamed:
+        lines = _entity_change_lines("RENAME", pair.after)
+        lines.insert(1, f"    {pair.before.qualified_name} -> {pair.after.qualified_name}")
+        lines.insert(2, f"    From: {pair.before.file}:{pair.before.line}")
+        if pair.before.signature != pair.after.signature:
+            lines.append(f"    Previous declaration: {pair.before.signature}")
+        changes.setdefault(pair.after.file, []).extend(lines)
+    for module in delta.modules:
+        files = [file.path for file in proposal.model.files.values() if file.module == module] \
+            if proposal.model is not None else []
+        changes.setdefault(files[0] if files else "Module declarations", []).append(f"  ADD module {module}")
+    deleted = {change.path for change in proposal.response.files if change.delete} if proposal.response else set()
+    for file, lines in changes.items():
+        heading = f"{file} (deleted)" if file in deleted else file
+        text += "\n\n" + heading + "\n" + "\n".join(lines or ["  File content changed; no parsed symbol changes."])
     if proposal.request.phase == prompt.ARCHITECTURE:
         text += (f"\n\nArchitecture entity budget: {proposal.delta.architecture_entity_count()} / "
                  f"{proposal.request.max_entities}")
@@ -702,6 +733,18 @@ def _delta_text(proposal: steps.Proposal) -> str:
     if len(batch_names) > 1:
         text = "Implementation batch:\n" + "\n".join(f"- {name}" for name in batch_names) + "\n\n" + text
     return text
+
+
+def _entity_change_lines(action: str, entity: Entity) -> list[str]:
+    kind = "type alias" if entity.kind.value == "alias" else entity.kind.value
+    lines = [f"  {action} {kind} {entity.qualified_name}", f"    Location: {entity.file}:{entity.line}"]
+    if entity.signature:
+        lines.append(f"    Declaration: {entity.signature}")
+    if entity.brief:
+        lines.append(f"    Purpose: {entity.brief}")
+    if entity.value:
+        lines.append(f"    Value: {entity.value}")
+    return lines
 
 
 def _proposal_batch_names(proposal: steps.Proposal) -> tuple[str, ...]:

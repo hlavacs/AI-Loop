@@ -23,6 +23,7 @@ UNPIN_CLUSTER = "unpin_cluster"
 RENAME_CLUSTER = "rename_cluster"
 PIN_FILE_TO_CLUSTER = "pin_file_to_cluster"
 STALE_MARKER = "⚠"
+HIERARCHY_ROW_HEIGHT = 27
 NODE_COLOURS = MappingProxyType({
     "stub": "#d9d9d9",
     "implemented": "#aec7e8",
@@ -157,6 +158,9 @@ class NodeAppearanceCanvas:
         self.hierarchy_bounds: tuple[float, float, float, float] | None = None
         self.hierarchy_background: Any | None = None
         self.hierarchy_position: tuple[float, float] | None = None
+        self.hierarchy_collapsed = False
+        self._hierarchy_scroll_pixels = 0
+        self._hierarchy_toggle_pressed = False
         self._hierarchy_drag_anchor: tuple[float, float] | None = None
         self.coverage_mode = False
         self.globally_stale = False
@@ -273,22 +277,32 @@ class NodeAppearanceCanvas:
         nodes = self.expansion_result.graph.nodes
         canvas_width, canvas_height = float(self.canvas.winfo_width()), float(self.canvas.winfo_height())
         left, top = self.hierarchy_position or (canvas_width - 294.0, 48.0)
-        width, row_height = min(280.0, max(100.0, canvas_width - 24.0)), 27.0
+        width, row_height = min(280.0, max(100.0, canvas_width - 24.0)), HIERARCHY_ROW_HEIGHT
         left = max(12.0, min(left, canvas_width - width - 12.0))
         top = max(48.0, min(top, canvas_height - 64.0))
         if self.hierarchy_position is not None:
             self.hierarchy_position = (left, top)
-        self.hierarchy_page_size = max(1, int((self.canvas.winfo_height() - top - 25 - 12) // row_height))
-        self.hierarchy_offset = min(self.hierarchy_offset, max(0, len(nodes) - self.hierarchy_page_size))
-        visible = nodes[self.hierarchy_offset:self.hierarchy_offset + self.hierarchy_page_size]
+        visible: tuple[expansion.ExpansionNode, ...] = ()
+        if not self.hierarchy_collapsed:
+            self.hierarchy_page_size = max(1, int((canvas_height - top - 25 - 12) // row_height))
+            self.hierarchy_offset = min(self.hierarchy_offset, max(0, len(nodes) - self.hierarchy_page_size))
+            visible = nodes[self.hierarchy_offset:self.hierarchy_offset + self.hierarchy_page_size]
         bottom = top + 25.0 + row_height * len(visible)
         self.hierarchy_bounds = (left, top, left + width, bottom)
         self.hierarchy_background = self.canvas.create_rectangle(
             left, top, left + width, bottom, fill="#ffffff", outline="#d1d5db", width=1)
         self.canvas.create_rectangle(left, top, left + width, top + 25,
                                       fill="#e8edf3", outline="#d1d5db")
-        self.canvas.create_text(left + 8, top + 12, anchor="w", text="Hierarchy — drag here to move",
+        self.canvas.create_text(left + 8, top + 12, anchor="w", text="Hierarchy — drag to move",
                                 fill="#4b5563", font=("TkDefaultFont", 9, "bold"))
+        self.canvas.create_rectangle(left + width - 25, top, left + width, top + 25,
+                                      fill="#f8fafc", outline="#d1d5db")
+        self.canvas.create_text(left + width - 12, top + 12, text="+" if self.hierarchy_collapsed else "−",
+                                fill="#1f2937", font=("TkDefaultFont", 12, "bold"))
+        if self.hierarchy_collapsed:
+            if self.hierarchy_scrollbar is not None:
+                self.hierarchy_scrollbar.place_forget()
+            return
         positions = {
             node.key: (left + 8 + min(node.depth, 5) * 16.0,
                        top + 25.0 + row * row_height + row_height / 2)
@@ -307,8 +321,10 @@ class NodeAppearanceCanvas:
         self.hide_tooltip()
         self.hierarchy_bounds = None
         self.hierarchy_background = None
+        self._hierarchy_toggle_pressed = False
         self._hierarchy_drag_anchor = None
         self.hierarchy_offset = 0
+        self._hierarchy_scroll_pixels = 0
         self.expansion_items = {}
         if self.hierarchy_scrollbar is not None:
             self.hierarchy_scrollbar.place_forget()
@@ -320,17 +336,28 @@ class NodeAppearanceCanvas:
         return left <= x <= right and top <= y <= bottom
 
     def press_hierarchy(self, event: Any) -> bool:
-        """Let the header move the panel; row presses stay available for navigation."""
+        """Separate the title-bar toggle and drag handle from row navigation."""
         self._hierarchy_drag_anchor = None
+        self._hierarchy_toggle_pressed = False
         if not self.in_hierarchy(event.x, event.y):
             return False
         assert self.hierarchy_bounds is not None
         left, top, _right, _bottom = self.hierarchy_bounds
-        if event.y < top + 25:
+        if self._in_hierarchy_toggle(event.x, event.y) and getattr(event, "num", 1) == 1:
+            self._hierarchy_toggle_pressed = True
+        elif event.y < top + 25:
             self._hierarchy_drag_anchor = (event.x - left, event.y - top)
         return True
 
+    def _in_hierarchy_toggle(self, x: int, y: int) -> bool:
+        if self.hierarchy_bounds is None:
+            return False
+        _left, top, right, _bottom = self.hierarchy_bounds
+        return right - 25 <= x <= right and top <= y < top + 25
+
     def drag_hierarchy(self, event: Any) -> bool:
+        if self._hierarchy_toggle_pressed:
+            return True
         if self._hierarchy_drag_anchor is None:
             return False
         dx, dy = self._hierarchy_drag_anchor
@@ -338,10 +365,16 @@ class NodeAppearanceCanvas:
         self.redraw()
         return True
 
-    def release_hierarchy(self) -> bool:
+    def release_hierarchy(self, event: Any) -> bool:
         """Consume header gestures so their release cannot select or open a node."""
-        active = self._hierarchy_drag_anchor is not None
+        toggle = self._hierarchy_toggle_pressed
+        active = toggle or self._hierarchy_drag_anchor is not None
+        self._hierarchy_toggle_pressed = False
         self._hierarchy_drag_anchor = None
+        if toggle and self._in_hierarchy_toggle(event.x, event.y):
+            self.hierarchy_collapsed = not self.hierarchy_collapsed
+            self.hide_tooltip()
+            self.redraw()
         return active
 
     def scroll_hierarchy(self, action: str, amount: str, unit: str = "units") -> None:
@@ -355,11 +388,39 @@ class NodeAppearanceCanvas:
         self.redraw()
 
     def scroll_hierarchy_at(self, event: Any) -> bool:
+        self._hierarchy_scroll_pixels = 0
         if not self.in_hierarchy(event.x, event.y):
             return False
+        if self.hierarchy_collapsed:
+            return True
         upwards = getattr(event, "delta", 0) > 0 or getattr(event, "num", 0) == 4
         self.scroll_hierarchy("scroll", "-3" if upwards else "3")
         return True
+
+    def bind_touchpad_scrolling(self) -> None:
+        """Tk 9 sends precise wheel/trackpad motion separately from MouseWheel."""
+        try:
+            self.canvas.bind("<TouchpadScroll>", self.on_touchpad_scroll)
+        except tk.TclError:
+            pass  # Older Tk versions only support the existing MouseWheel bindings.
+
+    def on_touchpad_scroll(self, event: Any) -> str | None:
+        if not self.in_hierarchy(event.x, event.y):
+            self._hierarchy_scroll_pixels = 0
+            return None
+        self.hide_tooltip()
+        if self.hierarchy_collapsed:
+            self._hierarchy_scroll_pixels = 0
+            return "break"
+        # Tk packs signed 16-bit horizontal/vertical pixel deltas into the high/low halves of %D.
+        delta = event.delta & 0xffff
+        vertical = delta if delta < 0x8000 else delta - 0x10000
+        self._hierarchy_scroll_pixels -= vertical
+        rows = int(self._hierarchy_scroll_pixels / HIERARCHY_ROW_HEIGHT)
+        if rows:
+            self._hierarchy_scroll_pixels -= rows * HIERARCHY_ROW_HEIGHT
+            self.scroll_hierarchy("scroll", str(rows))
+        return "break"
 
     def _draw_hierarchy_branches(self, positions: Mapping[str, tuple[float, float]]) -> None:
         """Connect rows to their parents; dependency arrows belong to the main diagram."""
@@ -445,6 +506,7 @@ class GraphCanvas(NodeAppearanceCanvas):
         )
         for event, handler in bindings:
             self.canvas.bind(event, handler)
+        self.bind_touchpad_scrolling()
         self.action_menu = NodeActionMenu(
             self.canvas, self.node_at, self.resolve_actions, self.dispatch_action)
 

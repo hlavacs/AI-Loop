@@ -100,6 +100,7 @@ class FileViewCanvas(graph_canvas.NodeAppearanceCanvas):
                                ("<Double-ButtonRelease-1>", self.on_double_click),
                                ("<Configure>", self.on_resize)):
             canvas.bind(event, handler)
+        self.bind_touchpad_scrolling()
         self.action_menu = graph_canvas.NodeActionMenu(
             canvas, self.node_at, app.graph_actions, app.dispatch_graph_action)
 
@@ -136,7 +137,8 @@ class FileViewCanvas(graph_canvas.NodeAppearanceCanvas):
         width = max(int(self.canvas.winfo_width() or 0), 200)
         height = max(int(self.canvas.winfo_height() or 0), 200)
         # The status legend and hierarchy use screen coordinates; neither belongs in the fitted graph bounds.
-        hierarchy = 306 if self.expansion_result is not None and self.expansion_result.graph.nodes else 0
+        hierarchy = 306 if (self.expansion_layer_enabled and not self.hierarchy_collapsed
+                            and self.expansion_result is not None and self.expansion_result.graph.nodes) else 0
         available_width, available_height = max(width - hierarchy - 24, 100), max(height - 60, 100)
         self._fit_graph(available_width, available_height)
         if self._boxes_overlap():
@@ -342,7 +344,7 @@ class FileViewCanvas(graph_canvas.NodeAppearanceCanvas):
         self.redraw()
 
     def on_release(self, event: Any) -> None:
-        if self.release_hierarchy():
+        if self.release_hierarchy(event):
             return
         if not self.dragged and getattr(event, "num", 1) == 1 and self.toggle_expansion_at(event.x, event.y):
             self.drag_start = None
@@ -355,7 +357,7 @@ class FileViewCanvas(graph_canvas.NodeAppearanceCanvas):
 
     def on_double_click(self, event: Any) -> None:
         self.drag_start = None
-        if self.release_hierarchy() or self.dragged:
+        if self.release_hierarchy(event) or self.dragged:
             return
         node = self.node_at(event.x, event.y)
         if node is not None and not node.startswith("external:"):
@@ -728,17 +730,45 @@ class App:
         vertical.add(self.panel.frame, weight=0)
         self.panel.on_details_visibility = self._resize_step_panel
         self._step_panel_resize_pending = False
+        self._step_panel_last_visible = self.panel.details_visible
+        self._step_panel_drag_origin: int | None = None
+        self._step_panel_manual_size = False
         vertical.bind("<Configure>", lambda _event: self.panel._fit_collapsed())
+        vertical.bind("<ButtonPress-1>", self._step_panel_sash_press)
+        vertical.bind("<B1-Motion>", self._step_panel_sash_drag)
+        vertical.bind("<ButtonRelease-1>", self._step_panel_sash_release)
+        self._resize_step_panel()
+
+    def _step_panel_sash_press(self, event: Any) -> None:
+        if str(self.main_panes.identify(event.x, event.y)) == "0":
+            self._step_panel_drag_origin = event.y
+
+    def _step_panel_sash_drag(self, event: Any) -> None:
+        origin = self._step_panel_drag_origin
+        if origin is None or abs(event.y - origin) <= 3:
+            return
+        self._step_panel_manual_size = True
+        if event.y < origin and not self.panel.details_visible:
+            self.panel.set_details_visible(True)
+
+    def _step_panel_sash_release(self, _event: Any) -> None:
+        self._step_panel_drag_origin = None
         self._resize_step_panel()
 
     def _resize_step_panel(self) -> None:
-        """Give space released by the review details back to the graph and editor."""
-        if self._step_panel_resize_pending:
+        """Compact on explicit toggles, while preserving the height chosen with the divider."""
+        if self.panel.details_visible != self._step_panel_last_visible:
+            self._step_panel_last_visible = self.panel.details_visible
+            if self._step_panel_drag_origin is None:
+                self._step_panel_manual_size = False
+        if self._step_panel_resize_pending or self._step_panel_drag_origin is not None or self._step_panel_manual_size:
             return
         self._step_panel_resize_pending = True
 
         def resize() -> None:
             self._step_panel_resize_pending = False
+            if self._step_panel_drag_origin is not None or self._step_panel_manual_size:
+                return
             height = self.main_panes.winfo_height()
             if height > 1:
                 position = max(180, height - self.panel.frame.winfo_reqheight() - 6)

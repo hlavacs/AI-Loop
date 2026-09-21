@@ -213,7 +213,7 @@ class CallViewCanvas(graph_canvas.GraphCanvas):
 
     def on_release(self, event: Any) -> None:
         self.drag_start = None
-        if self.release_hierarchy():
+        if self.release_hierarchy(event):
             return
         if not self.dragged and getattr(event, "num", 1) == 1 and self.toggle_expansion_at(event.x, event.y):
             return
@@ -239,7 +239,7 @@ class CallViewCanvas(graph_canvas.GraphCanvas):
 
     def on_double_click(self, event: Any) -> None:
         self.drag_start = None
-        if self.release_hierarchy() or self.dragged:
+        if self.release_hierarchy(event) or self.dragged:
             return
         usr = self.node_at(event.x, event.y)
         entity = self.model.entities.get(usr) if self.model is not None and usr else None

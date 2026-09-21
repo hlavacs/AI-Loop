@@ -454,11 +454,14 @@ messages and 20,000 characters per request). Switching projects or restarting cl
 The review details start collapsed when there is no proposal, leaving more height for diagrams and the source
 editor. **Show details** and **Hide details**, at the right of the action row, toggle the lower review area without losing
 its content or your Summary edits. A new proposal, approach, selected historical step, or failure opens it
-automatically. You can still drag the horizontal divider to choose the review area's height.
+automatically. Drag the horizontal divider upward while details are hidden to reveal them at the height you
+choose. The chosen height is retained through progress updates and window resizing. **Hide details** compacts
+the panel again.
 
 The collapsed panel fits its visible controls without reserving empty rows. Queue and batch controls appear
 only during implementation. When a result is available, its title, build/test status, and signature status share
-one line. Returning from a longer progress message or resizing the window releases any unused height.
+one line. When no height has been chosen by dragging, returning from a longer progress message or resizing the
+window releases any unused height.
 
 The lower panel is driven by the project's phase. One sentence above the buttons says what to do next; it changes
 with every event (analysis running, proposal ready, signature confirmation needed, approach approved, queue empty,
@@ -474,7 +477,7 @@ While a step runs, the buttons are replaced by a moving bar, the current activit
 kills the running process; the step ends with `cancelled — nothing was recorded` and the panel keeps its previous
 content. Approving, undoing and committing cannot be cancelled because they change the project.
 
-The detail tabs are **Approach**, **Delta**, **Signatures**, **Summary**, **Diff**, **Build**,
+The detail tabs are **Approach**, **Code details**, **Signatures**, **Summary**, **Diff**, **Build**,
 **Tests**, **Prompt** and **Reply**. The last two show exactly what was sent to the agent for the displayed item and
 what came back, so that a puzzling proposal can be traced to its cause.
 
@@ -513,6 +516,11 @@ assurance or runtime execution filter.
 - Scroll over a diagram to zoom around the pointer.
 - Drag with the left or middle mouse button to pan.
 - Click `+` or `-` in the hierarchy panel to expand or collapse a level.
+- Scroll anywhere over the hierarchy panel with the mouse wheel or trackpad to move through its rows.
+  This scrolls the hierarchy without zooming the diagram; hovering over the scrollbar is not required.
+- Click `-` at the right of the **Hierarchy** title bar to fold the whole panel into its title bar; click `+`
+  there to restore it. Its scroll position is retained. Drag the title bar to move the panel in either state.
+  In File View, **Fit** uses the freed width while the panel is folded.
 - Hover over a node for source and status details.
 - Click a file or source entity to open it in the upper-right Source Editor at its source line.
 - Right-click a node for actions that are valid in the current phase.
@@ -668,7 +676,10 @@ it. Functions from 31 through 50 lines receive only the 30-line guideline warnin
 The lower panel contains:
 
 - the provider rationale and questions;
-- **Delta**: added, removed, changed, and renamed entities;
+- **Code details**: the default tab for a code proposal, listing affected files and grouping added, changed,
+  renamed, and removed symbols by file. Classes, functions, methods, enums, type aliases, fields, variables,
+  and modules include their available declarations, locations, and purpose. Signature changes include the
+  previous and proposed declarations; build or other files without parsed symbol changes still appear;
 - **Signatures**: previous and proposed declarations;
 - **Summary**: editable structured intent for adaptation;
 - **Diff**: the exact candidate patch;
@@ -679,7 +690,11 @@ checks passed; they do not prove the change meets the specification.
 
 ![Proposal Delta tab listing added entities](docs/images/handbook/proposal-delta.png)
 
-*Delta summarizes the model-level effect rather than forcing reviewers to infer it from text.*
+*The Code details tab (called Delta in this earlier screenshot) summarizes the changes found by code analysis.*
+
+Before code is written, the **Approach** tab shows the planned scope. New approach requests ask for a short
+overview followed by Code details grouped by file, including each symbol's intended action, kind, name, and
+declaration. These are planning estimates; the code proposal's Code details show the analysed changes.
 
 ![Editable structured Summary tab used for adaptation](docs/images/handbook/structured-adaptation.png)
 

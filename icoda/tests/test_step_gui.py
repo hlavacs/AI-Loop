@@ -162,7 +162,42 @@ def test_panel_delta_shows_rename_pairs(tmp_path: Path) -> None:
     panel = step_panel.StepPanel(tk.Tk(), lambda action: None)
     panel.show(proposal)
     shown = panel.details.get("1.0", "end")
-    assert "1 renamed" in shown and "> function app::old -> app::new int new()" in shown
+    assert "1 renamed" in shown and "RENAME function app::new" in shown
+    assert "app::old -> app::new" in shown and "Declaration: int new()" in shown
+    assert "From: m.cpp:1" in shown and "Previous declaration: int old()" in shown
+
+
+def test_code_details_group_actual_symbols_by_file_including_build_and_deleted_files(tmp_path):
+    before, after = DerivedModel('/p'), DerivedModel('/p')
+    before.add_entity(Entity('run', Kind.FUNCTION, 'run', 'app::run', 'src/app.cppm', 4,
+                             signature='int run()', body_hash='old'))
+    after.add_entity(Entity('run', Kind.FUNCTION, 'run', 'app::run', 'src/app.cppm', 6,
+                            signature='long run()', body_hash='new', brief='Run the application.'))
+    before.add_entity(Entity('obsolete', Kind.CLASS, 'Old', 'Old', 'src/old.hpp', 1))
+    for usr, kind, name, signature in (
+            ('type', Kind.CLASS, 'app::Worker', 'class Worker'),
+            ('enum', Kind.ENUM, 'app::State', 'enum class State'),
+            ('alias', Kind.ALIAS, 'app::Job', 'using Job = void(*)()'),
+            ('field', Kind.FIELD, 'app::Worker::state', 'State state')):
+        after.add_entity(Entity(usr, kind, name, name, 'src/app.cppm', 10, signature=signature))
+    after.files['src/app.cppm'] = FileInfo('src/app.cppm', module='app')
+    proposal = fake_proposal(tmp_path)
+    proposal.model = after
+    proposal.delta = steps.compute_delta(before, after, ['src/app.cppm', 'src/old.hpp', 'CMakeLists.txt'])
+    proposal.response = response.StepResponse('Add worker', 'Schedule jobs.', (
+        response.FileChange('src/app.cppm'), response.FileChange('src/old.hpp', delete=True),
+        response.FileChange('CMakeLists.txt')))
+    panel = step_panel.StepPanel(tk.Tk(), lambda _action: None)
+    panel.show(proposal)
+    shown = panel.details.get('1.0', 'end')
+    assert 'Affected files:\n- src/app.cppm\n- src/old.hpp\n- CMakeLists.txt' in shown
+    assert 'ADD class app::Worker' in shown and 'ADD enum app::State' in shown
+    assert 'ADD type alias app::Job' in shown and 'ADD field app::Worker::state' in shown
+    assert 'CHANGE function app::run' in shown and 'Location: src/app.cppm:6' in shown
+    assert 'Previous: int run()' in shown and 'Proposed: long run()' in shown
+    assert 'Purpose: Run the application.' in shown and 'ADD module app' in shown
+    assert 'src/old.hpp (deleted)\n  REMOVE class Old' in shown
+    assert 'CMakeLists.txt\n  File content changed; no parsed symbol changes.' in shown
 
 
 def test_panel_requires_and_records_signature_confirmation_with_exact_actions(tmp_path: Path) -> None:

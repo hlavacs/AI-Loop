@@ -119,6 +119,11 @@ def _approach_step_text(request: StepRequest, model: DerivedModel) -> str:
     lines.extend([
         "Explain the algorithm, expected STL algorithms/containers or libraries, estimated line count, and trade-offs.",
         "Name the existing or planned entities and project-relative file paths you expect the later code round to touch.",
+        ("After the short overview, include a Code details section in the plan, grouped by affected file. "
+        "For each class, struct, function, method, enum, type alias, field, variable, or module in scope, "
+        "state whether it will be added, changed, renamed, or removed; give its qualified name, intended "
+        "declaration or signature, and what will change. Include test and build files. "
+        "Mark uncertain details as tentative; do not invent exact line numbers for code not yet written."),
         "The developer will approve, adapt, or reject this approach before the separate code-and-test round.",
     ])
     return "\n".join(lines)
@@ -126,10 +131,11 @@ def _approach_step_text(request: StepRequest, model: DerivedModel) -> str:
 
 def _approach_format_text() -> str:
     return ("Reply with a single JSON object (no code fence or surrounding prose) with exactly these fields:\n"
-            '{\n "plan": "short, plain-language plan including trade-offs and estimated line count",\n'
+            '{\n "plan": "short overview including trade-offs and line count, followed by Code details",\n'
             ' "entities": ["qualified entity name"],\n "files": ["project/relative/path"]\n}\n'
             "`entities` and `files` describe expected scope only. Do not include file contents, source code, "
-            "patches, diffs, or commands.\n\nFor `plan`: " + STEP_DESCRIPTION_STYLE)
+            "patches, diffs, or commands.\n\nFor the overview in `plan`: " + STEP_DESCRIPTION_STYLE +
+            " The separate Code details section may be longer to list every affected file and symbol.")
 
 
 def _issues_text(issues: Sequence[rules.Issue]) -> str:

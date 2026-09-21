@@ -5191,3 +5191,64 @@ Verification:
   restores ordinary window stacking after earlier screenshot helpers pin the main window above floating
   windows, and allows the native compositor to paint before capture. Existing hierarchy dragging, scrolling,
   source navigation, editing, undo/redo, save, and reload acceptance checks also passed.
+
+## 2026-09-21 — Collapse the hierarchy into its title bar
+
+Added a minus/plus toggle to the right of the Hierarchy header in File, Call, and Class View. Folding hides
+the rows and scrollbar, leaving a 25-pixel title bar. The panel remains draggable, retains its scroll offset,
+and stays folded across redraws and model reloads in the current session. File View's Fit uses the reclaimed
+width. Header gestures are consumed so that toggling cannot open source or select a node underneath.
+
+Verification:
+
+- **59 existing tests passed** across shared expansion, source editing, and application behavior. Ruff,
+  mypy across 61 production files, and `git diff --check` passed.
+- Native Tk checks in `.icoda-test-artifacts/hierarchy-titlebar` exercised the actual canvas event bindings
+  in all three views. Verified the 25-pixel collapsed height, scrollbar hiding/restoration, retained scroll
+  position, dragging while collapsed, cancellation when releasing outside the toggle, stable diagram position,
+  no accidental source opening, and preservation across a model reload. File View Fit reclaimed 306 pixels.
+- The handbook's diagram-interaction instructions and PDF were updated. The changed PDF page was rendered
+  and visually inspected. Native application verification used widget geometry and callbacks, without screenshots.
+
+## 2026-09-21 — Scroll anywhere over the hierarchy panel
+
+The local Tk 9.0.3 runtime provides high-resolution wheel/trackpad motion as TouchpadScroll events. The native
+scrollbar handled these, but ICODA's canvas only handled MouseWheel and X11 wheel buttons. Added the missing
+binding to File, Call, and Class canvases, decoded the vertical component independently of horizontal motion,
+and accumulated pixel deltas into hierarchy rows. Older Tk versions retain their ordinary wheel bindings.
+
+Verification:
+
+- The native check first reproduced ignored TouchpadScroll events over the panel before the change. After
+  the fix, `.icoda-test-artifacts/hierarchy-wheel/verify.py` passed in all three views on Tk 9.0.3.
+- Native event checks cover ordinary wheel and precise scrolling over titles, row bodies, empty margins, and
+  the title toggle; positive and negative vertical deltas mixed with horizontal motion; one-pixel accumulation;
+  moved and folded panels; the native scrollbar; and unchanged diagram zoom/position.
+- **59 existing tests passed** across expansion, source editing, and application behavior. Ruff, mypy on
+  61 production files, and diff checks passed. The handbook PDF was regenerated and its revised interaction
+  instructions rendered and visually inspected.
+
+## 2026-09-21 — Show file and symbol details and drag the collapsed review panel open
+
+Renamed the proposal's Delta tab to Code details and selected it automatically for each code result. The view
+lists affected files, then groups added, changed, removed, and renamed symbols by file. It includes symbol
+kinds, declarations, source locations, available purpose/value descriptions, module additions, and signature
+comparisons. Files without parsed symbol changes remain visible. Approach prompts now request a separate
+file-and-symbol plan after the short overview without changing their response schema or approval flow.
+
+Dragging the main horizontal divider upward from the collapsed lower panel reveals the review content and
+preserves the chosen height. Automatic compacting no longer overrides divider gestures. Explicit Show/Hide
+details still sets the default expanded/compact size, and hiding preserves edited Summary content.
+
+Verification:
+
+- **86 focused tests passed** for the step panel/controller, application, and prompts. Updated rename-display
+  coverage and checked file grouping for class, enum, alias, field, function, module, signature, deletion, and
+  build-file changes. Ruff, mypy across 61 production files, and diff checks passed.
+- Native Tk checks in `.icoda-test-artifacts/step-code-details` exercised the actual divider bindings: an
+  88-pixel collapsed panel enlarged to 248 pixels and revealed details. Another drag after hiding a proposal
+  retained Summary edits. Its 251-pixel chosen height survived progress changes and window resizing, and
+  Hide details compacted it again. Code details was selected automatically and contained file/line/declaration
+  information. Existing compact-panel geometry checks also passed.
+- The handbook and PDF were updated; the affected instructions were rendered and visually inspected.
+  Native UI checks used widget geometry and callbacks, without desktop screenshots or a live provider call.
