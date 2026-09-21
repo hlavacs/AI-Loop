@@ -117,12 +117,16 @@ class ClassViewCanvas(graph_canvas.GraphCanvas):
 
     def _draw_loop(self, node: views.ClassNodeLayout, edge: class_graph.ClassEdge) -> None:
         right, top = self.to_screen(node.x + node.width / 2, node.y - node.height / 4)
-        radius = 18 * self.scale
+        radius, half_height = max(32 * self.scale, 20), min(18, node.height / 4) * self.scale
+        points = (right + 3, top - half_height, right + radius, top - half_height,
+                  right + radius, top + half_height, right + 3, top + half_height)
         colour = self.edge_colour(edge.source, edge.target, RELATION_COLOURS[edge.kind])
-        options: dict[str, Any] = {"outline": colour, "width": 2}
+        options: dict[str, Any] = {"fill": colour, "width": 2, "smooth": True}
         if edge.kind == class_graph.ClassEdgeKind.USAGE:
-            options["dash"] = (6, 4)
-        self.canvas.create_oval(right - radius, top - radius, right + radius, top + radius, **options)
+            options.update(dash=(6, 4), arrow=tk.LAST)
+        self.canvas.create_line(*points, **options)
+        marker_segment = points[-4:] if edge.kind == class_graph.ClassEdgeKind.INHERITANCE else points[:4]
+        self._draw_relation_marker(edge.kind, *marker_segment, colour)
 
     def _panel_endpoints(self, source: views.ClassNodeLayout,
                          target: views.ClassNodeLayout) -> tuple[float, float, float, float]:

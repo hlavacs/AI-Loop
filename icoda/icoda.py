@@ -1473,7 +1473,7 @@ class App:
         return "\n".join(line for line in lines if line)
 
     def select_node(self, node_id: str) -> None:
-        """A file/entity click opens its source and retains the file's entity list in the adjacent tab."""
+        """Update the source location and entity list without changing the selected sidebar tab."""
         if self.displayed is None or node_id.startswith(("external:", "cluster:")):
             return
         usr = node_id.removeprefix("entity:")
@@ -1515,6 +1515,7 @@ class App:
                 self.open_editor(entity.file, entity.line)
 
     def open_editor(self, file: str, line: int = 1, *, root: Path | None = None) -> None:
+        """Load the requested source location while preserving the current sidebar tab."""
         selected_root = root or self.project
         if selected_root is None or file.startswith(("external:", "cluster:")):
             return
@@ -1523,8 +1524,7 @@ class App:
             if entity is not None:
                 file, line = entity.file, entity.line
         file = file.removeprefix("file:")
-        if self.source_editor.open_file(selected_root, file, line):
-            self.side_views.select(self.source_editor.frame)
+        self.source_editor.open_file(selected_root, file, line)
 
     def open_call_source(self, file: str, line: int = 1) -> None:
         self.open_editor(file, line, root=self._call_source_root or self.project)

@@ -5,6 +5,8 @@ from __future__ import annotations
 import tkinter as tk
 from typing import Any
 
+import pytest
+
 from icoda_core import class_view
 from icoda_core.model import DerivedModel, Edge, EdgeKind, Entity, FileInfo, Kind
 from icoda_gui import class_view as class_view_gui
@@ -109,3 +111,35 @@ def test_class_view_renders_paired_entity_once_with_both_file_names(monkeypatch:
     assert labels.count("void run(app::Base)  [implemented]") == 1
     assert "include/widget.hpp" in canvas.hover_var.get()
     assert "src/widget.cpp" in canvas.hover_var.get()
+
+
+@pytest.mark.parametrize("scale", [0.35, 1.0, 2.0])
+@pytest.mark.parametrize("kind", [class_view.ClassEdgeKind.USAGE, class_view.ClassEdgeKind.COMPOSITION])
+def test_class_self_relation_has_visible_marker_outside_panel(monkeypatch: Any, scale: float,
+                                                            kind: class_view.ClassEdgeKind) -> None:
+    canvas = class_view_gui.ClassViewCanvas(tk.Tk(), lambda _file, _line: None)
+    model = model_with_classes()
+    source = "u:run" if kind == class_view.ClassEdgeKind.USAGE else "u:value"
+    model.add_edge(Edge(EdgeKind.USES_TYPE, source, "u:widget"))
+    canvas.show(model)
+    assert canvas.layout is not None
+    canvas.scale, canvas.offset = scale, (37, 53)
+    node = canvas.layout.nodes["u:widget"]
+    edge = next(edge for edge in canvas.layout.edges if edge.source == edge.target)
+    lines: list[tuple[tuple[float, ...], dict[str, Any]]] = []
+    markers: list[tuple[float, ...]] = []
+    monkeypatch.setattr(canvas.canvas, "create_line", lambda *args, **kwargs: lines.append((args, kwargs)))
+    monkeypatch.setattr(canvas.canvas, "create_polygon", lambda *args, **kwargs: markers.append(args))
+
+    canvas._draw_edge(edge)
+
+    assert len(lines) == 1
+    points, options = lines[0]
+    right, _ = canvas.to_screen(node.x + node.width / 2, node.y)
+    assert len(points) >= 8 and min(points[::2]) > right
+    assert points[1] < points[-1] and options["smooth"]
+    if kind == class_view.ClassEdgeKind.USAGE:
+        assert options["arrow"] == tk.LAST and "dash" in options
+    else:
+        assert "arrow" not in options and "dash" not in options
+        assert len(markers) == 1 and min(markers[0][::2]) > right

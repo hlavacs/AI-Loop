@@ -169,13 +169,16 @@ class CallViewCanvas(graph_canvas.GraphCanvas):
         colour = self.edge_colour(edge.source, edge.target, "#1f77b4")
         if edge.loop and a is b:
             x, y = self.to_screen(a.x + BOX_WIDTH / 2, a.y)
-            r = 10 * self.scale
-            loop_options: dict[str, Any] = {"outline": colour, "width": width}
+            radius, half_height = max(24 * self.scale, 16), BOX_HEIGHT * self.scale / 4
+            # Leave and re-enter at separate ports; keep the arrow clear of the node's outline.
+            loop_options: dict[str, Any] = {"fill": colour, "width": width, "smooth": True,
+                                           "arrow": tk.LAST}
             if edge.uncertain:
                 loop_options["dash"] = (6, 4)
-            self.canvas.create_oval(x - r, y - 2 * r, x + r, y, **loop_options)
+            self.canvas.create_line(x + 3, y - half_height, x + radius, y - half_height,
+                                    x + radius, y + half_height, x + 3, y + half_height, **loop_options)
             if edge.uncertain:
-                self.canvas.create_text(x + r, y - 2 * r, text="?", fill=colour,
+                self.canvas.create_text(x + radius, y - half_height - 8, text="?", fill=colour,
                                         font=("TkDefaultFont", max(int(10 * self.scale), 6), "bold"))
             return
         half = BOX_WIDTH / 2 if a.x <= b.x else -BOX_WIDTH / 2  # leave from the side that faces the target

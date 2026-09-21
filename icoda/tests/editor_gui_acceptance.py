@@ -465,15 +465,17 @@ def main() -> None:
         refreshes = []
         app.reload = lambda: refreshes.append(True)
         pane = app.source_editor
+        app.side_views.select(app.executables.output_frame)
+        sidebar = app.side_views.select()
         click_node(root, app.view, "main.cpp")
-        assert app.side_views.select() == str(pane.frame) and pane.text.index("insert") == "1.0"
+        assert app.side_views.select() == sidebar and pane.text.index("insert") == "1.0"
         app.views.select(app.class_view.frame)
         click_node(root, app.class_view, "clamp")
-        assert pane.text.index("insert") == "2.0"
+        assert app.side_views.select() == sidebar and pane.text.index("insert") == "2.0"
         app.call_view.set_root("main")
         app.views.select(app.call_view.frame)
         click_node(root, app.call_view, "clamp::clamp")
-        assert pane.text.index("insert") == "4.0"
+        assert app.side_views.select() == sidebar and pane.text.index("insert") == "4.0"
         verify_object_tooltips(root, app, args.output)
 
         # Unicode before the match must not shift the Text selection on Tcl 8 or 9.

@@ -446,6 +446,35 @@ def test_call_view_renders_uncertain_call_differently_from_certain_call(monkeypa
     assert any("uncertain dynamic call" in text for text in texts)
 
 
+@pytest.mark.parametrize("scale", [0.35, 1.0, 2.0])
+@pytest.mark.parametrize("uncertain", [False, True])
+def test_recursive_call_has_visible_arrow_outside_its_node(monkeypatch: Any, scale: float,
+                                                         uncertain: bool) -> None:
+    canvas = call_view.CallViewCanvas(tk.Tk(), lambda _file, _line: None)
+    model = model_with_calls()
+    model.add_edge(Edge(EdgeKind.CALLS, "u:b", "u:b", uncertain=uncertain))
+    canvas.show(model)
+    assert canvas.layout is not None
+    canvas.scale, canvas.offset = scale, (37, 53)
+    node = canvas.layout.nodes["u:b"]
+    edge = next(edge for edge in canvas.layout.edges if edge.source == edge.target)
+    lines: list[tuple[tuple[float, ...], dict[str, Any]]] = []
+    texts: list[str] = []
+    monkeypatch.setattr(canvas.canvas, "create_line", lambda *args, **kwargs: lines.append((args, kwargs)))
+    monkeypatch.setattr(canvas.canvas, "create_text", lambda *args, **kwargs: texts.append(kwargs["text"]))
+
+    canvas._draw_edge(edge)
+
+    assert len(lines) == 1
+    points, options = lines[0]
+    right, center = canvas.to_screen(node.x + call_view.BOX_WIDTH / 2, node.y)
+    assert options["arrow"] == tk.LAST and options["smooth"]
+    assert len(points) >= 8 and min(points[::2]) > right
+    assert points[1] < center < points[-1]  # Separate outgoing and returning ports.
+    assert ("dash" in options) == uncertain
+    assert ("?" in texts) == uncertain
+
+
 class FakeRunner(steps.StepRunner):
     def __init__(self, root: Path, config: Any, provider: str, binary: str, model: str, *, progress: Any) -> None:
         super().__init__(root, config, provider, binary, model, progress=progress)

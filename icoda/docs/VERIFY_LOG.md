@@ -5272,3 +5272,35 @@ Verification:
   row scrolling and inert folded headers, with no accidental source opening.
 - Updated zoom-button tooltips and the handbook. The revised PDF interaction instructions were rendered
   and visually inspected; native application checks used widget state and callbacks without screenshots.
+
+## 2026-09-21 — Make self-loop arrowheads visible
+
+Call View recursion and Class View self-relations were drawn as plain ovals without arrowheads or relation
+markers. They now follow a curved path outside the node, leaving and returning at separate ports. Call and
+usage loops show an arrowhead on the returning end; class loops retain their inheritance/composition markers.
+The endpoints stay clear of the node outline, and uncertain calls retain their dashed line and question mark.
+
+Verification:
+
+- All 12 new regression cases reproduced the missing directed paths before the fix. Afterwards, **74 tests
+  passed** across the step GUI, Class View, and view geometry. Ruff and mypy on 61 production files passed.
+- Native Tk 9.0.3 checks in `.icoda-test-artifacts/loop-arrows` verified recursion, uncertain recursion, class
+  usage, and composition at 35%, 100%, and 200% zoom with a translated viewport. Canvas hit testing confirmed
+  that each arrowhead or diamond remains visible after node panels are drawn. Canvas PostScript exports were
+  rendered and visually inspected for all four cases; no desktop screenshots were taken.
+
+## 2026-09-21 — Keep the selected sidebar tab during source navigation
+
+File and entity navigation now loads the source and positions the editor without selecting its tab. The
+current Entities, Source Editor, or Program output tab stays visible. The Source Editor tab and View menu
+remain available for explicitly opening the editor. Updated the README and existing native acceptance
+assertions to reflect the preserved sidebar selection.
+
+Verification:
+
+- **47 tests passed** across source editing and application behavior, including declaration navigation,
+  unsaved buffers, and candidate worktree editing. Ruff, mypy on 61 production files, and diff checks passed.
+- Native Tk 9.0.3 checks in `.icoda-test-artifacts/sidebar-selection` exercised actual File, Class, and Call
+  canvas clicks, Mind Map navigation, and entity-list selection with each of the three sidebar tabs active.
+  The selected tab remained unchanged and the editor followed the correct file and source line in every case.
+  Verification used widget state and events without desktop screenshots.
