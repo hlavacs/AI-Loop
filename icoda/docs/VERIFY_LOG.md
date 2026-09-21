@@ -5304,3 +5304,22 @@ Verification:
   canvas clicks, Mind Map navigation, and entity-list selection with each of the three sidebar tabs active.
   The selected tab remained unchanged and the editor followed the correct file and source line in every case.
   Verification used widget state and events without desktop screenshots.
+
+## 2026-09-21 — Correct callable labels in the Entities tab
+
+The entity list prefixed each callable's name to its full cached signature, producing labels such as
+`run  void run()`. Added a presentation formatter that shows one C++ declaration with a trailing return type,
+for example `auto run() -> void`. Constructors and destructors omit the parser's synthetic `void` return type.
+Python declarations, existing trailing-return declarations, and non-callable rows retain their existing form.
+The formatting leaves stored signatures unchanged, preserving signature comparisons and approval gates.
+
+Verification:
+
+- **118 tests passed** for view presentation, application behavior, source navigation, and step results. Cases
+  cover callback parameters, function-pointer return types, const/reference results, overloaded operators,
+  template constructors, destructors, and Python functions. Ruff, mypy on 61 production files, and diff checks
+  passed.
+- Native Tk 9.0.3 verification in `.icoda-test-artifacts/entity-signatures` loaded the Worktrees example's
+  cached declarations into a temporary project copy. Actual Entities rows displayed the expected `auto ... ->`
+  signatures once each and correct constructor/destructor labels while retaining the selected Entities tab.
+  Verification used widget text without desktop screenshots or writes to the original example project.

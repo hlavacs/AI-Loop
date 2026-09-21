@@ -4,8 +4,34 @@ from __future__ import annotations
 
 import math
 
+import pytest
+
 from icoda_core import clusters, views
 from icoda_core.model import DerivedModel, Edge, EdgeKind, Entity, FileInfo, Kind, merge_external_names
+
+
+@pytest.mark.parametrize("kind,name,signature,expected", [
+    (Kind.METHOD, "try_submit", "bool try_submit(void (*)(void *) noexcept, void *)",
+     "auto try_submit(void (*)(void *) noexcept, void *) -> bool"),
+    (Kind.FUNCTION, "run", "int run()", "auto run() -> int"),
+    (Kind.METHOD, "stop", "void stop()", "auto stop() -> void"),
+    (Kind.METHOD, "value", "const Value & value() const", "auto value() const -> const Value &"),
+    (Kind.METHOD, "operator()", "int operator()(int) const", "auto operator()(int) const -> int"),
+    (Kind.METHOD, "operator->", "Node * operator->() const", "auto operator->() const -> Node *"),
+    (Kind.FUNCTION, "callback", "void (*)(int) callback()", "auto callback() -> void (*)(int)"),
+    (Kind.CONSTRUCTOR, "WorkTree<Count>", "void WorkTree<Count>()", "WorkTree<Count>()"),
+    (Kind.DESTRUCTOR, "~Worker", "void ~Worker()", "~Worker()"),
+    (Kind.FUNCTION, "run", "auto run() -> int", "auto run() -> int"),
+    (Kind.FUNCTION, "run", "def run(value: int) -> bool", "def run(value: int) -> bool"),
+    (Kind.FUNCTION, "run", "async def run() -> int", "async def run() -> int"),
+    (Kind.FUNCTION, "run", "", "run"),
+    (Kind.FIELD, "root_", "WorkTreeNode<Count>", "root_  WorkTreeNode<Count>"),
+])
+def test_entity_tree_labels_show_one_signature_with_cpp_trailing_return_types(
+        kind: Kind, name: str, signature: str, expected: str) -> None:
+    entity = Entity("u:test", kind, name, name, "source.cpp", 1, signature=signature)
+    assert views.entity_tree_label(entity) == expected
+    assert entity.signature == signature  # Display formatting must not change signature-comparison inputs.
 
 
 def small_model() -> DerivedModel:

@@ -15,7 +15,7 @@ from dataclasses import dataclass, field, replace
 
 from icoda_core import class_view, mind_map
 from icoda_core.clusters import Clustering
-from icoda_core.model import CALLABLE_KINDS, DerivedModel, EdgeKind, Entity
+from icoda_core.model import CALLABLE_KINDS, DerivedModel, EdgeKind, Entity, Kind
 
 ARROW_COLOURS = {EdgeKind.INCLUDES: "#8a8a8a", EdgeKind.IMPORTS: "#8a8a8a", EdgeKind.CALLS: "#1f77b4",
                  EdgeKind.INHERITS: "#2ca02c", EdgeKind.USES_TYPE: "#ff7f0e"}
@@ -218,6 +218,28 @@ def layout_file_view(model: DerivedModel, clustering: Clustering, width: float =
     nodes.update(external_nodes)
     arrows = _merge_arrows(model, file_edges)
     return FileViewLayout(circles, nodes, arrows, aggregate_to_clusters(arrows, clustering), width, height)
+
+
+def entity_tree_label(entity: Entity) -> str:
+    """Show one callable signature, using trailing return types for cached C++ declarations."""
+    signature = entity.signature.strip()
+    if not signature:
+        return entity.name
+    if entity.kind not in CALLABLE_KINDS:
+        return f"{entity.name}  {signature}"
+    if signature.startswith(("def ", "async def ")):
+        return signature
+    # The analyser stores '<result type> <display name>(...)'. Match the full name so operator()
+    # and function-pointer types in the result or arguments are not mistaken for the parameter list.
+    result, separator, arguments = signature.partition(f" {entity.name}(")
+    if not separator:
+        return signature
+    declaration = f"{entity.name}({arguments}"
+    if entity.kind in (Kind.CONSTRUCTOR, Kind.DESTRUCTOR):
+        return declaration
+    if result == "auto":
+        return signature
+    return f"auto {declaration} -> {result}"
 
 
 def entity_location_label(entity: Entity) -> str:

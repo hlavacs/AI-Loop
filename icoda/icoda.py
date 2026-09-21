@@ -1489,7 +1489,7 @@ class App:
         parents = {e.usr: e for e in entities}
         for entity in entities:
             parent = entity.parent if entity.parent in parents else ""
-            label = entity.name + (f"  {entity.signature}" if entity.signature else "")
+            label = views.entity_tree_label(entity)
             self.tree.insert(parent, tk.END, iid=entity.usr, text=label, values=(entity.kind.value, entity.line),
                              open=True)
         self.open_editor(node_id, selected_entity.line if selected_entity is not None else 1)

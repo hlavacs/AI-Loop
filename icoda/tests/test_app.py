@@ -122,7 +122,7 @@ def test_view_notebook_registers_mind_map_beside_existing_m4_tabs(app_module, tm
     assert labels[:6] == ["File View", "Call View", "Class View", "Mind Map", "Coverage", "Issues"]
 
 
-def test_describe_and_select_nodes(app_module, tmp_path: Path) -> None:
+def test_describe_and_select_nodes(app_module, tmp_path: Path, monkeypatch) -> None:
     app = app_module.App(app_module.tk.Tk(), config=persistence.UserConfig(), config_path=tmp_path / "c.json")
     app.show(opened_project(tmp_path))
     assert "2 entities" in app.describe_node("src/a.cpp")
@@ -148,8 +148,11 @@ def test_describe_and_select_nodes(app_module, tmp_path: Path) -> None:
     assert "void f(int value)" in app.describe_node("u:A:f", candidate)
     assert "Function: new_api" in app.describe_node("u:new", candidate)
     assert "void f()" in app.describe_node("u:A:f") and not app.describe_node("u:new")
+    labels: dict[str, str] = {}
+    monkeypatch.setattr(app.tree, "insert", lambda *args, **kwargs: labels.update({kwargs["iid"]: kwargs["text"]}))
     app.select_node("src/a.cpp")
     assert app.side_title.get() == "src/a.cpp"
+    assert labels == {"u:A": "A", "u:A:f": "auto f() -> void"}
     app.select_node("external:std")
     assert app.side_title.get() == "src/a.cpp"
 
