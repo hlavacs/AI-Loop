@@ -59,6 +59,8 @@ def source_document() -> SpecificationDocument:
         in_scope=("Existing scope",),
         decisions=(
             SpecificationDecision(
+                id="D-1",
+                title="Keep SQLite",
                 topic="Storage",
                 selected_decision="Keep SQLite",
                 rationale="The user chose compatibility.",
@@ -147,7 +149,8 @@ def test_result_schema_embeds_complete_strict_specification_schema() -> None:
     }
     embedded = schema["properties"]["suggested_specification"]
     assert embedded["additionalProperties"] is False
-    assert set(embedded["required"]) == set(SpecificationDocument.empty().to_dict())
+    assert set(embedded["properties"]) == set(SpecificationDocument.empty().to_dict())
+    assert "goals" in embedded["allOf"][0]["then"]["required"]
     assert "$defs" in schema
     assert "$defs" not in embedded
     assert schema["$defs"]["decisionProposal"]["properties"]["options"]["minItems"] == 2
@@ -314,6 +317,8 @@ def test_malformed_json_receives_exactly_one_successful_repair(tmp_path: Path) -
         (
             lambda result: result["suggested_specification"]["decisions"].append(
                 {
+                    "id": "D-2",
+                    "title": "Fixed limit",
                     "topic": "Retry policy",
                     "selected_decision": "Fixed limit",
                     "rationale": "Model recommendation",
@@ -358,8 +363,9 @@ def test_broken_requirement_traceability_is_rejected(tmp_path: Path) -> None:
             "requirement_ids": ["MISSING"],
         }
     )
+    invalid["suggested_specification"]["requirements"][0]["use_cases"] = ["MISSING"]
     provider = FakeStructuredOutputProvider([invalid, invalid])
-    with pytest.raises(ElicitationValidationError, match="unknown requirement identifier: MISSING"):
+    with pytest.raises(ElicitationValidationError, match="unknown use case identifier: MISSING"):
         ElicitationEngine(service, provider).analyze("SPEC1")
     assert len(provider.requests) == 2
 

@@ -17,6 +17,8 @@ AI-Loop is useful for work that is too large for one prompt:
 
 AI-Loop works best when the goal is clear and the result can be checked with a command. Product decisions, credentials, destructive operations, and unclear requirements still need human attention.
 
+The Specification editor uses ICODA's authoring fields: Overview, Scope, Use Cases, Requirements, Decisions, and Code profile. See the [specification field guide](docs/SPECIFICATION_FIELDS.md) for their meanings, JSON import, and compatibility with older drafts. AI-Loop retains its verification and approval workflow for autonomous jobs.
+
 ## Why keep the job state?
 
 AI-Loop stores the plan, tasks, model decisions, run results, progress, and final state. If a process crashes or a model reaches a usage limit, the job can wait and continue later. The GUI lets you inspect the work, change models or task size, stop early, and resume when you are ready.

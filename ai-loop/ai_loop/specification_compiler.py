@@ -625,12 +625,14 @@ class VerificationManifest:
         return tuple(dict(item) for item in self.to_dict()["verification"])
 
 
-def _resolved_command(case: Any, job_test_command: str) -> tuple[str | None, str]:
+def _resolved_command(case: Any, job_test_command: str, profile_test_runner: str = "") -> tuple[str | None, str]:
     if case.automation == AutomationLevel.MANUAL:
         return None, "manual"
     override = (case.command_override or "").strip()
     if override:
         return override, "specification"
+    if profile_test_runner.strip():
+        return profile_test_runner.strip(), "specification"
     default = str(job_test_command).strip()
     if not default or default.lower() == "auto":
         raise ManifestCompilationError(
@@ -657,7 +659,9 @@ def compile_verification_manifest(
         )
     verification_entries: list[dict[str, Any]] = []
     for case in document.verification:
-        command, command_source = _resolved_command(case, job_test_command)
+        command, command_source = _resolved_command(
+            case, job_test_command, (document.code_profile or {}).get("test_runner", "")
+        )
         risk_ids = [risk.id for risk in document.risks if case.id in risk.verification_ids]
         verification_entries.append(
             {
@@ -723,9 +727,9 @@ def compile_verification_manifest(
                 "category": requirement.category.value,
                 "priority": requirement.priority.value,
                 "title": requirement.title,
-                "statement": requirement.statement,
+                "statement": requirement.implementation_statement(aligned=document.schema_version == "1.1"),
                 "acceptance_criteria": list(requirement.acceptance_criteria),
-                "linked_use_case_ids": [
+                "linked_use_case_ids": list(requirement.use_cases or ()) if document.schema_version == "1.1" else [
                     use_case.id
                     for use_case in document.use_cases
                     if requirement.id in use_case.requirement_ids

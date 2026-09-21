@@ -361,6 +361,8 @@ def test_specification_gui_import_exposes_every_stage_without_opening_tk() -> No
         "Scope",
         "Use Cases",
         "Requirements",
+        "Decisions",
+        "Code profile",
         "Risks",
         "Verification",
         "Choices",
@@ -375,9 +377,9 @@ def test_exact_json_diff_is_deterministic_and_preserves_complete_json_context() 
     assert render_specification_json_diff(source, suggestion) == (
         "--- stored-draft.json\n"
         "+++ suggested-specification.json\n"
-        "@@ -11,7 +11,7 @@\n"
+        "@@ -37,7 +37,7 @@\n"
         '   "risks": [],\n'
-        '   "schema_version": "1.0",\n'
+        '   "schema_version": "1.1",\n'
         '   "stakeholders": [],\n'
         '-  "summary": "",\n'
         '+  "summary": "B",\n'
@@ -512,8 +514,8 @@ def test_simplified_editor_labels_and_help_are_complete() -> None:
         } <= SPECIFICATION_VISIBLE_FIELD_KEYS
 
     assert ADDITIONAL_STAGE_FIELD_KEYS == {
-        "Overview": ("stakeholders",),
-        "Scope": ("assumptions", "dependencies"),
+        "Overview": ("objectives", "stakeholders"),
+        "Scope": ("in_scope", "assumptions", "constraints", "dependencies"),
     }
 
 
@@ -688,7 +690,7 @@ def test_editor_can_embed_in_specification_tab_with_json_controls(
         assert editor.save_specification_button.cget("text") == "Save JSON"
         assert editor.load_specification_button.cget("text") == "Load JSON"
         assert editor.notebook.winfo_manager() == "grid"
-        assert set(editor._stage_scroll_canvases) == {"Overview", "Scope"}
+        assert set(editor._stage_scroll_canvases) == {"Overview", "Scope", "Code profile"}
         assert all(
             str(canvas.cget("yscrollcommand"))
             for canvas in editor._stage_scroll_canvases.values()

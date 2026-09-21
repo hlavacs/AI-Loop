@@ -395,6 +395,16 @@ must be the COMPLETE document, not a patch, and must be strictly ADDITIVE:
   a description and tradeoffs for every option, a recommendation, and a blocking flag.
 Never materialize a recommended choice into suggested_specification.decisions.
 
+For schema version 1.1 use the ICODA authoring fields: summary is the project description;
+goals are desired outcomes; out_of_scope is work excluded from this project; not_allowed
+is prohibited approaches or behavior; done_when is the observable completion checklist.
+Use-case title/description explain user activities. A requirement title is its normative
+statement, description adds details, priority is must/should/could, and use_cases links
+UC IDs. Decisions use id/title/rationale. Respect every code_profile setting, including
+language, standard, modules, build, platforms, tests, naming, libraries and size limits.
+Keep legacy actor/flow/category/source fields optional; propose executable verification
+separately so approval and autonomous completion still require real evidence.
+
 Surface omitted normal flows, alternate flows, errors, edge and boundary cases, invalid
 input, cleanup, cancellation, retries, concurrency, ordering, resource ownership,
 persistence, compatibility, security, observability, performance, numerical stability,

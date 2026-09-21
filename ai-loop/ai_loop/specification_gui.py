@@ -22,6 +22,7 @@ except (ImportError, RuntimeError):  # pragma: no cover - platform dependent
     filedialog = None  # type: ignore[assignment]
     messagebox = None  # type: ignore[assignment]
 
+from ai_loop.specification_fields import CODE_PROFILE_SCHEMA, default_code_profile, editor_record
 from ai_loop.elicitation import (
     CompletedElicitation,
     ElicitationEngine,
@@ -45,6 +46,7 @@ from ai_loop.specifications import (
     StoredSpecificationVersion,
 )
 from ai_loop.specification_gui_support import (
+    PROFILE_LABELS,
     FieldSemanticFeedback,
     MetricAssertionParseError,
     PROCESS_OVERVIEW_TEXT,
@@ -95,11 +97,16 @@ _RECORD_FIELD_GROUPS = {
 
 SPECIFICATION_FIELD_LABELS = {
     "title": "Title",
-    "summary": "Summary",
+    "summary": "Description",
+    "goals": "Goals",
+    "not_allowed": "Not allowed",
+    "done_when": "Done when",
+    "code_profile": "Code profile",
+    **{f"code_profile.{key}": label for key, label in PROFILE_LABELS.items()},
     "objectives": "Objectives",
     "stakeholders": "Stakeholders",
     "in_scope": "In scope",
-    "out_of_scope": "Out of scope",
+    "out_of_scope": "Not in scope",
     "assumptions": "Assumptions",
     "constraints": "Constraints",
     "dependencies": "Dependencies",
@@ -149,19 +156,19 @@ SPECIFICATION_FIELD_HELP = {
 SPECIFICATION_VISIBLE_FIELD_KEYS = frozenset(SPECIFICATION_FIELD_LABELS)
 
 ADDITIONAL_STAGE_FIELD_KEYS = {
-    "Overview": ("stakeholders",),
-    "Scope": ("assumptions", "dependencies"),
+    "Overview": ("objectives", "stakeholders"),
+    "Scope": ("in_scope", "assumptions", "constraints", "dependencies"),
 }
 
 PRIMARY_RECORD_FIELD_KEYS = {
-    "use_cases": frozenset(("id", "title", "actors", "main_flow", "requirement_ids")),
+    "use_cases": frozenset(("id", "title", "description")),
     "requirements": frozenset(
-        ("id", "category", "priority", "title", "statement", "acceptance_criteria")
+        ("id", "title", "priority", "use_cases", "description")
     ),
     "risks": frozenset(
         ("id", "title", "description", "severity", "mitigations", "verification_ids")
     ),
-    "decisions": frozenset(("topic", "selected_decision", "rationale")),
+    "decisions": frozenset(("id", "title", "rationale")),
     "verification": frozenset(
         (
             "id",
@@ -322,6 +329,9 @@ class _RecordDialog:
                 else:
                     rendered = format_list_text(value or ())
                 control.insert("1.0", rendered)
+            elif field.kind == "tags":
+                control = ttk.Entry(field_row)
+                control.insert(0, ", ".join(value) if isinstance(value, (list, tuple)) else value)
             elif field.kind == "enum":
                 variable = tk.StringVar(value=str(value or field.default))
                 control = ttk.Combobox(
@@ -404,6 +414,8 @@ class _RecordDialog:
                         value = [item.__dict__ for item in parse_metric_assertions(value)]
                     elif field.kind == "records":
                         value = list(parse_structured_records(value))
+                elif field.kind == "tags":
+                    value = [item.strip() for item in control.get().replace("\n", ",").split(",") if item.strip()]
                 elif field.kind == "positive_int":
                     value = int(control.get())
                     if value <= 0:
@@ -1217,9 +1229,12 @@ class SpecificationEditor:
             self.stakeholders_text,
             *self.scope_widgets.values(),
             self.open_questions_text,
+            *self.profile_texts.values(),
         ):
             widget.edit_modified(False)
             widget.bind("<<Modified>>", self._on_text_modified, add="+")
+        for variable in self.profile_vars.values():
+            variable.trace_add("write", self._schedule_assessment)
         self._refresh_assessment()
         self.refresh_specifications()
 
@@ -1314,6 +1329,8 @@ class SpecificationEditor:
         self._build_collection_tab(
             "Verification", "verification", VERIFICATION_FIELDS, ("id", "automation", "title")
         )
+        self._build_collection_tab("Decisions", "decisions", DECISION_FIELDS, ("id", "title"))
+        self._build_code_profile_tab()
         self._build_choices_tab()
         self._build_review_tab()
 
@@ -1480,10 +1497,77 @@ class SpecificationEditor:
         tab.columnconfigure(1, weight=1)
         self.scope_widgets: dict[str, Any] = {}
         for row, key in enumerate(
-            ("in_scope", "out_of_scope", "assumptions", "constraints", "dependencies")
+            ("goals", "out_of_scope", "not_allowed", "done_when", "in_scope", "assumptions", "constraints", "dependencies")
         ):
             self.scope_widgets[key] = self._labeled_text(tab, row, key)
-        self._hide_additional_stage_fields(tab, "Scope", 5)
+        self._hide_additional_stage_fields(tab, "Scope", 8)
+
+    def _build_code_profile_tab(self) -> None:
+        tab = self._scrollable_stage_body("Code profile")
+        tab.columnconfigure(1, weight=1)
+        self.profile_vars: dict[str, Any] = {}
+        self.profile_texts: dict[str, Any] = {}
+        for row, (key, rule) in enumerate(CODE_PROFILE_SCHEMA["properties"].items()):
+            path = f"code_profile.{key}"
+            if rule.get("type") == "array":
+                self.profile_texts[key] = self._labeled_text(tab, row, path, height=3)
+                continue
+            self._field_label(tab, row, path)
+            variable = tk.BooleanVar() if rule.get("type") == "boolean" else tk.StringVar()
+            self.profile_vars[key] = variable
+            widget: Any
+            if "enum" in rule:
+                widget = ttk.Combobox(tab, textvariable=variable, values=rule["enum"], state="readonly")
+                widget.bind("<<ComboboxSelected>>", self._change_profile_language)
+            elif rule.get("type") == "boolean":
+                widget = ttk.Checkbutton(tab, variable=variable)
+            else:
+                widget = ttk.Entry(tab, textvariable=variable)
+            widget.grid(row=row, column=1, sticky="ew", pady=4)
+            self._field_row_widgets[path].append(widget)
+
+    def _load_code_profile(self, profile: Mapping[str, Any]) -> None:
+        self._loaded_profile = copy.deepcopy(dict(profile))
+        self._profile_language = str(profile.get("language", ""))
+        for key, variable in self.profile_vars.items():
+            value = profile.get(key, False if key == "modules" else "")
+            variable.set(value)
+        for key, widget in self.profile_texts.items():
+            self._set_text(widget, format_list_text(profile.get(key, [])))
+
+    def _collect_code_profile(self) -> dict[str, Any]:
+        profile = copy.deepcopy(self._loaded_profile)
+        for key, rule in CODE_PROFILE_SCHEMA["properties"].items():
+            value: Any
+            if key in self.profile_texts:
+                value = list(parse_list_text(self.profile_texts[key].get("1.0", "end-1c")))
+            else:
+                value = self.profile_vars[key].get()
+                if rule.get("type") == "integer" and value != "":
+                    try:
+                        value = int(value)
+                    except ValueError:
+                        pass  # Preserve invalid input so Review can identify its field.
+            if key in profile or value not in ("", [], False) or key in ("language", "standard"):
+                profile[key] = value
+        return profile
+
+    def _change_profile_language(self, _event: Any = None) -> None:
+        profile = self._collect_code_profile()
+        language = profile["language"]
+        old_defaults = default_code_profile(self._profile_language) if self._profile_language in ("C++", "Python") else {}
+        new_defaults = default_code_profile(language)
+        for key in CODE_PROFILE_SCHEMA["properties"]:
+            if key == "language":
+                continue
+            if (key not in profile or profile[key] == old_defaults.get(key)
+                    or (not old_defaults and profile[key] in ("", [], False))):
+                if key in new_defaults:
+                    profile[key] = new_defaults[key]
+                else:
+                    profile.pop(key, None)
+        self._load_code_profile(profile)
+        self._schedule_assessment()
 
     def _build_collection_tab(
         self,
@@ -1537,11 +1621,11 @@ class SpecificationEditor:
     def _build_choices_tab(self) -> None:
         tab = self.tabs["Choices"]
         tab.rowconfigure(0, weight=0)
-        tab.rowconfigure(1, weight=2)
+        tab.rowconfigure(1, weight=0)
         tab.rowconfigure(2, weight=1)
         choices_intro = ttk.Frame(tab)
         choices_intro.grid(row=0, column=0, sticky="ew", pady=(0, 8))
-        for key in ("decisions", "open_questions"):
+        for key in ("open_questions",):
             field = ttk.Frame(choices_intro)
             field.pack(side="left", padx=(0, 12))
             field_label = ttk.Label(field, text=SPECIFICATION_FIELD_LABELS[key])
@@ -1555,25 +1639,6 @@ class SpecificationEditor:
             help_button.pack(side="left", padx=(5, 0))
             self.field_labels[key] = field_label
             self.help_buttons[key] = help_button
-        materialized = ttk.LabelFrame(tab, text="User-resolved specification decisions", padding=6)
-        materialized.grid(row=1, column=0, sticky="nsew")
-        materialized.columnconfigure(0, weight=1)
-        materialized.rowconfigure(0, weight=1)
-        tree = ttk.Treeview(
-            materialized, columns=("topic", "decision"), show="headings", selectmode="browse"
-        )
-        tree.heading("topic", text="Topic")
-        tree.heading("decision", text="Selected decision")
-        tree.column("topic", width=180)
-        tree.column("decision", width=500)
-        tree.grid(row=0, column=0, sticky="nsew")
-        actions = ttk.Frame(materialized)
-        actions.grid(row=1, column=0, sticky="ew", pady=(6, 0))
-        ttk.Button(actions, text="Add", command=lambda: self._edit_collection("decisions", DECISION_FIELDS, None)).pack(side="left")
-        ttk.Button(actions, text="Edit", command=lambda: self._edit_selected_collection("decisions", DECISION_FIELDS)).pack(side="left", padx=(6, 0))
-        ttk.Button(actions, text="Remove", command=lambda: self._remove_selected("decisions")).pack(side="left", padx=(6, 0))
-        self.collection_trees["decisions"] = (tree, ("topic", "selected_decision"))
-
         lower = ttk.PanedWindow(tab, orient="horizontal")
         lower.grid(row=2, column=0, sticky="nsew", pady=(8, 0))
         questions = ttk.LabelFrame(lower, text="Open questions", padding=6)
@@ -1703,6 +1768,8 @@ class SpecificationEditor:
         widget.insert("1.0", value)
 
     def _load_record_into_widgets(self) -> None:
+        self.record = editor_record(self.record)
+        self._load_code_profile(self.record["code_profile"])
         self.title_var.set(self.record["title"])
         self._set_text(self.summary_text, self.record["summary"])
         self._set_text(self.objectives_text, format_list_text(self.record["objectives"]))
@@ -1714,6 +1781,7 @@ class SpecificationEditor:
 
     def _collect_record(self) -> dict[str, Any]:
         result = copy.deepcopy(self.record)
+        result["code_profile"] = self._collect_code_profile()
         result["title"] = self.title_var.get()
         result["summary"] = self.summary_text.get("1.0", "end-1c")
         result["objectives"] = list(parse_list_text(self.objectives_text.get("1.0", "end-1c")))
@@ -1732,6 +1800,13 @@ class SpecificationEditor:
         self, key: str, fields: Sequence[_Field], index: int | None
     ) -> None:
         initial = None if index is None else self.record[key][index]
+        if index is None and key in {"use_cases", "requirements", "decisions"}:
+            prefix = {"use_cases": "UC", "requirements": "R", "decisions": "D"}[key]
+            occupied = {item.get("id") for group in self.collection_trees for item in self.record[group]}
+            number = 1
+            while f"{prefix}-{number}" in occupied:
+                number += 1
+            initial = {"id": f"{prefix}-{number}"}
         if key == "verification":
             initial = _verification_for_dialog(initial)
         dialog = _RecordDialog(
@@ -1809,7 +1884,11 @@ class SpecificationEditor:
     def _refresh_assessment(self) -> None:
         record = self._collect_record()
         try:
-            document = record_to_document(record, worktree=self.repository_path)
+            if (self.snapshot is not None and self.snapshot.document.schema_version == "1.0"
+                    and record == editor_record(self.snapshot.document.to_dict())):
+                document = self.snapshot.document
+            else:
+                document = record_to_document(record, worktree=self.repository_path, validate=False)
             assessment = assess_specification(
                 document,
                 worktree=self.repository_path,
@@ -1830,12 +1909,14 @@ class SpecificationEditor:
         )
         feedback_keys_by_stage = {
             "Overview": ("title", "summary", "objectives", "stakeholders"),
-            "Scope": ("in_scope", "out_of_scope", "assumptions", "constraints", "dependencies"),
+            "Scope": ("goals", "out_of_scope", "not_allowed", "done_when"),
+            "Decisions": ("decisions",),
+            "Code profile": ("code_profile",),
             "Use Cases": ("use_cases",),
             "Requirements": ("requirements",),
             "Risks": ("risks",),
             "Verification": ("verification",),
-            "Choices": ("decisions", "open_questions"),
+            "Choices": ("open_questions",),
             "Review": (),
         }
         for stage, frame in self.tabs.items():
@@ -1901,7 +1982,7 @@ class SpecificationEditor:
         if self.snapshot is None:
             return True
         try:
-            return self._current_document().canonical_json() != self.snapshot.document.canonical_json()
+            return self._collect_record() != editor_record(self.snapshot.document.to_dict())
         except Exception:
             return True
 

@@ -14,17 +14,22 @@ import re
 import sqlite3
 import tempfile
 import uuid
-from dataclasses import dataclass, fields
+from dataclasses import dataclass, field, fields
 from decimal import Decimal
 from enum import Enum
 from pathlib import Path, PurePosixPath, PureWindowsPath
 from typing import Any, Callable, Iterable, Mapping, Sequence
 
 from ai_loop import db
+from ai_loop.specification_fields import (
+    code_profile_problems,
+    default_code_profile,
+    expand_aligned_record,
+)
 
 
-SUPPORTED_SCHEMA_VERSIONS = frozenset({"1.0"})
-CURRENT_SCHEMA_VERSION = "1.0"
+SUPPORTED_SCHEMA_VERSIONS = frozenset({"1.0", "1.1"})
+CURRENT_SCHEMA_VERSION = "1.1"
 STABLE_ID_PATTERN = re.compile(r"^[A-Z][A-Z0-9]*(?:[-_][A-Z0-9]+)*$")
 MAX_STABLE_ID_LENGTH = 64
 EVIDENCE_NAME_PATTERN = re.compile(r"^[A-Za-z][A-Za-z0-9._-]{0,127}$")
@@ -169,6 +174,22 @@ def _string(value: Any, path: str) -> str:
     return value
 
 
+def _extended_mapping(data: Any, model: type, path: str) -> Mapping[str, Any]:
+    """Optional authoring fields do not alter the serialized content of legacy revisions."""
+    defaults = {item.name: None for item in fields(model) if item.metadata.get("omit_none")}
+    if isinstance(data, Mapping):
+        data = {**defaults, **data}
+    return _strict_mapping(data, {item.name for item in fields(model)}, path)
+
+
+def _optional_text(value: Any, path: str) -> str | None:
+    return None if value is None else _string(value, path)
+
+
+def _optional_lines(value: Any, path: str) -> tuple[str, ...] | None:
+    return None if value is None else _tuple_of_strings(value, path)
+
+
 def _boolean(value: Any, path: str) -> bool:
     if not isinstance(value, bool):
         raise SpecificationError(f"{path} must be a boolean")
@@ -219,11 +240,11 @@ class UseCase:
     postconditions: tuple[str, ...]
     error_and_edge_cases: tuple[str, ...]
     requirement_ids: tuple[str, ...]
+    description: str | None = field(default=None, metadata={"omit_none": True})
 
     @classmethod
     def from_dict(cls, data: Any, path: str = "use_case") -> UseCase:
-        keys = {field.name for field in fields(cls)}
-        item = _strict_mapping(data, keys, path)
+        item = _extended_mapping(data, cls, path)
         return cls(
             id=_string(item["id"], f"{path}.id"),
             title=_string(item["title"], f"{path}.title"),
@@ -237,6 +258,7 @@ class UseCase:
                 item["error_and_edge_cases"], f"{path}.error_and_edge_cases"
             ),
             requirement_ids=_tuple_of_strings(item["requirement_ids"], f"{path}.requirement_ids"),
+            description=_optional_text(item["description"], f"{path}.description"),
         )
 
 
@@ -250,11 +272,17 @@ class Requirement:
     rationale: str
     acceptance_criteria: tuple[str, ...]
     source: str
+    description: str | None = field(default=None, metadata={"omit_none": True})
+    use_cases: tuple[str, ...] | None = field(default=None, metadata={"omit_none": True})
+
+    def implementation_statement(self, *, aligned: bool) -> str:
+        if not aligned:
+            return self.statement
+        return "\n".join(value for value in (self.title, self.description) if value)
 
     @classmethod
     def from_dict(cls, data: Any, path: str = "requirement") -> Requirement:
-        keys = {field.name for field in fields(cls)}
-        item = _strict_mapping(data, keys, path)
+        item = _extended_mapping(data, cls, path)
         return cls(
             id=_string(item["id"], f"{path}.id"),
             category=_enum(RequirementCategory, item["category"], f"{path}.category"),  # type: ignore[arg-type]
@@ -266,6 +294,8 @@ class Requirement:
                 item["acceptance_criteria"], f"{path}.acceptance_criteria"
             ),
             source=_string(item["source"], f"{path}.source"),
+            description=_optional_text(item["description"], f"{path}.description"),
+            use_cases=_optional_lines(item["use_cases"], f"{path}.use_cases"),
         )
 
 
@@ -276,11 +306,12 @@ class SpecificationDecision:
     rationale: str
     rejected_alternatives: tuple[str, ...]
     consequences: tuple[str, ...]
+    id: str | None = field(default=None, metadata={"omit_none": True})
+    title: str | None = field(default=None, metadata={"omit_none": True})
 
     @classmethod
     def from_dict(cls, data: Any, path: str = "decision") -> SpecificationDecision:
-        keys = {field.name for field in fields(cls)}
-        item = _strict_mapping(data, keys, path)
+        item = _extended_mapping(data, cls, path)
         return cls(
             topic=_string(item["topic"], f"{path}.topic"),
             selected_decision=_string(item["selected_decision"], f"{path}.selected_decision"),
@@ -289,6 +320,8 @@ class SpecificationDecision:
                 item["rejected_alternatives"], f"{path}.rejected_alternatives"
             ),
             consequences=_tuple_of_strings(item["consequences"], f"{path}.consequences"),
+            id=_optional_text(item["id"], f"{path}.id"),
+            title=_optional_text(item["title"], f"{path}.title"),
         )
 
 
@@ -584,6 +617,10 @@ class SpecificationDocument:
     risks: tuple[Risk, ...]
     verification: tuple[VerificationCase, ...]
     open_questions: tuple[str, ...]
+    goals: tuple[str, ...] | None = field(default=None, metadata={"omit_none": True})
+    not_allowed: tuple[str, ...] | None = field(default=None, metadata={"omit_none": True})
+    done_when: tuple[str, ...] | None = field(default=None, metadata={"omit_none": True})
+    code_profile: dict[str, Any] | None = field(default=None, metadata={"omit_none": True})
 
     @classmethod
     def empty(cls, *, title: str = "", summary: str = "") -> SpecificationDocument:
@@ -604,6 +641,10 @@ class SpecificationDocument:
             risks=(),
             verification=(),
             open_questions=(),
+            goals=(),
+            not_allowed=(),
+            done_when=(),
+            code_profile=default_code_profile(),
         )
 
     @classmethod
@@ -614,8 +655,9 @@ class SpecificationDocument:
         worktree: str | Path | None = None,
         validate: bool = True,
     ) -> SpecificationDocument:
-        keys = {field.name for field in fields(cls)}
-        item = _strict_mapping(data, keys, "specification")
+        if isinstance(data, Mapping) and data.get("schema_version") == "1.1":
+            data = expand_aligned_record(data)
+        item = _extended_mapping(data, cls, "specification")
         collection_types = {
             "use_cases": UseCase,
             "requirements": Requirement,
@@ -651,6 +693,10 @@ class SpecificationDocument:
             open_questions=_tuple_of_strings(
                 item["open_questions"], "specification.open_questions"
             ),
+            goals=_optional_lines(item["goals"], "specification.goals"),
+            not_allowed=_optional_lines(item["not_allowed"], "specification.not_allowed"),
+            done_when=_optional_lines(item["done_when"], "specification.done_when"),
+            code_profile=item["code_profile"],
         )
         if validate:
             validate_structural(document, worktree=worktree)
@@ -702,7 +748,11 @@ def _json_value(value: Any) -> Any:
     if isinstance(value, Enum):
         return value.value
     if hasattr(value, "__dataclass_fields__"):
-        return {field.name: _json_value(getattr(value, field.name)) for field in fields(value)}
+        return {
+            item.name: _json_value(getattr(value, item.name))
+            for item in fields(value)
+            if not (item.metadata.get("omit_none") and getattr(value, item.name) is None)
+        }
     if isinstance(value, tuple):
         return [_json_value(item) for item in value]
     if isinstance(value, list):
@@ -797,6 +847,15 @@ def structural_issues(
 
     if not isinstance(document.schema_version, str) or document.schema_version not in SUPPORTED_SCHEMA_VERSIONS:
         add("schema_version", f"unsupported schema version: {document.schema_version}")
+    if document.schema_version == "1.1":
+        for name in ("goals", "not_allowed", "done_when"):
+            if getattr(document, name) is None:
+                add(name, "is required (use an empty list when there are no items)")
+        for path, message in code_profile_problems(document.code_profile):
+            add(path, message)
+    elif document.code_profile is not None:
+        for path, message in code_profile_problems(document.code_profile):
+            add(path, message)
 
     def require_enum(path: str, value: Any, enum_type: type[Enum]) -> None:
         allowed = {item.value for item in enum_type}
@@ -809,6 +868,7 @@ def structural_issues(
         ("requirements", document.requirements),
         ("risks", document.risks),
         ("verification", document.verification),
+        ("decisions", tuple(d for d in document.decisions if d.id is not None)),
     )
     all_ids: list[tuple[str, str]] = []
     for group_name, entities in entity_groups:
@@ -830,11 +890,25 @@ def structural_issues(
         add("identifiers", f"identifier is reused by different entities: {duplicate}")
 
     requirement_ids = {requirement.id for requirement in document.requirements}
+    use_case_ids = {use_case.id for use_case in document.use_cases}
     verification_ids = {case.id for case in document.verification}
     for index, requirement in enumerate(document.requirements):
         require_enum(f"requirements[{index}].category", requirement.category, RequirementCategory)
         require_enum(f"requirements[{index}].priority", requirement.priority, RequirementPriority)
+        for use_case_id in requirement.use_cases or ():
+            if use_case_id not in use_case_ids:
+                add(f"requirements[{index}].use_cases", f"unknown use case identifier: {use_case_id}")
+        for duplicate in sorted(_duplicates(requirement.use_cases or ())):
+            add(f"requirements[{index}].use_cases", f"duplicate reference: {duplicate}")
+    if document.schema_version == "1.1":
+        for index, decision in enumerate(document.decisions):
+            if decision.id is None:
+                add(f"decisions[{index}].id", "is required")
+            if decision.title is None:
+                add(f"decisions[{index}].title", "is required")
     for index, use_case in enumerate(document.use_cases):
+        if document.schema_version == "1.1":
+            continue  # Requirements.use_cases is authoritative for ICODA-style authoring.
         for requirement_id in use_case.requirement_ids:
             if requirement_id not in requirement_ids:
                 add(
@@ -1043,6 +1117,7 @@ def approval_issues(
     unresolved_blocking_decisions: int = 0,
 ) -> list[ValidationIssue]:
     issues = structural_issues(document)
+    aligned = document.schema_version == "1.1"
 
     def add(path: str, message: str) -> None:
         issues.append(ValidationIssue("approval", path, "error", message))
@@ -1050,20 +1125,23 @@ def approval_issues(
     for path, value in (("title", document.title), ("summary", document.summary)):
         if not _nonempty(value):
             add(path, "is required for approval")
-    for path, values in (
-        ("objectives", document.objectives),
-        ("in_scope", document.in_scope),
-        ("out_of_scope", document.out_of_scope),
-        ("stakeholders", document.stakeholders),
-    ):
-        if not values or any(not _nonempty(value) for value in values):
-            add(path, "must contain at least one non-empty item for approval")
+    if not aligned:
+        for path, values in (
+            ("objectives", document.objectives),
+            ("in_scope", document.in_scope),
+            ("out_of_scope", document.out_of_scope),
+            ("stakeholders", document.stakeholders),
+        ):
+            if not values or any(not _nonempty(value) for value in values):
+                add(path, "must contain at least one non-empty item for approval")
     if not document.use_cases:
         add("use_cases", "at least one complete use case is required")
     for index, use_case in enumerate(document.use_cases):
         base = f"use_cases[{index}]"
         if not _nonempty(use_case.title):
             add(f"{base}.title", "is required")
+        if aligned:
+            continue
         if not use_case.actors:
             add(f"{base}.actors", "at least one actor is required")
         if not use_case.preconditions:
@@ -1079,10 +1157,16 @@ def approval_issues(
         if not use_case.requirement_ids:
             add(f"{base}.requirement_ids", "every use case must reference requirements")
 
+    if aligned:
+        for index, decision in enumerate(document.decisions):
+            if not _nonempty(decision.title or ""):
+                add(f"decisions[{index}].title", "is required")
+
     categories = {requirement.category for requirement in document.requirements}
-    if RequirementCategory.FUNCTIONAL not in categories:
-        add("requirements", "at least one functional requirement is required")
-    if RequirementCategory.QUALITY not in categories:
+    if (not aligned and RequirementCategory.FUNCTIONAL not in categories) or not document.requirements:
+        add("requirements", "at least one requirement is required" if aligned
+            else "at least one functional requirement is required")
+    if not aligned and RequirementCategory.QUALITY not in categories:
         add("requirements", "at least one quality requirement is required")
     coverage: dict[str, set[str]] = {requirement.id: set() for requirement in document.requirements}
     for case in document.verification:
@@ -1091,11 +1175,12 @@ def approval_issues(
                 coverage[requirement_id].add(case.id)
     for index, requirement in enumerate(document.requirements):
         base = f"requirements[{index}]"
-        for name in ("title", "statement", "rationale", "source"):
+        for name in (("title",) if aligned else ("title", "statement", "rationale", "source")):
             if not _nonempty(getattr(requirement, name)):
                 add(f"{base}.{name}", "is required for approval")
-        if not requirement.acceptance_criteria or any(
-            not _nonempty(item) for item in requirement.acceptance_criteria
+        if not aligned and (
+            not requirement.acceptance_criteria
+            or any(not _nonempty(item) for item in requirement.acceptance_criteria)
         ):
             add(f"{base}.acceptance_criteria", "measurable acceptance criteria are required")
         if not coverage.get(requirement.id):

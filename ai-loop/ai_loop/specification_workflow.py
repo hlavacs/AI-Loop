@@ -11,6 +11,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable, Mapping, Sequence
 
+from ai_loop.specification_fields import profile_instructions
 from ai_loop.specifications import (
     SpecificationDocument,
     SpecificationService,
@@ -27,6 +28,8 @@ EDITOR_STAGES = (
     "Scope",
     "Use Cases",
     "Requirements",
+    "Decisions",
+    "Code profile",
     "Risks",
     "Verification",
     "Choices",
@@ -47,7 +50,11 @@ _ROOT_PATH_STAGES = {
     "requirements": "Requirements",
     "risks": "Risks",
     "verification": "Verification",
-    "decisions": "Choices",
+    "decisions": "Decisions",
+    "goals": "Scope",
+    "not_allowed": "Scope",
+    "done_when": "Scope",
+    "code_profile": "Code profile",
     "choices": "Choices",
     "open_questions": "Choices",
 }
@@ -202,7 +209,7 @@ def analyze_specification_change(
         values = document.get(key)
         if not isinstance(values, list) or not all(isinstance(item, Mapping) for item in values):
             raise ValueError(f"specification.{key} must contain objects")
-        return _stable_contract_index(values, lambda item: str(item.get(identity) or ""), key)
+        return _stable_contract_index(values, lambda item: str((item.get("id") if key == "decisions" else None) or item.get(identity) or ""), key)
 
     old_requirements = index_root(old_document, "requirements", "id")
     new_requirements = index_root(new_document, "requirements", "id")
@@ -299,7 +306,18 @@ def analyze_specification_change(
         ),
     }
 
+    authoring_changed = False
+    if previous.document.schema_version == "1.1" or newer.document.schema_version == "1.1":
+        keys = ("title", "summary", "goals", "out_of_scope", "not_allowed", "done_when", "code_profile", "use_cases")
+        changes["authoring_fields"] = _contract_delta(
+            {key: {"value": old_document.get(key)} for key in keys},
+            {key: {"value": new_document.get(key)} for key in keys},
+        )
+        authoring_changed = bool(_changed_ids(changes["authoring_fields"]))
+
     changed_requirement_ids = _changed_ids(changes["requirements"])
+    if authoring_changed:
+        changed_requirement_ids.update(new_requirements)
     changed_risk_ids = _changed_ids(changes["risks"])
     changed_case_ids = _changed_ids(changes["verification_cases"])
     changed_nested_case_ids = {
@@ -318,6 +336,7 @@ def analyze_specification_change(
             or requirement_ids & changed_requirement_ids
             or risk_ids & changed_risk_ids
             or decision_changed
+            or authoring_changed
         ):
             affected_verification_ids.add(verification_id)
     for verification_id, case in old_manifest_cases.items():
@@ -493,26 +512,34 @@ def derive_formal_job_inputs(snapshot: StoredSpecificationVersion) -> FormalJobI
     if document.summary:
         goal = f"{goal}\n\n{document.summary}"
 
+    if document.goals:
+        goal += "\n\nGoals:\n" + "\n".join(f"- {item}" for item in document.goals)
+
     constraints = [
         f"Treat the pinned formal specification {contract} as authoritative; "
         "do not silently change its scope, requirements, decisions, or exclusions."
     ]
     constraints.extend(f"[Out of scope] {item}" for item in document.out_of_scope)
+    constraints.extend(f"[Not allowed] {item}" for item in document.not_allowed or ())
+    if document.code_profile is not None:
+        constraints.extend(profile_instructions(document.code_profile))
     constraints.extend(f"[Assumption] {item}" for item in document.assumptions)
     constraints.extend(
         f"[Implementation constraint or compatibility boundary] {item}"
         for item in document.constraints
     )
     for decision in document.decisions:
+        label = decision.id or decision.topic
+        selected = decision.title if decision.title is not None else decision.selected_decision
         constraints.append(
-            f"[Approved decision: {decision.topic}] {decision.selected_decision}"
+            f"[Approved decision: {label}] {selected}"
         )
         if decision.rationale:
             constraints.append(
-                f"[Approved decision rationale: {decision.topic}] {decision.rationale}"
+                f"[Approved decision rationale: {label}] {decision.rationale}"
             )
         constraints.extend(
-            f"[Approved decision consequence: {decision.topic}] {consequence}"
+            f"[Approved decision consequence: {label}] {consequence}"
             for consequence in decision.consequences
         )
 
@@ -521,6 +548,12 @@ def derive_formal_job_inputs(snapshot: StoredSpecificationVersion) -> FormalJobI
         for requirement in document.requirements
         for criterion in requirement.acceptance_criteria
     ]
+    acceptance.extend(f"[Done when] {item}" for item in document.done_when or ())
+    if document.schema_version == "1.1":
+        acceptance.extend(
+            f"[Requirement {item.id}; {item.priority.value}] {item.implementation_statement(aligned=True)}"
+            for item in document.requirements
+        )
     blocking_cases = tuple(case for case in document.verification if case.blocking)
     acceptance.extend(
         f"[Blocking verification {case.id}] {criterion}"

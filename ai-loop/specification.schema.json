@@ -5,7 +5,7 @@
   "type": "object",
   "additionalProperties": false,
   "properties": {
-    "schema_version": { "const": "1.0" },
+    "schema_version": { "enum": ["1.0", "1.1"] },
     "title": { "type": "string" },
     "summary": { "type": "string" },
     "objectives": { "$ref": "#/$defs/stringArray" },
@@ -35,27 +35,108 @@
       "type": "array",
       "items": { "$ref": "#/$defs/verificationCase" }
     },
-    "open_questions": { "$ref": "#/$defs/stringArray" }
+    "open_questions": { "$ref": "#/$defs/stringArray" },
+    "goals": { "$ref": "#/$defs/stringArray" },
+    "not_allowed": { "$ref": "#/$defs/stringArray" },
+    "done_when": { "$ref": "#/$defs/stringArray" },
+    "code_profile": { "$ref": "#/$defs/codeProfile" }
   },
-  "required": [
-    "schema_version",
-    "title",
-    "summary",
-    "objectives",
-    "in_scope",
-    "out_of_scope",
-    "stakeholders",
-    "assumptions",
-    "constraints",
-    "dependencies",
-    "use_cases",
-    "requirements",
-    "decisions",
-    "risks",
-    "verification",
-    "open_questions"
+  "required": ["schema_version"],
+  "allOf": [
+    {
+      "if": {
+        "properties": {"schema_version": {"const": "1.1"}}
+      },
+      "then": {
+        "required": [
+          "code_profile",
+          "decisions",
+          "done_when",
+          "goals",
+          "not_allowed",
+          "out_of_scope",
+          "requirements",
+          "schema_version",
+          "summary",
+          "title",
+          "use_cases"
+        ],
+        "properties": {"decisions": {"items": {"required": ["id", "title"]}}}
+      },
+      "else": {
+        "required": [
+          "schema_version",
+          "title",
+          "summary",
+          "objectives",
+          "in_scope",
+          "out_of_scope",
+          "stakeholders",
+          "assumptions",
+          "constraints",
+          "dependencies",
+          "use_cases",
+          "requirements",
+          "decisions",
+          "risks",
+          "verification",
+          "open_questions"
+        ],
+        "properties": {
+          "use_cases": {
+            "items": {
+              "required": [
+                "id",
+                "title",
+                "actors",
+                "preconditions",
+                "trigger",
+                "main_flow",
+                "alternate_flows",
+                "postconditions",
+                "error_and_edge_cases",
+                "requirement_ids"
+              ]
+            }
+          },
+          "requirements": {
+            "items": {
+              "required": ["id", "category", "priority", "title", "statement", "rationale", "acceptance_criteria", "source"]
+            }
+          },
+          "decisions": {
+            "items": {"required": ["topic", "selected_decision", "rationale", "rejected_alternatives", "consequences"]}
+          }
+        }
+      }
+    }
   ],
   "$defs": {
+    "codeProfile": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["language", "standard"],
+      "properties": {
+        "language": {"enum": ["C++", "Python"]},
+        "standard": {"type": "string"},
+        "modules": {"type": "boolean"},
+        "build": {"type": "string"},
+        "platforms": {"type": "array", "items": {"enum": ["macOS", "Linux", "Windows"]}},
+        "test_framework": {"type": "string"},
+        "test_runner": {"type": "string"},
+        "test_file_convention": {"type": "string"},
+        "source_file_extension": {"type": "string"},
+        "module_naming": {"type": "string"},
+        "class_naming": {"type": "string"},
+        "function_naming": {"type": "string"},
+        "library_policy": {"type": "string"},
+        "max_function_lines": {"type": "integer", "minimum": 1},
+        "hard_max_function_lines": {"type": "integer", "minimum": 1},
+        "max_data_members": {"type": "integer", "minimum": 1},
+        "max_methods": {"type": "integer", "minimum": 1},
+        "style_notes": {"type": "array", "items": {"type": "string"}}
+      }
+    },
     "stableId": {
       "type": "string",
       "pattern": "^[A-Z][A-Z0-9]*(?:[-_][A-Z0-9]+)*$",
@@ -87,19 +168,10 @@
           "type": "array",
           "items": { "$ref": "#/$defs/stableId" }
         }
+,
+        "description": {"type": "string"}
       },
-      "required": [
-        "id",
-        "title",
-        "actors",
-        "preconditions",
-        "trigger",
-        "main_flow",
-        "alternate_flows",
-        "postconditions",
-        "error_and_edge_cases",
-        "requirement_ids"
-      ]
+      "required": ["id", "title"]
     },
     "requirement": {
       "type": "object",
@@ -119,17 +191,11 @@
         "rationale": { "type": "string" },
         "acceptance_criteria": { "$ref": "#/$defs/stringArray" },
         "source": { "type": "string" }
+,
+        "description": {"type": "string"},
+        "use_cases": {"type": "array", "items": {"$ref": "#/$defs/stableId"}, "uniqueItems": true}
       },
-      "required": [
-        "id",
-        "category",
-        "priority",
-        "title",
-        "statement",
-        "rationale",
-        "acceptance_criteria",
-        "source"
-      ]
+      "required": ["id", "title", "priority"]
     },
     "specificationDecision": {
       "type": "object",
@@ -140,14 +206,11 @@
         "rationale": { "type": "string" },
         "rejected_alternatives": { "$ref": "#/$defs/stringArray" },
         "consequences": { "$ref": "#/$defs/stringArray" }
+,
+        "id": {"$ref": "#/$defs/stableId"},
+        "title": {"type": "string"}
       },
-      "required": [
-        "topic",
-        "selected_decision",
-        "rationale",
-        "rejected_alternatives",
-        "consequences"
-      ]
+      "required": []
     },
     "risk": {
       "type": "object",

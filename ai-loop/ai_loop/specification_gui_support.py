@@ -15,6 +15,9 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Iterable, Mapping, Sequence
 
+from ai_loop.specification_fields import (
+    CODE_PROFILE_SCHEMA, CORE_ROOT_FIELDS, default_code_profile, expand_aligned_record,
+)
 from ai_loop.elicitation import (
     DecisionProposal,
 )
@@ -249,6 +252,62 @@ SPECIFICATION_FIELD_EXAMPLES = {
 }
 
 
+_ALIGNED_HELP = {
+    "goals": ("One goal per line: what the project must achieve.", "Runs at 60 frames per second on a laptop"),
+    "not_allowed": ("One item per line: libraries, techniques or features the code must not use.", "Boost; exceptions for control flow; global variables"),
+    "done_when": ("One observable condition per line that marks the project as finished.", "Every implemented function has a passing unit test"),
+    "use_cases.title": ("One thing a user does with the program, as a short sentence.", "The player starts a new game"),
+    "use_cases.description": ("Optional steps, result and special cases.", "The player picks a difficulty and a field is generated."),
+    "requirements.title": ("One testable statement about what the program must do or be.", "The game saves its state when it is closed"),
+    "requirements.description": ("Optional numbers, limits and formats that clarify the requirement.", "Saving takes at most 100 ms"),
+    "requirements.use_cases": ("Optional use cases this requirement serves, by ID, comma separated.", "UC-1, UC-3"),
+    "requirements.priority": ("must: without it the project fails; should: important; could: nice to have.", "must"),
+    "decisions.id": ("A unique stable ID for this decision.", "D-1"),
+    "decisions.title": ("A choice already made, so the agent does not reopen it.", "Use SDL3 for graphics and input"),
+    "decisions.rationale": ("Optional reason for this choice.", "Cross-platform and available in vcpkg"),
+    "code_profile": ("Source language and conventions the implementation must follow, as in ICODA.", "C++23 with doctest"),
+}
+for _key, (_help, _example) in _ALIGNED_HELP.items():
+    SPECIFICATION_FIELD_GUIDANCE[_key] = _help
+    SPECIFICATION_FIELD_EXAMPLES[_key] = _example
+
+PROFILE_LABELS = {
+    "language": "Language", "standard": "Standard", "modules": "C++20 modules",
+    "build": "Build", "platforms": "Platforms", "test_framework": "Test framework",
+    "test_runner": "Test runner", "test_file_convention": "Test files",
+    "source_file_extension": "Source extension", "module_naming": "Module naming",
+    "class_naming": "Class naming", "function_naming": "Function naming",
+    "library_policy": "Libraries", "max_function_lines": "Max function lines",
+    "hard_max_function_lines": "Hard max function lines", "max_methods": "Max methods per class",
+    "max_data_members": "Max data members", "style_notes": "Style rules",
+}
+_PROFILE_GUIDANCE = {
+    "language": "The project's source language.",
+    "standard": "The language standard the code is written in.",
+    "modules": "Generate C++20 modules instead of header files.",
+    "build": "The build system and build-directory conventions to follow.",
+    "platforms": "Where the program must build and run, one platform per line.",
+    "test_framework": "The unit test framework the agent writes tests for.",
+    "test_runner": "The command used to run tests.",
+    "test_file_convention": "Where test files live and how they are named.",
+    "source_file_extension": "The extension for source files.",
+    "module_naming": "The naming style for modules.",
+    "class_naming": "The naming style for classes.",
+    "function_naming": "The naming style for functions.",
+    "library_policy": "How third-party libraries are added.",
+    "max_function_lines": "Functions longer than this are split into smaller ones.",
+    "hard_max_function_lines": "A function longer than this is refused outright, not only reported.",
+    "max_methods": "A class with more methods than this is flagged as too large.",
+    "max_data_members": "A class with more data members than this is flagged as too large.",
+    "style_notes": "One rule per line that the agent must follow.",
+}
+for _key, _help in _PROFILE_GUIDANCE.items():
+    SPECIFICATION_FIELD_GUIDANCE[f"code_profile.{_key}"] = _help
+    SPECIFICATION_FIELD_EXAMPLES[f"code_profile.{_key}"] = str(
+        default_code_profile().get(_key, default_code_profile("Python").get(_key, ""))
+    )
+
+
 def _field_guidance(path: str) -> str:
     """Return permanent inline help plus a concrete value for one input."""
 
@@ -438,12 +497,12 @@ def document_to_record(document: SpecificationDocument) -> dict[str, Any]:
 
 
 def record_to_document(
-    record: Mapping[str, Any], *, worktree: str | Path | None = None
+    record: Mapping[str, Any], *, worktree: str | Path | None = None, validate: bool = True
 ) -> SpecificationDocument:
     """Convert an editor record through the strict authoritative model parser."""
 
     return SpecificationDocument.from_dict(
-        copy.deepcopy(dict(record)), worktree=worktree
+        copy.deepcopy(dict(record)), worktree=worktree, validate=validate
     )
 
 
@@ -486,6 +545,14 @@ def savefile_to_record(content: bytes | bytearray | str) -> dict[str, Any]:
         raise SpecificationSavefileError(
             "Specification file must contain a JSON object"
         )
+    if type(envelope.get("schema_version")) is int and envelope["schema_version"] == 2:
+        if set(envelope) != CORE_ROOT_FIELDS:
+            raise SpecificationSavefileError("ICODA specification has missing or unexpected fields")
+        imported = expand_aligned_record({**envelope, "schema_version": "1.1"})
+        try:
+            return SpecificationDocument.from_dict(imported).to_dict()
+        except ValueError as exc:
+            raise SpecificationSavefileError(str(exc)) from exc
     schema = envelope.get("schema")
     if schema != SPECIFICATION_SAVEFILE_SCHEMA:
         raise SpecificationSavefileError(
@@ -504,7 +571,8 @@ def savefile_to_record(content: bytes | bytearray | str) -> dict[str, Any]:
             "Specification file field 'specification' must contain a JSON object"
         )
     template = SpecificationDocument.empty().to_dict()
-    missing = sorted(set(template) - set(record))
+    optional = {"goals", "not_allowed", "done_when", "code_profile"} if record.get("schema_version") == "1.0" else set()
+    missing = sorted(set(template) - optional - set(record))
     unexpected = sorted(set(record) - set(template))
     if missing or unexpected:
         details = []
@@ -518,7 +586,11 @@ def savefile_to_record(content: bytes | bytearray | str) -> dict[str, Any]:
             + ")"
         )
     for key, default in template.items():
+        if key not in record:
+            continue
         value = record[key]
+        if isinstance(default, dict) and not isinstance(value, dict):
+            raise SpecificationSavefileError(f"Specification file field {key!r} must contain an object")
         if isinstance(default, str) and not isinstance(value, str):
             raise SpecificationSavefileError(
                 f"Specification file field {key!r} must contain text"
@@ -535,9 +607,9 @@ def savefile_to_record(content: bytes | bytearray | str) -> dict[str, Any]:
         "assumptions",
         "constraints",
         "dependencies",
-        "open_questions",
+        "open_questions", "goals", "not_allowed", "done_when",
     ):
-        if not all(isinstance(item, str) for item in record[key]):
+        if not all(isinstance(item, str) for item in record.get(key, [])):
             raise SpecificationSavefileError(
                 f"Specification file field {key!r} must contain only text items"
             )
@@ -752,6 +824,18 @@ def worked_example_document(
             ],
         }
     )
+    payload["goals"] = list(payload["objectives"])
+    payload["not_allowed"] = ["Send duplicate reminders for the same appointment"]
+    payload["done_when"] = ["Due reminders are delivered once and the automated verification passes"]
+    payload["code_profile"] = default_code_profile("Python")
+    for use_case in payload["use_cases"]:
+        use_case["description"] = "\n".join(use_case["main_flow"])
+    for requirement in payload["requirements"]:
+        requirement["description"] = requirement["statement"]
+        requirement["use_cases"] = [case["id"] for case in payload["use_cases"] if requirement["id"] in case["requirement_ids"]]
+    for number, decision in enumerate(payload["decisions"], 1):
+        decision["id"] = f"D-{number}"
+        decision["title"] = decision["selected_decision"]
     return record_to_document(payload, worktree=worktree)
 
 
@@ -916,7 +1000,7 @@ def compute_field_feedback(
     source = copy.deepcopy(dict(record))
     if assessment is None:
         try:
-            document = record_to_document(source, worktree=worktree)
+            document = record_to_document(source, worktree=worktree, validate=False)
             assessment = assess_specification(document, worktree=worktree)
         except Exception as exc:
             assessment = StageAssessment(
@@ -971,7 +1055,10 @@ def compute_field_feedback(
         "decisions",
         "open_questions",
     }
+    if source.get("schema_version") == "1.1":
+        optional_roots.update({"objectives", "stakeholders", "in_scope", "out_of_scope", "goals", "not_allowed", "done_when"})
     top_level_fields = (
+        "goals", "not_allowed", "done_when", "code_profile",
         "title",
         "summary",
         "objectives",
@@ -990,6 +1077,10 @@ def compute_field_feedback(
     )
     for path in top_level_fields:
         add(path, source.get(path), optional=path in optional_roots)
+
+    for key in CODE_PROFILE_SCHEMA["properties"]:
+        profile = source.get("code_profile")
+        add(f"code_profile.{key}", profile.get(key) if isinstance(profile, dict) else None, optional=True)
 
     collection_fields = {
         "use_cases": USE_CASE_FIELDS,
@@ -1077,7 +1168,9 @@ _SUGGESTION_TAB_BY_ROOT = {
     "requirements": "Requirements",
     "risks": "Risks",
     "verification": "Verification",
-    "decisions": "Choices",
+    "decisions": "Decisions",
+    "goals": "Scope", "not_allowed": "Scope", "done_when": "Scope",
+    "code_profile": "Code profile",
     "choices": "Choices",
     "open_questions": "Choices",
 }
@@ -1105,7 +1198,7 @@ def analyze_specification(
 
     source = copy.deepcopy(dict(record))
     try:
-        document = record_to_document(source, worktree=worktree)
+        document = record_to_document(source, worktree=worktree, validate=False)
         assessment = assess_specification(
             document,
             worktree=worktree,
@@ -1297,7 +1390,8 @@ class _Field:
 
 USE_CASE_FIELDS = (
     _Field("id", "Stable ID"),
-    _Field("title", "Title"),
+    _Field("title", "Use case"),
+    _Field("description", "Details", "text"),
     _Field("actors", "Actors", "list"),
     _Field("preconditions", "Preconditions", "list"),
     _Field("trigger", "Trigger", "text"),
@@ -1310,21 +1404,11 @@ USE_CASE_FIELDS = (
 
 REQUIREMENT_FIELDS = (
     _Field("id", "Stable ID"),
-    _Field(
-        "category",
-        "Category",
-        "enum",
-        tuple(item.value for item in RequirementCategory),
-        "functional",
-    ),
-    _Field(
-        "priority",
-        "Priority",
-        "enum",
-        tuple(item.value for item in RequirementPriority),
-        "must",
-    ),
-    _Field("title", "Title"),
+    _Field("title", "Requirement"),
+    _Field("priority", "Priority", "enum", tuple(item.value for item in RequirementPriority), "must"),
+    _Field("use_cases", "Use cases", "tags"),
+    _Field("description", "Details", "text"),
+    _Field("category", "Category", "enum", tuple(item.value for item in RequirementCategory), "functional"),
     _Field("statement", "Normative statement", "text"),
     _Field("rationale", "Rationale", "text"),
     _Field("acceptance_criteria", "Measurable acceptance criteria", "list"),
@@ -1356,9 +1440,11 @@ RISK_FIELDS = (
 )
 
 DECISION_FIELDS = (
+    _Field("id", "Stable ID"),
+    _Field("title", "Decision"),
     _Field("topic", "Topic"),
     _Field("selected_decision", "Selected decision", "text"),
-    _Field("rationale", "Rationale", "text"),
+    _Field("rationale", "Why", "text"),
     _Field("rejected_alternatives", "Rejected alternatives", "list"),
     _Field("consequences", "Consequences", "list"),
 )

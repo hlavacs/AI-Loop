@@ -341,7 +341,7 @@ class TestSpecificationSchema:
         schema = json.loads((Path(__file__).parents[1] / "specification.schema.json").read_text())
         assert schema["$schema"].endswith("2020-12/schema")
         assert schema["additionalProperties"] is False
-        assert schema["properties"]["schema_version"]["const"] == "1.0"
+        assert schema["properties"]["schema_version"]["enum"] == ["1.0", "1.1"]
         assert schema["$defs"]["stableId"]["pattern"]
         for definition in ("useCase", "requirement", "specificationDecision", "risk", "validationLoop", "metricAssertion", "verificationCase"):
             assert schema["$defs"][definition]["additionalProperties"] is False
@@ -358,7 +358,7 @@ class TestSpecificationSchema:
         ]
         assert schema["$defs"]["metricNameArray"]["uniqueItems"] is True
         serialized = json.loads(complete_document().pretty_json())
-        assert set(serialized) == set(schema["required"])
+        assert set(serialized) == set(schema["allOf"][0]["else"]["required"])
         assert SpecificationDocument.from_dict(serialized).to_dict() == serialized
 
 
