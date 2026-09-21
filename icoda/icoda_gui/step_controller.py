@@ -6,8 +6,9 @@ back on the Tk thread. Dialogs ask for a rejection reason or adaptation constrai
 
 from __future__ import annotations
 
+import json
 from collections.abc import Callable, Sequence
-from dataclasses import replace
+from dataclasses import asdict, replace
 from pathlib import Path
 from tkinter import messagebox, simpledialog
 from typing import Any
@@ -160,6 +161,16 @@ class StepController:
                        approach.plan if approach and not panel.approach_approved else "")
         if not description.strip():
             return
+        if proposal is not None and proposal.response is not None:
+            context = proposal.source_diff or json.dumps(
+                [asdict(change) for change in proposal.response.files], indent=2)
+            if proposal.delta is not None:
+                context += "\n\nChanged declarations:\n" + proposal.delta.summary()
+        else:
+            assert approach is not None
+            context = ("Planned files:\n" + "\n".join(approach.files) +
+                       "\nPlanned names:\n" + "\n".join(approach.entities) +
+                       "\nThis is a plan only. No implementation or test result is supplied.")
         runner = self._ensure_runner()
         self.cancel_requested = False
         runner.begin()
@@ -184,7 +195,7 @@ class StepController:
             panel.refresh_description()
             self.window.status.set("Step description simplified")
 
-        self.window.run_async(lambda: runner.rephrase_description(description), done)
+        self.window.run_async(lambda: runner.rephrase_description(description, context=context), done)
 
     def propose_approach(self, constraints: tuple[str, ...] = (), focus: tuple[str, ...] = ()) -> None:
         runner = self._ensure_runner()

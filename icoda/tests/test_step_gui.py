@@ -1251,6 +1251,9 @@ def test_rephrase_updates_only_description_and_keeps_review_decisions(tmp_path, 
     assert source.read_text() == "int b();\n" and not runner.log.path.exists()
     assert requests[0][1] == tmp_path and original_response.rationale in requests[0][0]
     assert "Do not run tools or change files" in requests[0][0]
+    assert prompt.STEP_DESCRIPTION_STYLE in requests[0][0]
+    assert proposal.source_diff in requests[0][0] and proposal.delta.summary() in requests[0][0]
+    assert "Use supporting code only to explain the same step" in requests[0][0]
     window.panel.show_step(steplog.StepRecord(9, "architecture", "approved", rationale="Old step"))
     assert "rephrase" not in window.panel.enabled_actions
 
@@ -1291,7 +1294,9 @@ def test_rephrase_keeps_original_on_failure_cancellation_or_project_change(tmp_p
 
 def test_rephrase_pending_approach_preserves_scope_and_does_not_approve(tmp_path):
     window = Window(tmp_path)
-    runner = steps.StepRunner(tmp_path, window.config, invoke=lambda *_: "Find the item with one search.")
+    requests = []
+    runner = steps.StepRunner(tmp_path, window.config,
+                              invoke=lambda text, *_: requests.append(text) or "Find the item with one search.")
     controller = step_controller.StepController(window, lambda *a, **k: runner)
     approach = controller.approach = fake_approach()
     window.panel.set_phase(persistence.ProjectPhase.IMPLEMENTATION)
@@ -1302,8 +1307,33 @@ def test_rephrase_pending_approach_preserves_scope_and_does_not_approve(tmp_path
     assert approach.entities == ("b",) and approach.files == ("m.cpp", "tests/m_test.cpp")
     assert not window.panel.approach_approved and not runner.log.path.exists()
     assert approach.plan in window.panel.approach_text.get("1.0", "end")
+    assert "Planned files:\nm.cpp\ntests/m_test.cpp" in requests[0]
+    assert "Planned names:\nb" in requests[0]
+    assert "No implementation or test result is supplied" in requests[0]
     window.panel.show_approach(approach, approved=True)
     assert "rephrase" not in window.panel.enabled_actions
+
+
+@pytest.mark.parametrize("with_hunks", [False, True])
+def test_rephrase_uses_proposed_file_changes_when_no_diff_is_available(tmp_path, with_hunks):
+    window = Window(tmp_path)
+    requests = []
+    runner = steps.StepRunner(tmp_path, window.config,
+                              invoke=lambda text, *_: requests.append(text) or "A clearer explanation.")
+    controller = step_controller.StepController(window, lambda *a, **k: runner)
+    proposal = controller.proposal = fake_proposal(tmp_path, ok=False)
+    proposal.source_diff = ""
+    content = "struct Job { void (*callback)(void*); void* context; };"
+    change = (response.FileChange("src/job.cppm", hunks=(response.DiffHunk(1, 0, 1, 1, ("+" + content,)),))
+              if with_hunks else response.FileChange("src/job.cppm", content))
+    proposal.response = response.StepResponse("Add a job record", "Keep callback and data together.", (change,))
+    original = proposal.response
+    window.panel.show(proposal)
+    controller.rephrase()
+    assert "src/job.cppm" in requests[0] and content in requests[0]
+    assert "If a detail cannot be established, say it is unspecified" in requests[0]
+    assert proposal.response.files is original.files
+    assert not (tmp_path / "src/job.cppm").exists() and not runner.log.path.exists()
 
 
 def test_controller_cancel_stops_the_runner_and_records_nothing(tmp_path: Path, monkeypatch: Any) -> None:

@@ -139,6 +139,13 @@ configuration.
 A **gate** is an enforced checkpoint: a failing result blocks progress. Passing build and test gates means the
 configured checks passed; it does not prove that every requirement or edge case is covered.
 
+Step explanations use the voice of a senior programmer telling a junior what to do next, without assuming
+the junior has read earlier steps. They explain the purpose,
+affected files and names, concrete operations, remaining unfinished behavior, and checks. **Code details**
+keeps the full declarations and counts. Use **Rephrase** on a current proposal or pending approach to ask for
+the same explicit explanation; it uses the proposed code or planned scope as context and leaves the code
+and your approval decisions unchanged.
+
 Optional **Auto-approve while gates pass** applies to eligible implementation code proposals. Architecture,
 implementation approaches, and unconfirmed signature changes still need your decision.
 

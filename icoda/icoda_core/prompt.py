@@ -18,12 +18,52 @@ ARCHITECTURE = persistence.ProjectPhase.ARCHITECTURE.value
 IMPLEMENTATION = persistence.ProjectPhase.IMPLEMENTATION.value
 MAX_SUBSET_FILES = 40
 STEP_DESCRIPTION_STYLE = (
-    "Use simple, everyday language in the step description. Start with one short sentence saying what will "
-    "change and why it helps. Then use up to three short bullet points for how it works, how it will be checked, "
-    "and any important limitation or decision. Prefer concrete actions and short sentences. Avoid jargon, "
-    "unexplained abbreviations, and long lists of implementation details. Keep exact file and function names "
-    "when needed, and explain technical terms briefly. Include required scope, estimates, and trade-offs "
-    "concisely. Example: 'Check for empty input so the function returns a clear error.'"
+    "Write as a senior programmer explaining to a junior programmer exactly what to do next. The junior "
+    "knows basic programming but is new to this project and has not read any previous steps. Give direct "
+    "instructions: 'Create ...', 'In this function, ...', 'Then pass ...'. Briefly explain why each action "
+    "is needed. Use a respectful, practical mentoring tone, not an architecture summary or a report to "
+    "management. Use very simple, explicit language. Explain the code, not just the design intention. "
+    "Start with one or two sentences of context, then give a numbered task list. Explain only the background "
+    "needed for this task, not a general programming lesson. Clarity matters more than brevity: use as many "
+    "short steps as needed, with one action or idea per sentence. For a small change, aim for roughly "
+    "200-350 words before any Code details. Do not omit a necessary explanation to meet that guideline. "
+    "Explain only the changed operations and the background needed to understand them. Do not tour the "
+    "whole class, repeat the same fact, or turn unchanged startup, cleanup, build settings, or documentation "
+    "tags into extra tasks just because they appear in the supplied code.\n"
+    "Explain in this order:\n"
+    "- What this part of the program is for, what it currently does, and why this change is needed. Use only "
+    "facts present in the supplied code or description. Do not guess previous behavior or discuss unknown "
+    "history that is unnecessary for the task.\n"
+    "- What will be added or changed, in which project-relative file, and what each named item does. On first "
+    "mention, identify whether a name is a file, module, class, struct, field, or function and explain its "
+    "role. A name alone is not an explanation. If adding a module, explain which source file defines it, "
+    "what it makes available, and which code will use it. Do not invent missing paths or declarations.\n"
+    "- How the affected code will work, in execution order. Name the function receiving the input, the "
+    "values stored or passed, and the function receiving them next. Explain what those values mean. "
+    "For a struct, explain its relevant fields. Distinguish storing pointers from copying or owning the "
+    "pointed-to data. Use a small expression from the actual code when it makes the operation clearer.\n"
+    "- What the program will actually do after this step, including what is still unfinished. A 'stub' "
+    "means a function whose real work is not implemented yet: state its actual return value or empty "
+    "behavior. Clearly separate a future intention from behavior implemented in this step.\n"
+    "- How the change will be checked and what those checks establish. Do not claim that a planned check "
+    "has passed or that compiling placeholder functions proves the future feature works.\n"
+    "Replace vague phrases such as 'worker handoff', 'clear interface', 'wire up', or 'keep callback and "
+    "data together' with the actual operations and the names involved. Explain a callback as a function "
+    "supplied by the caller, then explain how this code uses it. Do not assume the reader knows this "
+    "project's meaning of job, worker, context, or publication. Translate source comments into concrete "
+    "language too: say 'the class that will later run jobs', not 'the job acceptance boundary'.\n"
+    "Example of the required level of explanation, only when supported by the actual code: instead of "
+    "'bundle the callback and data', write 'The new struct has two fields. One stores a pointer to the "
+    "function that should run. The other stores a pointer to the data that function should receive. "
+    "Passing one struct passes both pointers together; it does not copy the data.' Substitute the actual "
+    "struct, field, and function names and explain where the struct is constructed and passed.\n"
+    "Write identifiers exactly as they appear in the code. Preserve the task's constraints, limitations, "
+    "estimates, and trade-offs. Put requested signatures, entity counts, and other reference information "
+    "only in Code details, after the plain explanation. Limit that section to added, changed, renamed, or removed "
+    "items; do not catalogue unchanged declarations or build settings. Explain each affected file's purpose "
+    "there too; do not hide the actions or runtime limitations only in that section. "
+    "Before answering, check that the explanation itself answers: what changes, where, what each name "
+    "means, how the values move, and what will work afterward, without reading earlier steps."
 )
 
 
@@ -119,7 +159,7 @@ def _approach_step_text(request: StepRequest, model: DerivedModel) -> str:
     lines.extend([
         "Explain the algorithm, expected STL algorithms/containers or libraries, estimated line count, and trade-offs.",
         "Name the existing or planned entities and project-relative file paths you expect the later code round to touch.",
-        ("After the short overview, include a Code details section in the plan, grouped by affected file. "
+        ("After the plain explanation, include a Code details section in the plan, grouped by affected file. "
         "For each class, struct, function, method, enum, type alias, field, variable, or module in scope, "
         "state whether it will be added, changed, renamed, or removed; give its qualified name, intended "
         "declaration or signature, and what will change. Include test and build files. "
@@ -131,11 +171,10 @@ def _approach_step_text(request: StepRequest, model: DerivedModel) -> str:
 
 def _approach_format_text() -> str:
     return ("Reply with a single JSON object (no code fence or surrounding prose) with exactly these fields:\n"
-            '{\n "plan": "short overview including trade-offs and line count, followed by Code details",\n'
+            '{\n "plan": "self-contained explanation, followed by Code details with trade-offs and line count",\n'
             ' "entities": ["qualified entity name"],\n "files": ["project/relative/path"]\n}\n'
             "`entities` and `files` describe expected scope only. Do not include file contents, source code, "
-            "patches, diffs, or commands.\n\nFor the overview in `plan`: " + STEP_DESCRIPTION_STYLE +
-            " The separate Code details section may be longer to list every affected file and symbol.")
+            "patches, diffs, or commands.\n\nFor `plan`: " + STEP_DESCRIPTION_STYLE)
 
 
 def _issues_text(issues: Sequence[rules.Issue]) -> str:

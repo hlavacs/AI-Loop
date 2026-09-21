@@ -5338,3 +5338,32 @@ Verification:
 - Native Tk 9.0.3 button-event checks in `.icoda-test-artifacts/entity-double-click` verified classes,
   methods, and free functions. Each first click retained Entities; the second click displayed the editor
   at the expected file and line. Cancelling a file change preserved the selected tab and unsaved draft.
+
+## 2026-09-21 — Explain the next step as a senior programmer teaching a junior
+
+Replaced the compressed three-bullet description instruction with a shared explanation style for architecture
+proposals, implementation approaches, code proposals, and Rephrase. It gives brief context and concrete numbered
+tasks, names affected files and symbols, explains what values are stored or passed, and distinguishes unfinished
+behavior from what the step actually implements. It assumes no knowledge of previous steps. Reference declarations
+and counts stay in Code details; unrelated existing code must not become extra tasks.
+
+Rephrase now includes the proposed source diff and declaration changes, with proposed file contents or diff hunks
+as a fallback. A pending approach supplies only its planned files and names. This lets the provider explain an
+actual operation instead of guessing what a phrase such as “worker handoff” means. Rephrasing still leaves source
+files, scope, signatures, review edits, and approval decisions unchanged.
+
+Verification:
+
+- **71 prompt and step-GUI tests passed**, including all three generation rounds, proposal diffs, full-file and
+  diff-hunk fallbacks, pending approaches, cancellation, failures, and preservation of review decisions. The
+  step-runner tests passed too. Ruff, mypy on 61 production files, compilation, and diff checks passed.
+- The complete **675-test suite** initially had 671 passes, three C++ builds blocked by the sandbox's vcpkg
+  lock-file restriction, and one simulation failure. All three build checks passed when rerun with cache access.
+  The simulation failure expects the older Code details text (`~ method ...`); it was reproduced in a separate
+  checkout of unchanged commit `2a9c96f`.
+- Real-provider checks use the user's WorkTreeJob example in a temporary repository, retaining prompts and
+  replies under `.icoda-test-artifacts/junior-explanations`. The calls rewrite prose only and do not change the
+  example project. Review of the first output led to explicit rules against describing unrelated existing code.
+  The final check used the actual source diff from example commit `c9a395b`. Its explanation names the source
+  files, defines the callback and context fields, shows `WorkTreeJob{callback, context}`, explains pointer copies,
+  and states that submissions still return false and no job runs. It uses direct numbered instructions.

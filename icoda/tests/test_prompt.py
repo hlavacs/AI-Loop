@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import pytest
+
 from icoda_core import persistence, prompt, rules, specification, steplog
 from icoda_core.model import DerivedModel, Edge, EdgeKind, Entity, FileInfo, Kind
 
@@ -39,6 +41,30 @@ def test_architecture_prompt_has_all_sections() -> None:
                      "too many classes", "keep app::run",
                      "error: x", "no JSON", "# Response format", '"rationale"'):
         assert expected in text, expected
+
+
+@pytest.mark.parametrize("kind", ["architecture", "implementation", "approach"])
+def test_every_step_round_requests_a_self_contained_explanation(kind) -> None:
+    phase = prompt.ARCHITECTURE if kind == "architecture" else prompt.IMPLEMENTATION
+    state = persistence.ProjectState(persistence.ProjectPhase(phase))
+    request = prompt.StepRequest(phase, 3, target="u:run")
+    build = prompt.build_approach_prompt if kind == "approach" else prompt.build_prompt
+    text = build(specification.default_specification("Demo"), small_model(), request, state=state)
+    explanation_rules = text.split("# Response format", 1)[1]
+    assert prompt.STEP_DESCRIPTION_STYLE in explanation_rules
+    assert "senior programmer explaining to a junior programmer exactly what to do next" in explanation_rules
+    assert "has not read any previous steps" in explanation_rules
+    assert "which project-relative file" in explanation_rules
+    assert "Distinguish storing pointers from copying or owning" in explanation_rules
+    assert "actual return value or empty behavior" in explanation_rules
+    assert "Do not invent missing paths or declarations" in explanation_rules
+    assert "up to three" not in explanation_rules and "short overview" not in explanation_rules
+    if kind == "approach":
+        assert "Do not emit source code" in text and "Code details" in explanation_rules
+    elif kind == "architecture":
+        assert "No algorithmic code" in text
+    else:
+        assert "Do not implement other stub functions" in text
 
 
 def test_python_profile_and_prompt_rules_are_language_appropriate() -> None:
