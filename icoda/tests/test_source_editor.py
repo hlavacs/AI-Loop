@@ -227,6 +227,8 @@ def app_with_source(app_module, tmp_path):
 
 def test_click_file_class_function_and_entity_tree_opens_source(app_module, tmp_path, monkeypatch):
     app = app_with_source(app_module, tmp_path)
+    selected_tabs = []
+    monkeypatch.setattr(app.side_views, "select", selected_tabs.append)
     app.select_node("file:src/a.cpp")
     assert app.source_editor.document.relative == "src/a.cpp" and app.source_editor.text.index("insert") == "1.0"
     app.select_node("entity:u:A")
@@ -237,6 +239,10 @@ def test_click_file_class_function_and_entity_tree_opens_source(app_module, tmp_
     assert app.call_view.root_usr == "u:A:f"
     app.open_editor("entity:u:A")
     assert app.source_editor.text.index("insert") == "3.0"
+    assert selected_tabs == []
+    app.on_tree_double_click(None)
+    assert selected_tabs == [app.source_editor.frame]
+    assert app.source_editor.text.index("insert") == "5.0"
 
 
 def test_call_and_class_single_click_open_their_declarations(app_module, tmp_path, monkeypatch):

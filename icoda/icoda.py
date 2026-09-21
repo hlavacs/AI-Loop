@@ -1512,10 +1512,10 @@ class App:
         for usr in self.tree.selection():
             entity = self.opened.model.entities.get(usr)
             if entity is not None:
-                self.open_editor(entity.file, entity.line)
+                self.open_editor(entity.file, entity.line, reveal=True)
 
-    def open_editor(self, file: str, line: int = 1, *, root: Path | None = None) -> None:
-        """Load the requested source location while preserving the current sidebar tab."""
+    def open_editor(self, file: str, line: int = 1, *, root: Path | None = None, reveal: bool = False) -> None:
+        """Load a source location; select the editor only when explicitly requested."""
         selected_root = root or self.project
         if selected_root is None or file.startswith(("external:", "cluster:")):
             return
@@ -1524,7 +1524,9 @@ class App:
             if entity is not None:
                 file, line = entity.file, entity.line
         file = file.removeprefix("file:")
-        self.source_editor.open_file(selected_root, file, line)
+        if self.source_editor.open_file(selected_root, file, line) and reveal:
+            self.side_views.select(self.source_editor.frame)
+            self.source_editor.text.focus_set()
 
     def open_call_source(self, file: str, line: int = 1) -> None:
         self.open_editor(file, line, root=self._call_source_root or self.project)

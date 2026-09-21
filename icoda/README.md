@@ -27,7 +27,8 @@ the **Help** menu opens the same pages, and the sentence above the buttons in th
   entities back to their source locations.
 - **Source editor:** click a file, class, or function to open its source in the upper-right **Source Editor** tab.
   Clicking keeps the current right-hand tab selected; select **Source Editor** when you want to view or edit
-  the source. Edit, save, undo/redo, and find/replace text without leaving ICODA. Saving refreshes project analysis;
+  the source, or double-click an entity in **Entities** to switch to its source line in the editor.
+  Edit, save, undo/redo, and find/replace text without leaving ICODA. Saving refreshes project analysis;
   candidate worktree edits require a rebuild before approval.
 - **Controlled generation:** review architecture proposals, then approve an implementation approach before
   requesting code and tests. Work through a persisted queue or select the next target yourself.

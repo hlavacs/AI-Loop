@@ -5323,3 +5323,18 @@ Verification:
   cached declarations into a temporary project copy. Actual Entities rows displayed the expected `auto ... ->`
   signatures once each and correct constructor/destructor labels while retaining the selected Entities tab.
   Verification used widget text without desktop screenshots or writes to the original example project.
+
+## 2026-09-21 — Open the Source Editor on an Entities double-click
+
+Double-clicking an Entities row now explicitly selects the Source Editor and focuses the entity's source
+line. Ordinary selection still updates the source location while preserving the current sidebar tab. The
+editor is revealed only after the file opens successfully, so cancelling an unsaved-file prompt retains
+both the draft and the current tab. Updated the README and existing navigation test.
+
+Verification:
+
+- **47 tests passed** for source editing and application behavior. Ruff, mypy on 61 production files, and
+  diff checks passed.
+- Native Tk 9.0.3 button-event checks in `.icoda-test-artifacts/entity-double-click` verified classes,
+  methods, and free functions. Each first click retained Entities; the second click displayed the editor
+  at the expected file and line. Cancelling a file change preserved the selected tab and unsaved draft.
