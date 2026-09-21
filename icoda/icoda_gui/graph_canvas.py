@@ -144,6 +144,7 @@ class NodeAppearanceCanvas:
 
     def __init__(self) -> None:
         self.canvas: Any
+        self.offset: tuple[float, float]
         self.tooltip: tooltip.Tooltip | None = None
         self.node_appearances: Mapping[str, NodeAppearance] = MappingProxyType({})
         self.node_decisions: Mapping[str, NodeDecision] = MappingProxyType({})
@@ -404,23 +405,57 @@ class NodeAppearanceCanvas:
         except tk.TclError:
             pass  # Older Tk versions only support the existing MouseWheel bindings.
 
-    def on_touchpad_scroll(self, event: Any) -> str | None:
+    def on_touchpad_scroll(self, event: Any) -> str:
+        # Tk packs signed 16-bit horizontal/vertical pixel deltas into the high/low halves of %D.
+        delta = event.delta & 0xffff
+        vertical = delta if delta < 0x8000 else delta - 0x10000
+        delta = (event.delta >> 16) & 0xffff
+        horizontal = delta if delta < 0x8000 else delta - 0x10000
         if not self.in_hierarchy(event.x, event.y):
             self._hierarchy_scroll_pixels = 0
-            return None
+            self._navigate_diagram(event, horizontal, vertical, precise=True)
+            return "break"
         self.hide_tooltip()
         if self.hierarchy_collapsed:
             self._hierarchy_scroll_pixels = 0
             return "break"
-        # Tk packs signed 16-bit horizontal/vertical pixel deltas into the high/low halves of %D.
-        delta = event.delta & 0xffff
-        vertical = delta if delta < 0x8000 else delta - 0x10000
         self._hierarchy_scroll_pixels -= vertical
         rows = int(self._hierarchy_scroll_pixels / HIERARCHY_ROW_HEIGHT)
         if rows:
             self._hierarchy_scroll_pixels -= rows * HIERARCHY_ROW_HEIGHT
             self.scroll_hierarchy("scroll", str(rows))
         return "break"
+
+    def on_wheel(self, event: Any) -> str:
+        if not self.scroll_hierarchy_at(event):
+            delta = getattr(event, "delta", 0)
+            if not delta:
+                button = getattr(event, "num", 0)
+                delta = 120 if button == 4 else -120 if button == 5 else 0
+            if delta:
+                distance = 40.0 * max(1.0, abs(delta) / 120.0) * (1 if delta > 0 else -1)
+                self._navigate_diagram(event, 0, distance)
+        return "break"
+
+    def _navigate_diagram(self, event: Any, dx: float, dy: float, *, precise: bool = False) -> None:
+        """Scroll pans the diagram; Shift selects the horizontal axis and Control zooms."""
+        self.hide_tooltip()
+        state = getattr(event, "state", 0)
+        if state & 0x0004:  # Control
+            if dy:
+                factor = zoom_controls.ZOOM_IN ** (dy / 120.0) if precise else \
+                    zoom_controls.ZOOM_IN if dy > 0 else zoom_controls.ZOOM_OUT
+                self.zoom(factor, (float(event.x), float(event.y)))
+            return
+        if state & 0x0001 and not dx:  # Shift + vertical wheel
+            dx, dy = dy, 0
+        if (dx or dy) and getattr(self, "layout", None) is not None:
+            self.offset = (self.offset[0] + dx, self.offset[1] + dy)
+            self.user_zoomed = True
+            self.redraw()
+
+    def zoom(self, factor: float, origin: tuple[float, float] | None = None) -> None:
+        raise NotImplementedError
 
     def _draw_hierarchy_branches(self, positions: Mapping[str, tuple[float, float]]) -> None:
         """Connect rows to their parents; dependency arrows belong to the main diagram."""
@@ -576,14 +611,6 @@ class GraphCanvas(NodeAppearanceCanvas):
     def reset_zoom(self) -> None:
         if self.diagram_size() is not None and self.scale > 0:
             self.zoom(max(self.fit_scale, 1.0) / self.scale)
-
-    def on_wheel(self, event: Any) -> str:
-        if self.scroll_hierarchy_at(event):
-            return "break"
-        zoom_in = getattr(event, "delta", 0) > 0 or getattr(event, "num", 0) == 4
-        self.zoom(zoom_controls.ZOOM_IN if zoom_in else zoom_controls.ZOOM_OUT,
-                  (float(event.x), float(event.y)))
-        return "break"
 
     def on_press(self, event: Any) -> None:
         self.drag_start = None if self.press_hierarchy(event) else (event.x, event.y)

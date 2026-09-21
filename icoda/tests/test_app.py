@@ -161,6 +161,7 @@ def test_zoom_keeps_the_point_under_the_cursor(app_module, tmp_path: Path) -> No
 
     class Wheel:
         x, y, delta, num = 300, 200, 120, 0
+        state = 0x0004  # Ctrl+wheel zooms; ordinary scrolling pans.
 
     before = ((300 - view.offset[0]) / view.scale, (200 - view.offset[1]) / view.scale)
     assert view.on_wheel(Wheel()) == "break"

@@ -24,10 +24,10 @@ def build(
     """Return an analyzer-style ``- Fit 100% +`` control strip and its widgets."""
     frame = ttk.Frame(parent)
     definitions = (
-        ("zoom-out", "−", 3, zoom_out, "Zoom out. You can also scroll down over the diagram."),
+        ("zoom-out", "−", 3, zoom_out, "Zoom out. You can also hold Ctrl and scroll down over the diagram."),
         ("fit", "Fit", 4, fit, "Fit the complete diagram into the visible canvas area."),
         ("reset", "100%", 5, reset, "Reset the diagram to its original zoom level."),
-        ("zoom-in", "+", 3, zoom_in, "Zoom in. You can also scroll up over the diagram."),
+        ("zoom-in", "+", 3, zoom_in, "Zoom in. You can also hold Ctrl and scroll up over the diagram."),
     )
     widgets: dict[str, Any] = {}
     for index, (name, label, width, command, help_text) in enumerate(definitions):

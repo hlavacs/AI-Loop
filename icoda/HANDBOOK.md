@@ -513,7 +513,9 @@ assurance or runtime execution filter.
 
 ### Diagram interaction
 
-- Scroll over a diagram to zoom around the pointer.
+- Scroll over a diagram to pan vertically; hold **Shift** while scrolling to pan horizontally.
+- Use two-finger trackpad scrolling to pan in both directions.
+- Hold **Ctrl** while scrolling to zoom around the pointer, or use the `-` and `+` zoom buttons.
 - Drag with the left or middle mouse button to pan.
 - Click `+` or `-` in the hierarchy panel to expand or collapse a level.
 - Scroll anywhere over the hierarchy panel with the mouse wheel or trackpad to move through its rows.

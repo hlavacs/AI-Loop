@@ -5252,3 +5252,23 @@ Verification:
   information. Existing compact-panel geometry checks also passed.
 - The handbook and PDF were updated; the affected instructions were rendered and visually inspected.
   Native UI checks used widget geometry and callbacks, without desktop screenshots or a live provider call.
+
+## 2026-09-21 — Pan diagrams with the mouse wheel and trackpad
+
+File, Call, Class, and Mind Map views now share wheel navigation. Ordinary scrolling pans vertically;
+Shift+wheel pans horizontally; Tk 9 precise scrolling pans both axes using the reported pixel deltas.
+Ctrl+wheel retains zoom around the pointer, alongside the existing zoom buttons. Mouse-button dragging
+remains available, and scrolling over an expanded or folded hierarchy never pans the underlying diagram.
+Manual pan positions survive canvas resizing until Fit is used.
+
+Verification:
+
+- **97 focused tests passed** across the application, step GUI, Class View, Mind Map, and hierarchy expansion.
+  The existing cursor-anchored zoom checks now use Ctrl+wheel. Ruff, mypy on 61 production files, and diff
+  checks passed.
+- Native Tk 9.0.3 event checks in `.icoda-test-artifacts/diagram-wheel` passed in all four diagrams: ordinary
+  vertical scrolling, Shift+wheel, signed horizontal/vertical trackpad deltas, Ctrl zoom with both event types,
+  mouse-button dragging after scrolling, resize preservation, and Fit. Hierarchy checks confirmed independent
+  row scrolling and inert folded headers, with no accidental source opening.
+- Updated zoom-button tooltips and the handbook. The revised PDF interaction instructions were rendered
+  and visually inspected; native application checks used widget state and callbacks without screenshots.

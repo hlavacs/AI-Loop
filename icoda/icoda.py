@@ -318,14 +318,6 @@ class FileViewCanvas(graph_canvas.NodeAppearanceCanvas):
         if self.layout is not None and self.scale > 0:
             self.zoom(max(self.fit_scale, 1.0) / self.scale)
 
-    def on_wheel(self, event: Any) -> str:
-        if self.scroll_hierarchy_at(event):
-            return "break"
-        delta = getattr(event, "delta", 0) or (120 if getattr(event, "num", 0) == 4 else -120)
-        self.zoom(zoom_controls.ZOOM_IN if delta > 0 else zoom_controls.ZOOM_OUT,
-                  (float(event.x), float(event.y)))
-        return "break"
-
     def on_press(self, event: Any) -> None:
         self.drag_start = None if self.press_hierarchy(event) else (event.x, event.y)
         self._drag_offset, self.dragged = self.offset, False

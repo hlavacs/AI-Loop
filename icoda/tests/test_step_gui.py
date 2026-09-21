@@ -385,11 +385,12 @@ def test_call_view_canvas_follows_root_selection_and_proposals(tmp_path: Path, m
     fit_scale = canvas.fit_scale
 
     class Pointer:
-        def __init__(self, x: int, y: int, num: int = 1, delta: int = 0) -> None:
+        def __init__(self, x: int, y: int, num: int = 1, delta: int = 0, state: int = 0) -> None:
             self.x, self.y, self.num, self.delta = x, y, num, delta
+            self.state = state
 
     before_point = ((300 - canvas.offset[0]) / canvas.scale, (200 - canvas.offset[1]) / canvas.scale)
-    assert canvas.on_wheel(Pointer(300, 200, delta=120)) == "break"
+    assert canvas.on_wheel(Pointer(300, 200, delta=120, state=0x0004)) == "break"
     after_point = ((300 - canvas.offset[0]) / canvas.scale, (200 - canvas.offset[1]) / canvas.scale)
     assert abs(before_point[0] - after_point[0]) < 1e-6 and abs(before_point[1] - after_point[1]) < 1e-6
     assert canvas.scale > fit_scale
