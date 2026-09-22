@@ -11,6 +11,8 @@ from icoda_core import executables, persistence, process, recovery, session, ste
 from icoda_core.model import DerivedModel
 from icoda_gui import tooltip
 
+WHOLE_PROJECT = "Whole project"
+
 
 class ExecutableSelector:
     def __init__(self, window: Any, bar: Any, notebook: Any) -> None:
@@ -33,14 +35,15 @@ class ExecutableSelector:
         self.combo = ttk.Combobox(bar, textvariable=self.choice_var, state="readonly", width=45)
         self.combo.pack(side=tk.LEFT, fill=tk.X, expand=True, padx=(0, 6))
         self.combo.bind("<<ComboboxSelected>>", self.select)
-        tooltip.attach(self.combo, "Choose one executable or library to display its sources and dependencies "
+        tooltip.attach(self.combo, "Whole project shows all analysed sources. Choose an executable or library "
+                       "to display its sources and dependencies "
                        "in all code views. The choice is saved per project. Libraries expose functions and methods "
                        "without a main; "
                        "Build is available for both, Run only for executables.")
         tooltip.attach(self.buttons["Refresh targets"], "Refresh CMake target names and configurations "
                        "from the project's configured build tree.")
-        tooltip.attach(self.buttons["Build"], "Build the selected target. When no targets have been discovered, "
-                       "build the project using its existing CMake configuration and analyse its sources.")
+        tooltip.attach(self.buttons["Build"], "Build the selected target, or the whole project when no target "
+                       "is selected. A project build reloads its source analysis.")
         tooltip.attach(self.buttons["Run"], "Build the selected CMake target, then run its executable "
                        "from the project directory. Output is captured; Stop cancels it.")
         self.notebook = notebook
@@ -73,28 +76,28 @@ class ExecutableSelector:
 
     def _choices(self, choices: tuple[executables.Entry, ...], key: Any) -> None:
         self.choices = choices
-        self.combo.configure(values=[entry.label for entry in choices])
-        self.selected = executables.choose(choices, key)
+        self.combo.configure(values=[WHOLE_PROJECT, *(entry.label for entry in choices)])
+        self.selected = None if key == [] else executables.choose(choices, key)
         self.choice_var.set(self.selected.label if self.selected else
-                            "Select executable / library" if choices else "No targets")
+                            WHOLE_PROJECT if self.project is not None else "No targets")
         self._call_entry()
         self.update_controls()
 
     def select(self, _event: Any = None) -> None:
         chosen = next((entry for entry in self.choices if entry.label == self.choice_var.get()), None)
-        if self.window.panel.busy or chosen is None:
+        if self.window.panel.busy or (chosen is None and self.choice_var.get() != WHOLE_PROJECT):
             return
         if not self.window.source_editor.confirm_saved():
-            self.choice_var.set(self.selected.label if self.selected else "Select executable / library")
+            self.choice_var.set(self.selected.label if self.selected else WHOLE_PROJECT)
             return
         self.selected = chosen
         self._save_selection()
         self._call_entry()
         self.update_controls()
         self.window.show_executable()
-        if chosen.usr:
+        if chosen is not None and chosen.usr:
             self.window.select_node(chosen.usr)
-        self.window.status.set(f"Selected {chosen.label}")
+        self.window.status.set(f"Selected {chosen.label}" if chosen is not None else "Showing the whole project")
 
     def _call_entry(self) -> None:
         self.window.call_view.entry_usr = self.selected.usr if self.selected else None
@@ -107,7 +110,7 @@ class ExecutableSelector:
             if self.selected is not None:
                 ui["executable"] = self.selected.key
             else:
-                ui.pop("executable", None)
+                ui["executable"] = []  # Persist an explicit overview even if only one target remains.
             store.save_ui(ui)
 
     def update_controls(self) -> None:
@@ -115,9 +118,7 @@ class ExecutableSelector:
         self.combo.configure(state="readonly" if ready and self.choices else "disabled")
         cmake = ready and (self.project / "CMakeLists.txt").is_file() if self.project else False
         for label in ("Build", "Run", "Refresh targets"):
-            enabled = cmake and (label == "Refresh targets" or self.selected is not None)
-            if label == "Build" and (not self.choices or not (self.model and self.model.files)):
-                enabled = cmake
+            enabled = cmake and (label != "Run" or self.selected is not None)
             if label == "Run" and self.selected is not None and self.selected.is_library:
                 enabled = False
             self.buttons[label].state(["!disabled"] if enabled else ["disabled"])
@@ -140,7 +141,7 @@ class ExecutableSelector:
     def operate(self, action: str) -> None:
         if self.project is None or self.model is None or self.window.panel.busy:
             return
-        if action == "build" and (not self.choices or not self.model.files):
+        if action == "build" and (self.selected is None or not self.model.files):
             self.window.build_project()
             return
         if action != "refresh" and self.selected is None:
@@ -178,11 +179,10 @@ class ExecutableSelector:
                                    repaired=self.window.steps._show_proposal)
                 self.window.recovery.handle_failure(result, **options)
             else:
-                self._choices(result.entries, result.selected.key if result.selected else None)
-                if result.selected is None:  # ambiguity requires an explicit new selection
-                    self.selected = None
-                    self._call_entry()
-                    self.choice_var.set("Choose target / configuration")
+                key = result.selected.key if result.selected else []
+                if action == "refresh" and selected is None:
+                    key = []  # Refreshing metadata must not narrow a whole-project overview.
+                self._choices(result.entries, key)
                 self._save_selection()
                 self.window.show_executable()
                 self._output(result.output)

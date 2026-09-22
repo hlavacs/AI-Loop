@@ -121,6 +121,10 @@ CMake commands for sources outside the project (including the compiler's standar
 from the project model. Installed `vcpkg_installed/` headers are shown as external dependencies, even when that
 directory sits inside the project.
 
+Projects with several targets initially show **Whole project**, so File and Class diagrams are visible as soon
+as analysis finishes. Choose an executable or library to focus the views, or choose **Whole project** to return
+to the overview. The choice is saved per project. Build works in the overview; Run requires an executable.
+
 Existing CMake projects without ICODA state start in the implementation phase. Existing Python projects without
 ICODA state start in the specification phase; saving their first specification may add missing skeleton files.
 See [Starting a project](HANDBOOK.md#3-starting-a-project) before bringing an existing codebase into the workflow.

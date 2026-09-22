@@ -368,11 +368,11 @@ specification edits require confirmation before replacement.
 
 ### Choose an executable or library
 
-Use **Executable / library** to select an example, a smoke test, or a CMake library without `main()`.
-With multiple choices, the code views stay empty until you select one. A sole target is selected automatically.
-ICODA restores the choice per project after reload; choose again if it disappears or becomes ambiguous.
+With multiple targets, ICODA shows **Whole project** until you choose an example, test, or library in
+**Executable / library**. Choose **Whole project** again to restore the overview. A sole target is selected
+automatically. ICODA saves your choice per project.
 
-**File View**, **Class View**, **Call View**, **Mind Map**, **Coverage**, and **Issues** show only that target and
+**File View**, **Class View**, **Call View**, **Mind Map**, **Coverage**, and **Issues** show the selected target and
 its library dependencies. Basic and smoke test remain separate. Switching keeps the active tab. Executables
 open their main source and root Call View there; **From main** returns there. Libraries start Call View from
 their analysed functions and methods together, including unused API functions. Select a function to explore
@@ -383,8 +383,8 @@ Static, shared, module, object, and interface libraries reported by CMake are se
 or executable artifact. Before target metadata is available, executable views follow dependencies from main;
 source-only projects without main keep their full library view. Refresh to discover libraries and uncalled helpers.
 
-- **Build** builds the selected executable or library and its dependencies.
-- **Run** is disabled for libraries. For executables, it builds first, then launches the actual CMake artifact
+- **Build** builds the selected target and its dependencies, or the whole project in **Whole project** mode.
+- **Run** requires an executable selection. It builds first, then launches the actual CMake artifact
   from the project directory. Failed builds prevent launch. Runs capture output without an interactive terminal
   or command-line arguments.
 - **Stop** cancels the active target operation and its subprocesses. Runs have a one-hour time limit.

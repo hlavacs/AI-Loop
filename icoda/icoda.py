@@ -1175,21 +1175,21 @@ class App:
         self.tree_tooltip.hide()
         self.tree.delete(*self.tree.get_children())
         self._restore_provider(opened.root)
-        if self.executables.choices and self.executables.selected is None:
-            self.status.set("Select an executable / library to display its code views.")
+        if self.executables.selected is None and opened.model.files:
+            self.status.set("Whole project — " + self.status.get())
         self._source_snapshot = source_watch.snapshot_files(opened.root, opened.model.files)
         if not self.panel.details_visible:
             self._resize_step_panel()
         session.log_event("shown: window ready", opened.root)
 
     def executable_model(self, model: DerivedModel) -> DerivedModel:
-        """Keep workflow analysis complete while every code view uses the selected target."""
-        if not self.executables.choices and not executables.entries(model):
-            return model  # Without CMake target metadata, retain the source-only library view.
+        """Show the complete project until the developer chooses a target to focus on."""
+        if self.executables.selected is None:
+            return model
         return executables.scope_model(model, self.executables.selected, root=self.project)
 
     def show_executable(self) -> None:
-        """Repaint all code views from one target projection, preserving the active tab."""
+        """Repaint the whole project or selected target, preserving the active tab."""
         if self.opened is None:
             return
         opened = self.opened

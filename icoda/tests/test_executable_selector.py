@@ -28,8 +28,9 @@ def test_selection_changes_graph_source_and_survives_reload(app_module, tmp_path
     app.show(project)
     selector = app.executables
     assert selector.selected is None
-    assert not app.view.layout.nodes and not app.class_view.model.files and not app.call_view.model.files
-    assert "Select" in selector.choice_var.get() and "Select" in app.status.get()
+    assert set(app.view.layout.nodes) == set(project.model.files)
+    assert app.class_view.model.files and app.call_view.model.files
+    assert selector.choice_var.get() == "Whole project" and "Whole project" in app.status.get()
     selector.choice_var.set(selector.choices[1].label)
     selector.select()
     assert selector.selected.usr == app.call_view.root_usr == app.call_view.entry_usr == "second"
@@ -148,7 +149,7 @@ def test_success_and_ambiguity_update_choices_without_running_an_arbitrary_targe
     monkeypatch.setattr(executables, "operate", lambda *args: results.pop(0))
     app.run_async = lambda work, done: done(work())
     selector.operate("run")
-    assert selector.selected is None and "Choose target" in selector.choice_var.get()
+    assert selector.selected is None and selector.choice_var.get() == "Whole project"
     selector.operate("run")
     assert len(results) == 1
     selector.choice_var.set(choice.label)
@@ -171,6 +172,9 @@ def test_all_views_show_only_selected_executable_and_shared_dependencies(app_mod
     before = model.to_json()
     app.show(project)
     selector = app.executables
+    assert app.displayed.model is model
+    assert set(app.view.layout.nodes) == set(model.files)
+    assert set(app.class_view.layout.nodes) == {"first_class", "second_class", "shared"}
     app.views.select(app.class_view.frame)
     selected_tabs = []
     monkeypatch.setattr(app.views, "select", selected_tabs.append)
@@ -197,6 +201,51 @@ def test_all_views_show_only_selected_executable_and_shared_dependencies(app_mod
     assert app.opened.model is model and model.to_json() == before
     app.show(project)
     assert selector.selected.usr == "second" and "examples/first/main.cpp" not in app.displayed.model.files
+    selector.choice_var.set("Whole project")
+    selector.select()
+    assert selector.selected is None and app.displayed.model is model
+    assert set(app.view.layout.nodes) == set(model.files)
+    assert set(app.class_view.layout.nodes) == {"first_class", "second_class", "shared"}
+    assert persistence.ProjectStore(tmp_path).load_ui()["executable"] == []
+    assert not selected_tabs
+    app.show(project)
+    assert selector.selected is None and app.displayed.model is model
+
+
+def test_whole_project_preserves_single_target_overview_and_requires_selection_to_run(
+        app_module, tmp_path, monkeypatch):
+    app = app_module.App(app_module.tk.Tk(), config=persistence.UserConfig(), config_path=tmp_path / "c.json")
+    project = opened(tmp_path)
+    (tmp_path / "CMakeLists.txt").touch()
+    app.show(project)
+    selector = app.executables
+    called = []
+    monkeypatch.setattr(app, "build_project", lambda: called.append("build"))
+    monkeypatch.setattr(app, "run_async", lambda *args: called.append("target-operation"))
+    selector.operate("run")
+    assert not called
+    selector.operate("build")
+    assert called == ["build"]
+    selector.choice_var.set(selector.choices[0].label)
+    selector.select()
+    chosen = selector.selected
+    monkeypatch.setattr(app.source_editor, "confirm_saved", lambda: False)
+    selector.choice_var.set("Whole project")
+    selector.select()
+    assert selector.selected == chosen and selector.choice_var.get() == chosen.label
+    monkeypatch.setattr(app.source_editor, "confirm_saved", lambda: True)
+    selector.choice_var.set("Whole project")
+    selector.select()
+    del project.model.entities["second"]
+    app.show(project)
+    assert len(selector.choices) == 1 and selector.selected is None
+    assert app.displayed.model is project.model
+    app.run_async = lambda work, done: done(work())
+    choice = selector.choices[0]
+    monkeypatch.setattr(executables, "operate", lambda *args: executables.Outcome((choice,), choice, "", "refreshed"))
+    selector.operate("refresh")
+    assert selector.selected is None and selector.choice_var.get() == "Whole project"
+    assert app.displayed.model is project.model
 
 
 def test_proposal_call_preview_obeys_selection_and_opens_candidate_source(app_module, tmp_path, monkeypatch):

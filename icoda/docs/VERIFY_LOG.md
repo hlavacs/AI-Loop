@@ -5402,3 +5402,25 @@ Verification:
   expecting the older `~ method ...` text. The other was the new partition fixture missing the macOS sysroot;
   that fixture was corrected and passes in the final focused run. Production VVE analysis also passes with the
   same module-partition handling. The unrelated simulation assertion is unchanged.
+
+## 2026-09-22 — show diagrams before choosing a target
+
+VVE's saved analysis was valid, but its empty target selection caused the GUI to project it to an empty model.
+Projects with several targets now open in Whole project mode. Choosing an executable or library still limits
+every code view to that target; the new Whole project dropdown item restores the complete model. An explicit
+overview choice survives reload and target refresh, even when only one target remains. Build in this mode uses
+Project Build; Run still requires an executable. Diagram updates preserve the active tab and unsaved source checks.
+
+Verification:
+
+- **73 tests passed** across target selection, application behavior, real CMake targets, and source editing.
+  Cases include initial File/Class diagrams, overview/target transitions, persisted overview, refresh with a
+  single target, unsaved edits, and prevention of running an arbitrary executable. Ruff and mypy on all
+  **62 production files** passed.
+- A native Tk window using VVE's actual cached analysis displayed **96 source files, 107 File View nodes
+  (including external nodes), and 191 class/struct panels** without selecting a target. Both diagram canvases
+  were mapped and contained drawn items: 1,365 File View items and 4,152 Class View items.
+- The native CMake executable/library acceptance check passed with screenshot capture disabled, verifying
+  focused file/class/call views, source navigation, Build/Run controls, and restored selection after reload.
+- The handbook PDF was regenerated; it remains 97 pages. Extracted text differs only on page 18, whose rendered
+  layout was checked for readable paragraphs, lists, margins, and footer placement. `git diff --check` passed.

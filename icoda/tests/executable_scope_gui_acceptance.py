@@ -69,15 +69,16 @@ def main() -> None:
         root.update()
         selector = app.executables
         assert len(selector.choices) == 3 and selector.selected is None
-        assert not app.view.layout.nodes and not app.class_view.model.files and not app.call_view.model.files
+        assert set(app.view.layout.nodes) == set(opened.model.files)
+        assert app.class_view.model.files and app.call_view.model.files
         observed = {}
         for name, main_file, classes in (
                 ("basic", "examples/basic/main.cpp", {"BasicExample", "BasicHelper", "Shared"}),
                 ("smoke_test", "tests/smoke_test.cpp", {"SmokeTest", "Shared"}),
                 ("shared", "", {"Shared"})):
             app.views.select(app.class_view.frame)
-            index = next(i for i, choice in enumerate(selector.choices) if choice.target.name == name)
-            selector.combo.current(index)
+            choice = next(choice for choice in selector.choices if choice.target.name == name)
+            selector.combo.set(choice.label)
             selector.combo.event_generate("<<ComboboxSelected>>")
             root.update()
             assert app.views.select() == str(app.class_view.frame)
