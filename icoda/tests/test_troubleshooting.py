@@ -49,11 +49,14 @@ def test_automatic_purpose_comments_are_verified_and_preserve_prompt_draft(app_m
     app.recovery.input.insert("end", "Keep this unsent question")
     app.recovery.history.append(("Developer", "Explain the configuration"))
     requests = []
+    controls = {}
+    for name, button in app.recovery.buttons.items():
+        monkeypatch.setattr(button, "state", lambda states, name=name: controls.update({name: states}))
     def invoke(provider, model, request, cwd, **kwargs):
         requests.append(request)
-        assert cwd == tmp_path and kwargs["writable"]
+        assert cwd != tmp_path and kwargs["writable"]
         assert "settings.Settings.load" in request and "settings.main" in request
-        source.write_text('class Settings:\n    """Stores the application settings."""\n'
+        (cwd / source.name).write_text('class Settings:\n    """Stores the application settings."""\n'
                           '    def load(self):\n        """Loads the configured limit."""\n        return 42\n\n'
                           'def main():\n    """Loads settings when the program starts."""\n'
                           '    return Settings().load()\n')
@@ -61,6 +64,8 @@ def test_automatic_purpose_comments_are_verified_and_preserve_prompt_draft(app_m
     monkeypatch.setattr(recovery, "invoke", invoke)
     app.recovery.ensure_purpose_comments()
     assert len(pending) == 1
+    assert app.recovery.purpose_busy and not app.recovery.busy and not app.panel.busy
+    assert controls["Send"] == controls["Open CLI"] == ["!disabled"]
     complete(pending)
     app.recovery.ensure_purpose_comments()
     assert not documentation.missing_entities(app.opened.model)
@@ -68,6 +73,99 @@ def test_automatic_purpose_comments_are_verified_and_preserve_prompt_draft(app_m
     assert len(requests) == 1 and not pending
     assert app.recovery.input.get("1.0", "end").strip() == "Keep this unsent question"
     assert app.recovery.history == [("Developer", "Explain the configuration")]
+
+
+@pytest.mark.parametrize("foreground", ["step", "prompt", "editor", "proposal"])
+def test_background_comments_wait_to_apply_without_interrupting_foreground_work(
+        app_module, tmp_path, monkeypatch, foreground):
+    app, pending, source = undocumented_project(app_module, tmp_path, monkeypatch)
+    initial = source.read_text()
+    def invoke(_provider, _model, _request, cwd, **_kwargs):
+        (cwd / source.name).write_text(initial.replace("class Settings:",
+                                                     'class Settings:\n    """Stores settings."""'))
+        return recovery.RecoveryResult(ProcessResult([], 0, "Added a class comment.", ""))
+    monkeypatch.setattr(recovery, "invoke", invoke)
+    app.recovery.ensure_purpose_comments()
+    work, done = pending.pop()
+    result = work()
+    assert source.read_text() == initial  # The CLI has touched only its private copy.
+    scheduled = []
+    monkeypatch.setattr(app.root, "after", lambda delay, callback: scheduled.append((delay, callback)))
+    selected = []
+    monkeypatch.setattr(app.views, "select", selected.append)
+    if foreground == "step":
+        app.panel.set_busy(True, "building")
+    elif foreground == "prompt":
+        app.recovery.send("Explain this class")  # A conversation can start while documentation is running.
+        assert app.recovery.busy and pending
+    elif foreground == "editor":
+        app.source_editor.open_file(tmp_path, source.name)
+        app.source_editor.text.insert("end", "# unsaved edit\n")
+    else:
+        app.steps.proposal = object()
+    app.status.set("Foreground work")
+    scheduled.clear()
+    done(result)
+    assert app.recovery.purpose_busy and source.read_text() == initial
+    assert scheduled[0][0] == 250 and app.status.get() == "Foreground work" and not selected
+    if foreground in {"step", "prompt"}:
+        assert app.panel.busy
+    if foreground == "prompt":
+        complete(pending)
+    elif foreground == "step":
+        app.panel.set_busy(False)
+    elif foreground == "editor":
+        assert app.source_editor.dirty
+        app.source_editor._install(app.source_editor.document)
+    else:
+        app.steps.proposal = None
+    scheduled[0][1]()
+    assert '"""Stores settings."""' in source.read_text()
+    assert not app.recovery.purpose_busy and not app.panel.busy and not selected
+
+
+@pytest.mark.parametrize("action", ["disk_edit", "cancel", "switch_project", "close"])
+def test_background_comments_do_not_overwrite_new_edits_or_apply_after_cancellation(
+        app_module, tmp_path, monkeypatch, action):
+    app, pending, source = undocumented_project(app_module, tmp_path, monkeypatch)
+    initial = source.read_text()
+    def invoke(_provider, _model, _request, cwd, **_kwargs):
+        (cwd / source.name).write_text(initial.replace("class Settings:",
+                                                     'class Settings:\n    """Stores settings."""'))
+        return recovery.RecoveryResult(ProcessResult([], 0, "Added a class comment.", ""))
+    monkeypatch.setattr(recovery, "invoke", invoke)
+    monkeypatch.setattr("icoda_core.process.cancel_running", lambda: pytest.fail("Cancelled foreground processes"))
+    app.recovery.ensure_purpose_comments()
+    cancel = app.recovery.purpose_cancel
+    work, done = pending.pop()
+    result = work()
+    if action == "disk_edit":
+        initial += "# user's saved edit\n"
+        source.write_text(initial)
+    elif action == "cancel":
+        app.recovery.cancel()
+    elif action == "close":
+        app.close()
+    else:
+        app.recovery.set_project(tmp_path / "other")
+    done(result)
+    assert source.read_text() == initial
+    assert not app.recovery.purpose_busy
+    if action != "disk_edit":
+        assert cancel.is_set()
+
+
+@pytest.mark.parametrize("file, before, after, accepted", [
+    ("main.cpp", "int f() { return 1; }\n", "/// @brief Returns the initial count.\nint f() { return 1; }\n", True),
+    ("main.cpp", "int f() { return 1; }\n", "/// @brief Returns two.\nint f() { return 2; }\n", False),
+    ("main.cpp", 'auto text = R"(\nhello\n)";\n', 'auto text = R"(\n/// text\nhello\n)";\n', False),
+    ("main.cpp", "int f();\n", "/// hidden code \\\nint f();\n", False),
+    ("main.cpp", "#define F \\\n42\n", "#define F \\\n/// hidden macro body\n42\n", False),
+    ("main.py", "def f():\n    return 1\n", 'def f():\n    """Returns one."""\n    return 1\n', True),
+    ("main.py", "def f():\n    return 1\n", 'def f():\n    """Returns two."""\n    return 2\n', False),
+])
+def test_background_comment_results_reject_code_changes(file, before, after, accepted):
+    assert documentation.comments_only(file, before, after) == accepted
 
 
 @pytest.mark.parametrize("cancelled", [False, True])

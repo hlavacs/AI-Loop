@@ -26,10 +26,12 @@ class CallViewCanvas(graph_canvas.GraphCanvas):
     def __init__(self, parent: Any, open_editor: Callable[[str, int], None],
                  resolve_actions: graph_canvas.ActionResolver | None = None,
                  dispatch_action: graph_canvas.ActionDispatcher | None = None,
-                 focus_node: Callable[[str | None], None] | None = None) -> None:
+                 focus_node: Callable[[str | None], None] | None = None,
+                 select_node: Callable[[str], None] | None = None) -> None:
         super().__init__(parent, resolve_actions, dispatch_action)
         self.open_editor = open_editor
         self.focus_node = focus_node
+        self.select_node = select_node
         self.model: DerivedModel | None = None
         self.layout: views.CallViewLayout | None = None
         self.root_usr: str | None = None
@@ -228,7 +230,9 @@ class CallViewCanvas(graph_canvas.GraphCanvas):
                     if self.focus_node is not None:
                         self.focus_node(node)
                 entity = self.model.entities.get(node) if self.model is not None else None
-                if entity is not None:
+                if self.select_node is not None:
+                    self.select_node(node)
+                elif entity is not None:
                     self.open_editor(entity.file, entity.line)
                 elif self.model is not None and node.removeprefix("file:") in self.model.files:
                     self.open_editor(node.removeprefix("file:"), 1)

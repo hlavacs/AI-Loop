@@ -258,26 +258,27 @@ def test_call_and_class_single_click_open_their_declarations(app_module, tmp_pat
     assert app.source_editor.dirty
 
 
-@pytest.mark.parametrize("node, file, line", [
-    ("u:A", "src/a.cpp", "3.0"),
-    ("u:A:f", "src/a.cpp", "5.0"),
-    ("file:src/b.cpp", "src/b.cpp", "1.0"),
+@pytest.mark.parametrize("node, file, line, title, expected", [
+    ("u:A", "src/a.cpp", "3.0", "A", {"u:A": "", "u:A:f": "u:A"}),
+    ("u:A:f", "src/a.cpp", "5.0", "A::f", {"u:A:f": ""}),
+    ("file:src/a.cpp", "src/a.cpp", "1.0", "src/a.cpp", {"u:A": "", "u:A:f": "u:A", "u:other": ""}),
 ])
-def test_class_view_click_updates_entities_like_file_view_without_switching_tabs(
-        app_module, tmp_path, monkeypatch, node, file, line):
+@pytest.mark.parametrize("diagram", ["class_view", "call_view"])
+def test_diagram_click_shows_only_selected_entity_without_switching_tabs(
+        app_module, tmp_path, monkeypatch, node, file, line, title, expected, diagram):
+    from icoda_core.model import Entity, Kind
+
     app = app_with_source(app_module, tmp_path)
+    app.displayed.model.add_entity(Entity("u:other", Kind.FUNCTION, "other", "other", "src/a.cpp", 8))
     rows = {}
     selected_tabs = []
     monkeypatch.setattr(app.tree, "delete", lambda *_args: rows.clear())
     monkeypatch.setattr(app.tree, "insert", lambda parent, _where, **row: rows.update({
         row["iid"]: (parent, row["text"], row["values"])}))
     monkeypatch.setattr(app.side_views, "select", selected_tabs.append)
-    app.select_node(file)
-    expected_rows = dict(rows)
     other = "src/b.cpp" if file == "src/a.cpp" else "src/a.cpp"
     app.select_node(other)
-    assert rows != expected_rows
-    canvas = app.class_view
+    canvas = getattr(app, diagram)
     monkeypatch.setattr(canvas, "node_at", lambda _x, _y: node)
     monkeypatch.setattr(canvas, "toggle_expansion_at", lambda _x, _y: False)
     canvas.dragged = True
@@ -285,8 +286,8 @@ def test_class_view_click_updates_entities_like_file_view_without_switching_tabs
     assert app.side_title.get() == other  # Panning must not select the class under the pointer.
     canvas.dragged = False
     canvas.on_release(SimpleNamespace(x=1, y=2, num=1))
-    assert rows == expected_rows
-    assert app.side_title.get() == file
+    assert {usr: row[0] for usr, row in rows.items()} == expected
+    assert app.side_title.get() == title
     assert app.source_editor.document.relative == file
     assert app.source_editor.text.index("insert") == line
     assert selected_tabs == []
@@ -310,6 +311,36 @@ def test_candidate_source_edits_never_touch_project_and_invalidate_gates(app_mod
     assert "// edit" in source.read_text() and "// edit" not in (tmp_path / "src/a.cpp").read_text()
     assert proposal.build.ok is None and proposal.test.ok is None and not proposal.ok
     assert "Rebuild" in app.status.get()
+
+
+def test_candidate_call_selection_keeps_candidate_details_and_editor_location(app_module, tmp_path, monkeypatch):
+    from dataclasses import replace
+
+    from icoda_core.model import DerivedModel
+
+    app = app_with_source(app_module, tmp_path)
+    worktree = tmp_path / ".icoda/worktree"
+    (worktree / "src").mkdir(parents=True)
+    (worktree / "src/a.cpp").write_text("// candidate\nvoid changed() {}\n")
+    model = DerivedModel(str(worktree), files=dict(app.opened.model.files))
+    candidate = replace(app.opened.model.entities["u:A:f"], name="changed", qualified_name="A::changed",
+                        line=2, signature="void changed()", brief="Performs the candidate operation.")
+    model.add_entity(candidate)
+    app.call_view.show(model, candidate.usr)
+    app._call_source_root = worktree
+    rows = {}
+    monkeypatch.setattr(app.tree, "insert", lambda _parent, _where, **row: rows.update({row["iid"]: row}))
+    monkeypatch.setattr(app.call_view, "node_at", lambda _x, _y: candidate.usr)
+    monkeypatch.setattr(app.call_view, "toggle_expansion_at", lambda _x, _y: False)
+    app.call_view.on_release(SimpleNamespace(x=1, y=2, num=1))
+    assert set(rows) == {candidate.usr} and rows[candidate.usr]["text"] == "auto changed() -> void"
+    assert app.side_title.get() == "A::changed"
+    assert "candidate operation" in app.describe_node(candidate.usr, app._entities_model)
+    monkeypatch.setattr(app.tree, "selection", lambda: (candidate.usr,))
+    for select in (app.on_tree_select, app.on_tree_double_click):
+        select(None)
+        assert app.source_editor.document.root == worktree.resolve()
+        assert app.source_editor.text.index("insert") == "2.0"
 
 
 def test_file_hierarchy_and_mind_map_nodes_open_source(app_module, tmp_path, monkeypatch):

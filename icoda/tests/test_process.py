@@ -6,6 +6,7 @@ import os
 import signal
 import subprocess
 import sys
+import threading
 import time
 from pathlib import Path
 from types import SimpleNamespace
@@ -16,6 +17,40 @@ from icoda_core import process
 from icoda_core.process import run_bounded
 
 PY = sys.executable
+
+
+@pytest.mark.parametrize("cancel_background_first", [False, True])
+def test_background_cancellation_is_separate_from_foreground(tmp_path, cancel_background_first):
+    event = threading.Event()
+    results = {}
+    def run(name, **kwargs):
+        script = (f"from pathlib import Path; import time; Path({str(tmp_path / name)!r}).touch(); "
+                  "time.sleep(30)")
+        results[name] = run_bounded([PY, "-c", script], timeout=10, **kwargs)
+    background = threading.Thread(target=lambda: run("background", cancel_event=event))
+    foreground = threading.Thread(target=lambda: run("foreground"))
+    background.start()
+    foreground.start()
+    try:
+        deadline = time.monotonic() + 5
+        while not all((tmp_path / name).exists() for name in ("background", "foreground")):
+            assert time.monotonic() < deadline
+            time.sleep(0.02)
+        if cancel_background_first:
+            event.set()
+            background.join(timeout=3)
+            assert not background.is_alive() and foreground.is_alive()
+        else:
+            process.cancel_running()
+            foreground.join(timeout=3)
+            assert not foreground.is_alive() and background.is_alive()
+    finally:
+        event.set()
+        process.cancel_running()
+        background.join(timeout=3)
+        foreground.join(timeout=3)
+    assert results["background"].cancelled and results["foreground"].cancelled
+    assert not results["background"].timed_out and not results["foreground"].timed_out
 
 
 def test_captures_stdout_stderr_and_returncode() -> None:

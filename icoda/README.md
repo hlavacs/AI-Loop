@@ -28,6 +28,8 @@ the **Help** menu opens the same pages, and the sentence above the buttons in th
 - **Source editor:** click a file, class, or function to open its source in the upper-right **Source Editor** tab.
   Clicking keeps the current right-hand tab selected; select **Source Editor** when you want to view or edit
   the source, or double-click an entity in **Entities** to switch to its source line in the editor.
+  **Entities** shows the clicked class and its members, or just the clicked function. Clicking a file shows
+  all entities in that file. Call View selections also use the correct source when reviewing a proposal.
   Edit, save, undo/redo, and find/replace text without leaving ICODA. Saving refreshes project analysis;
   candidate worktree edits require a rebuild before approval.
 - **Controlled generation:** review architecture proposals, then approve an implementation approach before
@@ -131,8 +133,12 @@ Entity tooltips include a **Purpose** sentence from the source documentation, al
 signature, status, requirements, and test information. After opening or reloading a project, ICODA automatically
 asks the selected CLI LLM to add missing purpose comments throughout the analysed project. It preserves existing
 comments and requests documentation changes only. It then reanalyses the source to verify coverage, retries
-incomplete work once, and offers the Prompt tab if comments are still missing. Unsaved editor changes and running
-tasks defer this work. New proposals cannot be approved while an entity in an affected source file lacks a purpose
+incomplete work once, and reports remaining work in Prompt. The startup LLM job runs independently in the background:
+you can continue navigating, editing, building, and using Prompt. It edits a temporary source copy and applies
+documentation changes only when the workflow is idle, no proposal is awaiting review, and the editor has no
+unsaved changes. Files changed meanwhile are left untouched. Cancelling a foreground task does not cancel the
+comment job; Prompt's Cancel button stops the comment job when no conversation is running. New proposals cannot
+be approved while an entity in an affected source file lacks a purpose
 comment. C++ uses Doxygen comments; Python uses docstrings.
 
 Existing CMake projects without ICODA state start in the implementation phase. Existing Python projects without

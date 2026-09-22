@@ -45,6 +45,23 @@ def test_entity_purpose_uses_one_sentence_of_documentation(kind) -> None:
     assert views.entity_purpose(entity) == "A purpose comment still needs to be added to the source."
 
 
+@pytest.mark.parametrize("separator, extension", [("::", "cpp"), (".", "py")])
+def test_entity_scope_includes_nested_and_out_of_line_members_only(separator, extension):
+    model = DerivedModel("/p")
+    owner = Entity("C", Kind.CLASS, "C", separator.join(("app", "C")), f"z.{extension}", 3)
+    model.add_entity(owner)
+    model.add_entity(Entity("field", Kind.FIELD, "value", owner.qualified_name + separator + "value",
+                            owner.file, 4, parent=owner.usr))
+    model.add_entity(Entity("method", Kind.METHOD, "run", owner.qualified_name + separator + "run",
+                            f"a.{extension}", 1, parent="namespace"))
+    model.add_entity(Entity("nested", Kind.CLASS, "Nested", owner.qualified_name + separator + "Nested",
+                            owner.file, 5, parent=owner.usr))
+    model.add_entity(Entity("child", Kind.FIELD, "data", "data", owner.file, 6, parent="nested"))
+    model.add_entity(Entity("other", Kind.CLASS, "Other", owner.qualified_name + "Other", owner.file, 7))
+    assert {e.usr for e in views.entity_scope(model, owner)} == {"C", "field", "method", "nested", "child"}
+    assert views.entity_scope(model, model.entities["method"]) == [model.entities["method"]]
+
+
 def small_model() -> DerivedModel:
     model = DerivedModel("/p")
     for f in ("app/main.cpp", "app/config.cpp", "core/a.cpp", "core/b.cpp", "core/c.cpp"):

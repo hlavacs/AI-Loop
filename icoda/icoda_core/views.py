@@ -221,6 +221,28 @@ def layout_file_view(model: DerivedModel, clustering: Clustering, width: float =
     return FileViewLayout(circles, nodes, arrows, aggregate_to_clusters(arrows, clustering), width, height)
 
 
+def entity_scope(model: DerivedModel, selected: Entity) -> list[Entity]:
+    """Show one entity, including members of a selected class, namespace or enum."""
+    scoped = {selected.usr: selected}
+    if selected.kind in {Kind.CLASS, Kind.STRUCT, Kind.NAMESPACE, Kind.ENUM}:
+        separator = "." if selected.file.endswith(".py") else "::"
+        prefix = selected.qualified_name + separator
+        for entity in model.entities.values():
+            # Out-of-line C++ methods can have the namespace as their lexical parent.
+            if entity.qualified_name.startswith(prefix):
+                scoped[entity.usr] = entity
+        children = defaultdict(list)
+        for entity in model.entities.values():
+            children[entity.parent].append(entity)
+        pending = list(scoped)
+        while pending:
+            for entity in children[pending.pop()]:
+                if entity.usr not in scoped:
+                    scoped[entity.usr] = entity
+                    pending.append(entity.usr)
+    return sorted(scoped.values(), key=lambda entity: (entity.file, entity.line, entity.usr))
+
+
 def entity_tree_label(entity: Entity) -> str:
     """Show one callable signature, using trailing return types for cached C++ declarations."""
     signature = entity.signature.strip()

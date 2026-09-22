@@ -145,10 +145,13 @@ def run_bounded(
     max_output: int = 200_000,
     input_text: str | None = None,
     env: Mapping[str, str] | None = None,
+    cancel_event: threading.Event | None = None,
 ) -> ProcessResult:
-    """Run ``command`` to completion or until ``timeout`` seconds, keeping bounded output."""
+    """Run a bounded command; an explicit cancel event isolates it from foreground cancellation."""
     if isinstance(command, (str, bytes)):
         raise TypeError("command must be an argument sequence, not a shell command string")
+    if cancel_event is not None and cancel_event.is_set():
+        return ProcessResult(list(command), -1, "", "", cancelled=True)
     started = time.monotonic()
     process = subprocess.Popen(
         list(command),
@@ -161,7 +164,8 @@ def run_bounded(
         start_new_session=sys.platform != "win32",
         creationflags=int(getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0)) if sys.platform == "win32" else 0,
     )
-    _register(process)
+    if cancel_event is None:
+        _register(process)
     out, err = _Tail(max_output), _Tail(max_output)
     assert process.stdout is not None and process.stderr is not None
     threads = [threading.Thread(target=_pump, args=(process.stdout, out), daemon=True),
@@ -169,12 +173,12 @@ def run_bounded(
     for thread in threads:
         thread.start()
     writer = _feed_stdin(process, input_text)
-    timed_out = _wait(process, max(0.0, timeout - (time.monotonic() - started)))
+    timed_out = _wait(process, max(0.0, timeout - (time.monotonic() - started)), cancel_event)
     if writer is not None:
         writer.join(timeout=1)
     for thread in threads:
         thread.join(timeout=5)
-    cancelled = _unregister(process)
+    cancelled = _unregister(process) if cancel_event is None else cancel_event.is_set()
     return ProcessResult(list(command), process.returncode if process.returncode is not None else -1,
                          out.text(), err.text(), timed_out, out.truncated or err.truncated,
                          time.monotonic() - started, cancelled)
@@ -202,8 +206,21 @@ def _feed_stdin(process: subprocess.Popen[bytes], input_text: str | None) -> thr
     return thread
 
 
-def _wait(process: subprocess.Popen[bytes], timeout: float) -> bool:
+def _wait(process: subprocess.Popen[bytes], timeout: float,
+          cancel_event: threading.Event | None = None) -> bool:
     """Wait for exit; on timeout terminate the process tree and return True."""
+    if cancel_event is not None:
+        deadline = time.monotonic() + timeout
+        while process.poll() is None:
+            if cancel_event.is_set():
+                kill_tree(process)
+                process.wait()
+                return False
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                break
+            cancel_event.wait(min(remaining, 0.1))
+        timeout = 0
     try:
         process.wait(timeout=timeout)
         return False

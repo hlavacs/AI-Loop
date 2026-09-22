@@ -5488,3 +5488,32 @@ Verification: **73 tests passed** across source editing, Class View, application
 The regression check starts with another file's Entities list and verifies that clicking a class, method, or file
 in Class View replaces it with the same rows File View produces, without switching sidebar tabs. Ruff, mypy on all
 **63 production files**, and `git diff --check` passed.
+
+## 2026-09-22 — Background startup comments and focused entity selection
+
+The automatic startup purpose-comment job now uses its own worker state and cancellation event instead of
+the workflow's shared busy flag. Navigation, editing, builds, reloads, and Prompt remain available during the
+LLM request. The CLI edits a temporary copy of the analysed source files. ICODA checks that the returned changes
+are documentation only, waits for foreground work and pending proposals to finish, and applies changes only
+when the editor has no unsaved buffer. Save-time checks preserve files changed since the snapshot. Foreground
+cancellation does not kill the background CLI; changing projects or closing the window cancels its own job.
+Background completion does not select a different tab or clear another task's busy state.
+
+Selecting a class or struct now shows that entity and its members, including nested and out-of-line members.
+Selecting a function or method shows only that callable. File selection still shows the file's entity hierarchy.
+Class, Call, File, and Mind Map selections share this behavior without switching the sidebar tab. Proposal Call
+View selections retain the candidate model and worktree for the Entities rows, tooltip, and source editor.
+
+Verification:
+
+- **755 tests passed**, with the previously documented `test_complete_developer_controlled_simulation` excluded
+  because it expects the obsolete `~ method ...` detail text. Ruff, mypy on all **63 production files**, and
+  `git diff --check` passed.
+- Regression tests cover active builds and Prompt conversations, pending proposals, unsaved and externally saved
+  edits, cancellation, project switching, window close, documentation-only validation, and real subprocess
+  cancellation isolation. Selection tests cover classes, members, files, candidate source locations, Python and
+  C++ member scope, panning, and preserving the active sidebar tab.
+- A native Tk check held a scripted LLM request on a real worker thread while testing UI callbacks, enabled
+  controls, class/function selection, and an unsaved editor buffer. After the buffer was cleared, the worker's
+  comments were applied and verified by real Python analysis; the Prompt draft survived the reload. The live
+  LLM provider was not invoked, and no screenshots were taken.

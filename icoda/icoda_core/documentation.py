@@ -2,8 +2,14 @@
 
 from __future__ import annotations
 
-from collections.abc import Sequence
+import ast
+import difflib
+import tempfile
+from collections.abc import Callable, Sequence
+from dataclasses import dataclass
+from pathlib import Path
 
+from icoda_core import bodyhash, git, recovery, source_edit
 from icoda_core.model import DerivedModel, Entity
 
 
@@ -32,3 +38,72 @@ def completion_prompt(entities: Sequence[Entity]) -> str:
             "Complete the entire list, then summarise what was documented and identify anything you could "
             "not document accurately. ICODA will reanalyse the files and check for remaining missing comments."
             "\n\nEntities missing purpose comments:\n" + locations)
+
+
+@dataclass
+class Completion:
+    """A background CLI response and checked edits awaiting an idle UI."""
+
+    response: recovery.RecoveryResult
+    edits: list[tuple[source_edit.Document, str]]
+    skipped: list[str]
+
+
+def complete(root: Path, files: Sequence[str], invoke: Callable[[Path], recovery.RecoveryResult]) -> Completion:
+    """Let the CLI edit a private source copy so normal project work can continue."""
+    originals = []
+    skipped = []
+    with tempfile.TemporaryDirectory(prefix="icoda-comments-") as directory:
+        scratch = Path(directory)
+        git.run_git(["init", "-q"], scratch)  # Codex expects a repository, including for documentation.
+        for file in files:
+            try:
+                original = source_edit.Document.load(root, file)
+            except (OSError, ValueError):
+                skipped.append(file)
+                continue
+            target = scratch / original.relative
+            target.parent.mkdir(parents=True, exist_ok=True)
+            target.write_bytes(original.original)
+            originals.append(original)
+        response = invoke(scratch)
+        edits = []
+        for original in originals:
+            try:
+                updated = source_edit.Document.load(scratch, original.relative)
+                if updated.text == original.text:
+                    continue
+                if not comments_only(original.relative, original.text, updated.text):
+                    raise ValueError("The CLI changed code rather than only adding documentation.")
+                edits.append((original, updated.text))
+            except (OSError, ValueError):
+                skipped.append(original.relative)
+        return Completion(response, edits, skipped)
+
+
+def comments_only(file: str, before: str, after: str) -> bool:
+    """Reject code edits; C++ adds full comment lines and Python may add docstrings."""
+    if file.endswith(".py"):
+        trees = []
+        try:
+            for source in (before, after):
+                tree = ast.parse(source)
+                for node in ast.walk(tree):
+                    if (isinstance(node, (ast.Module, ast.ClassDef, ast.FunctionDef, ast.AsyncFunctionDef))
+                            and ast.get_docstring(node) is not None):
+                        node.body = node.body[1:]
+                trees.append(ast.dump(tree))
+        except SyntaxError:
+            return False
+        return trees[0] == trees[1]
+    old, new = before.splitlines(keepends=True), after.splitlines(keepends=True)
+    for tag, start, _end, new_start, new_end in difflib.SequenceMatcher(None, old, new, autojunk=False).get_opcodes():
+        if tag == "equal":
+            continue
+        if tag != "insert" or (start and old[start - 1].rstrip().endswith("\\")):
+            return False
+        if any(not line.lstrip().startswith("///") or line.rstrip().endswith("\\")
+               for line in new[new_start:new_end]):
+            return False
+    # A comment-looking line inside a raw string is data, not documentation.
+    return bodyhash.body_hash(before) == bodyhash.body_hash(after)

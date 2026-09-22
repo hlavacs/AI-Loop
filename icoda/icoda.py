@@ -374,6 +374,8 @@ class App:
         self.opened: session.OpenedProject | None = None
         self.displayed: session.OpenedProject | None = None
         self._call_source_root: Path | None = None
+        self._entities_model: DerivedModel | None = None
+        self._entities_root: Path | None = None
         self.spec_editor: spec_editor.SpecificationEditor | None = None
         self._spec_editors: dict[Path, spec_editor.SpecificationEditor] = {}
         self.config_path = config_path or persistence.config_path()
@@ -669,7 +671,7 @@ class App:
         self.views.add(file_view, text="File View")
         self.call_view = call_view.CallViewCanvas(
             self.views, self.open_call_source, self.graph_actions, self.dispatch_graph_action,
-            self.focus_graph_node)
+            self.focus_graph_node, self.select_call_node)
         self.views.add(self.call_view.frame, text="Call View")
         self.class_view = class_view.ClassViewCanvas(
             self.views, self.open_editor, self.graph_actions, self.dispatch_graph_action,
@@ -707,7 +709,8 @@ class App:
         self.tree.bind("<Double-Button-1>", self.on_tree_double_click)
         self.tree.bind("<<TreeviewSelect>>", self.on_tree_select)
         self.tree_tooltip = tooltip.attach_objects(
-            self.tree, lambda _x, y: self.tree.identify_row(y) or None, self.describe_node)
+            self.tree, lambda _x, y: self.tree.identify_row(y) or None,
+            lambda node: self.describe_node(node, self._entities_model))
         self.source_editor = source_editor.SourceEditor(
             self.side_views, project=lambda: self.project, busy=lambda: self.panel.busy,
             saved=self._editor_saved, failed=lambda *args, **kwargs: self.recovery.handle_failure(*args, **kwargs))
@@ -1202,6 +1205,7 @@ class App:
         self.displayed = session.OpenedProject(opened.root, model, clustering, layout,
                                                opened.libclang, opened.messages)
         self._call_source_root = opened.root
+        self._entities_model, self._entities_root = model, opened.root
         self.graph_focus_usr = None
         self.side_title.set("Entities")
         self.tree_tooltip.hide()
@@ -1479,47 +1483,67 @@ class App:
             lines.append(f"errors: {info.errors[0]}")
         return "\n".join(line for line in lines if line)
 
-    def select_node(self, node_id: str) -> None:
+    def select_node(self, node_id: str, *, model: DerivedModel | None = None, root: Path | None = None) -> None:
         """Update the source location and entity list without changing the selected sidebar tab."""
         if self.displayed is None or node_id.startswith(("external:", "cluster:")):
             return
+        model = model if model is not None else self.displayed.model
+        root = root or self.displayed.root
         usr = node_id.removeprefix("entity:")
-        selected_entity = self.displayed.model.entities.get(usr)
+        selected_entity = model.entities.get(usr)
         node_id = selected_entity.file if selected_entity is not None else node_id.removeprefix("file:")
-        if node_id not in self.displayed.model.files:
+        if node_id not in model.files:
             return
+        self._entities_model, self._entities_root = model, root
         self.focus_graph_node(usr if selected_entity is not None else None)
-        self.side_title.set(node_id)
+        self.side_title.set(selected_entity.qualified_name if selected_entity is not None else node_id)
         self.tree_tooltip.hide()
         self.tree.delete(*self.tree.get_children())
-        entities = sorted(self.displayed.model.entities_in(node_id), key=lambda e: e.line)
+        entities = (views.entity_scope(model, selected_entity) if selected_entity is not None else
+                    sorted(model.entities_in(node_id), key=lambda e: e.line))
         parents = {e.usr: e for e in entities}
-        for entity in entities:
+        inserted: set[str] = set()
+
+        def insert(entity: Any) -> None:
+            if entity.usr in inserted:
+                return
+            inserted.add(entity.usr)
             parent = entity.parent if entity.parent in parents else ""
+            if not parent and selected_entity is not None and entity.usr != selected_entity.usr:
+                parent = selected_entity.usr
+            if parent:
+                insert(parents[parent])
             label = views.entity_tree_label(entity)
             self.tree.insert(parent, tk.END, iid=entity.usr, text=label, values=(entity.kind.value, entity.line),
                              open=True)
-        self.open_editor(node_id, selected_entity.line if selected_entity is not None else 1)
+
+        for entity in entities:
+            insert(entity)
+        self.open_editor(node_id, selected_entity.line if selected_entity is not None else 1, root=root)
+
+    def select_call_node(self, node_id: str) -> None:
+        """Keep proposal functions attached to their candidate model and source worktree."""
+        self.select_node(node_id, model=self.call_view.model, root=self._call_source_root)
 
     def on_tree_select(self, _event: Any) -> None:
         """A selected function becomes the root of the Call View."""
-        if self.opened is None:
+        if self._entities_model is None:
             return
         for usr in self.tree.selection():
-            if usr in self.opened.model.entities:
-                entity = self.opened.model.entities[usr]
+            if usr in self._entities_model.entities:
+                entity = self._entities_model.entities[usr]
                 if entity.kind in CALLABLE_KINDS:
                     self.call_view.set_root(usr)
                 self.focus_graph_node(usr)
-                self.open_editor(entity.file, entity.line)
+                self.open_editor(entity.file, entity.line, root=self._entities_root)
 
     def on_tree_double_click(self, _event: Any) -> None:
-        if self.opened is None:
+        if self._entities_model is None:
             return
         for usr in self.tree.selection():
-            entity = self.opened.model.entities.get(usr)
+            entity = self._entities_model.entities.get(usr)
             if entity is not None:
-                self.open_editor(entity.file, entity.line, reveal=True)
+                self.open_editor(entity.file, entity.line, root=self._entities_root, reveal=True)
 
     def open_editor(self, file: str, line: int = 1, *, root: Path | None = None, reveal: bool = False) -> None:
         """Load a source location; select the editor only when explicitly requested."""
@@ -1569,6 +1593,7 @@ class App:
 
     def close(self) -> None:
         if self.source_editor.confirm_saved():
+            self.recovery.cancel_purpose_comments()
             self.recovery.cancel()
             self.executables.stop()
             self.root.destroy()
