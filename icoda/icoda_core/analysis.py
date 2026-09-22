@@ -168,14 +168,38 @@ def load_compile_commands(location: Path) -> list[CompileCommand]:
         return []
     commands = []
     for entry in json.loads(path.read_text(encoding="utf-8")):
-        raw = entry["arguments"] if "arguments" in entry else shlex.split(entry["command"])
+        raw = entry["arguments"] if "arguments" in entry else split_command(entry["command"])
         directory = entry["directory"]
         file = str((Path(directory) / entry["file"]).resolve())
         expanded = expand_response_files(raw[1:], directory)
-        arguments = clean_arguments(expanded, file, directory)
+        arguments = clean_arguments(expanded, file, directory,
+                                    msvc=Path(raw[0]).name.lower() in {"cl", "cl.exe"})
         module_unit = Path(file).suffix in MODULE_SUFFIXES or "c++-module" in arguments
         commands.append(CompileCommand(file, directory, tuple(arguments), raw[0], module_unit))
     return commands
+
+
+def split_command(command: str) -> list[str]:
+    """Use the host's compiler-command quoting rules, preserving Windows backslashes."""
+    if sys.platform != "win32":
+        return shlex.split(command)
+    import ctypes
+
+    shell = ctypes.WinDLL("shell32", use_last_error=True)
+    shell.CommandLineToArgvW.argtypes = [ctypes.c_wchar_p, ctypes.POINTER(ctypes.c_int)]
+    shell.CommandLineToArgvW.restype = ctypes.POINTER(ctypes.c_wchar_p)
+    kernel = ctypes.WinDLL("kernel32", use_last_error=True)
+    kernel.LocalFree.argtypes = [ctypes.c_void_p]
+    kernel.LocalFree.restype = ctypes.c_void_p
+    count = ctypes.c_int()
+    # A dummy program name gives response-file arguments the same quoting rules.
+    argv = shell.CommandLineToArgvW("compiler " + command, ctypes.byref(count))
+    if not argv:
+        raise ctypes.WinError(ctypes.get_last_error())
+    try:
+        return list(argv[1:count.value])
+    finally:
+        kernel.LocalFree(argv)
 
 
 def expand_response_files(arguments: Sequence[str], directory: str) -> list[str]:
@@ -184,13 +208,13 @@ def expand_response_files(arguments: Sequence[str], directory: str) -> list[str]
     for argument in arguments:
         if argument.startswith("@") and (Path(directory) / argument[1:]).is_file():
             for line in (Path(directory) / argument[1:]).read_text(encoding="utf-8").splitlines():
-                expanded.extend(shlex.split(line))
+                expanded.extend(split_command(line))
         else:
             expanded.append(argument)
     return expanded
 
 
-def clean_arguments(arguments: Sequence[str], file: str, directory: str) -> list[str]:
+def clean_arguments(arguments: Sequence[str], file: str, directory: str, *, msvc: bool = False) -> list[str]:
     """Drop the compile/output flags and the input file; make module file paths absolute."""
     cleaned: list[str] = []
     skip_next = False
@@ -198,7 +222,9 @@ def clean_arguments(arguments: Sequence[str], file: str, directory: str) -> list
         if skip_next:
             skip_next = False
             continue
-        if argument in ("-o", "-MF", "-MT", "-MQ"):
+        if msvc and argument in ("-MD", "-MT"):
+            cleaned.append(argument)
+        elif argument in ("-o", "-MF", "-MT", "-MQ"):
             skip_next = True
         elif argument in ("-c", "-MD", "-MMD") or Path(argument).name == Path(file).name:
             continue
@@ -317,8 +343,6 @@ class Parser:
             arguments.append("-fcxx-modules")  # Apple's libclang treats `import` as a keyword only with this
         if not any(a.startswith(("-fmodule-file=", "-fprebuilt-module-path=")) for a in arguments):
             flags = self.prebuilt_module_flags(command.directory)
-            if not flags:
-                self.missing_modules.add(command.directory)
             arguments += flags
         return arguments
 
@@ -332,6 +356,9 @@ class Parser:
     def parse(self, command: CompileCommand) -> tuple[Any, Shadow | None]:
         source = Path(command.file).read_bytes()
         arguments = self.arguments(command)
+        if (re.search(rb"^\s*(?:export\s+)?import\s+[\w:]", source, re.MULTILINE)
+                and not any(a.startswith(("-fmodule-file=", "-fprebuilt-module-path=")) for a in arguments)):
+            self.missing_modules.add(command.directory)
         options = cindex.TranslationUnit.PARSE_DETAILED_PROCESSING_RECORD
         if not _NEEDS_SHADOW.search(source.decode("utf-8", errors="replace")):
             return self.index.parse(command.file, args=arguments, options=options), None
@@ -844,6 +871,14 @@ def unit_cache_key(command: CompileCommand, contributing: Iterable[str], root: P
     digest = hashlib.sha1(
         f"schema={UNIT_CACHE_VERSION}\n{CACHE_VERSION}\n{libclang_version}\n{' '.join(command.arguments)}\n".encode()
     )
+    for argument in command.arguments:
+        if argument.startswith("-fmodule-file="):
+            module = Path(argument.rsplit("=", 1)[1])
+            if module.is_file():
+                stat = module.stat()
+                digest.update(f"{module}:{stat.st_mtime_ns}:{stat.st_size}".encode())
+            else:
+                digest.update(b"missing module")
     for relative in sorted(contributing):
         path = root / relative
         digest.update(relative.encode())
@@ -873,9 +908,11 @@ def parse_project(root: Path, commands: Sequence[CompileCommand], *, resource_di
                      "project is built (build.sh)")
     model = assemble(root, results, libclang_version)
     broken = [f"{r.file.path}: {r.file.errors[0]}" for r in results if r.file.errors]
-    if broken and previous is not None:
+    if broken and previous is not None and previous.files:
         previous.stale, previous.stale_reason = True, "; ".join(broken[:5])
         return previous
+    if broken:
+        model.stale, model.stale_reason = True, "; ".join(broken[:5])
     return model
 
 

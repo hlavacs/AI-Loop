@@ -20,7 +20,7 @@ def relative_path(root: Path, file: str) -> str:
     logical = Path(os.path.abspath(root / file))
     for base in (Path(os.path.abspath(root)), root.resolve()):
         try:
-            return str(logical.relative_to(base))
+            return logical.relative_to(base).as_posix()
         except ValueError:
             continue
     raise ValueError("The source editor opens files inside the selected project or worktree.")

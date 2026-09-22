@@ -7,6 +7,7 @@ the supporting modules in ``icoda_core``. Start it through ``icoda.bash`` (``ico
 from __future__ import annotations
 
 import math
+import os
 import queue
 import shlex
 import sys
@@ -1617,8 +1618,23 @@ def parse_args(argv: list[str]) -> Path | None:
     return Path(argv[0]) if argv else None
 
 
+def configure_tk_libraries() -> None:
+    """Locate the base Python installation's Tcl/Tk scripts on Windows."""
+    if sys.platform != "win32":
+        return
+    base = Path(sys.base_prefix) / "tcl"
+    for variable, directory, script in (
+        ("TCL_LIBRARY", f"tcl{tk.TclVersion}", "init.tcl"),
+        ("TK_LIBRARY", f"tk{tk.TkVersion}", "tk.tcl"),
+    ):
+        library = base / directory
+        if (library / script).is_file():
+            os.environ.setdefault(variable, str(library))
+
+
 def main(argv: list[str] | None = None) -> int:
     project = parse_args(sys.argv[1:] if argv is None else argv)
+    configure_tk_libraries()
     root = tk.Tk()
     app = App(root, project, watchdog=True)
     if project is None and app.config.last_project and Path(app.config.last_project).is_dir():

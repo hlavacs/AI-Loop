@@ -12,7 +12,7 @@ import pytest
 
 from icoda_core import analysis, toolchain
 from icoda_core.bodyhash import body_hash
-from icoda_core.model import DerivedModel, Edge, EdgeKind, Entity, Kind
+from icoda_core.model import DerivedModel, Edge, EdgeKind, Entity, FileInfo, Kind
 
 SAMPLE = Path(__file__).resolve().parent / "sample_project"
 
@@ -459,6 +459,7 @@ def test_broken_project_keeps_previous_model_marked_stale(tmp_path: Path) -> Non
     bad.write_text("int main( { return 0; }\n")
     command = analysis.CompileCommand(str(bad), str(tmp_path), ("-std=c++20",), "clang++", False)
     previous = DerivedModel(str(tmp_path))
+    previous.files["old.cpp"] = FileInfo("old.cpp")
     result = analysis.parse_project(tmp_path, [command], previous=previous)
     assert result is previous and result.stale and "bad.cpp" in result.stale_reason
 

@@ -62,6 +62,12 @@ Install vcpkg and set `VCPKG_ROOT` when the C++ project requires it. On macOS, g
 normally need Homebrew LLVM; Apple Clang alone may not provide the required module-scanning support.
 See the [installation guide](HANDBOOK.md#2-installation-and-launch) for details.
 
+On Windows, MSVC module projects also need `clang++.exe` beside the selected `libclang.dll`
+(the Visual Studio C++ Clang tools provide both). ICODA prepares compatible analysis modules in
+`.icoda/cache/clang-modules`, reusing them until their sources or included headers change.
+The first analysis can take several minutes. The project must have a generated compilation database
+and CMake module maps; use **Build** if these are missing.
+
 ### Launch
 
 From the root of this repository, on macOS or Linux:

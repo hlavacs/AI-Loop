@@ -5517,3 +5517,28 @@ Verification:
   controls, class/function selection, and an unsaved editor buffer. After the buffer was cleared, the worker's
   comments were applied and verified by real Python analysis; the Prompt draft survived the reload. The live
   LLM provider was not invoked, and no screenshots were taken.
+
+## 2026-09-22 — Windows VVE diagrams
+
+The Windows VVE cache contained an empty model. Its earlier compiler commands had lost Windows
+backslashes through POSIX command splitting; the current debug build also lacked an exported compilation
+database. The existing Ninja configuration was regenerated with `CMAKE_EXPORT_COMPILE_COMMANDS=ON`.
+
+ICODA now preserves Windows command and response-file quoting. MSVC commands retain their preprocessing
+settings and use the Clang installation beside the selected libclang for analysis. MSVC IFC files are
+replaced only for analysis by separate PCM files in `.icoda/cache/clang-modules`. Dependency manifests
+invalidate these files when source, included headers, imported modules, or the compiler change. Translation
+unit caches also track their PCM dependencies. An empty previous model no longer hides partial results;
+parse failures remain explicitly stale. Module-free sources and self-contained modules no longer produce
+an irrelevant missing-module warning. Source-editor paths use the same forward-slash spelling as graph IDs.
+
+Verification:
+
+- 55 focused tests pass, covering Windows quoting, preprocessing flags, dependency-cache invalidation,
+  empty-cache recovery, native C++ module extraction, startup, application views, graph filtering and target
+  selection. The existing response-file and stale-model regression tests also pass.
+- Real VVE analysis: 97 files, 2,176 entities, 9,500 relations, no parse errors and no stale model.
+- Native Tk rendering: 108 File View nodes / 1,392 canvas items; 191 Class View panels / 4,179 canvas items.
+  The Class View canvas was mapped. No VVE source files were edited.
+- Ruff passes for all changed Python files. Broader source-editor tests still have Windows failures involving
+  POSIX permission expectations, symlink privileges and default text encoding; those are outside this repair.

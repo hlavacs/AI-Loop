@@ -121,6 +121,10 @@ def _derive_model(root: Path, store: persistence.ProjectStore, loaded: toolchain
     if not commands:
         messages.append("No compile_commands.json found. Press Build to prepare the project and analyse its sources.")
         return previous or DerivedModel(str(root), loaded.version)
+    from icoda_core import windows_analysis
+
+    commands = windows_analysis.prepare(commands, loaded, store.cache_dir,
+                                        lambda message: log_event(message, root))
     resource = {c.compiler: r for c in commands if (r := toolchain.resource_dir(c.compiler))}
     version = f"{loaded.version}|{toolchain.default_sysroot() or ''}"
     model = analysis.parse_project_for_root(
