@@ -100,7 +100,14 @@ same at any later time and reloads the analysis when the build passes.
 
 For an existing project, start from a committed working tree and choose **File > Open Project...**. Python source
 is analysed without importing or executing it. C++ analysis needs the compiler settings in `compile_commands.json`.
-For a CMake project with a `debug` preset and a Ninja or Makefiles generator, run these commands in that project:
+If the CMake project already has a configured build under `build/`, press **Build**, even when the target list is
+empty. ICODA reuses that build's settings, exports the compiler commands, builds, and reloads the analysis.
+**Refresh targets** also exports compiler commands and reloads an empty analysis after configuration succeeds.
+ICODA uses the build associated with the compiler commands; without those, it prefers a completed configuration
+over an incomplete one. It preserves the configured project's compiler environment, including dependency builds.
+
+If no build has been configured, configure the project using its own instructions first. For a CMake project
+with a `debug` preset and a Ninja or Makefiles generator, run these commands in that project:
 
 ```bash
 cmake --preset debug -DCMAKE_EXPORT_COMPILE_COMMANDS=ON
@@ -110,6 +117,9 @@ cmake --build --preset debug
 ICODA looks for the newest compile database at the project root, in `build/`, or one directory below `build/`,
 such as `build/debug/`. Reload after generating it. Use **Project > Choose libclang Library...** if library
 discovery needs adjustment; applying a choice reloads the open project with that library.
+CMake commands for sources outside the project (including the compiler's standard-library modules) are excluded
+from the project model. Installed `vcpkg_installed/` headers are shown as external dependencies, even when that
+directory sits inside the project.
 
 Existing CMake projects without ICODA state start in the implementation phase. Existing Python projects without
 ICODA state start in the specification phase; saving their first specification may add missing skeleton files.

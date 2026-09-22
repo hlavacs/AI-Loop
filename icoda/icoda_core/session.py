@@ -119,7 +119,7 @@ def _derive_model(root: Path, store: persistence.ProjectStore, loaded: toolchain
         messages.append("no libclang found: showing the last derived model" if previous else "no libclang found")
         return previous or DerivedModel(str(root))
     if not commands:
-        messages.append("no compile_commands.json found: build the project once (build.sh) to analyse it")
+        messages.append("No compile_commands.json found. Press Build to prepare the project and analyse its sources.")
         return previous or DerivedModel(str(root), loaded.version)
     resource = {c.compiler: r for c in commands if (r := toolchain.resource_dir(c.compiler))}
     version = f"{loaded.version}|{toolchain.default_sysroot() or ''}"

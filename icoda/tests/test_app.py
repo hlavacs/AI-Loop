@@ -302,6 +302,8 @@ def test_build_menu_runs_the_build_gate_and_reloads_or_reports(app_module, tmp_p
     app.open_project = opened.append
     app.run_async = lambda work, done: done(work())
     app.project = tmp_path
+    persistence.ProjectStore(tmp_path).save_state(
+        persistence.ProjectState(phase=persistence.ProjectPhase.ARCHITECTURE))
     results = [app_module.steps.BuildResult(True, "ok"), app_module.steps.BuildResult(False, "error: boom")]
     monkeypatch.setattr(app_module.steps, "build_project", lambda root: results.pop(0))
     repairs = []
@@ -322,6 +324,22 @@ def test_build_menu_runs_the_build_gate_and_reloads_or_reports(app_module, tmp_p
     app.project = None
     app.build_project()  # without a project: an information box, nothing else
     assert opened == [tmp_path]
+
+
+def test_existing_project_build_failure_investigates_without_architecture_repair(
+        app_module, tmp_path: Path, monkeypatch) -> None:
+    app = app_module.App(app_module.tk.Tk(), config=persistence.UserConfig(), config_path=tmp_path / "c.json")
+    app.project = tmp_path
+    persistence.ProjectStore(tmp_path).save_state(
+        persistence.ProjectState(phase=persistence.ProjectPhase.IMPLEMENTATION))
+    app.run_async = lambda work, done: done(work())
+    monkeypatch.setattr(app_module.steps, "build_project", lambda root: app_module.steps.BuildResult(False, "boom"))
+    failures = []
+    monkeypatch.setattr(app.recovery, "handle_failure", lambda error, **options: failures.append((error, options)))
+    app.build_project()
+    assert failures[0][0] == "Build failed.\nboom"
+    assert failures[0][1] == {"retry": app.build_project}
+    assert not app.panel.busy
 
 
 def test_test_command_menu_edits_the_project_state(app_module, tmp_path: Path, monkeypatch) -> None:

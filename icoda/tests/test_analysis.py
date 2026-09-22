@@ -273,6 +273,44 @@ def test_analysis_populates_function_body_hash(tmp_path: Path) -> None:
     assert answer.body_hash == body_hash("{ return 42; }")
 
 
+@pytest.mark.parametrize("dependency_directory", ["toolchain", "project/vcpkg_installed/triplet/include"])
+def test_compile_database_can_include_external_modules_and_sources(tmp_path: Path, dependency_directory) -> None:
+    loaded = _libclang()
+    root, dependency = tmp_path / "project", tmp_path / dependency_directory
+    root.mkdir()
+    dependency.mkdir(parents=True)
+    (dependency / "std.compat.cppm").write_text("export module std.compat;\n")
+    (dependency / "outside.cpp").write_text("this dependency must not be parsed\n")
+    (dependency / "api.hpp").write_text("int external_value();\n")
+    source = root / "main.cpp"
+    source.write_text(f'#include "{dependency / "api.hpp"}"\nint main() {{ return external_value(); }}\n')
+    commands = [analysis.CompileCommand(str(path), str(root), ("-std=c++20",), "clang++", module)
+                for path, module in ((dependency / "std.compat.cppm", True),
+                                     (dependency / "outside.cpp", False), (source, False))]
+    parsed = []
+    model = analysis.parse_project(root, commands, libclang_version=loaded.version, progress=parsed.append)
+    assert set(model.files) == {"main.cpp"}
+    assert not model.files["main.cpp"].errors
+    assert len(parsed) == 1 and str(source) in parsed[0]
+    assert any(edge.target.startswith("external:") for edge in model.edges)
+    assert _by_name(model, "main").is_definition
+
+
+def test_specialized_template_retains_translation_unit_when_reading_members(tmp_path: Path, capsys) -> None:
+    _libclang()
+    source = tmp_path / "template.cpp"
+    source.write_text("template<class T> struct Box { T value; T get() { return value; } };\n"
+                      "int main() { Box<int> b{42}; return b.get(); }\n")
+    command = analysis.CompileCommand(str(source), str(tmp_path), ("-std=c++20",), "clang++", False)
+    unit, _shadow = analysis.Parser().parse(command)
+    call = next(cursor for cursor in unit.cursor.walk_preorder()
+                if cursor.kind == analysis.CK.CALL_EXPR and cursor.spelling == "get")
+    pattern = analysis.template_pattern(call.referenced)
+    assert pattern.kind == analysis.CK.CXX_METHOD
+    assert any(child.kind == analysis.CK.COMPOUND_STMT for child in pattern.get_children())
+    assert not capsys.readouterr().err
+
+
 def test_real_parse_marks_only_base_pointer_virtual_call_uncertain(tmp_path: Path) -> None:
     loaded = _libclang()
     source = tmp_path / "dispatch.cpp"
@@ -399,10 +437,41 @@ def test_shadow_source_blanks_export_blocks_and_keeps_offsets(tmp_path: Path) ->
     assert len(shadow.text) == len(source)
     lines = shadow.text.splitlines()
     assert lines[0] == "module;" and lines[1] == "#include <vector>"
-    assert lines[2] == "export module M;"
+    assert lines[2] == "export module m;"
     assert lines[3].strip() == "" and lines[4] == "int f();" and lines[5].strip() == ""
     assert lines[6] == "       int g();" and lines[7] == "module :private;"
     assert len(shadow.block_ranges) == 1 and len(shadow.export_ranges) == 1
+
+
+def test_module_partitions_keep_their_identity_and_resolve_relative_imports(tmp_path: Path) -> None:
+    loaded = _libclang()
+    compiler = Path(loaded.path).resolve().parent.parent / "bin" / ("clang++.exe" if sys.platform == "win32"
+                                                                else "clang++")
+    if not compiler.is_file():
+        pytest.skip("No matching compiler beside libclang")
+    (tmp_path / "types.cppm").write_text("export module demo:types;\nexport struct Value { int number; };\n")
+    (tmp_path / "api.cppm").write_text("export module demo:api;\nimport :types;\n"
+                                     "export int get(Value v) { return v.number; }\n")
+    (tmp_path / "demo.cppm").write_text("export module demo;\nexport import :types;\nexport import :api;\n"
+                                      "export int answer() { return get(Value{42}); }\n")
+    flags = ["-std=c++20"]
+    commands = []
+    for name in ("types", "api", "demo"):
+        source = tmp_path / f"{name}.cppm"
+        commands.append(analysis.CompileCommand(str(source), str(tmp_path), tuple(flags), str(compiler), True))
+        if name != "demo":
+            pcm = tmp_path / f"demo-{name}.pcm"
+            result = subprocess.run([str(compiler), *flags, "--precompile", str(source), "-o", str(pcm)],
+                                    capture_output=True, text=True, timeout=60, check=False)
+            assert result.returncode == 0, result.stderr
+            flags.append(f"-fmodule-file=demo:{name}={pcm}")
+    model = analysis.parse_project(tmp_path, commands, libclang_version=loaded.version,
+                                   sysroot=toolchain.default_sysroot(), apple=loaded.apple)
+    assert not [(file.path, file.errors) for file in model.files.values() if file.errors]
+    assert _by_name(model, "answer").is_definition
+    assert _by_name(model, "get").is_definition
+    assert any(edge.kind == EdgeKind.IMPORTS and edge.source == "demo.cppm" and edge.target == "api.cppm"
+               for edge in model.edges)
 
 
 def test_missing_module_flags_are_recovered_from_pcm_files(sample: DerivedModel) -> None:

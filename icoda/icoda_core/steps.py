@@ -21,6 +21,7 @@ from icoda_core import (
     adaptation,
     agent,
     analysis,
+    cmake,
     git,
     grouping,
     implementation,
@@ -150,7 +151,11 @@ def build_project(root: Path, timeout: float = BUILD_TIMEOUT,
                   *, code_profile: Mapping[str, object] | None = None) -> BuildResult:
     """Run the profile-selected build check without running the project's tests."""
     commands = gate_commands(root, (), code_profile=code_profile).build
-    environment = build_environment(root)
+    directory = cmake.build_directory(root) if commands[0][0] == "cmake" else None
+    if directory is not None:
+        commands = [cmake.configure_command(root, directory), ["cmake", "--build", str(directory)]]
+    # A configured project's cache/toolchain controls its compiler and dependency setup.
+    environment = None if directory is not None else build_environment(root)
     output = ""
     for command in commands:
         result = run_bounded(command, cwd=root, timeout=timeout, env=environment)

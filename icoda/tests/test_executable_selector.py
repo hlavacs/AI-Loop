@@ -3,6 +3,8 @@
 from pathlib import Path
 from types import SimpleNamespace
 
+import pytest
+
 from icoda_core import clusters, executables, persistence, prompt, session, steps, views
 from icoda_core.model import DerivedModel, Edge, EdgeKind, Entity, FileInfo, Kind
 
@@ -65,9 +67,11 @@ def test_selection_cancel_keeps_unsaved_source_and_choice(app_module, tmp_path, 
     assert app.source_editor.content() == draft and app.source_editor.dirty
 
 
-def test_operations_guard_busy_and_send_failures_to_recovery(app_module, tmp_path, monkeypatch):
+@pytest.mark.parametrize("phase", [persistence.ProjectPhase.ARCHITECTURE, persistence.ProjectPhase.IMPLEMENTATION])
+def test_operations_guard_busy_and_send_failures_to_recovery(app_module, tmp_path, monkeypatch, phase):
     app = app_module.App(app_module.tk.Tk(), config=persistence.UserConfig(), config_path=tmp_path / "c.json")
     app.show(opened(tmp_path))
+    persistence.ProjectStore(tmp_path).save_state(persistence.ProjectState(phase=phase))
     app.executables.choice_var.set(app.executables.choices[0].label)
     app.executables.select()
     calls = []
@@ -90,9 +94,44 @@ def test_operations_guard_busy_and_send_failures_to_recovery(app_module, tmp_pat
     app.executables.operate("run")
     assert calls == [(tmp_path, "first", "run")] and len(failures) == 1
     assert callable(failures[0][1]["retry"])
-    failures[0][1]["repair"]()
-    assert repaired == ["Build failed: example compilation"]
+    if phase == persistence.ProjectPhase.ARCHITECTURE:
+        failures[0][1]["repair"]()
+        assert repaired == ["Build failed: example compilation"]
+    else:
+        assert "repair" not in failures[0][1]  # use ordinary CLI investigation for an existing project
     assert not app.panel.busy and not app.executables.running
+
+
+def test_build_available_before_target_discovery_and_refresh_reanalyses(app_module, tmp_path, monkeypatch):
+    app = app_module.App(app_module.tk.Tk(), config=persistence.UserConfig(), config_path=tmp_path / "c.json")
+    (tmp_path / "CMakeLists.txt").touch()
+    project = opened(tmp_path)
+    project.model.files.clear()
+    project.model.entities.clear()
+    app.show(project)
+    selector = app.executables
+    states = {}
+    for name in ("Build", "Run", "Refresh targets"):
+        monkeypatch.setattr(selector.buttons[name], "state", lambda value, name=name: states.update({name: value}))
+    selector.update_controls()
+    assert states == {"Build": ["!disabled"], "Run": ["disabled"], "Refresh targets": ["!disabled"]}
+    built, reloaded = [], []
+    monkeypatch.setattr(app, "build_project", lambda: built.append(tmp_path))
+    monkeypatch.setattr(app, "open_project", reloaded.append)
+    selector.operate("build")
+    assert built == [tmp_path]
+    app.panel.set_busy(True, "busy")
+    selector.operate("build")
+    assert built == [tmp_path]
+    app.panel.set_busy(False)
+    library = executables.Target("library", "", tmp_path / "build", None, frozenset(), kind="STATIC_LIBRARY")
+    selector._choices((executables.Entry("", "", 0, library),), None)
+    selector.operate("build")
+    assert built == [tmp_path, tmp_path]  # target metadata alone does not replace the missing source analysis
+    app.run_async = lambda work, done: done(work())
+    monkeypatch.setattr(executables, "operate", lambda *args: executables.Outcome((), None, "ok", "refreshed"))
+    selector.operate("refresh")
+    assert reloaded == [tmp_path]
 
 
 def test_success_and_ambiguity_update_choices_without_running_an_arbitrary_target(app_module, tmp_path, monkeypatch):

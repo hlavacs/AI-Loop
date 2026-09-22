@@ -39,6 +39,8 @@ class ExecutableSelector:
                        "Build is available for both, Run only for executables.")
         tooltip.attach(self.buttons["Refresh targets"], "Refresh CMake target names and configurations "
                        "from the project's configured build tree.")
+        tooltip.attach(self.buttons["Build"], "Build the selected target. When no targets have been discovered, "
+                       "build the project using its existing CMake configuration and analyse its sources.")
         tooltip.attach(self.buttons["Run"], "Build the selected CMake target, then run its executable "
                        "from the project directory. Output is captured; Stop cancels it.")
         self.notebook = notebook
@@ -114,6 +116,8 @@ class ExecutableSelector:
         cmake = ready and (self.project / "CMakeLists.txt").is_file() if self.project else False
         for label in ("Build", "Run", "Refresh targets"):
             enabled = cmake and (label == "Refresh targets" or self.selected is not None)
+            if label == "Build" and (not self.choices or not (self.model and self.model.files)):
+                enabled = cmake
             if label == "Run" and self.selected is not None and self.selected.is_library:
                 enabled = False
             self.buttons[label].state(["!disabled"] if enabled else ["disabled"])
@@ -135,6 +139,9 @@ class ExecutableSelector:
 
     def operate(self, action: str) -> None:
         if self.project is None or self.model is None or self.window.panel.busy:
+            return
+        if action == "build" and (not self.choices or not self.model.files):
+            self.window.build_project()
             return
         if action != "refresh" and self.selected is None:
             return
@@ -163,7 +170,9 @@ class ExecutableSelector:
             elif isinstance(result, Exception):
                 self._output("ICODA is attempting recovery. See Prompt if further input is needed.\n")
                 options: dict[str, Any] = {"retry": lambda: self.operate(action)}
-                if recovery.diagnose(str(result)).code == "project_gate":
+                state = persistence.ProjectStore(project).load_state()
+                if (recovery.diagnose(str(result)).code == "project_gate"
+                        and state.phase == persistence.ProjectPhase.ARCHITECTURE):
                     runner = self.window.steps._ensure_runner()
                     options.update(repair=lambda: runner.repair_project(str(result)),
                                    repaired=self.window.steps._show_proposal)
@@ -179,6 +188,8 @@ class ExecutableSelector:
                 self._output(result.output)
                 self.window.status.set(result.message)
                 session.log_event(result.message + "\n" + result.output, project)
+                if action == "refresh" and not model.files:
+                    self.window.open_project(project)
             self.update_controls()
 
         self.window.run_async(lambda: executables.operate(

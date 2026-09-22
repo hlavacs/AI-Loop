@@ -1024,10 +1024,12 @@ class App:
                 self.open_project(project)
             else:
                 session.log_event("build failed (Project ▸ Build):\n" + result.output, project)
-                runner = self.steps._ensure_runner()
-                self.recovery.handle_failure("Build failed.\n" + result.output, retry=self.build_project,
-                    repair=lambda: runner.repair_project(result.output),
-                    repaired=self.steps._show_proposal)
+                options: dict[str, Any] = {"retry": self.build_project}
+                if persistence.ProjectStore(project).load_state().phase == persistence.ProjectPhase.ARCHITECTURE:
+                    runner = self.steps._ensure_runner()
+                    options.update(repair=lambda: runner.repair_project(result.output),
+                                   repaired=self.steps._show_proposal)
+                self.recovery.handle_failure("Build failed.\n" + result.output, **options)
 
         self.steps.run(work, done, "building the project", cancellable=True)
 

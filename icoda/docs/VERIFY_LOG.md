@@ -5367,3 +5367,38 @@ Verification:
   The final check used the actual source diff from example commit `c9a395b`. Its explanation names the source
   files, defines the callback and context fields, shows `WorkTreeJob{callback, context}`, explains pointer copies,
   and states that submissions still return false and no job runs. It uses direct numbered instructions.
+
+## 2026-09-22 — opening and building ViennaVulkanEngine
+
+The toolbar Build action can now prepare a CMake project before source analysis or target discovery succeeds.
+Project Build and target refresh reuse the configured build tree, request compiler commands and target metadata,
+and preserve its compiler environment. Without compiler commands, discovery prefers a completed configuration
+over an incomplete cache. Existing implementation projects use CLI investigation after a failure instead of
+calling the architecture-only proposal repair operation.
+
+The reported VVE refresh failure came from exporting ICODA's Homebrew CC/CXX choice into vcpkg: Draco was then
+rebuilt with GNU linker-group options that Apple's linker rejected. Preserving the environment lets vcpkg retain
+its original Apple compiler while VVE's CMake toolchain continues to select Homebrew LLVM for the engine.
+
+VVE also exposed analysis problems: compiler-owned standard-library module sources were treated as project
+files; vcpkg headers inside the project were expanded into over 500,000 entities per translation unit; template
+cursors lost their translation-unit reference; and renaming the shadow module broke relative partition imports.
+Analysis now excludes external compilation units, treats installed vcpkg headers as external libraries, caches
+resolved paths, retains template cursor ownership, and preserves module names when removing declaration exports.
+The unit-cache version was advanced to invalidate the earlier extraction results.
+
+Verification:
+
+- VVE's existing `build/debug-macos-arm64-llvm` configuration and full build pass through `steps.build_project`.
+  No VVE source files were changed.
+- A complete fresh VVE analysis finished in **128.3 seconds**: **96 files, 2,211 entities, 9,514 relations,
+  31 selectable CMake targets, no parse errors, and no diagnostic messages**.
+- A native Tk check, without screenshots, confirmed that Build is enabled for an empty initial analysis,
+  clicking it invokes the project build, and Run remains disabled.
+- The final focused run passed **121 tests**, covering analysis, real compiled module partitions, existing
+  CMake configuration reuse, toolbar states, recovery routing, application/session behavior, and verification
+  inventory. Ruff and mypy on all **62 production files** pass, as does `git diff --check`.
+- The full suite recorded **682 passes and two failures**. One was the already documented simulation assertion
+  expecting the older `~ method ...` text. The other was the new partition fixture missing the macOS sysroot;
+  that fixture was corrected and passes in the final focused run. Production VVE analysis also passes with the
+  same module-partition handling. The unrelated simulation assertion is unchanged.

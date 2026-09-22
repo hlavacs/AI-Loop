@@ -10,7 +10,8 @@ from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any
 
-from icoda_core import analysis, process, steps
+from icoda_core import analysis, cmake, process, steps
+from icoda_core.cmake import build_directory
 from icoda_core.model import DerivedModel, Kind
 
 
@@ -62,26 +63,6 @@ class Outcome:
     selected: Entry | None
     output: str
     message: str
-
-
-def build_directory(root: Path) -> Path | None:
-    """Use the analysed build tree; verify its source root before reconfiguring it."""
-    database = analysis.find_compile_commands(root)
-    candidates = [database.parent] if database else []
-    if database:
-        for command in analysis.load_compile_commands(database):
-            directory = Path(command.directory)
-            candidates.extend((directory, *directory.parents))
-    candidates.extend((root / "build/debug", root / "build", *sorted(root.glob("build/*")), root))
-    for directory in dict.fromkeys(candidates):
-        cache = directory / "CMakeCache.txt"
-        if cache.is_file():
-            for line in cache.read_text(encoding="utf-8").splitlines():
-                if line.startswith("CMAKE_HOME_DIRECTORY:INTERNAL="):
-                    if Path(line.split("=", 1)[1]).resolve() == root.resolve():
-                        return directory.resolve()
-                    break
-    return None
 
 
 def _json(path: Path) -> dict[str, Any]:
@@ -216,7 +197,9 @@ def operate(root: Path, model: DerivedModel, selected: Entry | None, action: str
     def run(command: list[str], stage: str, timeout: float = 600) -> None:
         if cancelled():
             raise steps.StepCancelled()
-        result = process.run_bounded(command, cwd=root, timeout=timeout, env=steps.build_environment(root))
+        # The existing cache/toolchain owns compiler selection. Exporting CC/CXX here can
+        # also change dependency compilers (e.g. vcpkg) and invalidate a working build.
+        result = process.run_bounded(command, cwd=root, timeout=timeout)
         output.append("$ " + shlex.join(command) + "\n" + result.stdout + result.stderr)
         if result.cancelled or cancelled():
             raise steps.StepCancelled()
@@ -227,10 +210,7 @@ def operate(root: Path, model: DerivedModel, selected: Entry | None, action: str
     directory = build_directory(root)
     if directory is None:
         raise steps.StepError("Configure/build this CMake project first with Project → Build, then refresh targets.")
-    query = directory / ".cmake/api/v1/query/client-icoda/codemodel-v2"
-    query.parent.mkdir(parents=True, exist_ok=True)
-    query.touch()
-    run(["cmake", "-S", str(root), "-B", str(directory)], "CMake configuration")
+    run(cmake.configure_command(root, directory), "CMake configuration")
     choices = entries(model, read_targets(root, directory))
     if action == "refresh":
         return Outcome(choices, choose(choices, selected.key if selected else None), "\n".join(output),

@@ -75,8 +75,8 @@ def diagnose(text: str) -> Diagnosis:
     if any(word in lower for word in ("tests fail", "test failed", "does not build", "build failed",
                                       "compiler error", "cmake error")):
         return Diagnosis("project_gate", "The project did not pass its build or test checks.",
-                         "The failed proposal stays in its worktree. Discuss the output here or open "
-                         "the CLI there, fix it, then retry the checks before approving.", detail)
+                         "The command output is available in Details. Use Prompt to investigate the cause "
+                         "and fix the configuration or code, then retry the failed operation.", detail)
     return Diagnosis("unknown", "ICODA could not complete the operation.",
                      "The cause is not yet established. The CLI conversation below includes the error "
                      "context so you can investigate and retry when it is resolved.", detail)

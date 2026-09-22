@@ -1,8 +1,7 @@
 """Parsing a project with libclang into the derived model; incremental cache; stale marking.
 
 Module interface units are parsed twice: once as written (only to tokenize), then from memory as a
-*shadow*: still a module interface unit, but with its module renamed (same length, upper-cased, so it
-does not clash with the real module file) and every ``export`` keyword blanked, because libclang does
+*shadow*: still the same module interface unit, with declaration ``export`` keywords blanked, because libclang does
 not visit the declarations inside an ``export``. Offsets are preserved, so locations and USRs match
 what call sites in other units reference. Implementation units and ordinary sources need no shadow.
 """
@@ -37,7 +36,7 @@ from icoda_core.model import (
 
 MODULE_SUFFIXES = frozenset({".cppm", ".ixx", ".mpp", ".cxxm", ".c++m", ".ccm"})
 HEADER_SUFFIXES = frozenset({".h", ".hh", ".hpp", ".hxx", ".h++", ".inl"})
-UNIT_CACHE_VERSION = 3
+UNIT_CACHE_VERSION = 5
 CPP_SUFFIXES = MODULE_SUFFIXES | HEADER_SUFFIXES | frozenset({".c", ".cc", ".cpp", ".cxx", ".c++"})
 CPP_LANGUAGE = "C++"
 PYTHON_LANGUAGE = "Python"
@@ -235,56 +234,38 @@ class Shadow:
 
 
 def shadow_source(source: bytes, tokens: Sequence[Any]) -> Shadow:
-    """Rename the module in ``export module …;`` (same length) and blank every other ``export`` (and block braces)."""
-    edits: list[tuple[int, int, bytes | None]] = []
+    """Keep the module identity (including partition imports); blank declaration exports and their block braces."""
+    edits: list[tuple[int, int]] = []
     shadow = Shadow("")
     index = 0
     while index < len(tokens):
         token = tokens[index]
         if token.spelling == "export" and token.kind == cindex.TokenKind.KEYWORD:
             following = tokens[index + 1] if index + 1 < len(tokens) else None
-            if following is not None and following.spelling == "module":
-                index = _rename_module(tokens, index + 2, edits)
-            else:
+            if following is None or following.spelling != "module":
                 index = _blank_export(tokens, index, edits, shadow)
         index += 1
     buffer = bytearray(source)
-    for start, end, replacement in edits:
+    for start, end in edits:
         for offset in range(start, min(end, len(buffer))):
-            if replacement is None and buffer[offset] not in b"\n":
+            if buffer[offset] not in b"\n":
                 buffer[offset] = ord(" ")
-            elif replacement is not None:
-                buffer[offset] = replacement[offset - start]
     shadow.text = bytes(buffer).decode("utf-8", errors="replace")
     return shadow
 
 
-def _rename_module(tokens: Sequence[Any], index: int, edits: list[tuple[int, int, bytes | None]]) -> int:
-    """Upper-case the identifiers of the module name up to ``;`` so the shadow is a different module."""
-    while index < len(tokens) and tokens[index].spelling != ";":
-        token = tokens[index]
-        if token.kind == cindex.TokenKind.IDENTIFIER:
-            original = token.spelling.encode("utf-8")
-            renamed = token.spelling.upper().encode("utf-8")
-            if renamed == original or len(renamed) != len(original):
-                renamed = b"X" * len(original)
-            edits.append((token.extent.start.offset, token.extent.end.offset, renamed))
-        index += 1
-    return index
-
-
-def _blank_export(tokens: Sequence[Any], index: int, edits: list[tuple[int, int, bytes | None]],
+def _blank_export(tokens: Sequence[Any], index: int, edits: list[tuple[int, int]],
                   shadow: Shadow) -> int:
     token = tokens[index]
     start, end = token.extent.start.offset, token.extent.end.offset
-    edits.append((start, end, None))
+    edits.append((start, end))
     following = tokens[index + 1] if index + 1 < len(tokens) else None
     if following is not None and following.spelling == "import":
         return index
     if following is not None and following.spelling == "{":
         close = _matching_brace(tokens, index + 1)
-        edits.append((following.extent.start.offset, following.extent.end.offset, None))
-        edits.append((tokens[close].extent.start.offset, tokens[close].extent.end.offset, None))
+        edits.append((following.extent.start.offset, following.extent.end.offset))
+        edits.append((tokens[close].extent.start.offset, tokens[close].extent.end.offset))
         shadow.block_ranges.append((following.extent.end.offset, tokens[close].extent.start.offset))
         return index + 1
     shadow.export_ranges.append((start, end))
@@ -442,6 +423,7 @@ class Extractor:
         self.module_map = module_map
         self.resource_dirs = tuple(resource_dirs)
         self.compiled_files: set[str] = set()
+        self._paths: dict[str, Path] = {}
 
     # -- entry point ------------------------------------------------------------------------
 
@@ -461,16 +443,19 @@ class Extractor:
         return result
 
     def relative(self, path: Path) -> str:
-        return path.resolve().relative_to(self.root).as_posix()
+        return self._resolved(str(path)).relative_to(self.root).as_posix()
+
+    def _resolved(self, path: str) -> Path:
+        # An AST can contain hundreds of thousands of cursors from the same headers.
+        # Resolve each distinct path once instead of hitting the filesystem per cursor.
+        if path not in self._paths:
+            self._paths[path] = Path(path).resolve()
+        return self._paths[path]
 
     def inside(self, path: str | None) -> bool:
         if not path:
             return False
-        try:
-            Path(path).resolve().relative_to(self.root)
-            return True
-        except ValueError:
-            return False
+        return _project_file(self._resolved(path), self.root)
 
     # -- declarations -----------------------------------------------------------------------
 
@@ -501,7 +486,7 @@ class Extractor:
         """Entities come from the main file and from project headers no compile command covers."""
         if not file_name or not self.inside(file_name):
             return False
-        path = Path(file_name).resolve()
+        path = self._resolved(file_name)
         if path == self._main:
             return True
         if str(path) in self.compiled_files or path.suffix not in HEADER_SUFFIXES:
@@ -649,17 +634,26 @@ def qualified_name(cursor: Any) -> str:
 
 def template_pattern(cursor: Any) -> Any:
     """The template a specialization or a member of a specialization comes from; else the cursor itself."""
-    specialized = _valid(cindex.conf.lib.clang_getSpecializedCursorTemplate(cursor))
+    specialized = _specialized_template(cursor)
     if specialized is not None and specialized.kind != CK.NO_DECL_FOUND and specialized.kind.is_declaration():
         return specialized
     parent = _valid(cursor.semantic_parent)
     if parent is not None and parent.kind in (CK.CLASS_DECL, CK.STRUCT_DECL):
-        parent_template = _valid(cindex.conf.lib.clang_getSpecializedCursorTemplate(parent))
+        parent_template = _specialized_template(parent)
         if parent_template is not None and parent_template.kind == CK.CLASS_TEMPLATE:
             for member in parent_template.get_children():
                 if member.spelling == cursor.spelling and member.kind == cursor.kind:
                     return member
     return cursor
+
+
+def _specialized_template(cursor: Any) -> Any:
+    result = _valid(cindex.conf.lib.clang_getSpecializedCursorTemplate(cursor))
+    if result is not None:
+        # Recent bindings return a raw cursor here. Retain its translation unit before
+        # reading children, as the bindings' high-level cursor accessors do.
+        result._tu = cursor._tu
+    return result
 
 
 def _is_implicit_member(declaration: Any) -> bool:
@@ -844,8 +838,11 @@ def parse_project(root: Path, commands: Sequence[CompileCommand], *, resource_di
                   cache_dir: Path | None = None, previous: DerivedModel | None = None,
                   libclang_version: str = "", sysroot: str | None = None, apple: bool = False,
                   notes: list[str] | None = None, progress: Callable[[str], None] | None = None) -> DerivedModel:
-    """Parse every compile command (from cache where nothing changed) and assemble the derived model."""
+    """Parse the project's compile commands; dependencies outside its root remain external."""
     root = root.resolve()
+    # CMake also exports commands for toolchain modules (e.g. std.compat.cppm) and
+    # dependencies outside the project. They cannot become project-relative files.
+    commands = [command for command in commands if _project_file(Path(command.file).resolve(), root)]
     parser = Parser(resource_dirs, sysroot, apple)
     extractor = Extractor(root, build_module_map(root, commands), (resource_dirs or {}).values())
     extractor.compiled_files = {str(Path(c.file).resolve()) for c in commands}
@@ -863,6 +860,14 @@ def parse_project(root: Path, commands: Sequence[CompileCommand], *, resource_di
         previous.stale, previous.stale_reason = True, "; ".join(broken[:5])
         return previous
     return model
+
+
+def _project_file(path: Path, root: Path) -> bool:
+    if not path.is_relative_to(root):
+        return False
+    # vcpkg installs dependencies inside the source/build tree in manifest mode.
+    # Treat their headers as external libraries, not hundreds of thousands of project entities.
+    return "vcpkg_installed" not in path.relative_to(root).parts
 
 
 def _unit_result(command: CompileCommand, parser: Parser, extractor: Extractor, root: Path,
