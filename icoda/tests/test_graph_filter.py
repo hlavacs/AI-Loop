@@ -85,6 +85,46 @@ def test_plan_cluster_namespace_and_edge_type_filters() -> None:
     assert _visible(_derive(graph_filter.FilterDescription(edge_type="uses-type"))) == {"u:near", "u:far"}
 
 
+@pytest.mark.parametrize("namespace, included", [
+    ("vve", {"vve"}),
+    ("VVE", {"vve"}),
+    ("vve::*", {"vve", "vve::simple", "vve::simple::detail"}),
+    ("vve::simple", {"vve::simple"}),
+    ("vve::simple::*", {"vve::simple", "vve::simple::detail"}),
+])
+def test_namespace_exact_and_recursive_match_real_namespaces_not_class_scopes(namespace, included) -> None:
+    model = DerivedModel(".")
+    owner_namespaces = {}
+    for scope in ("vve", "vve::simple", "vve::simple::detail", "vve_extra", "other::vve"):
+        file = scope.replace("::", "/") + ".cpp"
+        model.files[file] = FileInfo(file)
+        for name, kind in ((scope, Kind.NAMESPACE), (scope + "::Engine", Kind.CLASS),
+                           (scope + "::Engine::run", Kind.METHOD), (scope + "::Engine::Nested", Kind.STRUCT),
+                           (scope + "::Engine::Nested::value", Kind.FIELD), (scope + "::Mode", Kind.ENUM),
+                           (scope + "::Mode::ready", Kind.ENUMERATOR), (scope + "::start", Kind.FUNCTION)):
+            model.add_entity(Entity(name, kind, name.rpartition("::")[2], name, file, 1))
+            owner_namespaces[name] = scope
+    graph = graph_filter.project_graph(model)
+    decisions = graph_filter.derive(model, graph, {}, graph_filter.parse("namespace:" + namespace))
+    assert {usr for usr in model.entities if not decisions[usr].hidden} == {
+        usr for usr, scope in owner_namespaces.items() if scope in included}
+    assert {file for file in model.files if not decisions[file].hidden} == {
+        scope.replace("::", "/") + ".cpp" for scope in included}
+
+    methods = graph_filter.derive(model, graph, {}, graph_filter.parse("namespace:" + namespace + " kind:method"))
+    assert {usr for usr, entity in model.entities.items() if entity.kind == Kind.METHOD and not methods[usr].hidden} == {
+        scope + "::Engine::run" for scope in included}
+
+
+def test_namespace_filter_remains_exact_when_namespace_records_are_missing() -> None:
+    model = DerivedModel(".")
+    for name, kind in (("vve::Engine", Kind.CLASS), ("vve::Engine::run", Kind.METHOD),
+                       ("vve::child::Engine", Kind.CLASS), ("vve::child::Engine::run", Kind.METHOD)):
+        model.add_entity(Entity(name, kind, name.rpartition("::")[2], name, "a.cpp", 1))
+    decisions = graph_filter.derive(model, graph_filter.project_graph(model), {}, graph_filter.parse("namespace:vve"))
+    assert {usr for usr in model.entities if not decisions[usr].hidden} == {"vve::Engine", "vve::Engine::run"}
+
+
 def test_no_focus_dims_nothing() -> None:
     assert not any(decision.dimmed for decision in _derive(focus=None, depth=2).values())
 

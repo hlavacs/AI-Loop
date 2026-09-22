@@ -5424,3 +5424,22 @@ Verification:
   focused file/class/call views, source navigation, Build/Run controls, and restored selection after reload.
 - The handbook PDF was regenerated; it remains 97 pages. Extracted text differs only on page 18, whose rendered
   layout was checked for readable paragraphs, lists, margins, and footer placement. `git diff --check` passed.
+
+## 2026-09-22 — exact namespace filters and explicit descendants
+
+`namespace:vve` now matches only that namespace. `namespace:vve::*` includes it and all child namespaces.
+Class members, nested types, and enum values follow their containing namespace; class and enum scopes do not
+count as child namespaces. Namespace nodes match their own names, and matching remains case-insensitive.
+The toolbar help, README, and handbook explain both forms.
+
+Verification:
+
+- **43 tests passed** across graph filtering, all four diagram canvases, expansion, and Python GUI behavior.
+  Cases cover exact and recursive namespace matches, class members, nested types, enum values, unrelated
+  namespace names, missing namespace records, file aggregation, and combined filters. Ruff and mypy on all
+  **62 production files** passed.
+- VVE's cached analysis yields **759 entities and 82 classes/structs** for `namespace:vve`, compared with
+  **1,890 entities and 167 classes/structs** for `namespace:vve::*`. Exact filtering excludes child namespaces
+  while retaining methods belonging to classes in `vve`. No VVE source files were changed.
+- The regenerated handbook remains **97 pages**. Extracted text differs only on page 21; the rendered page
+  was inspected for readable text, margins, and footer placement.

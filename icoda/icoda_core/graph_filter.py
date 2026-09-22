@@ -106,11 +106,12 @@ def derive(model: DerivedModel, graph: Graph, appearances: NodeAppearanceMap,
            neighborhood_depth: int = 0) -> NodeDecisionMap:
     """Return one frozen decision map shared unchanged by all diagram canvases."""
     reachable = _neighborhood(graph, focus_usr, neighborhood_depth)
+    namespaces = _entity_namespaces(model) if criteria.namespace else {}
     decisions: dict[str, NodeDecision] = {}
     for node_id in graph.nodes:
         usrs = _node_usrs(model, graph, node_id)
         matched = not criteria.active or _node_matches(
-            model, graph, appearances, node_id, usrs, criteria)
+            model, graph, appearances, node_id, usrs, criteria, namespaces)
         dimmed = bool(reachable) and not bool(set(usrs or (node_id,)) & reachable)
         decisions[node_id] = NodeDecision(matched, not matched, matched and dimmed)
     return MappingProxyType(decisions)
@@ -147,17 +148,18 @@ def _node_usrs(model: DerivedModel, graph: Graph, node_id: str) -> tuple[str, ..
 
 
 def _node_matches(model: DerivedModel, graph: Graph, appearances: NodeAppearanceMap,
-                  node_id: str, usrs: tuple[str, ...], criteria: FilterDescription) -> bool:
+                  node_id: str, usrs: tuple[str, ...], criteria: FilterDescription,
+                  namespaces: Mapping[str, str]) -> bool:
     entities = tuple(model.entities[usr] for usr in usrs if usr in model.entities)
     if not entities:
         return _synthetic_matches(graph, node_id, criteria)
-    return any(_entity_matches(entity, graph, appearances.get(entity.usr), criteria)
+    return any(_entity_matches(entity, graph, appearances.get(entity.usr), criteria,
+                               namespaces.get(entity.usr, ""))
                for entity in entities)
 
 
 def _entity_matches(entity: Entity, graph: Graph, appearance: NodeAppearance | None,
-                    criteria: FilterDescription) -> bool:
-    namespace = entity.qualified_name.rpartition("::")[0]
+                    criteria: FilterDescription, namespace: str) -> bool:
     cluster = graph.cluster_by_file.get(entity.file, "")
     return (
         _contains(entity.name, criteria.name)
@@ -166,9 +168,33 @@ def _entity_matches(entity: Entity, graph: Graph, appearance: NodeAppearance | N
         and _optional_equals(appearance.covered if appearance else None, criteria.covered)
         and _optional_equals(appearance.stale if appearance else False, criteria.stale)
         and _contains(cluster, criteria.cluster)
-        and _contains(namespace, criteria.namespace)
+        and _namespace_matches(namespace, criteria.namespace)
         and _has_edge_type(graph.edges, entity.usr, criteria.edge_type)
     )
+
+
+def _entity_namespaces(model: DerivedModel) -> dict[str, str]:
+    scopes = {entity.qualified_name: entity.kind for entity in model.entities.values()}
+    result = {}
+    for entity in model.entities.values():
+        namespace = entity.qualified_name if entity.kind == Kind.NAMESPACE else \
+            entity.qualified_name.rpartition("::")[0]
+        # A class, enum, or function scope is not a child namespace. Qualified names
+        # also cover out-of-line definitions whose lexical parent is not their class.
+        while namespace in scopes and scopes[namespace] != Kind.NAMESPACE:
+            namespace = namespace.rpartition("::")[0]
+        result[entity.usr] = namespace
+    return result
+
+
+def _namespace_matches(actual: str, wanted: str) -> bool:
+    if not wanted:
+        return True
+    actual, wanted = actual.casefold(), wanted.casefold()
+    if wanted.endswith("::*"):
+        base = wanted[:-3]
+        return actual == base or actual.startswith(base + "::")
+    return actual == wanted
 
 
 def _synthetic_matches(graph: Graph, node_id: str, criteria: FilterDescription) -> bool:

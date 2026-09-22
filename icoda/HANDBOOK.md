@@ -499,13 +499,16 @@ status:stub
 covered:true
 stale:false
 cluster:core
-namespace:app
+namespace:vve
 edge:calls
 ```
 
 Terms can be combined. Quoted values are accepted. An invalid or unfinished quote is handled as plain text rather
 than crashing the filter. `covered:true` matches the structural recorded test reachability index; it is not a test
 assurance or runtime execution filter.
+
+`namespace:vve` matches only that namespace; `namespace:vve::*` also includes its child namespaces.
+Class members follow their class's namespace. Matching is case-insensitive.
 
 ![Call graph filtered to stub entities](docs/images/handbook/diagram-filtered.png)
 

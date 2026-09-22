@@ -85,6 +85,27 @@ def test_one_focus_and_depth_dim_identically_with_shared_appearance(
     assert all(not canvas.node_dimmed("u:uncovered") for canvas in canvases)
 
 
+def test_namespace_exact_and_descendant_filters_apply_to_all_diagrams(app_module, tmp_path: Path) -> None:
+    opened = _opened(tmp_path)
+    model = opened.model
+    for entity in model.entities.values():
+        entity.qualified_name = "vve::" + entity.qualified_name
+    model.files["src/child.cpp"] = FileInfo("src/child.cpp")
+    model.add_entity(Entity("child", Kind.CLASS, "Renderer", "vve::detail::Renderer", "src/child.cpp", 1))
+    model.add_entity(Entity("child_method", Kind.METHOD, "render", "vve::detail::Renderer::render",
+                            "src/child.cpp", 2, parent="child"))
+    app = app_module.App(app_module.tk.Tk(), config=persistence.UserConfig(), config_path=tmp_path / "config.json")
+    app.show(opened)
+    app.graph_filter_var.set("namespace:vve")
+    assert _visible(app) == (frozenset({"u:type", "u:covered", "u:uncovered", "u:test"}),) * 4
+    assert app.view.node_visible("src/app.cpp") and not app.view.node_visible("src/child.cpp")
+    app.graph_filter_var.set("namespace:vve::*")
+    assert _visible(app) == (frozenset(model.entities),) * 4
+    assert app.view.node_visible("src/child.cpp")
+    app.graph_filter_var.set("namespace:vve::detail")
+    assert _visible(app) == (frozenset({"child", "child_method"}),) * 4
+
+
 def test_controls_are_inert_without_project_and_empty_model_is_safe(
         app_module, tmp_path: Path) -> None:
     app = app_module.App(app_module.tk.Tk(), config=persistence.UserConfig(),

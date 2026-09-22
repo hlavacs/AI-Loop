@@ -776,6 +776,7 @@ class App:
             self.graph_filter_entry,
             "Space-separated filters: name:, kind:, status:, covered: (recorded-test reachability), stale:, "
             "cluster:, namespace:, edge:. "
+            "namespace:vve matches only vve; namespace:vve::* also includes child namespaces. "
             "Plain text filters by name; clear the entry to show all nodes.")
         ttk.Label(parent, text="Neighborhood:").pack(side=tk.LEFT)
         self.neighborhood_spinbox = ttk.Spinbox(
