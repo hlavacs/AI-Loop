@@ -26,10 +26,12 @@ class ClassViewCanvas(graph_canvas.GraphCanvas):
     def __init__(self, parent: Any, open_editor: Callable[[str, int], None],
                  resolve_actions: graph_canvas.ActionResolver | None = None,
                  dispatch_action: graph_canvas.ActionDispatcher | None = None,
-                 focus_node: Callable[[str | None], None] | None = None) -> None:
+                 focus_node: Callable[[str | None], None] | None = None,
+                 select_node: Callable[[str], None] | None = None) -> None:
         super().__init__(parent, resolve_actions, dispatch_action)
         self.open_editor = open_editor
         self.focus_node = focus_node
+        self.select_node = select_node
         self.model: DerivedModel | None = None
         self.graph = class_graph.ClassGraph()
         self.layout: views.ClassViewLayout | None = None
@@ -204,7 +206,9 @@ class ClassViewCanvas(graph_canvas.GraphCanvas):
                 self.focus_node(self.selected)
             self.redraw()
             entity = self.model.entities.get(self.selected) if self.model is not None and self.selected else None
-            if entity is not None:
+            if self.select_node is not None and self.selected:
+                self.select_node(self.selected)
+            elif entity is not None:
                 self.open_editor(entity.file, entity.line)
             elif self.model is not None and self.selected \
                     and self.selected.removeprefix("file:") in self.model.files:

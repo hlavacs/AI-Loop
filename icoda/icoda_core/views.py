@@ -10,6 +10,7 @@ Nothing here imports tkinter.
 from __future__ import annotations
 
 import math
+import re
 from collections import defaultdict
 from dataclasses import dataclass, field, replace
 
@@ -249,6 +250,15 @@ def entity_location_label(entity: Entity) -> str:
     if not entity.is_definition:
         return f"declaration {entity.declaration_file or entity.file} · no definition"
     return f"definition {entity.file}"
+
+
+def entity_purpose(entity: Entity) -> str:
+    """The first sentence of the actual source documentation, for hover details."""
+    text = " ".join(entity.brief.split())
+    if not text:
+        return "A purpose comment still needs to be added to the source."
+    sentence = re.split(r"(?<=[.!?])\s+(?=[A-Z])", text, maxsplit=1)[0]
+    return sentence if sentence.endswith((".", "!", "?")) else sentence + "."
 
 
 def compact_file_view(layout: FileViewLayout, columns: int, column_width: float,

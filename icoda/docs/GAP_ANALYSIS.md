@@ -131,7 +131,7 @@ describe the separate AI-Loop application and are not ICODA plans or specificati
   `icoda/icoda_python.bash:choose_icoda_python`.
 - Auxiliary CLI entry points: `icoda/icoda_core/provider_check.py:main` and the analysis child process
   `icoda/icoda_core/session.py:main`. There is no TUI or web entry point; neither is planned.
-- Core package: 42 top-level Python modules under `icoda/icoda_core/`, counting every `*.py` file including
+- Core package: 43 top-level Python modules under `icoda/icoda_core/`, counting every `*.py` file including
   `__init__.py`, and including the phase/queue, grouping, coverage/rules/mind-map,
   common graph-status/filter/expansion, and Python-analysis slices added after the original baseline.
 - GUI package: 18 Python modules under `icoda/icoda_gui/`, including all six overview surfaces, the Troubleshooting and Source Editor tabs, and their shared controls.

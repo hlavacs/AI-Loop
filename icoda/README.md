@@ -127,6 +127,14 @@ to the overview. The choice is saved per project. Build works in the overview; R
 The diagram filter `namespace:vve` matches that namespace only; `namespace:vve::*` also includes child namespaces.
 Class members use their class's namespace.
 
+Entity tooltips include a **Purpose** sentence from the source documentation, along with the existing source,
+signature, status, requirements, and test information. After opening or reloading a project, ICODA automatically
+asks the selected CLI LLM to add missing purpose comments throughout the analysed project. It preserves existing
+comments and requests documentation changes only. It then reanalyses the source to verify coverage, retries
+incomplete work once, and offers the Prompt tab if comments are still missing. Unsaved editor changes and running
+tasks defer this work. New proposals cannot be approved while an entity in an affected source file lacks a purpose
+comment. C++ uses Doxygen comments; Python uses docstrings.
+
 Existing CMake projects without ICODA state start in the implementation phase. Existing Python projects without
 ICODA state start in the specification phase; saving their first specification may add missing skeleton files.
 See [Starting a project](HANDBOOK.md#3-starting-a-project) before bringing an existing codebase into the workflow.

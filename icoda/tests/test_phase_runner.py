@@ -111,8 +111,8 @@ def test_approval_advances_and_persists_the_implementation_cursor(
         tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     store = persistence.ProjectStore(tmp_path)
     model = DerivedModel(str(tmp_path))
-    first = Entity("u:first", Kind.FUNCTION, "first", "app::first", "x.cpp", 1, status="stub")
-    second = Entity("u:second", Kind.FUNCTION, "second", "app::second", "x.cpp", 2, status="stub")
+    first = Entity("u:first", Kind.FUNCTION, "first", "app::first", "x.cpp", 1, status="stub", brief="Runs first.")
+    second = Entity("u:second", Kind.FUNCTION, "second", "app::second", "x.cpp", 2, status="stub", brief="Runs next.")
     model.add_entity(first)
     model.add_entity(second)
     store.save_model(model)
@@ -222,9 +222,9 @@ def test_legacy_batch_default_keeps_single_target_flow_end_to_end(
     store = persistence.ProjectStore(tmp_path)
     model = DerivedModel(str(tmp_path))
     first = Entity("u:first", Kind.FUNCTION, "first", "app::first", "x.cpp", 1,
-                   signature="void first()", status="stub")
+                   signature="void first()", status="stub", brief="Runs the first operation.")
     second = Entity("u:second", Kind.FUNCTION, "second", "app::second", "x.cpp", 2,
-                    signature="void second()", status="stub")
+                    signature="void second()", status="stub", brief="Runs the next operation.")
     model.add_entity(first)
     model.add_entity(second)
     store.save_model(model)
@@ -317,7 +317,8 @@ def test_batch_approval_advances_every_member_and_refuses_a_changed_head(
     store = persistence.ProjectStore(tmp_path)
     model = DerivedModel(str(tmp_path))
     for usr in ("first", "second", "third"):
-        model.add_entity(Entity(usr, Kind.FUNCTION, usr, f"app::{usr}", "x.cpp", 1, status="stub"))
+        model.add_entity(Entity(usr, Kind.FUNCTION, usr, f"app::{usr}", "x.cpp", 1, status="stub",
+                                brief="Runs one operation in the batch."))
     store.save_model(model)
     initial = persistence.ProjectState(
         persistence.ProjectPhase.IMPLEMENTATION, ("first", "second", "third"), 0,

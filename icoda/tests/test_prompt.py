@@ -65,6 +65,9 @@ def test_every_step_round_requests_a_self_contained_explanation(kind) -> None:
         assert "No algorithmic code" in text
     else:
         assert "Do not implement other stub functions" in text
+    if kind != "approach":
+        assert "Every entity in every source file you touch must have a purpose comment" in text
+        assert "Missing purpose comments prevent approval" in text
 
 
 def test_python_profile_and_prompt_rules_are_language_appropriate() -> None:

@@ -5,7 +5,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from icoda_core import git, persistence, prompt, recovery, steps
+from icoda_core import agent, documentation, git, persistence, prompt, python_analysis, recovery, steps
 from icoda_core.process import ProcessResult
 
 
@@ -28,6 +28,86 @@ def complete(pending):
     except Exception as exc:  # noqa: BLE001  (simulate UiTasks result delivery)
         result = exc
     done(result)
+
+
+def undocumented_project(app_module, tmp_path, monkeypatch):
+    app, pending = window(app_module, tmp_path)
+    source = tmp_path / "settings.py"
+    source.write_text("class Settings:\n    def load(self):\n        return 42\n\n"
+                      "def main():\n    return Settings().load()\n")
+    app.opened = SimpleNamespace(root=tmp_path, model=python_analysis.parse_project(tmp_path))
+    # Simulate the normal reload after edits with the real parser, without background GUI threads.
+    def refresh(root):
+        app.opened.model = python_analysis.parse_project(root)
+    monkeypatch.setattr(app, "_source_changed", refresh)
+    monkeypatch.setattr(agent, "binary_available", lambda *_args: True)
+    return app, pending, source
+
+
+def test_automatic_purpose_comments_are_verified_and_preserve_prompt_draft(app_module, tmp_path, monkeypatch):
+    app, pending, source = undocumented_project(app_module, tmp_path, monkeypatch)
+    app.recovery.input.insert("end", "Keep this unsent question")
+    app.recovery.history.append(("Developer", "Explain the configuration"))
+    requests = []
+    def invoke(provider, model, request, cwd, **kwargs):
+        requests.append(request)
+        assert cwd == tmp_path and kwargs["writable"]
+        assert "settings.Settings.load" in request and "settings.main" in request
+        source.write_text('class Settings:\n    """Stores the application settings."""\n'
+                          '    def load(self):\n        """Loads the configured limit."""\n        return 42\n\n'
+                          'def main():\n    """Loads settings when the program starts."""\n'
+                          '    return Settings().load()\n')
+        return recovery.RecoveryResult(ProcessResult([], 0, "Documented the three entities.", ""))
+    monkeypatch.setattr(recovery, "invoke", invoke)
+    app.recovery.ensure_purpose_comments()
+    assert len(pending) == 1
+    complete(pending)
+    app.recovery.ensure_purpose_comments()
+    assert not documentation.missing_entities(app.opened.model)
+    assert "verified for all 3 project entities" in app.recovery.summary.get()
+    assert len(requests) == 1 and not pending
+    assert app.recovery.input.get("1.0", "end").strip() == "Keep this unsent question"
+    assert app.recovery.history == [("Developer", "Explain the configuration")]
+
+
+@pytest.mark.parametrize("cancelled", [False, True])
+def test_automatic_documentation_is_bounded_and_respects_cancellation(
+        app_module, tmp_path, monkeypatch, cancelled):
+    app, pending, _source = undocumented_project(app_module, tmp_path, monkeypatch)
+    monkeypatch.setattr(recovery, "invoke", lambda *_args, **_kwargs: recovery.RecoveryResult(
+        ProcessResult([], 0, "Done", "", cancelled=cancelled)))
+    app.recovery.ensure_purpose_comments()
+    complete(pending)
+    app.recovery.ensure_purpose_comments()
+    if not cancelled:
+        assert len(pending) == 1  # The CLI's claim of completion does not override the source inventory.
+        complete(pending)
+        app.recovery.ensure_purpose_comments()
+    assert not pending
+    assert "3 entities still need purpose comments" in app.recovery.summary.get()
+
+
+def test_documentation_waits_for_saved_source_valid_analysis_and_an_available_provider(
+        app_module, tmp_path, monkeypatch):
+    app, pending, source = undocumented_project(app_module, tmp_path, monkeypatch)
+    app.source_editor.open_file(tmp_path, source.name)
+    app.source_editor.text.insert("end", "# Unfinished edit\n")
+    app.recovery.ensure_purpose_comments()
+    assert not pending
+    app.source_editor._install(app.source_editor.document)
+    app.source_editor.clear()
+    app._editor_refresh_pending = tmp_path
+    app.recovery.ensure_purpose_comments()
+    assert not pending  # Wait for the delayed post-edit reload before considering another LLM request.
+    app._editor_refresh_pending = None
+    app.opened.model.stale = True
+    app.recovery.ensure_purpose_comments()
+    assert not pending
+    app.opened.model.stale = False
+    monkeypatch.setattr(agent, "binary_available", lambda *_args: False)
+    app.recovery.ensure_purpose_comments()
+    assert not pending and not app.recovery.purpose_attempts
+    assert "choose an available CLI" in app.status.get()
 
 
 def test_prompt_works_before_any_failure_and_keeps_history(app_module, tmp_path, monkeypatch):

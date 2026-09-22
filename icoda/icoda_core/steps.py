@@ -1073,6 +1073,8 @@ class StepRunner:
         )
         return rules.promotion_refusal(
             proposal.model, self.log, changed,
+            documentation_usrs=(entity.usr for entity in proposal.model.entities.values()
+                                if entity.file in proposal.delta.files or entity.declaration_file in proposal.delta.files),
         )
 
     def reject(self, proposal: Proposal, reason: str) -> StepRecord:

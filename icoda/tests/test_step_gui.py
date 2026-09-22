@@ -579,7 +579,8 @@ def signature_gate_controller(tmp_path: Path, monkeypatch: Any) \
                              signature="int b()", status="stub", body_hash="same"))
     proposed = DerivedModel(str(tmp_path))
     proposed.add_entity(Entity("u:b", Kind.FUNCTION, "b", "app::b", "m.cpp", 1,
-                               signature="int b(int value)", status="implemented", body_hash="same"))
+                               signature="int b(int value)", status="implemented", body_hash="same",
+                               brief="Returns the supplied value."))
     store.save_model(before)
     store.save_state(persistence.ProjectState(
         persistence.ProjectPhase.IMPLEMENTATION, ("u:b",), 0, approved_approach="Implement directly."))
@@ -757,8 +758,8 @@ def test_app_adapt_re_requests_through_feedback_and_replaces_proposal(
 
     project = tmp_path / "structured-adapt"
     write_simulation_project(project)
-    first_source = "def answer() -> int:\n    return 1\n"
-    second_source = "def answer(limit: int = 2) -> int:\n    return limit\n"
+    first_source = 'def answer() -> int:\n    """Returns the fixed answer."""\n    return 1\n'
+    second_source = 'def answer(limit: int = 2) -> int:\n    """Returns the configured answer."""\n    return limit\n'
     original = {
         "name": "service.answer", "kind": "function", "file": "service.py",
         "signature": "answer() -> int", "satisfies": ["R-1"],
@@ -1026,10 +1027,12 @@ def test_controller_auto_approves_two_green_steps_then_halts_on_failed_test_gate
         write_simulation_project,
     )
 
-    stub_source = "def alpha():\n    pass\n\ndef beta():\n    pass\n\ndef gamma():\n    pass\n"
-    alpha_source = stub_source.replace("def alpha():\n    pass", "def alpha():\n    return 'alpha'")
-    beta_source = alpha_source.replace("def beta():\n    pass", "def beta():\n    return 'beta'")
-    gamma_source = beta_source.replace("def gamma():\n    pass", "def gamma():\n    return 'gamma'")
+    stub_source = ('def alpha():\n    """Provides the alpha result."""\n    pass\n\n'
+                   'def beta():\n    """Provides the beta result."""\n    pass\n\n'
+                   'def gamma():\n    """Provides the gamma result."""\n    pass\n')
+    alpha_source = stub_source.replace("    pass", "    return 'alpha'", 1)
+    beta_source = alpha_source.replace("    pass", "    return 'beta'", 1)
+    gamma_source = beta_source.replace("    pass", "    return 'gamma'", 1)
     project = tmp_path / "auto-approve"
     write_simulation_project(project)
     provider = ScriptedProvider([

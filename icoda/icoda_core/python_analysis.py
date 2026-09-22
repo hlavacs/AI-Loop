@@ -325,11 +325,12 @@ def _argument(argument: ast.arg) -> str:
 
 def _brief(node: ast.ClassDef | FunctionNode) -> str:
     doc = ast.get_docstring(node, clean=True) or ""
-    return doc.splitlines()[0] if doc else ""
+    return " ".join(doc.split("\n\n", 1)[0].split())
 
 
 def _function_body_hash(source: str, node: FunctionNode) -> str:
-    chunks = [ast.get_source_segment(source, statement) or "" for statement in node.body]
+    statements = node.body[1:] if ast.get_docstring(node) is not None else node.body
+    chunks = [ast.get_source_segment(source, statement) or "" for statement in statements]
     return body_hash("\n".join(chunks))
 
 

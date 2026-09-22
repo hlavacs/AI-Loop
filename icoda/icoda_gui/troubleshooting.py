@@ -8,7 +8,7 @@ from pathlib import Path
 from tkinter import ttk
 from typing import Any
 
-from icoda_core import agent, process, recovery, session, source_watch, steps, terminal
+from icoda_core import agent, documentation, process, recovery, session, source_watch, steps, terminal
 from icoda_gui import provider_field, tasks
 
 
@@ -27,6 +27,8 @@ class Troubleshooting:
         self.cancelled = False
         self.finishing = False
         self.pending: list[tuple[Exception | str, dict[str, Any], Path | None]] = []
+        self.purpose_attempts: dict[str, int] = {}
+        self.purpose_active = False
         self.summary = tk.StringVar(value="Open a project to ask questions or edit files in Prompt.")
         ttk.Label(self.frame, textvariable=self.summary, wraplength=850, justify="left").pack(
             fill=tk.X, padx=8, pady=6)
@@ -53,6 +55,8 @@ class Troubleshooting:
         self.input.bind("<<Modified>>", self._input_changed)
         self.provider.on_change = self._controls
         window.panel.activity_var.trace_add("write", lambda *_args: self._controls())
+        window.panel.activity_var.trace_add(
+            "write", lambda *_args: window.root.after(0, self.ensure_purpose_comments))
         self._controls()
 
     @staticmethod
@@ -118,6 +122,8 @@ class Troubleshooting:
             self._set_busy(False)
         self.issue, self.retry, self.project, self.cwd = None, None, None, None
         self.history.clear()
+        self.purpose_attempts.clear()
+        self.purpose_active = False
         self.transcript.configure(state="normal")
         self.transcript.delete("1.0", "end")
         self.transcript.configure(state="disabled")
@@ -265,13 +271,55 @@ class Troubleshooting:
             else:
                 process.cancel_running()
 
-    def send(self) -> None:
+    def ensure_purpose_comments(self) -> None:
+        """Complete missing source comments automatically, with at most two attempts per entity."""
+        opened = self.window.opened
+        if (opened is None or opened.root != self.project or self.busy or self.window.panel.busy
+                or self.window._pending_analyses or self.window._editor_refresh_pending is not None
+                or self.window.source_editor.dirty):
+            return
+        model = opened.model  # The whole project, even when the diagrams show only one target.
+        if model.stale or any(info.errors for info in model.files.values()):
+            return  # Fix analysis before asking an agent to document incomplete source facts.
+        missing = documentation.missing_entities(model)
+        usrs = {entity.usr for entity in missing}
+        self.purpose_attempts = {usr: count for usr, count in self.purpose_attempts.items() if usr in usrs}
+        if not missing:
+            if self.purpose_active:
+                self.summary.set(f"Purpose comments verified for all {len(model.entities)} project entities.")
+                self.window.status.set(self.summary.get())
+                self._append("ICODA", self.summary.get())
+                self.purpose_active = False
+            return
+        pending = tuple(entity for entity in missing if self.purpose_attempts.get(entity.usr, 0) < 2)
+        if not pending:
+            if self.purpose_active:
+                self.summary.set(f"{len(missing)} entities still need purpose comments. Continue in Prompt.")
+                self.window.status.set(self.summary.get())
+                self._append("ICODA", self.summary.get())
+                self.window.views.select(self.frame)
+                self.purpose_active = False
+            return
+        selection = self.window.provider_field.selection()
+        provider = provider_field.resolve_provider(self.provider.providers, selection.binary)
+        if provider is None or not provider.enabled or not agent.binary_available(provider, selection.binary):
+            self.window.status.set(f"{len(missing)} entities need purpose comments — choose an available CLI in LLM.")
+            return
+        for entity in pending:
+            self.purpose_attempts[entity.usr] = self.purpose_attempts.get(entity.usr, 0) + 1
+        self.purpose_active = True
+        self.summary.set(f"Adding purpose comments for {len(pending)} entities…")
+        self.window.status.set(self.summary.get())
+        self.send(documentation.completion_prompt(pending), purpose_comments=True)
+
+    def send(self, message: str | None = None, *, purpose_comments: bool = False) -> None:
         if self.busy or self.window.panel.busy or self.cwd is None:
             return
-        message = self.input.get("1.0", "end").strip()
+        from_input = message is None
+        message = self.input.get("1.0", "end").strip() if message is None else message
         if not message:
             return
-        selection = self.provider.selection()
+        selection = self.window.provider_field.selection() if purpose_comments else self.provider.selection()
         if not selection.provider_id:
             self._append("ICODA", "Select an enabled provider in Binary first.")
             return
@@ -279,11 +327,16 @@ class Troubleshooting:
         if not provider.enabled:
             self._append("ICODA", "This provider is disabled. Choose an enabled provider.")
             return
-        self.input.delete("1.0", "end")
-        self.history.append(("Developer", message))
-        self._append("You", message)
-        request = recovery.conversation_prompt(self.issue, self.history, self.cwd, writable=True)
-        cwd, token = self.cwd, self.generation
+        if from_input:
+            self.input.delete("1.0", "end")
+        if not purpose_comments:
+            self.history.append(("Developer", message))
+        self._append("ICODA purpose comments" if purpose_comments else "You", message)
+        cwd = self.project if purpose_comments else self.cwd
+        assert cwd is not None
+        history = [("Developer", message)] if purpose_comments else self.history
+        request = recovery.conversation_prompt(None if purpose_comments else self.issue, history, cwd, writable=True)
+        token = self.generation
         changed = False
         self._set_busy(True)
 
@@ -306,6 +359,8 @@ class Troubleshooting:
             if changed:
                 self._refresh_after_edits(cwd)
             if self.cancelled or isinstance(result, steps.StepCancelled):
+                if purpose_comments:
+                    self.purpose_attempts = {usr: 2 for usr in self.purpose_attempts}
                 self._append("ICODA", "Conversation request cancelled.")
                 return
             if isinstance(result, Exception):
@@ -315,6 +370,8 @@ class Troubleshooting:
                 self._controls()
                 return
             if result.result.cancelled:
+                if purpose_comments:
+                    self.purpose_attempts = {usr: 2 for usr in self.purpose_attempts}
                 self._append("ICODA", "Conversation request cancelled.")
                 return
             tasks.completion_ping(self.window.root)
@@ -323,7 +380,8 @@ class Troubleshooting:
             else:
                 self.issue = result.diagnosis or recovery.diagnose(result.result.stderr or result.result.stdout)
                 answer = self.issue.text()
-            self.history.append(("Assistant", answer))
+            if not purpose_comments:
+                self.history.append(("Assistant", answer))
             self._append(provider.label, answer)
             self._controls()
 

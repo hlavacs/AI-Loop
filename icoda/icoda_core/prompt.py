@@ -204,6 +204,12 @@ def _step_text(request: StepRequest, model: DerivedModel, profile: Mapping[str, 
     lines.append("")
     lines.extend(_architecture_rules(request, profile) if request.phase == ARCHITECTURE
                  else _implementation_rules(request, model, profile))
+    lines.append("- Every entity in every source file you touch must have a purpose comment: classes, structs, "
+                 "functions, methods, constructors, destructors, namespaces, enums, enum values, aliases, "
+                 "fields, and variables. Start with one simple sentence explaining what it does and why it "
+                 "exists, based on the actual code, for a junior programmer. Use Doxygen @brief in C++ and "
+                 "docstrings in Python. Preserve useful existing documentation and update it when behaviour "
+                 "changes. Missing purpose comments prevent approval.")
     return "\n".join(lines)
 
 

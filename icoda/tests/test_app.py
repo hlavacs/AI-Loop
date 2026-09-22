@@ -135,8 +135,12 @@ def test_describe_and_select_nodes(app_module, tmp_path: Path, monkeypatch) -> N
     description = app.describe_node("entity:u:A:f")
     assert description == app.describe_node("u:A:f")
     for expected in ("Method: A::f", "void f()", "src/a.cpp:5", "include/a.hpp", "Status: implemented",
-                     "Updates the object.", "Requirements: R-1", "Tests: tests/a.cpp"):
+                     "Purpose: Updates the object.", "Requirements: R-1", "Tests: tests/a.cpp"):
         assert expected in description
+    assert description.count("Updates the object.") == 1
+    entity.brief += " Keeps existing values intact."
+    assert "Purpose: Updates the object.\n" in app.describe_node(entity.usr)
+    assert entity.brief in app.describe_node(entity.usr)
     assert "Class: A" in app.describe_node("u:A")
     assert "Function: g" in app.describe_node("u:g")
     assert "Cluster:" in app.describe_node("cluster:" + app.displayed.clustering.clusters[0].id)
@@ -144,8 +148,10 @@ def test_describe_and_select_nodes(app_module, tmp_path: Path, monkeypatch) -> N
     assert app.describe_node("external-symbol:missing:0") == app.describe_node("unknown") == ""
     candidate = DerivedModel.from_json(app.displayed.model.to_json())
     candidate.entities["u:A:f"].signature = "void f(int value)"
+    candidate.entities["u:A:f"].brief = "Updates only the supplied value."
     candidate.add_entity(Entity("u:new", Kind.FUNCTION, "new_api", "new_api", "new.cpp", 7))
     assert "void f(int value)" in app.describe_node("u:A:f", candidate)
+    assert "Purpose: Updates only the supplied value." in app.describe_node("u:A:f", candidate)
     assert "Function: new_api" in app.describe_node("u:new", candidate)
     assert "void f()" in app.describe_node("u:A:f") and not app.describe_node("u:new")
     labels: dict[str, str] = {}

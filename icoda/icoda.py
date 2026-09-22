@@ -673,7 +673,7 @@ class App:
         self.views.add(self.call_view.frame, text="Call View")
         self.class_view = class_view.ClassViewCanvas(
             self.views, self.open_editor, self.graph_actions, self.dispatch_graph_action,
-            self.focus_graph_node)
+            self.focus_graph_node, self.select_node)
         self.views.add(self.class_view.frame, text="Class View")
         self.mind_map_view = mind_map_view.MindMapCanvas(
             self.views, self.select_step, self.graph_actions, self.dispatch_graph_action,
@@ -1182,6 +1182,7 @@ class App:
         if not self.panel.details_visible:
             self._resize_step_panel()
         session.log_event("shown: window ready", opened.root)
+        self.root.after(0, self.recovery.ensure_purpose_comments)
 
     def executable_model(self, model: DerivedModel) -> DerivedModel:
         """Show the complete project until the developer chooses a target to focus on."""
@@ -1336,6 +1337,7 @@ class App:
             self.panel.set_project_facts(self.project is not None, self.panel.has_model, self._provider_ready())
         if hasattr(self, "recovery"):
             self.recovery.follow_provider()
+            self.root.after(0, self.recovery.ensure_purpose_comments)
 
     def _provider_ready(self) -> bool:
         """A known agent is chosen and its command-line tool is installed."""
@@ -1432,13 +1434,15 @@ class App:
         entity = model.entities.get(node_id.removeprefix("entity:"))
         if entity is not None:
             lines = [f"{entity.kind.value.title()}: {entity.qualified_name}"]
+            purpose = views.entity_purpose(entity)
+            lines.append(f"Purpose: {purpose}")
             if entity.signature:
                 lines.append(entity.signature)
             lines.append(f"{'Definition' if entity.is_definition else 'Declaration'}: {entity.file}:{entity.line}")
             if entity.declaration_file and entity.declaration_file != entity.file:
                 lines.append("Declared in: " + entity.declaration_file)
             lines.append("Status: " + entity.status)
-            if entity.brief:
+            if entity.brief and " ".join(entity.brief.split()).rstrip(".!?") != purpose.rstrip(".!?"):
                 lines.append(entity.brief)
             if entity.satisfies:
                 lines.append("Requirements: " + ", ".join(entity.satisfies))
@@ -1565,6 +1569,7 @@ class App:
 
     def close(self) -> None:
         if self.source_editor.confirm_saved():
+            self.recovery.cancel()
             self.executables.stop()
             self.root.destroy()
 

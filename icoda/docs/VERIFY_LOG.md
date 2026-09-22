@@ -5443,3 +5443,48 @@ Verification:
   while retaining methods belonging to classes in `vve`. No VVE source files were changed.
 - The regenerated handbook remains **97 pages**. Extracted text differs only on page 21; the rendered page
   was inspected for readable text, margins, and footer placement.
+
+## 2026-09-22 — source purpose comments and entity tooltips
+
+Every entity tooltip now includes a Purpose sentence from its source documentation. Existing signature, location,
+status, requirement, test, and longer documentation details remain available. C++ analysis preserves documentation
+from declarations when combining them with definitions and recognises trailing comments on types. Python analysis
+joins wrapped docstring summaries and excludes docstrings from function body hashes, so adding documentation does
+not count as changing an implementation.
+
+Opening or reloading a project automatically asks the selected CLI LLM to add missing purpose comments across the
+whole analysed project, independently of target selection and diagram filters. The request permits documentation
+edits only and asks for a plain explanation based on the actual code. ICODA checks the newly analysed source,
+retries incomplete work once per entity, and directs remaining work to Prompt. It preserves the user's unsent
+Prompt draft and conversation, waits for analysis and unsaved editor changes, respects cancellation, and cancels
+active CLI work when the window closes. Automatic edits remain uncommitted.
+
+Architecture and implementation prompts require purpose comments for all entities in affected source files.
+The proposal and approval checks enforce this, including comment removal without a code change. The existing
+function-length gate remains limited to changed functions. Existing test fixtures now include purpose comments
+where required by this new gate.
+
+Verification:
+
+- **728 tests passed**, with the previously documented `test_complete_developer_controlled_simulation` assertion
+  excluded because it still expects the older `~ method ...` detail text. After the final wrapped-docstring and
+  rule-scope refinements, **99** and **116** focused tests respectively passed. Ruff and mypy on all **63 production
+  files**, the module inventory checks, and `git diff --check` passed.
+- Tests cover all entity kinds, preserving existing tooltip information, candidate-model descriptions, real C++
+  comment extraction, declaration pairing, purpose gates, automatic insertion followed by Python source analysis,
+  incomplete LLM replies, bounded retries, cancellation, unavailable providers, unsaved source, and delayed reloads.
+- A native Tk check with a scripted CLI documented a temporary Python project's three entities, reanalysed the
+  actual files, verified complete coverage with exactly one CLI request, and displayed real hover popups containing
+  Purpose text in File, Call, Class, and Mind Map views. No screenshots were taken. This caught and fixed a duplicate
+  request during the delayed source-reload interval. The live CLI provider itself was not invoked for verification.
+
+## 2026-09-22 — Class View selection updates the Entities sidebar
+
+Class View now routes class, struct, member, and hierarchy-file clicks through the same source-selection handler
+as File View. The Entities sidebar shows the source file's entity hierarchy and signatures, and the source editor
+loads the selected entity's line while the current sidebar tab remains selected. Panning does not change the list.
+
+Verification: **73 tests passed** across source editing, Class View, application selection, and hierarchy expansion.
+The regression check starts with another file's Entities list and verifies that clicking a class, method, or file
+in Class View replaces it with the same rows File View produces, without switching sidebar tabs. Ruff, mypy on all
+**63 production files**, and `git diff --check` passed.

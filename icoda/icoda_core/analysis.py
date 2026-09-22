@@ -36,7 +36,7 @@ from icoda_core.model import (
 
 MODULE_SUFFIXES = frozenset({".cppm", ".ixx", ".mpp", ".cxxm", ".c++m", ".ccm"})
 HEADER_SUFFIXES = frozenset({".h", ".hh", ".hpp", ".hxx", ".h++", ".inl"})
-UNIT_CACHE_VERSION = 5
+UNIT_CACHE_VERSION = 6
 CPP_SUFFIXES = MODULE_SUFFIXES | HEADER_SUFFIXES | frozenset({".c", ".cc", ".cpp", ".cxx", ".c++"})
 CPP_LANGUAGE = "C++"
 PYTHON_LANGUAGE = "Python"
@@ -121,7 +121,9 @@ def pair_declarations(entities: Sequence[Entity], edges: Sequence[Edge]) -> Logi
             for path in (entity.declaration_file, entity.file if not entity.is_definition else "")
             if path
         })
-        merged.append(replace(owner, declaration_file=declaration_files[0] if declaration_files else ""))
+        brief = owner.brief or next((entity.brief for entity in candidates if entity.brief), "")
+        merged.append(replace(owner, brief=brief,
+                              declaration_file=declaration_files[0] if declaration_files else ""))
         if len(candidates) > 1:
             paired_sources.add(usr)
 
@@ -424,6 +426,7 @@ class Extractor:
         self.resource_dirs = tuple(resource_dirs)
         self.compiled_files: set[str] = set()
         self._paths: dict[str, Path] = {}
+        self._sources: dict[str, bytes] = {}
 
     # -- entry point ------------------------------------------------------------------------
 
@@ -498,7 +501,7 @@ class Extractor:
 
     def _entity(self, cursor: Any, parent: str | None, file_name: str) -> Entity:
         kind = _KINDS[cursor.kind]
-        brief, satisfies = parse_doc_comment(cursor.raw_comment or "")
+        brief, satisfies = parse_doc_comment(self._doc_comment(cursor, file_name))
         digest = body_hash(_body_source(cursor, file_name)) if cursor.kind in _CALLABLE else ""
         is_definition = bool(cursor.is_definition())
         relative_file = self.relative(Path(file_name))
@@ -508,6 +511,16 @@ class Extractor:
                       _template_params(cursor), is_definition, self._exported(cursor),
                       _value(cursor, kind), body_hash=digest,
                       declaration_file="" if is_definition else relative_file)
+
+    def _doc_comment(self, cursor: Any, file_name: str) -> str:
+        """Clang omits trailing documentation on some class/struct definitions."""
+        if cursor.raw_comment:
+            return str(cursor.raw_comment)
+        if file_name not in self._sources:
+            self._sources[file_name] = Path(file_name).read_bytes()
+        tail = self._sources[file_name][cursor.extent.end.offset:]
+        match = re.match(rb"[ \t]*;?[ \t]*(///<[^\r\n]*|//!<[^\r\n]*|/\*[*!]<.*?\*/)", tail, re.DOTALL)
+        return match.group(1).decode("utf-8", errors="replace") if match else ""
 
     def _usr(self, cursor: Any) -> str:
         usr = cursor.get_usr()
@@ -752,12 +765,16 @@ def _body_source(cursor: Any, file_name: str) -> str:
 
 def parse_doc_comment(comment: str) -> tuple[str, tuple[str, ...]]:
     """(brief, satisfies) from a Doxygen comment: ``@brief``/first sentence and ``@satisfies A, B``."""
-    lines = [re.sub(r"^\s*(/\*\*|/\*!|\*/|///?<?|//!<?|\*)\s?", "", line).rstrip() for line in comment.splitlines()]
+    comment = re.sub(r"\s*\*/\s*$", "", comment)
+    lines = [re.sub(r"^\s*(/\*\*<?|/\*!<?|\*/|//!<?|///?<?|\*)\s?", "", line).rstrip()
+             for line in comment.splitlines()]
     text = "\n".join(line for line in lines if line != "/")
     satisfies = tuple(t for m in re.finditer(r"[@\\]satisfies\s+([^\n@\\]+)", text)
                       for t in re.split(r"[,\s]+", m.group(1).strip()) if t)
     brief_match = re.search(r"[@\\]brief\s+(.+?)(?=\n\s*\n|\n\s*[@\\]|$)", text, re.DOTALL)
     brief = brief_match.group(1) if brief_match else re.split(r"\n\s*[@\\]|\n\s*\n", text, maxsplit=1)[0]
+    if not brief_match and brief.lstrip().startswith(("@", "\\")):
+        brief = ""
     return " ".join(brief.split()), satisfies
 
 

@@ -105,19 +105,21 @@ def promotion_refusal(
     model: DerivedModel,
     state_or_log: History,
     changed_usrs: Iterable[str],
+    *, documentation_usrs: Iterable[str] = (),
 ) -> str:
     """Return the first required-rule violation introduced or changed by a proposal.
 
-    The hard function limit is deterministic and applies only to callables the
-    proposal touches. Other issues remain advisory.
+    Purpose comments also cover the other entities in affected files; the hard function
+    limit applies only to changed callables. Other issues remain advisory.
     """
     changed = set(changed_usrs)
-    if not changed:
+    documented = changed | set(documentation_usrs)
+    if not documented:
         return ""
     for issue in check(model, state_or_log):
-        if issue.usr not in changed:
-            continue
-        if issue.rule_id == "function-lines" and issue.severity == "error":
+        if issue.rule_id == "missing-doxygen" and issue.usr in documented:
+            return issue.message
+        if issue.usr in changed and issue.rule_id == "function-lines" and issue.severity == "error":
             return issue.message
     return ""
 
@@ -184,7 +186,8 @@ def _entity_issues(entity: Entity) -> list[Issue]:
         issues.extend(_callable_issues(entity))
     if not entity.brief.strip():
         issues.append(_issue("missing-doxygen", "warning", entity,
-                             f"{entity.qualified_name} has no Doxygen comment; document its purpose."))
+                             f"{entity.qualified_name} has no purpose comment; add one sentence explaining "
+                             "what it does and why it exists."))
     if not entity.satisfies:
         issues.append(_issue("missing-satisfies", "warning", entity,
                              f"{entity.qualified_name} has no @satisfies tag; link it to its requirement."))

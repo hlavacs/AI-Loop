@@ -258,6 +258,40 @@ def test_call_and_class_single_click_open_their_declarations(app_module, tmp_pat
     assert app.source_editor.dirty
 
 
+@pytest.mark.parametrize("node, file, line", [
+    ("u:A", "src/a.cpp", "3.0"),
+    ("u:A:f", "src/a.cpp", "5.0"),
+    ("file:src/b.cpp", "src/b.cpp", "1.0"),
+])
+def test_class_view_click_updates_entities_like_file_view_without_switching_tabs(
+        app_module, tmp_path, monkeypatch, node, file, line):
+    app = app_with_source(app_module, tmp_path)
+    rows = {}
+    selected_tabs = []
+    monkeypatch.setattr(app.tree, "delete", lambda *_args: rows.clear())
+    monkeypatch.setattr(app.tree, "insert", lambda parent, _where, **row: rows.update({
+        row["iid"]: (parent, row["text"], row["values"])}))
+    monkeypatch.setattr(app.side_views, "select", selected_tabs.append)
+    app.select_node(file)
+    expected_rows = dict(rows)
+    other = "src/b.cpp" if file == "src/a.cpp" else "src/a.cpp"
+    app.select_node(other)
+    assert rows != expected_rows
+    canvas = app.class_view
+    monkeypatch.setattr(canvas, "node_at", lambda _x, _y: node)
+    monkeypatch.setattr(canvas, "toggle_expansion_at", lambda _x, _y: False)
+    canvas.dragged = True
+    canvas.on_release(SimpleNamespace(x=1, y=2, num=1))
+    assert app.side_title.get() == other  # Panning must not select the class under the pointer.
+    canvas.dragged = False
+    canvas.on_release(SimpleNamespace(x=1, y=2, num=1))
+    assert rows == expected_rows
+    assert app.side_title.get() == file
+    assert app.source_editor.document.relative == file
+    assert app.source_editor.text.index("insert") == line
+    assert selected_tabs == []
+
+
 def test_candidate_source_edits_never_touch_project_and_invalidate_gates(app_module, tmp_path):
     app = app_with_source(app_module, tmp_path)
     worktree = tmp_path / ".icoda/worktree"

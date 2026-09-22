@@ -34,6 +34,17 @@ def test_entity_tree_labels_show_one_signature_with_cpp_trailing_return_types(
     assert entity.signature == signature  # Display formatting must not change signature-comparison inputs.
 
 
+@pytest.mark.parametrize("kind", list(Kind))
+def test_entity_purpose_uses_one_sentence_of_documentation(kind) -> None:
+    entity = Entity("u", kind, "Thing", "Thing", "a.cpp", 1,
+                    brief="Keeps each window's current state.\n Later text describes its fields.")
+    assert views.entity_purpose(entity) == "Keeps each window's current state."
+    entity.brief = "Returns a scale of 1.5 for high density displays"
+    assert views.entity_purpose(entity) == "Returns a scale of 1.5 for high density displays."
+    entity.brief = ""
+    assert views.entity_purpose(entity) == "A purpose comment still needs to be added to the source."
+
+
 def small_model() -> DerivedModel:
     model = DerivedModel("/p")
     for f in ("app/main.cpp", "app/config.cpp", "core/a.cpp", "core/b.cpp", "core/c.cpp"):

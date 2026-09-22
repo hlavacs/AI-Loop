@@ -6,6 +6,8 @@ import tkinter as tk
 from pathlib import Path
 from typing import Any
 
+import pytest
+
 from icoda_core import persistence, prompt, rules, steplog
 from icoda_core.model import DerivedModel, Edge, EdgeKind, Entity, Kind
 from icoda_gui import issue_view
@@ -76,8 +78,27 @@ def test_clean_model_has_no_issues_and_uses_successful_test_evidence() -> None:
     assert rules.check(clean_model(), [passed_record()]) == ()
 
 
+@pytest.mark.parametrize("kind", list(Kind))
+def test_every_kind_requires_a_real_purpose_comment_for_promotion(kind) -> None:
+    model = DerivedModel("/project")
+    entity = Entity("u", kind, "Thing", "Thing", "src/a.cpp", 1, brief=" ")
+    model.add_entity(entity)
+    assert "has no purpose comment" in rules.promotion_refusal(model, [], ["u"])
+    entity.brief = "Records the settings for one window."
+    assert not rules.promotion_refusal(model, [], ["u"])
+
+
 def test_order_is_deterministic_across_entity_insertion_order() -> None:
     assert rules.check(violating_model(), []) == rules.check(violating_model(reverse=True), [])
+
+
+def test_documentation_scope_does_not_expand_the_function_length_gate() -> None:
+    model = violating_model()
+    entity = model.entities["u:large"]
+    entity.brief = "Processes the application data."
+    assert not rules.promotion_refusal(model, [], [], documentation_usrs=[entity.usr])
+    entity.brief = ""
+    assert "has no purpose comment" in rules.promotion_refusal(model, [], [], documentation_usrs=[entity.usr])
 
 
 def test_step_selection_is_relevant_bounded_and_deterministic() -> None:

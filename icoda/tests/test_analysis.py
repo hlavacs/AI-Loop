@@ -48,6 +48,44 @@ def test_library_name() -> None:
     assert analysis.library_name("/home/u/llvm18/lib/clang/18/include/stddef.h", ["/home/u/llvm18/lib/clang/18"]) == "std"
 
 
+@pytest.mark.parametrize("comment", ["/** @brief Stores window state. */", "///< Stores window state.",
+                                    "/**< Stores window state. */", "//!< Stores window state."])
+def test_purpose_comment_delimiters_do_not_leak_into_the_brief(comment) -> None:
+    assert analysis.parse_doc_comment(comment)[0] == "Stores window state."
+
+
+def test_requirement_tags_alone_are_not_purpose_documentation() -> None:
+    assert analysis.parse_doc_comment("/// @satisfies R-1") == ("", ("R-1",))
+
+
+def test_pairing_keeps_declaration_documentation_and_prefers_definition_documentation() -> None:
+    declaration = Entity("u", Kind.FUNCTION, "run", "run", "a.hpp", 1,
+                         brief="Runs the window event loop.", is_definition=False)
+    definition = Entity("u", Kind.FUNCTION, "run", "run", "a.cpp", 1)
+    assert analysis.pair_declarations([definition, declaration], []).entities[0].brief == declaration.brief
+    definition.brief = "Runs the event loop until all windows close."
+    assert analysis.pair_declarations([declaration, definition], []).entities[0].brief == definition.brief
+
+
+def test_real_parse_keeps_trailing_type_purpose_comments(tmp_path: Path) -> None:
+    loaded = _libclang()
+    source = tmp_path / "types.cpp"
+    source.write_text("struct WindowFrameInfo { int width; ///< Window width in pixels.\n"
+                      "}; ///< Stores a snapshot of one window.\n"
+                      "class Engine {}; /**< Runs the application's systems. */\n"
+                      "struct Undocumented {}; struct Other {}; ///< Describes the other type.\n"
+                      "/// @brief Retains its preceding documentation.\n"
+                      "struct Preferred {}; ///< This trailing text must not replace it.\n")
+    command = analysis.CompileCommand(str(source), str(tmp_path), ("-std=c++20",), "clang++", False)
+    model = analysis.parse_project(tmp_path, [command], libclang_version=loaded.version)
+    assert _by_name(model, "WindowFrameInfo").brief == "Stores a snapshot of one window."
+    assert _by_name(model, "WindowFrameInfo::width").brief == "Window width in pixels."
+    assert _by_name(model, "Engine").brief == "Runs the application's systems."
+    assert not _by_name(model, "Undocumented").brief
+    assert _by_name(model, "Other").brief == "Describes the other type."
+    assert _by_name(model, "Preferred").brief == "Retains its preceding documentation."
+
+
 def test_unit_cache_key_changes_with_the_extractor_schema(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     source = tmp_path / "a.cpp"
     source.write_text("int a() { return 1; }\n")

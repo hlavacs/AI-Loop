@@ -44,6 +44,7 @@ NORMALIZE_TEST = '''from service import Formatter
 
 
 def test_normalize(formatter: Formatter) -> None:
+    """Checks that normalization removes surrounding spaces."""
     assert formatter.normalize(" item ") == "item"
 '''
 FINAL_TESTS = NORMALIZE_TEST + '''
@@ -52,14 +53,17 @@ from service import main
 
 
 def test_main() -> None:
+    """Checks the application returns its formatted result."""
     assert main() == "ready:item"
 '''
 
 DIFF_INITIAL_SOURCE = '''def first() -> str:
+    """Returns the first fixture value."""
     return "old-one"
 
 
 def second() -> str:
+    """Returns the second fixture value."""
     return "old-two"
 '''
 DIFF_UPDATED_SOURCE = DIFF_INITIAL_SOURCE.replace("old-one", "new-one").replace("old-two", "new-two")
@@ -496,10 +500,10 @@ def test_step_runner_unified_diff_and_full_file_produce_identical_candidate_and_
     diff = """diff --git a/service.py b/service.py
 --- a/service.py
 +++ b/service.py
-@@ -2 +2 @@
+@@ -3 +3 @@
 -    return "old-one"
 +    return "new-one"
-@@ -6 +6 @@
+@@ -8 +8 @@
 -    return "old-two"
 +    return "new-two"
 """
@@ -520,10 +524,10 @@ def test_step_runner_lf_unified_diff_ignores_platform_linesep_and_matches_full_f
     diff = """diff --git a/service.py b/service.py
 --- a/service.py
 +++ b/service.py
-@@ -2 +2 @@
+@@ -3 +3 @@
 -    return "old-one"
 +    return "new-one"
-@@ -6 +6 @@
+@@ -8 +8 @@
 -    return "old-two"
 +    return "new-two"
 """
@@ -542,10 +546,10 @@ def test_step_runner_unified_diff_preserves_crlf_file_endings(tmp_path: Path) ->
     diff = """diff --git a/service.py b/service.py
 --- a/service.py
 +++ b/service.py
-@@ -2 +2 @@
+@@ -3 +3 @@
 -    return "old-one"
 +    return "new-one"
-@@ -6 +6 @@
+@@ -8 +8 @@
 -    return "old-two"
 +    return "new-two"
 """
@@ -582,7 +586,7 @@ def test_step_runner_stale_unified_diff_leaves_candidate_files_byte_identical(
     valid_first = """diff --git a/service.py b/service.py
 --- a/service.py
 +++ b/service.py
-@@ -2 +2 @@
+@@ -3 +3 @@
 -    return "old-one"
 +    return "new-one"
 """

@@ -544,6 +544,15 @@ def test_hard_function_limit_refuses_promotion(tmp_path: Path) -> None:
     assert str(refused.value) == "app::work is 51 lines; split it below the hard maximum of 50."
 
 
+def test_purpose_comment_is_required_even_when_only_documentation_changed(tmp_path: Path) -> None:
+    runner = approval_runner(tmp_path)
+    candidate = quality_proposal(tmp_path)
+    candidate.model.entities["u:work"].brief = ""
+    candidate.delta = steps.Delta((), (), (), ("src/app.cpp",))
+    with pytest.raises(steps.StepError, match="app::work has no purpose comment"):
+        runner.approve(candidate)
+
+
 def test_hard_function_limit_allows_compliant_promotion(
         tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     runner = approval_runner(tmp_path)
@@ -611,7 +620,7 @@ def test_approval_names_failed_gate_and_records_both_successes(
     candidate = proposal(tmp_path, steps.BuildResult(True, "built"), steps.TestResult(True, "tested"))
     candidate.selected_tests = ("tests/focused_test.cpp",)
     touched = Entity("u:touched", Kind.FUNCTION, "touched", "touched", "x.cpp", 1,
-                     body_hash="approved-hash")
+                     body_hash="approved-hash", brief="Exercises the approved source change.")
     assert candidate.model is not None
     candidate.model.add_entity(touched)
     candidate.delta = steps.Delta((), (), (touched,), ("x.cpp",))

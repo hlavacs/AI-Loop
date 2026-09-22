@@ -191,6 +191,16 @@ def test_usrs_are_deterministic_and_do_not_contain_location_data(tmp_path: Path)
     }
 
 
+def test_adding_purpose_docstring_preserves_body_hash(tmp_path: Path) -> None:
+    source = tmp_path / "app.py"
+    source.write_text("def limit():\n    return 42\n")
+    before = python_analysis.parse_project(tmp_path).entities["python:app:limit"]
+    source.write_text('def limit():\n    """Returns the configured\n    item limit."""\n    return 42\n')
+    after = python_analysis.parse_project(tmp_path).entities["python:app:limit"]
+    assert after.brief == "Returns the configured item limit."
+    assert before.body_hash == after.body_hash
+
+
 def test_body_hash_is_stable_for_unchanged_body_and_changes_for_edit(tmp_path: Path) -> None:
     first = _model(tmp_path)
     usr = "python:pkg.helpers:normalize"
