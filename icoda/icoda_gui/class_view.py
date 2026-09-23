@@ -20,7 +20,7 @@ RELATION_COLOURS = {
 }
 
 
-class ClassViewCanvas(graph_canvas.GraphCanvas):
+class ClassViewCanvas(graph_canvas.GroupedGraphCanvas):
     """A project-wide expanded Class View using the common graph navigation."""
 
     def __init__(self, parent: Any, open_editor: Callable[[str, int], None],
@@ -52,6 +52,7 @@ class ClassViewCanvas(graph_canvas.GraphCanvas):
             zoom_in=lambda: self.zoom(zoom_controls.ZOOM_IN),
         )
         zoom.pack(side=tk.RIGHT)
+        self.build_group_navigation(bar)
         ttk.Label(bar, textvariable=self.summary_var, anchor="w").pack(side=tk.LEFT)
         ttk.Label(bar, textvariable=self.hover_var, anchor="w", foreground="#555555", width=1).pack(
             side=tk.LEFT, fill=tk.X, expand=True, padx=(12, 0))
@@ -60,14 +61,29 @@ class ClassViewCanvas(graph_canvas.GraphCanvas):
     def show(self, model: DerivedModel) -> None:
         self.model = model
         self.graph = class_graph.build_class_graph(model)
-        self.layout = views.layout_class_view(self.graph)
+        self.reset_groups()
+        self.configure_groups(model, {node.usr for node in self.graph.nodes},
+                              [views.Arrow(edge.source, edge.target, {views.EdgeKind.USES_TYPE: edge.count})
+                               for edge in self.graph.edges], "classes")
+        self.apply_group_layout()
         self.selected, self.user_zoomed = None, False
         count = len(self.graph.nodes)
         self.summary_var.set(f"{count} class{'es' if count != 1 else ''} / structs" if count
                              else "No classes or structs in this model")
         self.fit()
 
+    def apply_group_layout(self) -> None:
+        graph = self.graph
+        if self.focused_group is not None:
+            members = self.groups.get(self.focused_group, set())
+            graph = class_graph.ClassGraph(tuple(node for node in graph.nodes if node.usr in members),
+                                           tuple(edge for edge in graph.edges
+                                                 if edge.source in members and edge.target in members))
+        self.layout = views.layout_class_view(graph)
+
     def diagram_size(self) -> tuple[float, float] | None:
+        if self.overview and self.overview_layout is not None:
+            return self.overview_layout.width, self.overview_layout.height
         return None if self.layout is None else (self.layout.width, self.layout.height)
 
     def redraw(self) -> None:
@@ -76,6 +92,8 @@ class ClassViewCanvas(graph_canvas.GraphCanvas):
         self.item_nodes = {}
         if self.layout is None:
             self.hide_hierarchy()
+            return
+        if self.draw_group_overview():
             return
         if not self.layout.nodes:
             self._draw_empty()
@@ -200,6 +218,8 @@ class ClassViewCanvas(graph_canvas.GraphCanvas):
             return
         if not self.dragged and getattr(event, "num", 1) == 1 and self.toggle_expansion_at(event.x, event.y):
             return
+        if self.overview:
+            return
         if not self.dragged and getattr(event, "num", 1) == 1:
             self.selected = self.node_at(event.x, event.y)
             if self.focus_node is not None:
@@ -230,6 +250,9 @@ class ClassViewCanvas(graph_canvas.GraphCanvas):
         if self.release_hierarchy(event) or self.dragged:
             return
         usr = self.node_at(event.x, event.y)
+        if self.overview and usr is not None:
+            self.open_group(usr)
+            return
         entity = self.model.entities.get(usr) if self.model is not None and usr else None
         if entity is not None:
             self.open_editor(entity.file, entity.line)

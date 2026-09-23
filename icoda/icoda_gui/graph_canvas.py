@@ -9,8 +9,9 @@ from tkinter import ttk
 from types import MappingProxyType
 from typing import Any
 
-from icoda_core import expansion
+from icoda_core import clusters, expansion, views
 from icoda_core.graph_filter import NodeDecision
+from icoda_core.model import DerivedModel
 from icoda_core.node_status import NodeAppearance
 from icoda_gui import tooltip, zoom_controls
 
@@ -628,3 +629,128 @@ class GraphCanvas(NodeAppearanceCanvas):
         self.dragged, self.user_zoomed = True, True
         self.offset = (self._drag_offset[0] + dx, self._drag_offset[1] + dy)
         self.redraw()
+
+
+class GroupedGraphCanvas(GraphCanvas):
+    """A persistent group scope for dense Call and Class views."""
+
+    def __init__(self, parent: Any, resolve_actions: ActionResolver | None = None,
+                 dispatch_action: ActionDispatcher | None = None) -> None:
+        super().__init__(parent, resolve_actions, dispatch_action)
+        self.group_clustering: clusters.Clustering | None = None
+        self.overview_layout: views.FileViewLayout | None = None
+        self.groups: dict[str, set[str]] = {}
+        self._group_arrows: list[views.Arrow] = []
+        self.focused_group: str | None = None
+        self.overview = False
+        self._overview_viewport: tuple[float, tuple[float, float], float, bool] | None = None
+
+    def build_group_navigation(self, parent: Any) -> None:
+        self.overview_button = ttk.Button(parent, text="← Overview", command=self.back_to_overview,
+                                          state=tk.DISABLED)
+        self.overview_button.pack(side=tk.RIGHT, padx=(4, 0))
+
+    def reset_groups(self) -> None:
+        self.focused_group = None
+        self._overview_viewport = None
+        self.overview_button.configure(state=tk.DISABLED)
+
+    def configure_groups(self, model: DerivedModel, members: set[str], arrows: list[views.Arrow],
+                         unit: str) -> None:
+        self.overview_layout, self.groups = None, {}
+        self._group_arrows = arrows
+        if len(members) > 12 or self.focused_group is not None:
+            clustering = self.group_clustering or clusters.cluster_files(model)
+            self.overview_layout, self.groups = views.entity_view_overview(model, clustering, members, arrows, unit)
+        self.overview = self.overview_layout is not None and self.focused_group is None
+
+    def apply_group_layout(self) -> None:
+        raise NotImplementedError
+
+    def open_group(self, group: str) -> None:
+        if not self.overview or group not in self.groups:
+            return
+        self._overview_viewport = (self.scale, self.offset, self.fit_scale, self.user_zoomed)
+        self.focused_group, self.overview = group, False
+        self.overview_button.configure(state=tk.NORMAL)
+        self.apply_group_layout()
+        self.fit()
+
+    def back_to_overview(self) -> None:
+        if self.focused_group is None:
+            return
+        viewport = self._overview_viewport
+        self.reset_groups()
+        self.overview = self.overview_layout is not None
+        self.apply_group_layout()
+        if viewport is not None:
+            self.scale, self.offset, self.fit_scale, self.user_zoomed = viewport
+        self.redraw()
+
+    def draw_group_overview(self) -> bool:
+        if not self.overview or self.overview_layout is None:
+            return False
+        visible = {key: {usr for usr in members if self.node_visible(usr)}
+                   for key, members in self.groups.items()}
+        owners = {usr: key for key, members in visible.items() for usr in members}
+        relations = {(owners[arrow.source], owners[arrow.target]) for arrow in self._group_arrows
+                     if arrow.source in owners and arrow.target in owners}
+        nodes = self.overview_layout.nodes
+        for arrow in self.overview_layout.file_arrows:
+            if (arrow.source, arrow.target) in relations:
+                a, b = nodes[arrow.source], nodes[arrow.target]
+                x1, y1, x2, y2 = views.arrow_endpoints(a, b, 40)
+                self.canvas.create_line(*self.to_screen(x1, y1), *self.to_screen(x2, y2),
+                                        fill="#c0c5cc", width=1, arrow=tk.LAST)
+        for key, node in nodes.items():
+            if not visible[key]:
+                continue
+            x, y = self.to_screen(node.x, node.y)
+            font_size = max(8, int(11 * self.scale))
+            label = node.label
+            if len(visible[key]) != len(self.groups[key]):
+                label = label.split("\n")[0] + f"\n{len(visible[key])} / {len(self.groups[key])} visible"
+            text = self.canvas.create_text(x, y, text=label, justify=tk.CENTER,
+                                           font=("TkDefaultFont", font_size), fill="#333333")
+            bounds = self.canvas.bbox(text)
+            if bounds:
+                left, top, right, bottom = bounds
+                box = self.canvas.create_rectangle(left - 10, top - 7, right + 10, bottom + 7,
+                                                    fill="#e5e7eb", outline="#8993a0")
+                self.canvas.tag_lower(box, text)
+                self.item_nodes[box] = key
+            self.item_nodes[text] = key
+        self.draw_filter_empty(sum(bool(members) for members in visible.values()))
+        self.canvas.create_text(12, 12, anchor="nw", fill="#555555",
+                                text="Zoom into or double-click a group to open it", font=("TkDefaultFont", 10))
+        self.draw_expansion_layer()
+        return True
+
+    def zoom(self, factor: float, origin: tuple[float, float] | None = None) -> None:
+        if self.overview and factor > 1 and self.overview_layout is not None:
+            point = origin or (float(self.canvas.winfo_width()) / 2, float(self.canvas.winfo_height()) / 2)
+            candidates = [node for key, node in self.overview_layout.nodes.items()
+                          if any(self.node_visible(usr) for usr in self.groups[key])]
+            if candidates and self.scale * factor >= max(1.0, self.fit_scale * 1.3):
+                nearest = min(candidates, key=lambda node: sum(
+                    (a - b) ** 2 for a, b in zip(self.to_screen(node.x, node.y), point, strict=True)))
+                self.open_group(nearest.id)
+                return
+        if self.focused_group is None:
+            super().zoom(factor, origin)
+            return
+        # A group has its own zoom range; zooming out never changes its scope.
+        if self.scale <= 0:
+            return
+        target = min(zoom_controls.MAX_ZOOM, max(min(.1, self.fit_scale), self.scale * factor))
+        actual = target / self.scale
+        x, y = origin or (float(self.canvas.winfo_width()) / 2, float(self.canvas.winfo_height()) / 2)
+        self.offset = (x - (x - self.offset[0]) * actual, y - (y - self.offset[1]) * actual)
+        self.scale, self.user_zoomed = target, True
+        self.redraw()
+
+    def reset_zoom(self) -> None:
+        if self.focused_group is not None and self.scale > 0:
+            self.zoom(1.0 / self.scale)
+        else:
+            super().reset_zoom()

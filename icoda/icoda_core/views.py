@@ -372,6 +372,33 @@ def file_view_overview(layout: FileViewLayout, visible: set[str]) -> FileViewLay
         key: replace(node, x=summary.nodes[key].x, y=summary.nodes[key].y) for key, node in nodes.items()})
 
 
+
+def entity_view_overview(model: DerivedModel, clustering: Clustering, members: set[str],
+                         arrows: list[Arrow], unit: str) -> tuple[FileViewLayout, dict[str, set[str]]]:
+    """Use stable File View cluster IDs for a compact function or class overview."""
+    files = {file: cluster.id for cluster in clustering.clusters for file in cluster.files}
+    names = {cluster.id: cluster.name for cluster in clustering.clusters}
+    groups: dict[str, set[str]] = defaultdict(set)
+    owners, nodes = {}, {}
+    for usr in sorted(members):
+        entity = model.entities.get(usr)
+        group = files.get(entity.file, entity.file) if entity else ""
+        key = f"cluster:{group}" if entity else "external:overview"
+        label = names.get(group, group) if entity else "External libraries"
+        owners[usr] = key
+        groups[key].add(usr)
+        nodes[key] = Node(key, label, 0, 0, key, "cluster")
+    for key, node in nodes.items():
+        count = len(groups[key])
+        plural = "libraries" if key == "external:overview" else unit
+        singular = {"classes": "class", "functions": "function", "libraries": "library"}[plural]
+        node.label += f"\n{count} {singular if count == 1 else plural}"
+    relations = [replace(arrow, source=owners[arrow.source], target=owners[arrow.target])
+                 for arrow in arrows if arrow.source in owners and arrow.target in owners]
+    layout = file_view_overview(FileViewLayout([], nodes, relations, [], 1, 1), set(nodes))
+    return layout, dict(groups)
+
+
 def entity_scope(model: DerivedModel, selected: Entity) -> list[Entity]:
     """Show one entity, including members of a selected class, namespace or enum."""
     scoped = {selected.usr: selected}
@@ -688,3 +715,19 @@ def _path_to(parents: dict[str, str], selected: str | None) -> set[str]:
         path.add(current)
         current = parents.get(current)
     return path
+
+
+def call_view_group(layout: CallViewLayout, members: set[str]) -> CallViewLayout:
+    """Keep internal calls and repack the group's columns without empty rows or depths."""
+    per_level: dict[int, list[CallNode]] = defaultdict(list)
+    for usr, node in layout.nodes.items():
+        if usr in members:
+            per_level[node.level].append(node)
+    nodes = {}
+    for column, level in enumerate(sorted(per_level)):
+        for row, node in enumerate(per_level[level]):
+            nodes[node.usr] = replace(node, x=COLUMN_WIDTH * (column + .5), y=ROW_HEIGHT * (row + .5))
+    return replace(layout, nodes=nodes,
+                   edges=[edge for edge in layout.edges if edge.source in nodes and edge.target in nodes],
+                   path=layout.path & nodes.keys(), width=COLUMN_WIDTH * max(len(per_level), 1),
+                   height=ROW_HEIGHT * max((len(items) for items in per_level.values()), default=1))
