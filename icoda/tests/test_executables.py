@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import shutil
+import sys
 from pathlib import Path
 
 import pytest
@@ -43,7 +44,7 @@ set_target_properties(first PROPERTIES OUTPUT_NAME renamed_program
 add_executable(second examples/second/main.cpp)
 add_executable(broken broken.cpp)
 ''')
-    configured = process.run_bounded(["cmake", "-S", str(root), "-B", str(root / "build/debug"),
+    configured = process.run_bounded(["cmake", "-S", str(root), "-B", str(root / "build/debug"), "-G", "Ninja",
                                       "-DCMAKE_BUILD_TYPE=Debug", "-DCMAKE_EXPORT_COMPILE_COMMANDS=ON"])
     assert configured.ok, configured.stdout + configured.stderr
     return root, model
@@ -73,15 +74,16 @@ def test_build_and_run_selected_target_use_cmake_artifact(project) -> None:
     first = initial[0]
     built = executables.operate(root, model, first, "build", lambda: False)
     assert built.selected.target.name == "first"
-    assert built.selected.target.artifact == root / "bin/custom/renamed_program"
+    name = "renamed_program.exe" if sys.platform == "win32" else "renamed_program"
+    assert built.selected.target.artifact == root / "bin/custom" / name
     assert built.selected.target.artifact.is_file()
     assert not (root / "build/debug/second").exists()
     assert "--target first" in built.output and built.message == "first: build passed"
     ran = executables.operate(root, model, built.selected, "run", lambda: False)
-    assert ran.output.endswith("first\n") and "exit 0" in ran.message
+    assert ran.output.splitlines()[-1] == "first" and "exit 0" in ran.message
     second = next(e for e in ran.entries if e.target.name == "second")
     ran_second = executables.operate(root, model, second, "run", lambda: False)
-    assert ran_second.output.endswith("second\n")
+    assert ran_second.output.splitlines()[-1] == "second"
     assert not (root / "build/debug/broken").exists()
 
 
@@ -95,7 +97,7 @@ def test_shared_main_requires_explicit_target_selection(project) -> None:
         "first", "first_variant"}
     assert not (root / "bin/custom/renamed_program").exists()
     variant = next(entry for entry in result.entries if entry.target.name == "first_variant")
-    assert executables.operate(root, model, variant, "run", lambda: False).output.endswith("first\n")
+    assert executables.operate(root, model, variant, "run", lambda: False).output.splitlines()[-1] == "first"
 
 
 def test_cancel_after_build_does_not_launch_program(project, monkeypatch) -> None:
@@ -113,7 +115,7 @@ def test_cancel_after_build_does_not_launch_program(project, monkeypatch) -> Non
     monkeypatch.setattr(process, "run_bounded", run)
     with pytest.raises(steps.StepCancelled):
         executables.operate(root, model, ready.selected, "run", lambda: False)
-    assert len(calls) == 2 and all(command[0] == "cmake" for command in calls)
+    assert len(calls) == 2 and all(Path(command[0]).stem.lower() == "cmake" for command in calls)
 
 
 def test_selection_is_required_and_ambiguous_saved_sources_are_not_guessed(project):

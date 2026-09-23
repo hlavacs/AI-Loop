@@ -7,10 +7,8 @@ includes the step log entry in ``.icoda/steps.jsonl``.
 
 from __future__ import annotations
 
-import os
 import re
 import shlex
-import shutil
 import sys
 from collections import defaultdict
 from collections.abc import Callable, Iterable, Mapping, Sequence
@@ -36,6 +34,7 @@ from icoda_core import (
     session,
     specification,
     test_selection,
+    toolchain,
 )
 from icoda_core.model import CALLABLE_KINDS, TYPE_KINDS, DerivedModel, Entity, Kind
 from icoda_core.process import cancel_running, run_bounded
@@ -151,17 +150,25 @@ def build_project(root: Path, timeout: float = BUILD_TIMEOUT,
                   *, code_profile: Mapping[str, object] | None = None) -> BuildResult:
     """Run the profile-selected build check without running the project's tests."""
     commands = gate_commands(root, (), code_profile=code_profile).build
-    directory = cmake.build_directory(root) if commands[0][0] == "cmake" else None
-    if directory is not None:
-        commands = [cmake.configure_command(root, directory), ["cmake", "--build", str(directory)]]
-    # A configured project's cache/toolchain controls its compiler and dependency setup.
-    environment = None if directory is not None else build_environment(root)
+    directory = None
+    environment = None
+    if commands[0][0] == "cmake":
+        try:
+            directory, configure, environment = cmake.clang_configuration(root)
+        except (RuntimeError, OSError) as exc:
+            return BuildResult(False, str(exc))
+        commands = [configure, [configure[0], "--build", str(directory)]]
     output = ""
     for command in commands:
         result = run_bounded(command, cwd=root, timeout=timeout, env=environment)
         output += result.stdout + result.stderr
         if not result.ok:
             return BuildResult(False, _tail(output))
+        if directory is not None and command is commands[0]:
+            try:
+                cmake.verify_clang(directory)
+            except RuntimeError as exc:
+                return BuildResult(False, _tail(output + "\n" + str(exc)))
     return BuildResult(True, _tail(output))
 
 
@@ -174,49 +181,11 @@ def _build_commands(root: Path) -> list[list[str]]:
             ["cmake", "--build", "--preset", CMAKE_PRESET]]
 
 
-def build_environment(root: Path) -> dict[str, str] | None:
-    """Retain the generated build scripts' platform compiler selection for direct CMake builds."""
-    compiler: Path | None = None
-    c_compiler: Path | None = None
-    if sys.platform == "darwin" and not os.environ.get("CXX") and shutil.which("brew"):
-        prefix = run_bounded(["brew", "--prefix", "llvm"], cwd=root, timeout=30.0)
-        if prefix.ok:
-            compiler = Path(prefix.stdout.strip()) / "bin" / "clang++"
-            c_compiler = compiler.with_name("clang")
-    elif sys.platform.startswith("linux") and not os.environ.get("CXX"):
-        candidates: list[tuple[int, Path, Path]] = []
-        for directory in os.get_exec_path():
-            try:
-                paths = Path(directory).glob("clang++*")
-                for path in paths:
-                    suffix = path.name.removeprefix("clang++")
-                    if not os.access(path, os.X_OK) or (suffix and re.fullmatch(r"-[0-9]+", suffix) is None):
-                        continue
-                    probe = run_bounded([str(path), "--version"], cwd=root, timeout=30.0)
-                    match = re.search(r"clang version ([0-9]+)", probe.stdout + probe.stderr)
-                    if not probe.ok or match is None or int(match.group(1)) < 16:
-                        continue
-                    companion_suffixes = (suffix,) if suffix else ("", f"-{match.group(1)}")
-                    for companion_suffix in companion_suffixes:
-                        clang = path.with_name("clang" + companion_suffix)
-                        scanner = path.with_name("clang-scan-deps" + companion_suffix)
-                        if all(item.is_file() and os.access(item, os.X_OK) for item in (clang, scanner)):
-                            candidates.append((int(match.group(1)), path, clang))
-                            break
-            except OSError:
-                continue
-        if candidates:
-            _version, compiler, c_compiler = max(candidates, key=lambda item: (item[0], str(item[1])))
-    elif sys.platform == "win32" and not os.environ.get("CXX"):
-        found = shutil.which("clang-cl")
-        compiler = Path(found) if found else None
-        c_compiler = compiler
-    if compiler is None or c_compiler is None or not compiler.is_file() or not c_compiler.is_file():
-        return None
-    environment = dict(os.environ)
-    environment["CXX"] = str(compiler)
-    environment["CC"] = str(c_compiler)
-    return environment
+def build_environment(root: Path) -> dict[str, str]:
+    """Use the same required Clang environment for sample and project builds."""
+    directory = cmake.build_directory(root)
+    cache = cmake.cache_values(directory) if directory else {}
+    return toolchain.clang_build_environment(cache.get("CMAKE_CXX_COMPILER", ("", ""))[1])
 
 
 def test_project(root: Path, command: Sequence[str], timeout: float = BUILD_TIMEOUT) -> TestResult:

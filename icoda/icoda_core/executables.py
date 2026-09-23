@@ -193,13 +193,12 @@ def operate(root: Path, model: DerivedModel, selected: Entry | None, action: str
     if action == "run" and selected is not None and selected.is_library:
         raise steps.StepError("A library has no executable to run. Use Build or select an executable.")
     output: list[str] = []
+    environment = None
 
     def run(command: list[str], stage: str, timeout: float = 600) -> None:
         if cancelled():
             raise steps.StepCancelled()
-        # The existing cache/toolchain owns compiler selection. Exporting CC/CXX here can
-        # also change dependency compilers (e.g. vcpkg) and invalidate a working build.
-        result = process.run_bounded(command, cwd=root, timeout=timeout)
+        result = process.run_bounded(command, cwd=root, timeout=timeout, env=environment)
         output.append("$ " + shlex.join(command) + "\n" + result.stdout + result.stderr)
         if result.cancelled or cancelled():
             raise steps.StepCancelled()
@@ -207,10 +206,22 @@ def operate(root: Path, model: DerivedModel, selected: Entry | None, action: str
             reason = "timed out" if result.timed_out else f"exit {result.returncode}"
             raise steps.StepError(f"{stage} failed ({reason}).\n" + "\n".join(output))
 
-    directory = build_directory(root)
-    if directory is None:
-        raise steps.StepError("Configure/build this CMake project first with Project → Build, then refresh targets.")
-    run(cmake.configure_command(root, directory), "CMake configuration")
+    if action == "refresh":
+        directory = build_directory(root)
+        if directory is None:
+            raise steps.StepError("Configure/build this CMake project first with Project → Build, then refresh targets.")
+        configure = cmake.configure_command(root, directory)
+    else:
+        try:
+            directory, configure, environment = cmake.clang_configuration(root)
+        except (RuntimeError, OSError) as exc:
+            raise steps.StepError(str(exc)) from exc
+    run(configure, "CMake configuration")
+    if action != "refresh":
+        try:
+            cmake.verify_clang(directory)
+        except RuntimeError as exc:
+            raise steps.StepError(str(exc)) from exc
     choices = entries(model, read_targets(root, directory))
     if action == "refresh":
         return Outcome(choices, choose(choices, selected.key if selected else None), "\n".join(output),
@@ -218,6 +229,8 @@ def operate(root: Path, model: DerivedModel, selected: Entry | None, action: str
     assert selected is not None
     matches = [entry for entry in choices if entry.file == selected.file and entry.target is not None]
     exact = next((entry for entry in matches if entry.key == selected.key), None)
+    if exact is None and selected.target:
+        exact = next((entry for entry in matches if entry.target and entry.target.name == selected.target.name), None)
     chosen = exact or (matches[0] if len(matches) == 1 and selected.target is None else None)
     if chosen is None:
         if matches:
@@ -232,7 +245,7 @@ def operate(root: Path, model: DerivedModel, selected: Entry | None, action: str
     target = chosen.target
     if action == "run" and (target.is_library or target.artifact is None):
         raise steps.StepError("The selected target has no executable to run. Refresh targets and choose again.")
-    command = ["cmake", "--build", str(target.build_dir), "--target", target.name]
+    command = [configure[0], "--build", str(target.build_dir), "--target", target.name]
     if target.configuration:
         command.extend(("--config", target.configuration))
     run(command, "Build")
