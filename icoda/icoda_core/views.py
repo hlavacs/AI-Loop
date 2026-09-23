@@ -313,6 +313,22 @@ def organise_file_view(layout: FileViewLayout,
                    height=bottom + (170.0 if externals else 80.0))
 
 
+def file_view_group(layout: FileViewLayout, group: str) -> FileViewLayout:
+    """Return one group's files and internal relationships without changing the complete graph."""
+    if group.startswith("cluster:"):
+        circle = next(circle for circle in layout.circles if circle.id == group.removeprefix("cluster:"))
+        members = set(circle.files)
+    elif group == "external:overview":
+        members = {key for key, node in layout.nodes.items() if node.kind == "external"}
+    else:
+        members = {group}
+    return replace(layout, nodes={key: node for key, node in layout.nodes.items() if key in members},
+                   circles=[replace(circle, files=[file for file in circle.files if file in members])
+                            for circle in layout.circles if any(file in members for file in circle.files)],
+                   file_arrows=[arrow for arrow in layout.file_arrows
+                                if arrow.source in members and arrow.target in members], cluster_arrows=[])
+
+
 def file_view_overview(layout: FileViewLayout, visible: set[str]) -> FileViewLayout:
     """Summarise visible files by cluster and merge their relationships for a readable overview."""
     nodes = {key: node for key, node in layout.nodes.items() if key in visible}

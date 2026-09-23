@@ -220,26 +220,65 @@ def test_organise_ignores_result_after_project_changes(app_module, tmp_path: Pat
     assert view.layout is replacement and not view.organised
 
 
-def test_organised_overview_reveals_files_when_zooming_or_opening_a_group(
-        app_module, tmp_path: Path, monkeypatch) -> None:
+@pytest.mark.parametrize("entry", ["zoom", "double_click"])
+def test_opened_group_stays_active_until_explicit_return_to_overview(
+        app_module, tmp_path: Path, monkeypatch, entry: str) -> None:
     from types import SimpleNamespace
 
     app = app_module.App(app_module.tk.Tk(), config=persistence.UserConfig(), config_path=tmp_path / "c.json")
     view = app.view
     view.show(opened_project(tmp_path).layout)
+    complete_layout = view.layout
     view.organised, view.overview = True, True
     view.scale, view.fit_scale = .5, .2
+    view.offset, view.user_zoomed = (31.0, 47.0), True
+    parent_viewport = (view.scale, view.offset, view.fit_scale, view.user_zoomed)
     view.redraw()
     assert set(view._draw_layout.nodes) == {"cluster:src", "external:std"}
-    view.zoom(2.0)
-    assert not view.overview and set(view._draw_layout.nodes) == set(view.layout.nodes)
-    monkeypatch.setattr(view, "_fit_graph", lambda *_: setattr(view, "scale", .5))
-    view.zoom(.5)
-    assert view.overview
-    monkeypatch.setattr(view, "node_at", lambda *_: "cluster:src")
-    view.on_double_click(SimpleNamespace(x=0, y=0))
-    assert not view.overview and view.scale >= 1.0
-    assert set(view._draw_layout.nodes) == set(view.layout.nodes)
+    if entry == "zoom":
+        node = view._draw_layout.nodes["cluster:src"]
+        view.zoom(2.0, view.to_screen(node.x, node.y))
+    else:
+        monkeypatch.setattr(view, "node_at", lambda *_: "cluster:src")
+        view.on_double_click(SimpleNamespace(x=0, y=0))
+    assert view.focused_group == "cluster:src" and not view.overview
+    assert set(view.layout.nodes) == {"src/a.cpp", "src/b.cpp"}
+    assert view._original_layout is complete_layout
+    view.zoom(.05)
+    assert view.scale < 1.0 and not view.overview
+    before = view.offset
+    view.on_press(SimpleNamespace(x=20, y=30))
+    view.on_drag(SimpleNamespace(x=70, y=45))
+    view.on_release(SimpleNamespace(x=70, y=45, num=1))
+    assert view.offset == (before[0] + 50, before[1] + 15)
+    view.on_resize(None)
+    monkeypatch.setattr(view, "_fit_graph", lambda *_: setattr(view, "scale", .4))
+    view.fit()
+    view.on_resize(None)
+    view.reset_zoom()
+    assert view.focused_group == "cluster:src" and not view.overview
+    assert set(view._draw_layout.nodes) == {"src/a.cpp", "src/b.cpp"}
+    view.overview_button.kwargs["command"]()
+    assert view.focused_group is None and view.overview and view.layout is complete_layout
+    assert (view.scale, view.offset, view.fit_scale, view.user_zoomed) == parent_viewport
+    assert set(view._draw_layout.nodes) == {"cluster:src", "external:std"}
+
+
+def test_organising_inside_a_group_stays_inside_and_new_graph_clears_the_group(
+        app_module, tmp_path: Path, monkeypatch) -> None:
+    app = app_module.App(app_module.tk.Tk(), config=persistence.UserConfig(), config_path=tmp_path / "c.json")
+    view = app.view
+    view.show(opened_project(tmp_path).layout)
+    view.organised, view.overview = True, True
+    view.open_group("cluster:src")
+    monkeypatch.setattr(app, "run_async", lambda work, done: done(work()))
+    view.organise()
+    assert view.focused_group == "cluster:src" and not view.overview
+    assert set(view.layout.nodes) == {"src/a.cpp", "src/b.cpp"}
+    view.show(views.FileViewLayout([], {}, [], [], 1, 1))
+    assert view.focused_group is None and view._overview_viewport is None
+    view.back_to_overview()
+    assert not view.layout.nodes
 
 
 def test_overview_refreshes_when_the_file_filter_changes(app_module, tmp_path: Path, monkeypatch) -> None:

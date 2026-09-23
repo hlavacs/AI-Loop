@@ -85,6 +85,8 @@ class FileViewCanvas(graph_canvas.NodeAppearanceCanvas):
         self.compact = False
         self.organised = False
         self.overview = False
+        self.focused_group: str | None = None
+        self._overview_viewport: tuple[float, tuple[float, float], float, bool] | None = None
         self._draw_layout: views.FileViewLayout | None = None
         self._overview_layout: views.FileViewLayout | None = None
         self._overview_key: tuple[int, frozenset[str]] | None = None
@@ -125,6 +127,10 @@ class FileViewCanvas(graph_canvas.NodeAppearanceCanvas):
         self.organise_button.pack(side=tk.LEFT, padx=(8, 0))
         tooltip.attach(self.organise_button, "Space file labels and bring related clusters closer. "
                        "Crowded diagrams show groups; zoom in or double-click a group to see its files.")
+        self.overview_button = ttk.Button(controls, text="← Overview", command=self.back_to_overview,
+                                         state=tk.DISABLED)
+        self.overview_button.pack(side=tk.LEFT, padx=(8, 0))
+        tooltip.attach(self.overview_button, "Leave the current group and return to the overview.")
         return controls
 
     # -- coordinates ------------------------------------------------------------------------
@@ -138,6 +144,9 @@ class FileViewCanvas(graph_canvas.NodeAppearanceCanvas):
         self.edge_focus = None
         self.organised = False
         self.overview = False
+        self.focused_group = None
+        self._overview_viewport = None
+        self.overview_button.configure(state=tk.DISABLED)
         self.user_zoomed = False
         self.scale, self.offset = 1.0, (0.0, 0.0)
         self.fit()
@@ -171,10 +180,12 @@ class FileViewCanvas(graph_canvas.NodeAppearanceCanvas):
         self.app.run_async(lambda: views.organise_file_view(source, sizes), done)
 
     def fit(self) -> None:
-        """Scale and centre the whole diagram — as drawn, labels included — inside the visible canvas."""
+        """Fit the current group or complete diagram, including its labels, inside the visible canvas."""
         self.edge_focus = None
         self.user_zoomed = False
-        self.layout = self._original_layout or self.layout
+        source = self._original_layout or self.layout
+        self.layout = views.file_view_group(source, self.focused_group) \
+            if source is not None and self.focused_group is not None else source
         self.compact = False
         self.overview = False
         if self.layout is None or not self.layout.nodes:
@@ -187,7 +198,7 @@ class FileViewCanvas(graph_canvas.NodeAppearanceCanvas):
                             and self.expansion_result is not None and self.expansion_result.graph.nodes) else 0
         available_width, available_height = max(width - hierarchy - 24, 100), max(height - 60, 100)
         self._fit_graph(available_width, available_height)
-        if self.organised and self.scale < 1.0:
+        if self.organised and self.focused_group is None and self.scale < 1.0:
             self.overview = True
             self._fit_graph(available_width, available_height)
         if not self.organised and self._boxes_overlap():
@@ -257,7 +268,10 @@ class FileViewCanvas(graph_canvas.NodeAppearanceCanvas):
         self.canvas.addtag_all("file-graph")
         self.draw_filter_empty(visible_count)
         self.draw_appearance_key()
-        if self.overview and not self.globally_stale:
+        if self.focused_group is not None and not self.globally_stale:
+            self.canvas.create_text(12, 30, anchor="nw", fill="#4b5563", font=("TkDefaultFont", 9),
+                                    text="Group view · hover a file for connections · use Overview to go back")
+        elif self.overview and not self.globally_stale:
             self.canvas.create_text(12, 30, anchor="nw", fill="#4b5563", font=("TkDefaultFont", 9),
                                     text="Cluster overview · double-click a group or zoom in to see files")
         elif self.organised and len(self.layout.nodes) > 30 and not self.globally_stale:
@@ -385,30 +399,28 @@ class FileViewCanvas(graph_canvas.NodeAppearanceCanvas):
             self.redraw()
 
     def zoom(self, factor: float, origin: tuple[float, float] | None = None) -> None:
-        """Zoom around ``origin`` while keeping the complete fitted diagram as the lower limit."""
+        """Zoom within the active group; only opening a group changes the navigation level."""
         if self.layout is None or self.scale <= 0:
             return
-        target = min(max(zoom_controls.MAX_ZOOM, self.fit_scale), max(self.fit_scale, self.scale * factor))
+        minimum = min(self.fit_scale, .1) if self.focused_group is not None else self.fit_scale
+        target = min(max(zoom_controls.MAX_ZOOM, self.fit_scale), max(minimum, self.scale * factor))
         actual_factor = target / self.scale
         if abs(actual_factor - 1.0) < 0.001:
             return
         origin_x, origin_y = origin or (float(self.canvas.winfo_width()) / 2, float(self.canvas.winfo_height()) / 2)
-        overview = self.organised and target < 1.0
-        detail_position = None
+        overview = self.organised and self.focused_group is None and target < 1.0
         if self.overview and not overview and self._draw_layout and self._draw_layout.nodes:
             nearest = min(self._draw_layout.nodes.values(),
                           key=lambda n: math.hypot(n.x * self.scale + self.offset[0] - origin_x,
                                                    n.y * self.scale + self.offset[1] - origin_y))
-            detail_position = self._detail_position(nearest.id)
+            self.open_group(nearest.id)
+            return
         elif not self.overview and overview:
             self.fit()
             return
         self.offset = (origin_x - (origin_x - self.offset[0]) * actual_factor,
                        origin_y - (origin_y - self.offset[1]) * actual_factor)
         self.scale = target
-        if detail_position is not None:
-            x, y = detail_position
-            self.offset = (origin_x - x * self.scale, origin_y - y * self.scale)
         if overview != self.overview:
             self.edge_focus = None
         self.overview = overview
@@ -417,7 +429,8 @@ class FileViewCanvas(graph_canvas.NodeAppearanceCanvas):
 
     def reset_zoom(self) -> None:
         if self.layout is not None and self.scale > 0:
-            self.zoom(max(self.fit_scale, 1.0) / self.scale)
+            target = 1.0 if self.focused_group is not None else max(self.fit_scale, 1.0)
+            self.zoom(target / self.scale)
 
     def on_press(self, event: Any) -> None:
         self.drag_start = None if self.press_hierarchy(event) else (event.x, event.y)
@@ -454,26 +467,31 @@ class FileViewCanvas(graph_canvas.NodeAppearanceCanvas):
             return
         node = self.node_at(event.x, event.y)
         if self.overview and node is not None:
-            self.edge_focus = None
-            x, y = self._detail_position(node)
-            self.scale, self.user_zoomed, self.overview = max(1.0, self.fit_scale), True, False
-            self.offset = (self.canvas.winfo_width() / 2 - x * self.scale,
-                           self.canvas.winfo_height() / 2 - y * self.scale)
-            self.redraw()
+            self.open_group(node)
             return
         if node is not None and not node.startswith("external:"):
             self.app.open_editor(node)
 
-    def _detail_position(self, node_id: str) -> tuple[float, float]:
-        assert self.layout is not None
-        if node_id.startswith("cluster:"):
-            circle = next(c for c in self.layout.circles if c.id == node_id.removeprefix("cluster:"))
-            return circle.cx, circle.cy
-        if node_id == "external:overview":
-            nodes = [node for node in self.layout.nodes.values() if node.kind == "external"]
-            return sum(n.x for n in nodes) / len(nodes), sum(n.y for n in nodes) / len(nodes)
-        node = self.layout.nodes[node_id]
-        return node.x, node.y
+    def open_group(self, node_id: str) -> None:
+        """Enter a subdiagram and remember the parent viewport for an explicit return."""
+        if not self.overview or self._original_layout is None:
+            return
+        self._overview_viewport = (self.scale, self.offset, self.fit_scale, self.user_zoomed)
+        self.focused_group = node_id
+        self.overview_button.configure(state=tk.NORMAL)
+        self.fit()
+
+    def back_to_overview(self) -> None:
+        """Return to the parent only when requested, restoring its previous zoom and position."""
+        if self.focused_group is None or self._overview_viewport is None:
+            return
+        self.layout = self._original_layout
+        self.focused_group, self.edge_focus = None, None
+        self.overview, self.compact = True, False
+        self.scale, self.offset, self.fit_scale, self.user_zoomed = self._overview_viewport
+        self._overview_viewport = None
+        self.overview_button.configure(state=tk.DISABLED)
+        self.redraw()
 
     def node_at(self, x: int, y: int) -> str | None:
         for item in reversed(self.canvas.find_overlapping(x - 2, y - 2, x + 2, y + 2)):

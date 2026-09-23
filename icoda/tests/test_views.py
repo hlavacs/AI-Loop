@@ -247,6 +247,24 @@ def test_file_overview_groups_external_libraries_without_losing_relations() -> N
     assert "external:std" in filtered.nodes and "external:overview" not in filtered.nodes
 
 
+@pytest.mark.parametrize("group, expected", [
+    ("cluster:core", {"core/a.cpp", "core/b.cpp", "core/c.cpp"}),
+    ("external:overview", {"external:std"}),
+    ("app/main.cpp", {"app/main.cpp"}),
+])
+def test_file_group_contains_only_its_members_and_internal_relations(group, expected) -> None:
+    model = small_model()
+    layout = views.layout_file_view(model, clusters.cluster_files(model))
+    saved = deepcopy(layout)
+    detail = views.file_view_group(layout, group)
+    assert set(detail.nodes) == expected
+    assert detail.file_arrows == [arrow for arrow in layout.file_arrows
+                                  if arrow.source in expected and arrow.target in expected]
+    assert not detail.cluster_arrows
+    assert all(set(circle.files) <= expected for circle in detail.circles)
+    assert layout == saved
+
+
 def call_model() -> DerivedModel:
     model = DerivedModel("/p")
     model.files["m.cpp"] = FileInfo("m.cpp")
