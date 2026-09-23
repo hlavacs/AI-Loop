@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import os
 import re
+import shutil
 import subprocess
 import sys
 from collections.abc import Callable, Iterable, Mapping
@@ -15,6 +16,81 @@ from pathlib import Path
 # version it was branched from (Xcode 13 -> LLVM 12, Xcode 14 -> 14, Xcode 15 -> 16, Xcode 16 -> 17,
 # Xcode 16.3+ -> 19). Unknown majors fall back to the Apple number itself.
 APPLE_TO_LLVM_MAJOR = {12: 10, 13: 12, 14: 14, 15: 16, 16: 17, 17: 19}
+
+
+def clang_build_environment(preferred: str | None = None) -> dict[str, str]:
+    """Select module-capable Clang on every host, including the Windows SDK environment."""
+    environment = dict(os.environ)
+    if sys.platform == "win32":
+        environment = _windows_build_environment(environment)
+    choices = [preferred, environment.get("CXX")]
+    if sys.platform == "darwin" and shutil.which("brew"):
+        result = subprocess.run(["brew", "--prefix", "llvm"], capture_output=True, text=True,
+                                timeout=30, check=False)
+        if result.returncode == 0:
+            choices.append(str(Path(result.stdout.strip()) / "bin/clang++"))
+    choices.append(shutil.which("clang++", path=environment.get("PATH")))
+    if sys.platform.startswith("linux"):
+        versioned = [path for directory in os.get_exec_path(environment)
+                     for path in Path(directory).glob("clang++-[0-9]*")]
+        choices.extend(str(path) for path in sorted(versioned, key=lambda p: _version_key(p.name), reverse=True))
+    for candidate in candidates(environ=environment):
+        directory = Path(candidate.path).parent
+        choices.append(str(directory / ("clang++.exe" if sys.platform == "win32" else "../bin/clang++")))
+    for choice in dict.fromkeys(choices):
+        if not choice:
+            continue
+        resolved = shutil.which(choice, path=environment.get("PATH"))
+        if resolved is None:
+            continue
+        compiler = Path(resolved)
+        if sys.platform == "win32":
+            compiler = compiler.resolve()  # Expand CMake's Windows short paths.
+        if not re.fullmatch(r"clang\+\+(?:-[0-9]+)?(?:\.exe)?", compiler.name, re.IGNORECASE):
+            continue
+        suffix = compiler.stem.removeprefix("clang++") if sys.platform == "win32" else compiler.name.removeprefix("clang++")
+        extension = ".exe" if sys.platform == "win32" else ""
+        scanner = next((compiler.with_name(f"clang-scan-deps{s}{extension}") for s in (suffix, "")
+                        if compiler.with_name(f"clang-scan-deps{s}{extension}").is_file()), None)
+        c_compiler = compiler.with_name(f"clang{suffix}{extension}")
+        if scanner is None or not c_compiler.is_file():
+            continue
+        result = subprocess.run([str(compiler), "--version"], capture_output=True, text=True,
+                                timeout=30, check=False, env=environment)
+        match = re.search(r"clang version (\d+)", result.stdout + result.stderr)
+        if result.returncode or match is None or int(match.group(1)) < 16:
+            continue
+        environment.update(CC=str(c_compiler), CXX=str(compiler))
+        environment["PATH"] = str(compiler.parent) + os.pathsep + environment.get("PATH", "")
+        return environment
+    raise RuntimeError("Clang 16+ with clang-scan-deps is required to build C++. Install LLVM "
+                       "(Homebrew LLVM on macOS, the Visual Studio LLVM component on Windows).")
+
+
+def _windows_build_environment(environment: dict[str, str]) -> dict[str, str]:
+    """Load Visual Studio's SDK paths even when ICODA starts outside a developer prompt."""
+    base = environment.get("ProgramFiles(x86)", environment.get("PROGRAMFILES(X86)", r"C:\Program Files (x86)"))
+    vswhere = Path(base) / "Microsoft Visual Studio/Installer/vswhere.exe"
+    if not vswhere.is_file():
+        return environment
+    result = subprocess.run([str(vswhere), "-latest", "-prerelease", "-products", "*", "-requires",
+                             "Microsoft.VisualStudio.Component.VC.Tools.x86.x64", "-property", "installationPath"],
+                            capture_output=True, text=True, timeout=30, check=False)
+    if result.returncode or not result.stdout.strip():
+        return environment
+    install = Path(result.stdout.strip().splitlines()[-1])
+    vcvars = install / "VC/Auxiliary/Build/vcvars64.bat"
+    result = subprocess.run(f'cmd /d /s /c ""{vcvars}" >nul && set"',
+                            capture_output=True, text=True, timeout=60, check=False, env=environment)
+    if result.returncode:
+        raise RuntimeError("Could not initialize Visual Studio's C++ environment: " + result.stderr.strip())
+    environment = {key.upper(): value for line in result.stdout.splitlines()
+                   if "=" in line and not line.startswith("=") for key, value in [line.split("=", 1)]}
+    directories = [install / "VC/Tools/Llvm/x64/bin",
+                   install / "Common7/IDE/CommonExtensions/Microsoft/CMake/CMake/bin",
+                   install / "Common7/IDE/CommonExtensions/Microsoft/CMake/Ninja"]
+    environment["PATH"] = os.pathsep.join(map(str, directories)) + os.pathsep + environment.get("PATH", "")
+    return environment
 
 
 @dataclass(frozen=True)

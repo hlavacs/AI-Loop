@@ -168,7 +168,7 @@ def load_compile_commands(location: Path) -> list[CompileCommand]:
         return []
     commands = []
     for entry in json.loads(path.read_text(encoding="utf-8")):
-        raw = entry["arguments"] if "arguments" in entry else shlex.split(entry["command"])
+        raw = entry["arguments"] if "arguments" in entry else split_command_line(entry["command"])
         directory = entry["directory"]
         file = str((Path(directory) / entry["file"]).resolve())
         expanded = expand_response_files(raw[1:], directory)
@@ -178,13 +178,59 @@ def load_compile_commands(location: Path) -> list[CompileCommand]:
     return commands
 
 
+def split_command_line(command: str, platform: str = sys.platform) -> list[str]:
+    """Decode compiler arguments without treating Windows path separators as shell escapes."""
+    if platform != "win32":
+        return shlex.split(command)
+    arguments: list[str] = []
+    token: list[str] = []
+    quoted = started = False
+    index = 0
+    while index < len(command):
+        char = command[index]
+        if char.isspace() and not quoted:
+            if started:
+                arguments.append("".join(token))
+                token = []
+                started = False
+        else:
+            started = True
+            if char == "\\":
+                end = index
+                while end < len(command) and command[end] == "\\":
+                    end += 1
+                count = end - index
+                if end < len(command) and command[end] == '"':
+                    token.extend("\\" * (count // 2))
+                    if count % 2:
+                        token.append('"')
+                    else:
+                        quoted = not quoted
+                    index = end
+                else:
+                    token.extend("\\" * count)
+                    index = end - 1
+            elif char == '"':
+                if quoted and command[index:index + 2] == '""':
+                    token.append('"')
+                    index += 1
+                else:
+                    quoted = not quoted
+            else:
+                token.append(char)
+        index += 1
+    if started:
+        arguments.append("".join(token))
+    return arguments
+
+
 def expand_response_files(arguments: Sequence[str], directory: str) -> list[str]:
     """Replace ``@file`` arguments by the file's contents (CMake's ``.modmap`` files)."""
     expanded: list[str] = []
     for argument in arguments:
         if argument.startswith("@") and (Path(directory) / argument[1:]).is_file():
             for line in (Path(directory) / argument[1:]).read_text(encoding="utf-8").splitlines():
-                expanded.extend(shlex.split(line))
+                expanded.extend(split_command_line(line))
         else:
             expanded.append(argument)
     return expanded

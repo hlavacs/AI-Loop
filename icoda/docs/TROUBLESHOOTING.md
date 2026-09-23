@@ -172,6 +172,13 @@ presets switch it on). Press **Project ▸ Build**; if you built by hand, use `c
 -DCMAKE_EXPORT_COMPILE_COMMANDS=ON` and reload. ICODA looks at the project root, in `build/` and one level below
 it, and takes the newest file.
 
+On Windows, module projects built with MSVC need a separate Clang build for ICODA analysis: libclang cannot
+read MSVC's `.ifc` files. **Build** selects Clang on every platform and creates `build/debug-clang` when
+migrating an existing build from another compiler. It exports the compilation database and reloads after
+success. Use the libclang from the same LLVM installation. If a project toolchain forces another compiler,
+Build reports that override; update the toolchain before retrying. Windows compiler and response-file paths
+retain their backslashes.
+
 **"no libclang found"**: ICODA needs the libclang library of a Clang installation to parse C++. **Project ▸
 Choose libclang Library…** lists what it found; choose one, press **Apply**, and ICODA reloads the project with it
 (no restart is needed). If nothing is listed, install LLVM (`brew install llvm` on macOS, `libclang-dev` or

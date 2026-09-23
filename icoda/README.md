@@ -105,8 +105,10 @@ is analysed without importing or executing it. C++ analysis needs the compiler s
 If the CMake project already has a configured build under `build/`, press **Build**, even when the target list is
 empty. ICODA reuses that build's settings, exports the compiler commands, builds, and reloads the analysis.
 **Refresh targets** also exports compiler commands and reloads an empty analysis after configuration succeeds.
-ICODA uses the build associated with the compiler commands; without those, it prefers a completed configuration
-over an incomplete one. It preserves the configured project's compiler environment, including dependency builds.
+Build uses Clang with `clang-scan-deps` on Windows, macOS and Linux. It reuses an existing Clang configuration;
+when the project uses another compiler, it creates `build/debug-clang` with Ninja and carries over the project
+and dependency options. The original build tree is retained. On Windows it initializes the Visual Studio SDK
+environment automatically. If Clang is unavailable, Build reports how to install it instead of using another compiler.
 
 If no build has been configured, configure the project using its own instructions first. For a CMake project
 with a `debug` preset and a Ninja or Makefiles generator, run these commands in that project:

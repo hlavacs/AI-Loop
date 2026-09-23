@@ -5,12 +5,21 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any
 
-from icoda_core import steps
+import pytest
+
+from icoda_core import cmake, steps
 from icoda_core.process import ProcessResult
 
 
 def _result(command: list[str], returncode: int, stdout: str) -> ProcessResult:
     return ProcessResult(command, returncode, stdout, "")
+
+
+@pytest.fixture(autouse=True)
+def configured_clang_plan(tmp_path: Path, monkeypatch: Any) -> None:
+    monkeypatch.setattr(cmake, "clang_configuration", lambda _root: (
+        tmp_path / "build/debug", ["cmake", "--preset", "debug"], {}))
+    monkeypatch.setattr(cmake, "verify_clang", lambda _directory: None)
 
 
 def test_cmake_gate_uses_the_assumed_debug_preset(tmp_path: Path) -> None:
@@ -50,7 +59,7 @@ def test_compile_failure_stops_after_configuration(tmp_path: Path, monkeypatch: 
 
     result = steps.build_project(tmp_path, code_profile={"language": "C++"})
 
-    assert commands == [["cmake", "--preset", "debug"], ["cmake", "--build", "--preset", "debug"]]
+    assert commands == [["cmake", "--preset", "debug"], ["cmake", "--build", str(tmp_path / "build/debug")]]
     assert result == steps.BuildResult(False, "configured\ncompiler error")
 
 
@@ -87,7 +96,7 @@ def test_build_and_test_gates_can_both_pass(tmp_path: Path, monkeypatch: Any) ->
     monkeypatch.setattr(steps, "build_environment", lambda _root: None)
     build = steps.build_project(tmp_path, code_profile={"language": "C++"})
     test = steps.test_project(tmp_path, ["ctest", "--preset", "debug"])
-    assert calls == [["cmake", "--preset", "debug"], ["cmake", "--build", "--preset", "debug"],
+    assert calls == [["cmake", "--preset", "debug"], ["cmake", "--build", str(tmp_path / "build/debug")],
                      ["ctest", "--preset", "debug"]]
     assert build.ok is True and build.output == "okok"
     assert test.ok is True and test.output == "ok"

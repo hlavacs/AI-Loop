@@ -37,22 +37,21 @@ endif()
 add_executable(example main.cpp)
 ''')
     directory = tmp_path / "build/custom-release"
-    result = process.run_bounded(["cmake", "-S", str(tmp_path), "-B", str(directory),
+    result = process.run_bounded(["cmake", "-S", str(tmp_path), "-B", str(directory), "-G", "Ninja",
                                   "-DKEEP_SETTING=retained", "-DCMAKE_EXPORT_COMPILE_COMMANDS=OFF"])
     assert result.ok, result.stdout + result.stderr
     assert not (directory / "compile_commands.json").exists()
     cache = (directory / "CMakeCache.txt").read_text()
     compiler = next(line for line in cache.splitlines() if line.startswith("CMAKE_CXX_COMPILER:FILEPATH="))
 
-    def unexpected_environment(_root):
-        pytest.fail("An existing build must inherit the environment, not inject ICODA's compiler")
-
-    monkeypatch.setattr(steps, "build_environment", unexpected_environment)
     build = steps.build_project(tmp_path)
     assert build.ok, build.output
     assert compiler in (directory / "CMakeCache.txt").read_text()
-    database = json.loads((directory / "compile_commands.json").read_text())
-    assert any(entry["file"] == str(tmp_path / "main.cpp") for entry in database)
+    active = cmake.build_directory(tmp_path)
+    assert active is not None
+    cmake.verify_clang(active)
+    database = json.loads((active / "compile_commands.json").read_text())
+    assert any(Path(entry["file"]) == tmp_path / "main.cpp" for entry in database)
     targets = executables.read_targets(tmp_path)
     assert [target.name for target in targets] == ["example"]
     assert targets[0].artifact.is_file()
