@@ -156,10 +156,21 @@ def _edge_owner_order(edge: Edge, owner_file: str) -> tuple[bool, str, int]:
 
 
 def find_compile_commands(root: Path) -> Path | None:
-    """Newest ``compile_commands.json`` under the project: the root, ``build/``, or ``build/<preset>/``."""
+    """Prefer a Clang database for libclang, then the newest database for that toolchain."""
     found = [p for p in (root / "compile_commands.json", *root.glob("build/compile_commands.json"),
                          *root.glob("build/*/compile_commands.json")) if p.is_file()]
-    return max(found, key=lambda p: p.stat().st_mtime) if found else None
+    return max(found, key=lambda p: (_clang_database(p), p.stat().st_mtime)) if found else None
+
+
+def _clang_database(path: Path) -> bool:
+    """Use the recorded compiler, including Windows short names, rather than the build folder's name."""
+    try:
+        entries = json.loads(path.read_text(encoding="utf-8"))
+        compilers = [entry["arguments"][0] if "arguments" in entry else split_command_line(entry["command"])[0]
+                     for entry in entries]
+    except (OSError, ValueError, KeyError, IndexError):
+        return False
+    return bool(compilers) and all("clang" in Path(compiler).name.lower() for compiler in compilers)
 
 
 def load_compile_commands(location: Path) -> list[CompileCommand]:

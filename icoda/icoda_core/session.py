@@ -190,6 +190,30 @@ def _last_log_line(root: Path) -> str:
     return lines[-1][:160] if lines else "?"
 
 
+def analysis_progress(root: Path) -> str:
+    """Read bounded log output for the status bar, without exposing compiler command lines."""
+    try:
+        with (persistence.ProjectStore(root).dir / LOG_NAME).open("rb") as handle:
+            size = handle.seek(0, os.SEEK_END)
+            handle.seek(max(0, size - 16384))
+            lines = handle.read().decode("utf-8", errors="replace").splitlines()
+    except OSError:
+        return ""
+    for line in reversed(lines):
+        _, _, message = line.partition(" ")
+        if message.startswith("parsing "):
+            path = Path(message[len("parsing "):].split(" with ", 1)[0])
+            label = path.relative_to(root) if path.is_relative_to(root) else path.name
+            return f"Parsing {label}"
+        if message.startswith("preparing Clang analysis module "):
+            return message[0].upper() + message[1:]
+        if message.startswith("analysing with "):
+            return "Loading compiler and checking cached analysis"
+        if message in ("opening: analysis started", "analysis: arranging diagram"):
+            return "Starting analysis" if message.startswith("opening:") else "Arranging diagram"
+    return ""
+
+
 def open_project(root: Path, config: persistence.UserConfig, width: float = 1600.0, height: float = 1000.0,
                  in_process: bool = False) -> OpenedProject:
     """Analyse (in a child process unless ``in_process``), then cluster and lay out the project."""
@@ -208,6 +232,7 @@ def open_project(root: Path, config: persistence.UserConfig, width: float = 1600
     result = analyse(root, config) if in_process else analyse_in_child(root)
     if result.libclang_path:
         config.libclang = result.libclang_path
+    log_event("analysis: arranging diagram", root)
     model = store.load_model() or DerivedModel(str(root))
     steplog.apply_statuses(model, steplog.StepLog(store.steps_path))
     clustering = clusters.cluster_files(model, store.load_layout())

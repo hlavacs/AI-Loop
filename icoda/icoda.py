@@ -1096,6 +1096,10 @@ class App:
         try:
             result = self.results.get_nowait()
         except queue.Empty:
+            if self.project is not None:
+                progress = session.analysis_progress(self.project)
+                if progress:
+                    self.status.set(f"Analysing {self.project.name}: {progress}")
             self.root.after(100, self._poll)
             return
         self._pending_analyses = max(0, self._pending_analyses - 1)
