@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import math
+from copy import deepcopy
 
 import pytest
 
@@ -141,6 +142,109 @@ def test_compact_file_view_preserves_files_relations_and_original_layout() -> No
     assert len({(node.x, node.y) for node in compact.nodes.values()}) == len(layout.nodes)
     assert {node.x for node in compact.nodes.values()} == {60, 180}
     assert [(node.x, node.y) for node in layout.nodes.values()] == positions
+
+
+def test_organise_file_view_brings_connected_clusters_closer_and_preserves_contents() -> None:
+    model = small_model()
+    for index in range(6):
+        model.files[f"extra{index}/file.cpp"] = FileInfo(f"extra{index}/file.cpp")
+    grouping = clusters.Clustering([
+        clusters.Cluster("app", "App", ["app/main.cpp", "app/config.cpp"]),
+        *(clusters.Cluster(f"extra{i}", f"Extra {i}", [f"extra{i}/file.cpp"]) for i in range(3)),
+        clusters.Cluster("core", "Core", ["core/a.cpp", "core/b.cpp", "core/c.cpp"]),
+        *(clusters.Cluster(f"extra{i}", f"Extra {i}", [f"extra{i}/file.cpp"]) for i in range(3, 6)),
+    ])
+    original = views.layout_file_view(model, grouping)
+    saved = deepcopy(original)
+    organised = views.organise_file_view(original)
+    before = {circle.id: circle for circle in original.circles}
+    after = {circle.id: circle for circle in organised.circles}
+    assert math.hypot(after["app"].cx - after["core"].cx, after["app"].cy - after["core"].cy) < \
+        math.hypot(before["app"].cx - before["core"].cx, before["app"].cy - before["core"].cy)
+    assert original == saved and views.organise_file_view(original) == organised
+    assert organised.file_arrows == original.file_arrows
+    assert organised.cluster_arrows == original.cluster_arrows
+    assert organised.nodes.keys() == original.nodes.keys()
+    for circle in organised.circles:
+        old = before[circle.id]
+        assert (circle.name, circle.radius, circle.files) == (old.name, old.radius, old.files)
+        for file in circle.files:
+            node, previous = organised.nodes[file], original.nodes[file]
+            assert node.cluster == previous.cluster
+            assert node.x - circle.cx == pytest.approx(previous.x - old.cx)
+            assert node.y - circle.cy == pytest.approx(previous.y - old.cy)
+        for other in organised.circles:
+            if other.id != circle.id:
+                assert math.hypot(circle.cx - other.cx, circle.cy - other.cy) >= circle.radius + other.radius
+    assert organised.nodes["external:std"].y > max(
+        node.y for node in organised.nodes.values() if node.kind == "file")
+    assert all(0 <= node.x <= organised.width and 0 <= node.y <= organised.height
+               for node in organised.nodes.values())
+
+
+@pytest.mark.parametrize("count", [0, 1, 5])
+def test_organise_file_view_handles_empty_single_and_disconnected_clusters(count: int) -> None:
+    model = DerivedModel("/p")
+    grouping = clusters.Clustering([])
+    for index in range(count):
+        file = f"group{index}/a.cpp"
+        model.files[file] = FileInfo(file)
+        grouping.clusters.append(clusters.Cluster(str(index), str(index), [file]))
+    layout = views.layout_file_view(model, grouping)
+    result = views.organise_file_view(layout)
+    assert result.nodes.keys() == layout.nodes.keys()
+    assert len({(node.x, node.y) for node in result.nodes.values()}) == count
+    assert all(math.isfinite(node.x) and math.isfinite(node.y) for node in result.nodes.values())
+
+
+def test_organise_spaces_labels_in_a_large_single_cluster() -> None:
+    model = DerivedModel("/p")
+    files = [f"core/long_module_name_{i}.cpp" for i in range(40)]
+    model.files = {file: FileInfo(file) for file in files}
+    grouping = clusters.Clustering([clusters.Cluster("core", "Core", files)])
+    layout = views.layout_file_view(model, grouping)
+    sizes = {file: (220.0, 40.0) for file in files}
+    result = views.organise_file_view(layout, sizes)
+    assert result.circles[0].radius > layout.circles[0].radius
+    assert result.circles[0].files == files
+    nodes = list(result.nodes.values())
+    for i, node in enumerate(nodes):
+        for other in nodes[i + 1:]:
+            assert abs(node.x - other.x) >= 220.0 - 1e-6 or abs(node.y - other.y) >= 40.0 - 1e-6
+    repeated = views.organise_file_view(result, sizes)
+    assert repeated.circles[0].radius == pytest.approx(result.circles[0].radius)
+
+
+def test_file_overview_preserves_visible_relations_and_respects_hidden_files() -> None:
+    model = small_model()
+    layout = views.layout_file_view(model, clusters.cluster_files(model))
+    saved = deepcopy(layout)
+    overview = views.file_view_overview(layout, set(layout.nodes))
+    assert set(overview.nodes) == {"cluster:app", "cluster:core", "external:std"}
+    assert overview.nodes["cluster:core"].label.endswith("3 files")
+    edge = next(arrow for arrow in overview.file_arrows if arrow.target == "cluster:core")
+    assert edge.source == "cluster:app" and edge.counts == {EdgeKind.CALLS: 2, EdgeKind.IMPORTS: 1}
+    assert all(arrow.source in overview.nodes and arrow.target in overview.nodes for arrow in overview.file_arrows)
+    filtered = views.file_view_overview(layout, {"app/main.cpp", "core/b.cpp", "core/c.cpp"})
+    assert set(filtered.nodes) == {"app/main.cpp", "cluster:core"}
+    assert filtered.nodes["cluster:core"].label.endswith("2 files")
+    assert not filtered.file_arrows  # Both inter-cluster relations target the hidden core/a.cpp.
+    assert not views.file_view_overview(layout, set()).nodes
+    assert layout == saved
+
+
+def test_file_overview_groups_external_libraries_without_losing_relations() -> None:
+    model = small_model()
+    merge_external_names(model, "SDL", ["poll"])
+    model.add_edge(Edge(EdgeKind.CALLS, "u:main", "external:SDL", "app/main.cpp", 5))
+    layout = views.layout_file_view(model, clusters.cluster_files(model))
+    overview = views.file_view_overview(layout, set(layout.nodes))
+    assert "external:std" not in overview.nodes and "external:SDL" not in overview.nodes
+    assert overview.nodes["external:overview"].label == "External libraries\n2 libraries"
+    edge = next(arrow for arrow in overview.file_arrows if arrow.target == "external:overview")
+    assert edge.source == "cluster:app" and edge.counts == {EdgeKind.CALLS: 2}
+    filtered = views.file_view_overview(layout, set(layout.nodes) - {"external:SDL"})
+    assert "external:std" in filtered.nodes and "external:overview" not in filtered.nodes
 
 
 def call_model() -> DerivedModel:

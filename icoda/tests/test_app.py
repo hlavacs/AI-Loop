@@ -184,6 +184,99 @@ def test_zoom_keeps_the_point_under_the_cursor(app_module, tmp_path: Path) -> No
     assert abs(view.scale - view.fit_scale) < 1e-6
 
 
+def test_organise_button_keeps_clusters_after_fit_and_resize(app_module, tmp_path: Path, monkeypatch) -> None:
+    app = app_module.App(app_module.tk.Tk(), config=persistence.UserConfig(), config_path=tmp_path / "c.json")
+    opened = opened_project(tmp_path)
+    opened.clustering = clusters.Clustering([
+        clusters.Cluster("a", "A", ["src/a.cpp"]), clusters.Cluster("b", "B", ["src/b.cpp"])])
+    opened.layout = views.layout_file_view(opened.model, opened.clustering)
+    view = app.view
+    view.show(opened.layout)
+    monkeypatch.setattr(app, "run_async", lambda work, done: done(work()))
+    monkeypatch.setattr(view, "_boxes_overlap", lambda: True)
+    view.organise_button.kwargs["command"]()
+    organised = view.layout
+    assert view.organised and not view.compact and organised is not opened.layout
+    assert organised.circles and organised.cluster_arrows
+    view.fit()
+    view.on_resize(None)
+    assert view.layout is organised and not view.compact
+    monkeypatch.setattr(view, "_boxes_overlap", lambda: False)
+    view.show(opened.layout)
+    assert not view.organised and view.layout is opened.layout
+
+
+def test_organise_ignores_result_after_project_changes(app_module, tmp_path: Path, monkeypatch) -> None:
+    app = app_module.App(app_module.tk.Tk(), config=persistence.UserConfig(), config_path=tmp_path / "c.json")
+    pending = []
+    monkeypatch.setattr(app, "run_async", lambda work, done: pending.append((work, done)))
+    view = app.view
+    view.show(opened_project(tmp_path).layout)
+    view.organise()
+    replacement = opened_project(tmp_path).layout
+    view.show(replacement)
+    work, done = pending.pop()
+    done(work())
+    assert view.layout is replacement and not view.organised
+
+
+def test_organised_overview_reveals_files_when_zooming_or_opening_a_group(
+        app_module, tmp_path: Path, monkeypatch) -> None:
+    from types import SimpleNamespace
+
+    app = app_module.App(app_module.tk.Tk(), config=persistence.UserConfig(), config_path=tmp_path / "c.json")
+    view = app.view
+    view.show(opened_project(tmp_path).layout)
+    view.organised, view.overview = True, True
+    view.scale, view.fit_scale = .5, .2
+    view.redraw()
+    assert set(view._draw_layout.nodes) == {"cluster:src", "external:std"}
+    view.zoom(2.0)
+    assert not view.overview and set(view._draw_layout.nodes) == set(view.layout.nodes)
+    monkeypatch.setattr(view, "_fit_graph", lambda *_: setattr(view, "scale", .5))
+    view.zoom(.5)
+    assert view.overview
+    monkeypatch.setattr(view, "node_at", lambda *_: "cluster:src")
+    view.on_double_click(SimpleNamespace(x=0, y=0))
+    assert not view.overview and view.scale >= 1.0
+    assert set(view._draw_layout.nodes) == set(view.layout.nodes)
+
+
+def test_overview_refreshes_when_the_file_filter_changes(app_module, tmp_path: Path, monkeypatch) -> None:
+    app = app_module.App(app_module.tk.Tk(), config=persistence.UserConfig(), config_path=tmp_path / "c.json")
+    view = app.view
+    view.show(opened_project(tmp_path).layout)
+    view.organised, view.overview = True, True
+    view.scale = .5
+    view.redraw()
+    assert "cluster:src" in view._draw_layout.nodes
+    monkeypatch.setattr(view, "node_visible", lambda key: key == "src/a.cpp")
+    view.redraw()
+    assert set(view._draw_layout.nodes) == {"src/a.cpp"} and not view._draw_layout.file_arrows
+
+
+def test_crowded_file_view_highlights_only_the_hovered_files_connections(
+        app_module, tmp_path: Path, monkeypatch) -> None:
+    from types import SimpleNamespace
+
+    app = app_module.App(app_module.tk.Tk(), config=persistence.UserConfig(), config_path=tmp_path / "c.json")
+    view = app.view
+    nodes = {str(i): views.Node(str(i), str(i), i * 150, 100, "") for i in range(31)}
+    edges = [views.Arrow("0", "1", {EdgeKind.CALLS: 1}), views.Arrow("2", "3", {EdgeKind.CALLS: 1})]
+    view.layout = views.FileViewLayout([], nodes, edges, [], 5000, 400)
+    view.organised = True
+    lines = []
+    monkeypatch.setattr(view.canvas, "create_line", lambda *args, **kwargs: lines.append(kwargs))
+    view.redraw()
+    assert len(lines) == 2 and all(line["fill"] == "#e2e8f0" for line in lines)
+    lines.clear()
+    monkeypatch.setattr(view, "node_at", lambda *_: "0")
+    view._focus_file_edges(SimpleNamespace(x=0, y=0))
+    assert view.edge_focus == "0" and len(lines) == 1
+    assert lines[0]["fill"] == views.ARROW_COLOURS[EdgeKind.CALLS]
+    assert len(view.node_boxes) == 31
+
+
 def test_dragging_moves_file_view_without_selecting_a_node(app_module, tmp_path: Path, monkeypatch) -> None:
     app = app_module.App(app_module.tk.Tk(), config=persistence.UserConfig(), config_path=tmp_path / "c.json")
     app.show(opened_project(tmp_path))

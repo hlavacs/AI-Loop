@@ -221,6 +221,141 @@ def layout_file_view(model: DerivedModel, clustering: Clustering, width: float =
     return FileViewLayout(circles, nodes, arrows, aggregate_to_clusters(arrows, clustering), width, height)
 
 
+def organise_file_view(layout: FileViewLayout,
+                       sizes: dict[str, tuple[float, float]] | None = None) -> FileViewLayout:
+    """Make room for file labels, then relax cluster centres using their relations.
+
+    A bounded, deterministic spring calculation needs no numerical-library dependency. Cluster
+    membership stays unchanged; dense clusters use compact rows and external libraries stay below the files.
+    """
+    if not layout.circles:
+        return layout
+    sizes = sizes or {key: (max(map(len, node.label.splitlines())) * 8.0 + 24.0,
+                           len(node.label.splitlines()) * 18.0 + 18.0) for key, node in layout.nodes.items()}
+    nodes = {key: replace(node) for key, node in layout.nodes.items()}
+    circles = []
+    radii = []
+    for circle in layout.circles:
+        members = [layout.nodes[file] for file in circle.files]
+        if len(members) > 8:
+            width = max(sizes[node.id][0] for node in members)
+            height = max(sizes[node.id][1] for node in members)
+            columns = max(1, math.ceil(math.sqrt(len(members) * height / width)))
+            rows = math.ceil(len(members) / columns)
+            for i, node in enumerate(members):
+                row, column = divmod(i, columns)
+                nodes[node.id] = replace(node, x=circle.cx + (column - (columns - 1) / 2) * width,
+                                        y=circle.cy + (row - (rows - 1) / 2) * height)
+            radius = math.hypot((columns - 1) * width, (rows - 1) * height) / 2
+            circles.append(replace(circle, radius=radius))
+            radii.append(radius + max(width, height) / 2)
+            continue
+        factor = 1.0
+        for i, a in enumerate(members):
+            for b in members[i + 1:]:
+                dx, dy = abs(a.x - b.x), abs(a.y - b.y)
+                width, height = (sizes[a.id][0] + sizes[b.id][0]) / 2, (sizes[a.id][1] + sizes[b.id][1]) / 2
+                factor = max(factor, min(width / dx if dx > .001 else math.inf,
+                                         height / dy if dy > .001 else math.inf))
+        for node in members:
+            nodes[node.id] = replace(node, x=circle.cx + (node.x - circle.cx) * factor,
+                                    y=circle.cy + (node.y - circle.cy) * factor)
+        circles.append(replace(circle, radius=circle.radius * factor))
+        radii.append(circles[-1].radius + max((max(sizes[n.id]) / 2 for n in members), default=0.0))
+    layout = replace(layout, circles=circles, nodes=nodes)
+    index = {circle.id: i for i, circle in enumerate(circles)}
+    weights: dict[tuple[int, int], int] = defaultdict(int)
+    for arrow in layout.cluster_arrows:
+        if arrow.source in index and arrow.target in index:
+            source_index, target_index = sorted((index[arrow.source], index[arrow.target]))
+            weights[source_index, target_index] += arrow.weight
+    positions = [[circle.cx, circle.cy] for circle in circles]
+    centre_x = sum(p[0] for p in positions) / len(positions)
+    centre_y = sum(p[1] for p in positions) / len(positions)
+    for iteration in range(80):
+        forces = [[(centre_x - x) * .01, (centre_y - y) * .01] for x, y in positions]
+        for i, (x, y) in enumerate(positions):
+            for j in range(i + 1, len(positions)):
+                dx, dy = positions[j][0] - x, positions[j][1] - y
+                distance = math.hypot(dx, dy)
+                if distance < .001:
+                    dx, dy, distance = 1.0, 0.0, 1.0
+                spacing = radii[i] + radii[j] + 60.0
+                force = 900.0 / distance + max(spacing - distance, 0.0) * .5
+                force -= .1 * math.log1p(weights.get((i, j), 0)) * max(distance - spacing, 0.0)
+                fx, fy = dx / distance * force, dy / distance * force
+                forces[i][0] -= fx
+                forces[i][1] -= fy
+                forces[j][0] += fx
+                forces[j][1] += fy
+        step = max(20.0, max(radii) * .15) * (1.0 - iteration / 80) + .5
+        for position, (fx, fy) in zip(positions, forces, strict=True):
+            factor = min(1.0, step / max(math.hypot(fx, fy), .001))
+            position[0] += fx * factor
+            position[1] += fy * factor
+    left = min(p[0] - c.radius for p, c in zip(positions, circles, strict=True)) - 80.0
+    top = min(p[1] - c.radius for p, c in zip(positions, circles, strict=True)) - 80.0
+    moved = [replace(circle, cx=x - left, cy=y - top)
+             for circle, (x, y) in zip(circles, positions, strict=True)]
+    offsets = {old.id: (new.cx - old.cx, new.cy - old.cy)
+               for old, new in zip(circles, moved, strict=True)}
+    nodes = {key: replace(node, x=node.x + offsets.get(node.cluster, (0.0, 0.0))[0],
+                         y=node.y + offsets.get(node.cluster, (0.0, 0.0))[1])
+             for key, node in layout.nodes.items()}
+    right = max(circle.cx + circle.radius for circle in moved)
+    bottom = max(circle.cy + circle.radius for circle in moved)
+    externals = [node for node in nodes.values() if node.kind == "external"]
+    for i, node in enumerate(externals):
+        node.x = 80.0 + max(right - 80.0, 160.0) * (i + 1) / (len(externals) + 1)
+        node.y = bottom + 90.0
+    return replace(layout, circles=moved, nodes=nodes,
+                   width=max([right, *(node.x for node in nodes.values())]) + 80.0,
+                   height=bottom + (170.0 if externals else 80.0))
+
+
+def file_view_overview(layout: FileViewLayout, visible: set[str]) -> FileViewLayout:
+    """Summarise visible files by cluster and merge their relationships for a readable overview."""
+    nodes = {key: node for key, node in layout.nodes.items() if key in visible}
+    owners = {key: key for key in nodes}
+    for circle in layout.circles:
+        files = [file for file in circle.files if file in nodes]
+        if len(files) < 2:
+            continue
+        key = f"cluster:{circle.id}"
+        nodes[key] = Node(key, f"{circle.name}\n{len(files)} files", circle.cx, circle.cy, circle.id, "cluster")
+        for file in files:
+            owners[file] = key
+            del nodes[file]
+    external_ids = [key for key, node in nodes.items() if node.kind == "external"]
+    if len(external_ids) > 1:
+        key = "external:overview"
+        nodes[key] = Node(key, f"External libraries\n{len(external_ids)} libraries", 0, 0, "", "external")
+        for external in external_ids:
+            owners[external] = key
+            del nodes[external]
+    merged: dict[tuple[str, str], Arrow] = {}
+    for arrow in layout.file_arrows:
+        if arrow.source not in owners or arrow.target not in owners:
+            continue
+        source, target = owners[arrow.source], owners[arrow.target]
+        if source == target:
+            continue
+        aggregate = merged.setdefault((source, target), Arrow(source, target))
+        for kind, count in arrow.counts.items():
+            aggregate.counts[kind] = aggregate.counts.get(kind, 0) + count
+    arrows = list(merged.values())
+    # The overview has its own compact geometry; the expanded file circles would waste its space.
+    summary_nodes, circles = {}, []
+    for i, (key, node) in enumerate(nodes.items()):
+        angle = 2 * math.pi * i / len(nodes)
+        x, y = 80 * math.sqrt(len(nodes)) * math.cos(angle), 80 * math.sqrt(len(nodes)) * math.sin(angle)
+        summary_nodes[key] = replace(node, x=x, y=y, cluster=key, kind="file")
+        circles.append(ClusterCircle(key, node.label, x, y, 0.0, [key]))
+    summary = organise_file_view(FileViewLayout(circles, summary_nodes, arrows, arrows, layout.width, layout.height))
+    return replace(summary, circles=[], cluster_arrows=[], nodes={
+        key: replace(node, x=summary.nodes[key].x, y=summary.nodes[key].y) for key, node in nodes.items()})
+
+
 def entity_scope(model: DerivedModel, selected: Entity) -> list[Entity]:
     """Show one entity, including members of a selected class, namespace or enum."""
     scoped = {selected.usr: selected}

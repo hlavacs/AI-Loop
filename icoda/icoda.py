@@ -83,6 +83,12 @@ class FileViewCanvas(graph_canvas.NodeAppearanceCanvas):
         self.layout: views.FileViewLayout | None = None
         self._original_layout: views.FileViewLayout | None = None
         self.compact = False
+        self.organised = False
+        self.overview = False
+        self._draw_layout: views.FileViewLayout | None = None
+        self._overview_layout: views.FileViewLayout | None = None
+        self._overview_key: tuple[int, frozenset[str]] | None = None
+        self.edge_focus: str | None = None
         self.scale = 1.0
         self.fit_scale = 1.0
         self.user_zoomed = False
@@ -102,6 +108,8 @@ class FileViewCanvas(graph_canvas.NodeAppearanceCanvas):
                                ("<Configure>", self.on_resize)):
             canvas.bind(event, handler)
         self.bind_touchpad_scrolling()
+        canvas.bind("<Motion>", self._focus_file_edges, add="+")
+        canvas.bind("<Leave>", self._focus_file_edges, add="+")
         self.action_menu = graph_canvas.NodeActionMenu(
             canvas, self.node_at, app.graph_actions, app.dispatch_graph_action)
 
@@ -113,6 +121,10 @@ class FileViewCanvas(graph_canvas.NodeAppearanceCanvas):
             reset=self.reset_zoom,
             zoom_in=lambda: self.zoom(zoom_controls.ZOOM_IN),
         )
+        self.organise_button = ttk.Button(controls, text="Organise", command=self.organise)
+        self.organise_button.pack(side=tk.LEFT, padx=(8, 0))
+        tooltip.attach(self.organise_button, "Space file labels and bring related clusters closer. "
+                       "Crowded diagrams show groups; zoom in or double-click a group to see its files.")
         return controls
 
     # -- coordinates ------------------------------------------------------------------------
@@ -122,16 +134,49 @@ class FileViewCanvas(graph_canvas.NodeAppearanceCanvas):
 
     def show(self, layout: views.FileViewLayout) -> None:
         self.layout = self._original_layout = layout
+        self._overview_key = None
+        self.edge_focus = None
+        self.organised = False
+        self.overview = False
         self.user_zoomed = False
         self.scale, self.offset = 1.0, (0.0, 0.0)
         self.fit()
         self.canvas.after(150, self.on_resize, None)  # once more when the window geometry has settled
 
+    def organise(self) -> None:
+        """Compute in the background; discard the result if another graph has been loaded."""
+        source = self._original_layout
+        if source is None or not source.nodes:
+            return
+        sizes = {}
+        for node in source.nodes.values():
+            item = self.canvas.create_text(0, 0, text=node.label, font=("TkDefaultFont", 12))
+            left, top, right, bottom = self.canvas.bbox(item) or (0, 0, len(node.label) * 8, 18)
+            self.canvas.delete(item)
+            sizes[node.id] = (right - left + 24.0, bottom - top + 18.0)
+        self.organise_button.configure(state=tk.DISABLED)
+
+        def done(result: views.FileViewLayout | Exception) -> None:
+            self.organise_button.configure(state=tk.NORMAL)
+            if self._original_layout is not source:
+                return
+            if isinstance(result, Exception):
+                self.app.status.set(f"Could not organise file clusters: {result}")
+                return
+            self._original_layout = result
+            self._overview_key = None
+            self.organised = True
+            self.fit()
+
+        self.app.run_async(lambda: views.organise_file_view(source, sizes), done)
+
     def fit(self) -> None:
         """Scale and centre the whole diagram — as drawn, labels included — inside the visible canvas."""
+        self.edge_focus = None
         self.user_zoomed = False
         self.layout = self._original_layout or self.layout
         self.compact = False
+        self.overview = False
         if self.layout is None or not self.layout.nodes:
             self.redraw()
             return
@@ -142,7 +187,10 @@ class FileViewCanvas(graph_canvas.NodeAppearanceCanvas):
                             and self.expansion_result is not None and self.expansion_result.graph.nodes) else 0
         available_width, available_height = max(width - hierarchy - 24, 100), max(height - 60, 100)
         self._fit_graph(available_width, available_height)
-        if self._boxes_overlap():
+        if self.organised and self.scale < 1.0:
+            self.overview = True
+            self._fit_graph(available_width, available_height)
+        if not self.organised and self._boxes_overlap():
             column_width = max(box[2] - box[0] for box in self.node_boxes.values()) + 4
             row_height = max(box[3] - box[1] for box in self.node_boxes.values()) + 8
             columns = max(1, int((available_width + 4) / column_width))
@@ -170,7 +218,7 @@ class FileViewCanvas(graph_canvas.NodeAppearanceCanvas):
             left, top, right, bottom = (float(v) for v in bounds)
             drawn_width, drawn_height = max(right - left, 1.0), max(bottom - top, 1.0)
             factor = min(available_width / drawn_width, available_height / drawn_height)
-            factor = min(factor, zoom_controls.MAX_ZOOM / self.scale)
+            factor = min(factor, (.95 if self.overview else zoom_controls.MAX_ZOOM) / self.scale)
             self.scale *= factor
             self.offset = (self.offset[0] * factor + 12 + (available_width - drawn_width * factor) / 2 - left * factor,
                            self.offset[1] * factor + 48 + (available_height - drawn_height * factor) / 2 - top * factor)
@@ -193,6 +241,15 @@ class FileViewCanvas(graph_canvas.NodeAppearanceCanvas):
         if self.layout is None:
             self.hide_hierarchy()
             return
+        if self.overview:
+            visible = frozenset(key for key in self.layout.nodes if self.node_visible(key))
+            key = (id(self.layout), visible)
+            if key != self._overview_key:
+                self._overview_layout = views.file_view_overview(self.layout, set(visible))
+                self._overview_key = key
+            self._draw_layout = self._overview_layout
+        else:
+            self._draw_layout = self.layout
         self._draw_circles()
         visible_count = self._draw_nodes()
         self._draw_arrows()
@@ -200,24 +257,37 @@ class FileViewCanvas(graph_canvas.NodeAppearanceCanvas):
         self.canvas.addtag_all("file-graph")
         self.draw_filter_empty(visible_count)
         self.draw_appearance_key()
+        if self.overview and not self.globally_stale:
+            self.canvas.create_text(12, 30, anchor="nw", fill="#4b5563", font=("TkDefaultFont", 9),
+                                    text="Cluster overview · double-click a group or zoom in to see files")
+        elif self.organised and len(self.layout.nodes) > 30 and not self.globally_stale:
+            self.canvas.create_text(12, 30, anchor="nw", fill="#4b5563", font=("TkDefaultFont", 9),
+                                    text="Hover over a file to highlight its connections")
         self.draw_expansion_layer()
 
     def _draw_circles(self) -> None:
         """The circles themselves are never drawn; a multi-file cluster shows its name in the empty centre."""
         assert self.layout is not None
-        if self.compact:
+        if self.compact or self.overview:
             return  # cluster labels and actions remain in the hierarchy beside the compact file grid
         for circle in self.layout.circles:
             if len(circle.files) < 2 or not any(self.node_visible(file) for file in circle.files):
                 continue
-            cx, cy = self.to_screen(circle.cx, circle.cy)
+            label_y = circle.cy - circle.radius - 30 if self.organised and len(circle.files) > 8 else circle.cy
+            cx, cy = self.to_screen(circle.cx, label_y)
             label = self.canvas.create_text(cx, cy, text=circle.name, fill="#9a9a9a",
                                             font=("TkDefaultFont", max(8, int(12 * self.scale)), "bold"))
             self.item_nodes[label] = f"cluster:{circle.id}"
 
     def _draw_arrows(self) -> None:
         assert self.layout is not None
-        cluster_level = not self.compact and self.scale < self.fit_scale * CLUSTER_LEVEL_BELOW
+        if self.overview:
+            assert self._draw_layout is not None
+            for arrow in self._draw_layout.file_arrows:
+                self._draw_arrow(self._draw_layout.nodes[arrow.source], self._draw_layout.nodes[arrow.target],
+                                 arrow, 1.0)
+            return
+        cluster_level = not self.organised and not self.compact and self.scale < self.fit_scale * CLUSTER_LEVEL_BELOW
         clustering = self.app.opened.clustering if self.app.opened else None
         for arrow in self.layout.file_arrows:
             if not self.edge_visible(arrow.source, arrow.target):
@@ -242,6 +312,10 @@ class FileViewCanvas(graph_canvas.NodeAppearanceCanvas):
     def _draw_arrow(self, a: views.Node, b: views.Node, arrow: views.Arrow, base_width: float) -> None:
         sx0, sy0 = self._edge_point(a, b)
         sx1, sy1 = self._edge_point(b, a)
+        if self.organised and not self.overview and len(self.layout.nodes) > 30 and self.edge_focus not in {a.id, b.id}:
+            if self.edge_focus is None:
+                self.canvas.create_line(sx0, sy0, sx1, sy1, fill="#e2e8f0", width=1, tags="file-edge")
+            return
         if b.kind == "external":
             colour = self.edge_colour(a.id, b.id, "#c0c0c0")
             self.canvas.create_line(sx0, sy0, sx1, sy1, fill=colour, width=1, arrow="last", dash=(2, 4),
@@ -250,8 +324,9 @@ class FileViewCanvas(graph_canvas.NodeAppearanceCanvas):
         colour = self.edge_colour(a.id, b.id, views.ARROW_COLOURS[arrow.dominant])
         width = min(4.0, base_width + math.log2(arrow.weight) * 0.5)
         self.canvas.create_line(sx0, sy0, sx1, sy1, fill=colour, width=width, arrow="last", tags="file-edge")
-        self.canvas.create_text((sx0 + sx1) / 2, (sy0 + sy1) / 2 - 6, text=arrow.badge, fill=colour,
-                                font=("TkDefaultFont", max(7, int(8 * self.scale))), tags="file-edge")
+        if not self.overview:
+            self.canvas.create_text((sx0 + sx1) / 2, (sy0 + sy1) / 2 - 6, text=arrow.badge, fill=colour,
+                                    font=("TkDefaultFont", max(7, int(8 * self.scale))), tags="file-edge")
 
     def _edge_point(self, node: views.Node, towards: views.Node) -> tuple[float, float]:
         x, y = self.to_screen(node.x, node.y)
@@ -271,10 +346,10 @@ class FileViewCanvas(graph_canvas.NodeAppearanceCanvas):
         return max(next((c.radius for c in self.layout.circles if c.id == node.id), 30.0), 12.0)
 
     def _draw_nodes(self) -> int:
-        assert self.layout is not None
+        assert self._draw_layout is not None
         count = 0
-        for node in self.layout.nodes.values():
-            if not self.node_visible(node.id):
+        for node in self._draw_layout.nodes.values():
+            if node.kind != "cluster" and not self.node_visible(node.id):
                 continue
             count += 1
             x, y = self.to_screen(node.x, node.y)
@@ -284,7 +359,7 @@ class FileViewCanvas(graph_canvas.NodeAppearanceCanvas):
             left, top, right, bottom = (float(v) for v in bounds)
             box = (left - 8, top - 5, right + 8, bottom + 5)
             self.node_boxes[node.id] = box
-            fallback = "#f0f0f0" if node.kind == "external" else "#aec7e8"
+            fallback = "#f0f0f0" if node.kind in {"external", "cluster"} else "#aec7e8"
             outline = "#d62728" if self._has_errors(node.id) else "#64748b"
             item = self.canvas.create_rectangle(*box, fill=self.node_fill(node.id, fallback),
                                                  outline=self.node_outline(node.id, outline))
@@ -300,6 +375,15 @@ class FileViewCanvas(graph_canvas.NodeAppearanceCanvas):
 
     # -- interaction ------------------------------------------------------------------------
 
+    def _focus_file_edges(self, event: Any) -> None:
+        if not self.organised or self.overview or self.layout is None or len(self.layout.nodes) <= 30:
+            return
+        node = self.node_at(event.x, event.y)
+        node = node if node in self.layout.nodes else None
+        if node != self.edge_focus:
+            self.edge_focus = node
+            self.redraw()
+
     def zoom(self, factor: float, origin: tuple[float, float] | None = None) -> None:
         """Zoom around ``origin`` while keeping the complete fitted diagram as the lower limit."""
         if self.layout is None or self.scale <= 0:
@@ -309,9 +393,25 @@ class FileViewCanvas(graph_canvas.NodeAppearanceCanvas):
         if abs(actual_factor - 1.0) < 0.001:
             return
         origin_x, origin_y = origin or (float(self.canvas.winfo_width()) / 2, float(self.canvas.winfo_height()) / 2)
+        overview = self.organised and target < 1.0
+        detail_position = None
+        if self.overview and not overview and self._draw_layout and self._draw_layout.nodes:
+            nearest = min(self._draw_layout.nodes.values(),
+                          key=lambda n: math.hypot(n.x * self.scale + self.offset[0] - origin_x,
+                                                   n.y * self.scale + self.offset[1] - origin_y))
+            detail_position = self._detail_position(nearest.id)
+        elif not self.overview and overview:
+            self.fit()
+            return
         self.offset = (origin_x - (origin_x - self.offset[0]) * actual_factor,
                        origin_y - (origin_y - self.offset[1]) * actual_factor)
         self.scale = target
+        if detail_position is not None:
+            x, y = detail_position
+            self.offset = (origin_x - x * self.scale, origin_y - y * self.scale)
+        if overview != self.overview:
+            self.edge_focus = None
+        self.overview = overview
         self.user_zoomed = True
         self.redraw()
 
@@ -353,8 +453,27 @@ class FileViewCanvas(graph_canvas.NodeAppearanceCanvas):
         if self.release_hierarchy(event) or self.dragged:
             return
         node = self.node_at(event.x, event.y)
+        if self.overview and node is not None:
+            self.edge_focus = None
+            x, y = self._detail_position(node)
+            self.scale, self.user_zoomed, self.overview = max(1.0, self.fit_scale), True, False
+            self.offset = (self.canvas.winfo_width() / 2 - x * self.scale,
+                           self.canvas.winfo_height() / 2 - y * self.scale)
+            self.redraw()
+            return
         if node is not None and not node.startswith("external:"):
             self.app.open_editor(node)
+
+    def _detail_position(self, node_id: str) -> tuple[float, float]:
+        assert self.layout is not None
+        if node_id.startswith("cluster:"):
+            circle = next(c for c in self.layout.circles if c.id == node_id.removeprefix("cluster:"))
+            return circle.cx, circle.cy
+        if node_id == "external:overview":
+            nodes = [node for node in self.layout.nodes.values() if node.kind == "external"]
+            return sum(n.x for n in nodes) / len(nodes), sum(n.y for n in nodes) / len(nodes)
+        node = self.layout.nodes[node_id]
+        return node.x, node.y
 
     def node_at(self, x: int, y: int) -> str | None:
         for item in reversed(self.canvas.find_overlapping(x - 2, y - 2, x + 2, y + 2)):
@@ -1470,6 +1589,8 @@ class App:
                 return f"External symbol: {external.names[int(index)]}\nLibrary: {library}"
             return ""
         if node_id.startswith("external:"):
+            if node_id == "external:overview":
+                return "External libraries\n" + "\n".join(sorted(model.externals))
             library = node_id.split(":", 1)[1]
             external = model.externals.get(library)
             names = external.names if external else ()
