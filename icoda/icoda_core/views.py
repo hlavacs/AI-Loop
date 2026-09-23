@@ -525,6 +525,41 @@ def layout_class_view(graph: class_view.ClassGraph) -> ClassViewLayout:
     return ClassViewLayout(graph, nodes, graph.edges, width, height)
 
 
+def organise_class_view(layout: ClassViewLayout) -> ClassViewLayout:
+    """Pack actual panel heights in balanced columns, visiting related classes first."""
+    if not layout.nodes:
+        return layout
+    relations: dict[tuple[str, str, EdgeKind], int] = defaultdict(int)
+    neighbours: dict[str, dict[str, int]] = defaultdict(lambda: defaultdict(int))
+    for edge in layout.edges:
+        if edge.source == edge.target:
+            continue
+        relations[edge.source, edge.target, EdgeKind.USES_TYPE] += edge.count
+        neighbours[edge.source][edge.target] += edge.count
+        neighbours[edge.target][edge.source] += edge.count
+    order = _order_files(sorted(layout.nodes), relations)
+    gap = CLASS_PANEL_GAP
+    column_width = max(node.width for node in layout.nodes.values()) + gap
+    area = sum(column_width * (node.height + gap) for node in layout.nodes.values())
+    columns = min(len(order), max(1, round(math.sqrt(area * 1.5) / column_width)))
+    tops = [gap] * columns
+    nodes: dict[str, ClassNodeLayout] = {}
+    for usr in order:
+        node = layout.nodes[usr]
+        related = [(nodes[other], weight) for other, weight in neighbours[usr].items() if other in nodes]
+        scores = []
+        for column in range(columns):
+            x, y = gap + node.width / 2 + column * column_width, tops[column] + node.height / 2
+            distance = sum(math.hypot(x - other.x, y - other.y) * weight for other, weight in related)
+            scores.append(tops[column] + .25 * distance / max(sum(weight for _, weight in related), 1))
+        column = min(range(columns), key=scores.__getitem__)
+        nodes[usr] = replace(node, x=gap + node.width / 2 + column * column_width,
+                             y=tops[column] + node.height / 2)
+        tops[column] += node.height + gap
+    return replace(layout, nodes=nodes, width=max(node.x + node.width / 2 for node in nodes.values()) + gap,
+                   height=max(tops))
+
+
 def _class_panel_height(node: class_view.ClassNode) -> float:
     return CLASS_HEADER_HEIGHT + max(len(node.members), 1) * CLASS_MEMBER_HEIGHT + 8.0
 

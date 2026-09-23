@@ -36,6 +36,7 @@ class ClassViewCanvas(graph_canvas.GroupedGraphCanvas):
         self.graph = class_graph.ClassGraph()
         self.layout: views.ClassViewLayout | None = None
         self.selected: str | None = None
+        self.edge_focus: str | None = None
         self.summary_var = tk.StringVar(value="No model")
         self.hover_var = tk.StringVar(value="")
         self._build_toolbar()
@@ -53,6 +54,8 @@ class ClassViewCanvas(graph_canvas.GroupedGraphCanvas):
         )
         zoom.pack(side=tk.RIGHT)
         self.build_group_navigation(bar)
+        self.organise_button = ttk.Button(bar, text="Organise", command=self.organise)
+        self.organise_button.pack(side=tk.RIGHT, padx=(4, 0))
         ttk.Label(bar, textvariable=self.summary_var, anchor="w").pack(side=tk.LEFT)
         ttk.Label(bar, textvariable=self.hover_var, anchor="w", foreground="#555555", width=1).pack(
             side=tk.LEFT, fill=tk.X, expand=True, padx=(12, 0))
@@ -73,6 +76,7 @@ class ClassViewCanvas(graph_canvas.GroupedGraphCanvas):
         self.fit()
 
     def apply_group_layout(self) -> None:
+        self.edge_focus = None
         graph = self.graph
         if self.focused_group is not None:
             members = self.groups.get(self.focused_group, set())
@@ -80,6 +84,16 @@ class ClassViewCanvas(graph_canvas.GroupedGraphCanvas):
                                            tuple(edge for edge in graph.edges
                                                  if edge.source in members and edge.target in members))
         self.layout = views.layout_class_view(graph)
+        if self.focused_group is not None:
+            self.layout = views.organise_class_view(self.layout)
+        self.organise_button.configure(state=tk.DISABLED if self.overview or not graph.nodes else tk.NORMAL)
+
+    def organise(self) -> None:
+        """Repack the current subdiagram without changing the active group or its parent viewport."""
+        if self.layout is None or self.overview:
+            return
+        self.layout = views.organise_class_view(self.layout)
+        self.fit()
 
     def diagram_size(self) -> tuple[float, float] | None:
         if self.overview and self.overview_layout is not None:
@@ -99,9 +113,16 @@ class ClassViewCanvas(graph_canvas.GroupedGraphCanvas):
             self._draw_empty()
             self.draw_expansion_layer()
             return
+        dense = self.focused_group is not None and len(self.layout.nodes) > 30
         for edge in self.layout.edges:
-            if self.edge_visible(edge.source, edge.target):
+            if not self.edge_visible(edge.source, edge.target):
+                continue
+            if not dense or self.edge_focus in {edge.source, edge.target}:
                 self._draw_edge(edge)
+            elif self.edge_focus is None and edge.source != edge.target:
+                source, target = self.layout.nodes[edge.source], self.layout.nodes[edge.target]
+                x1, y1, x2, y2 = self._panel_endpoints(source, target)
+                self.canvas.create_line(*self.to_screen(x1, y1), *self.to_screen(x2, y2), fill="#e2e8f0")
         visible_count = 0
         for node in self.layout.nodes.values():
             if self.node_visible(node.node.usr):
@@ -237,6 +258,11 @@ class ClassViewCanvas(graph_canvas.GroupedGraphCanvas):
     def on_motion(self, event: Any) -> None:
         usr = self.node_at(event.x, event.y)
         entity = self.model.entities.get(usr) if self.model is not None and usr else None
+        if self.focused_group is not None and self.layout is not None and len(self.layout.nodes) > 30:
+            focused = usr if usr in self.layout.nodes else entity.parent if entity is not None else None
+            if focused != self.edge_focus:
+                self.edge_focus = focused
+                self.redraw()
         if entity is None:
             self.hover_var.set("")
             return

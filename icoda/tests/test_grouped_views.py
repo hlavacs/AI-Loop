@@ -128,3 +128,95 @@ def test_group_layout_preserves_call_metadata_and_singleton_cluster_id() -> None
     overview, groups = views.entity_view_overview(model, grouping, {"f1"}, [], "functions")
     assert groups == {"cluster:a": {"f1"}}
     assert overview.nodes["cluster:a"].label == "Renamed A\n1 function"
+
+
+def test_class_subview_organises_automatically_and_button_keeps_scope(monkeypatch) -> None:
+    model, grouping = grouped_model()
+    view = ClassViewCanvas(tk.Tk(), lambda *_: None)
+    view.group_clustering = grouping
+    view.show(model)
+    parent = view.scale, view.offset, view.fit_scale, view.user_zoomed
+    calls = []
+    original = views.organise_class_view
+
+    def organise(layout):
+        calls.append(set(layout.nodes))
+        return original(layout)
+
+    monkeypatch.setattr(views, "organise_class_view", organise)
+    view.open_group("cluster:a")
+    members = set(view.groups["cluster:a"])
+    assert calls == [members]
+    packed = view.layout
+    view.zoom(2)
+    view.organise()
+    assert calls == [members, members] and view.layout == packed
+    assert view.focused_group == "cluster:a" and not view.overview
+    view.fit()
+    view.on_resize(None)
+    assert view.layout == packed and view.focused_group == "cluster:a"
+    view.back_to_overview()
+    assert view.overview and (view.scale, view.offset, view.fit_scale, view.user_zoomed) == parent
+    view.organise()
+    assert len(calls) == 2 and view.overview
+
+
+def test_dense_class_subview_keeps_members_visible_and_highlights_connections_on_hover(monkeypatch) -> None:
+    model, grouping = grouped_model()
+    for index in range(20, 50):
+        model.add_entity(Entity(f"c{index}", Kind.CLASS, f"C{index}", f"C{index}", "a.cpp", index))
+        model.add_edge(Edge(EdgeKind.INHERITS, f"c{index}", "c0"))
+    model.add_entity(Entity("method", Kind.METHOD, "run", "C0::run", "a.cpp", 60,
+                            parent="c0", signature="void run()", status="implemented"))
+    view = ClassViewCanvas(tk.Tk(), lambda *_: None)
+    view.group_clustering = grouping
+    view.show(model)
+    view.open_group("cluster:a")
+    labels, lines = [], []
+    monkeypatch.setattr(view.canvas, "create_text", lambda *args, **kw: labels.append(kw["text"]) or len(labels))
+    monkeypatch.setattr(view.canvas, "create_line", lambda *args, **kw: lines.append(kw))
+    view.scale = .3
+    view.redraw()
+    assert "void run()  [implemented]" in labels
+    assert lines and all(line["fill"] == "#e2e8f0" for line in lines)
+    view.reset_zoom()
+    assert "void run()  [implemented]" in labels
+    monkeypatch.setattr(view, "node_at", lambda *_: "method")
+    lines.clear()
+    view.on_motion(SimpleNamespace(x=0, y=0))
+    assert view.edge_focus == "c0" and lines
+    assert all(line["fill"] == "#2ca02c" for line in lines)
+    assert view.focused_group == "cluster:a" and not view.overview
+
+
+def test_single_class_group_keeps_all_details_when_fitted_organised_or_zoomed(monkeypatch) -> None:
+    model, grouping = grouped_model()
+    for index in range(1, 8):
+        model.entities[f"c{index}"].file = "b.cpp"
+    model.add_entity(Entity("field", Kind.FIELD, "value", "C0::value", "a.cpp", 10,
+                            parent="c0", signature="int"))
+    for index in range(60):
+        model.add_entity(Entity(f"method{index}", Kind.METHOD, f"run{index}", f"C0::run{index}", "a.cpp",
+                                20 + index, parent="c0", signature=f"void run{index}()", status="implemented"))
+    view = ClassViewCanvas(tk.Tk(), lambda *_: None)
+    view.group_clustering = grouping
+    view.show(model)
+    labels = []
+    create_text = view.canvas.create_text
+
+    def record_text(*args, **kwargs):
+        labels.append(kwargs.get("text", ""))
+        return create_text(*args, **kwargs)
+
+    monkeypatch.setattr(view.canvas, "create_text", record_text)
+    view.open_group("cluster:a")
+    assert view.scale < .5 and set(view.layout.nodes) == {"c0"}
+    expected = {"class C0", "1 data · 60 methods", "value: int"}
+    expected.update(f"void run{index}()  [implemented]" for index in range(60))
+    for action in (view.redraw, view.fit, view.organise, lambda: view.on_resize(None),
+                   lambda: view.zoom(.1), view.reset_zoom):
+        labels.clear()
+        action()
+        assert expected <= set(labels)
+        assert {"field", *(f"method{index}" for index in range(60))} <= set(view.item_nodes.values())
+        assert view.focused_group == "cluster:a" and not view.overview

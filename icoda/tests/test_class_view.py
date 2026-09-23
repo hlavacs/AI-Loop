@@ -143,3 +143,66 @@ def test_class_self_relation_has_visible_marker_outside_panel(monkeypatch: Any, 
     else:
         assert "arrow" not in options and "dash" not in options
         assert len(markers) == 1 and min(markers[0][::2]) > right
+
+
+def test_organise_class_panels_packs_actual_heights_without_losing_members_or_relations() -> None:
+    import copy
+    from itertools import combinations
+
+    from icoda_core import views
+
+    model = model_with_classes()
+    for index in range(30):
+        usr = f"c{index:02}"
+        model.add_entity(Entity(usr, Kind.CLASS, usr, usr, "types.cppm", index + 40))
+        for member in range(80 if index == 0 else index % 6):
+            model.add_entity(Entity(f"{usr}:m{member}", Kind.METHOD, f"m{member}", f"{usr}::m{member}",
+                                    "types.cppm", 100 + member, parent=usr, status="implemented"))
+    original = views.layout_class_view(class_view.build_class_graph(model))
+    saved = copy.deepcopy(original)
+    packed = views.organise_class_view(original)
+    assert original == saved and views.organise_class_view(packed) == packed
+    assert packed.graph is original.graph and packed.edges == original.edges
+    assert packed.nodes.keys() == original.nodes.keys()
+    assert packed.width * packed.height < original.width * original.height / 2
+    for usr, node in packed.nodes.items():
+        assert node.node is original.nodes[usr].node
+        assert (node.width, node.height) == (original.nodes[usr].width, original.nodes[usr].height)
+        assert 0 <= node.x - node.width / 2 <= node.x + node.width / 2 <= packed.width
+        assert 0 <= node.y - node.height / 2 <= node.y + node.height / 2 <= packed.height
+    for a, b in combinations(packed.nodes.values(), 2):
+        assert (abs(a.x - b.x) >= (a.width + b.width) / 2 + views.CLASS_PANEL_GAP
+                or abs(a.y - b.y) >= (a.height + b.height) / 2 + views.CLASS_PANEL_GAP)
+
+
+def test_organise_class_panels_brings_connected_classes_closer() -> None:
+    import math
+
+    from icoda_core import views
+
+    model = DerivedModel("/p")
+    for index in range(12):
+        usr = f"c{index:02}"
+        model.add_entity(Entity(usr, Kind.CLASS, usr, usr, "types.cppm", index))
+    model.add_edge(Edge(EdgeKind.INHERITS, "c00", "c11"))
+    original = views.layout_class_view(class_view.build_class_graph(model))
+    packed = views.organise_class_view(original)
+
+    def distance(layout):
+        a, b = layout.nodes["c00"], layout.nodes["c11"]
+        return math.hypot(a.x - b.x, a.y - b.y)
+
+    assert distance(packed) < distance(original)
+
+
+@pytest.mark.parametrize("count", [0, 1, 12])
+def test_organise_class_panels_handles_empty_single_and_disconnected_views(count: int) -> None:
+    from icoda_core import views
+
+    model = DerivedModel("/p")
+    for index in range(count):
+        model.add_entity(Entity(str(index), Kind.CLASS, str(index), str(index), "types.cppm", index))
+    original = views.layout_class_view(class_view.build_class_graph(model))
+    packed = views.organise_class_view(original)
+    assert len(packed.nodes) == count and packed.width > 0 and packed.height > 0
+    assert views.organise_class_view(packed) == packed
