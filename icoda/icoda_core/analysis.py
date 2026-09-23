@@ -168,11 +168,7 @@ def load_compile_commands(location: Path) -> list[CompileCommand]:
         return []
     commands = []
     for entry in json.loads(path.read_text(encoding="utf-8")):
-<<<<<<< HEAD
-        raw = entry["arguments"] if "arguments" in entry else split_command(entry["command"])
-=======
         raw = entry["arguments"] if "arguments" in entry else split_command_line(entry["command"])
->>>>>>> main
         directory = entry["directory"]
         file = str((Path(directory) / entry["file"]).resolve())
         expanded = expand_response_files(raw[1:], directory)
@@ -183,29 +179,6 @@ def load_compile_commands(location: Path) -> list[CompileCommand]:
     return commands
 
 
-<<<<<<< HEAD
-def split_command(command: str) -> list[str]:
-    """Use the host's compiler-command quoting rules, preserving Windows backslashes."""
-    if sys.platform != "win32":
-        return shlex.split(command)
-    import ctypes
-
-    shell = ctypes.WinDLL("shell32", use_last_error=True)
-    shell.CommandLineToArgvW.argtypes = [ctypes.c_wchar_p, ctypes.POINTER(ctypes.c_int)]
-    shell.CommandLineToArgvW.restype = ctypes.POINTER(ctypes.c_wchar_p)
-    kernel = ctypes.WinDLL("kernel32", use_last_error=True)
-    kernel.LocalFree.argtypes = [ctypes.c_void_p]
-    kernel.LocalFree.restype = ctypes.c_void_p
-    count = ctypes.c_int()
-    # A dummy program name gives response-file arguments the same quoting rules.
-    argv = shell.CommandLineToArgvW("compiler " + command, ctypes.byref(count))
-    if not argv:
-        raise ctypes.WinError(ctypes.get_last_error())
-    try:
-        return list(argv[1:count.value])
-    finally:
-        kernel.LocalFree(argv)
-=======
 def split_command_line(command: str, platform: str = sys.platform) -> list[str]:
     """Decode compiler arguments without treating Windows path separators as shell escapes."""
     if platform != "win32":
@@ -250,7 +223,11 @@ def split_command_line(command: str, platform: str = sys.platform) -> list[str]:
     if started:
         arguments.append("".join(token))
     return arguments
->>>>>>> main
+
+
+def split_command(command: str) -> list[str]:
+    """Keep the MSVC analysis entry point on the shared command-line decoder."""
+    return split_command_line(command, sys.platform)
 
 
 def expand_response_files(arguments: Sequence[str], directory: str) -> list[str]:
@@ -259,11 +236,7 @@ def expand_response_files(arguments: Sequence[str], directory: str) -> list[str]
     for argument in arguments:
         if argument.startswith("@") and (Path(directory) / argument[1:]).is_file():
             for line in (Path(directory) / argument[1:]).read_text(encoding="utf-8").splitlines():
-<<<<<<< HEAD
-                expanded.extend(split_command(line))
-=======
                 expanded.extend(split_command_line(line))
->>>>>>> main
         else:
             expanded.append(argument)
     return expanded
