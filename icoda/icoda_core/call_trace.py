@@ -18,6 +18,7 @@ complete event while holding its output lock.
 from __future__ import annotations
 
 import json
+import re
 import shutil
 from bisect import bisect_right
 from collections import defaultdict
@@ -31,6 +32,9 @@ from icoda_core.model import CALLABLE_KINDS, DerivedModel, Entity
 
 FORMAT_HEADER = "# icoda-call-trace-v1"
 FIELD_COUNT = 8
+_CLANG_MODULE_OWNER = re.compile(
+    r"@[A-Za-z_][A-Za-z0-9_.]*(?::(?!:)[A-Za-z_][A-Za-z0-9_.]*)?"
+)
 
 
 class TraceFormatError(ValueError):
@@ -102,12 +106,38 @@ class CallTrace:
         return None
 
 
+@dataclass
+class _PlaybackCall:
+    entity: Entity
+    count: int
+    caller_counts: dict[str, int]
+
+
 class CallPlayback:
-    """Navigate the resolved function entries in a :class:`CallTrace`."""
+    """Navigate visually distinct resolved function entries in a trace."""
 
     def __init__(self, trace: CallTrace) -> None:
-        self._calls = tuple(event.entity for event in trace.events
-                            if event.kind == EventKind.ENTRY and event.entity is not None)
+        calls: list[_PlaybackCall] = []
+        stacks: dict[str, list[Entity | None]] = defaultdict(list)
+        for event in trace.events:
+            stack = stacks[event.thread_id]
+            if event.kind == EventKind.EXIT:
+                del stack[event.depth:]
+                continue
+            del stack[event.depth:]
+            stack.extend([None] * (event.depth - len(stack)))
+            caller = stack[-1] if stack else None
+            stack.append(event.entity)
+            if event.entity is None:
+                continue
+            if calls and calls[-1].entity.usr == event.entity.usr:
+                calls[-1].count += 1
+                if caller is not None:
+                    calls[-1].caller_counts[caller.usr] = calls[-1].caller_counts.get(caller.usr, 0) + 1
+            else:
+                caller_counts = {caller.usr: 1} if caller is not None else {}
+                calls.append(_PlaybackCall(event.entity, 1, caller_counts))
+        self._calls = tuple(calls)
         self._position = 0
 
     @property
@@ -120,19 +150,37 @@ class CallPlayback:
         return len(self._calls)
 
     @property
+    def entities(self) -> tuple[Entity, ...]:
+        """Each function represented by playback, in first-call order."""
+        return tuple({call.entity.usr: call.entity for call in self._calls}.values())
+
+    @property
+    def current_entity(self) -> Entity | None:
+        return self._calls[self._position - 1].entity if self._position else None
+
+    @property
+    def current_repeat_count(self) -> int:
+        return self._calls[self._position - 1].count if self._position else 0
+
+    @property
+    def current_caller_counts(self) -> Mapping[str, int]:
+        return self._calls[self._position - 1].caller_counts if self._position else {}
+
+    @property
     def status(self) -> str:
         if not self.total:
             return "No project calls resolved. Check the executable/PDB and reload the trace."
         if self._position == 0:
             return f"call 0 of {self.total}"
-        entity = self._calls[self._position - 1]
-        return f"call {self._position} of {self.total}: {entity.qualified_name or entity.name}"
+        call = self._calls[self._position - 1]
+        status = f"call {self._position} of {self.total}: {call.entity.qualified_name or call.entity.name}"
+        return status if call.count == 1 else f"{status} — {call.count} consecutive calls"
 
     def next_call(self) -> Entity | None:
         """Select and return the next resolved entry, or ``None`` at the end."""
         if self._position >= self.total:
             return None
-        entity = self._calls[self._position]
+        entity = self._calls[self._position].entity
         self._position += 1
         return entity
 
@@ -142,7 +190,15 @@ class CallPlayback:
             self._position = 0
             return None
         self._position -= 1
-        return self._calls[self._position - 1]
+        return self._calls[self._position - 1].entity
+
+    def seek_first_call(self, usr: str) -> Entity | None:
+        """Select the first visual call of ``usr`` without moving when it is absent."""
+        for index, call in enumerate(self._calls):
+            if call.entity.usr == usr:
+                self._position = index + 1
+                return call.entity
+        return None
 
     def reset(self) -> None:
         self._position = 0
@@ -354,9 +410,10 @@ def _entity_names(entity: Entity) -> set[str]:
 
 def _symbol_variants(symbol: str) -> tuple[set[str], set[str]]:
     symbol = _normalize_symbol(symbol)
-    exact = {symbol}
-    if symbol.startswith("_") and not symbol.startswith("_Z"):
-        exact.add(symbol[1:])
+    exact = {symbol, _CLANG_MODULE_OWNER.sub("", symbol)}
+    for name in tuple(exact):
+        if name.startswith("_") and not name.startswith("_Z"):
+            exact.add(name[1:])
     without_arguments = {_without_arguments(name) for name in exact}
     return ({name for name in exact if name},
             {name for name in without_arguments if name and name not in exact})

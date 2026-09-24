@@ -6,6 +6,7 @@ import json
 import os
 import shlex
 import shutil
+import sys
 from collections import defaultdict
 from collections.abc import Callable
 from dataclasses import dataclass, replace
@@ -219,6 +220,10 @@ def operate(root: Path, model: DerivedModel, selected: Entry | None, action: str
                 cmake.instrumented_clang_configuration(root, instrumentation_options))
             environment = dict(environment)
             environment["PATH"] = str(directory) + os.pathsep + environment.get("PATH", "")
+            loader_path = "PATH" if sys.platform == "win32" else (
+                "DYLD_LIBRARY_PATH" if sys.platform == "darwin" else "LD_LIBRARY_PATH")
+            if loader_path != "PATH":
+                environment[loader_path] = str(directory) + os.pathsep + environment.get(loader_path, "")
         else:
             directory, configure, environment = cmake.clang_configuration(root)
     except (RuntimeError, OSError, ValueError) as exc:

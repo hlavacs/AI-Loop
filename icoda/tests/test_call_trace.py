@@ -94,6 +94,32 @@ def test_loader_demangles_a_recorded_cpp_symbol(tmp_path: Path, monkeypatch) -> 
     assert event.entity is model.entities["method"]
 
 
+def test_loader_resolves_a_clang_module_owned_symbol(tmp_path: Path, monkeypatch) -> None:
+    model = DerivedModel(str(tmp_path))
+    model.add_entity(Entity(
+        "method", Kind.METHOD, "applyDefaults", "vve::simple::Engine::applyDefaults",
+        "engine.cpp", 4, signature="void applyDefaults()"))
+    path = tmp_path / "calls.tsv"
+    path.write_text(
+        "# icoda-call-trace-v1\n"
+        "E\t1\tt\t0\t0x10\t0x0\t"
+        "_ZN3vve6simpleW8VEEngineW6Simple6Engine13applyDefaultsEv\t/app/demo\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(call_trace.shutil, "which", lambda name: "/tools/c++filt"
+                        if name == "c++filt" else None)
+    monkeypatch.setattr(
+        call_trace.process,
+        "run_bounded",
+        lambda command, **kwargs: process.ProcessResult(
+            command, 0, "vve::simple::Engine@VEEngine.Simple::applyDefaults()\n", ""),
+    )
+
+    event = call_trace.load_trace(path, model).events[0]
+    assert event.function_name == "vve::simple::Engine@VEEngine.Simple::applyDefaults()"
+    assert event.entity is model.entities["method"]
+
+
 def test_loader_resolves_an_empty_symbol_from_the_containing_nm_symbol(
         tmp_path: Path, monkeypatch) -> None:
     model = DerivedModel(str(tmp_path))
@@ -147,6 +173,48 @@ def test_call_playback_steps_only_resolved_entries(tmp_path: Path, monkeypatch) 
     assert playback.next_call() is model.entities["u:main"]
     playback.reset()
     assert playback.position == 0
+
+
+def test_call_playback_collapses_consecutive_calls_to_the_same_function(tmp_path: Path) -> None:
+    path = tmp_path / "calls.tsv"
+    path.write_text(
+        "# icoda-call-trace-v1\n"
+        "E\t1\tt\t0\t0x1\t0x0\tmain\tapp\n"
+        "E\t2\tt\t1\t0x2\t0x1\tdemo::work()\tapp\n"
+        "X\t3\tt\t1\t0x2\t0x1\tdemo::work()\tapp\n"
+        "E\t4\tt\t1\t0x2\t0x1\tdemo::work()\tapp\n"
+        "E\t5\tt\t0\t0x1\t0x0\tmain\tapp\n",
+        encoding="utf-8",
+    )
+    playback = call_trace.CallPlayback(call_trace.load_trace(path, _model(tmp_path)))
+
+    assert playback.total == 3
+    assert playback.next_call().usr == "u:main"
+    assert playback.next_call().usr == "u:work"
+    assert playback.current_repeat_count == 2
+    assert playback.current_caller_counts == {"u:main": 2}
+    assert playback.status == "call 2 of 3: demo::work — 2 consecutive calls"
+    assert playback.next_call().usr == "u:main"
+    assert playback.next_call() is None
+
+
+def test_call_playback_seeks_to_the_first_call_of_a_function(tmp_path: Path) -> None:
+    path = tmp_path / "calls.tsv"
+    path.write_text(
+        "# icoda-call-trace-v1\n"
+        "E\t1\tt\t0\t0x1\t0x0\tmain\tapp\n"
+        "E\t2\tt\t0\t0x2\t0x0\tdemo::work()\tapp\n"
+        "E\t3\tt\t0\t0x1\t0x0\tmain\tapp\n"
+        "E\t4\tt\t0\t0x2\t0x0\tdemo::work()\tapp\n",
+        encoding="utf-8",
+    )
+    playback = call_trace.CallPlayback(call_trace.load_trace(path, _model(tmp_path)))
+
+    assert playback.seek_first_call("missing") is None and playback.position == 0
+    assert playback.seek_first_call("u:work") is playback.entities[1]
+    assert playback.position == 2 and playback.status == "call 2 of 4: demo::work"
+    assert playback.next_call() is playback.entities[0]
+    assert playback.seek_first_call("u:work") is playback.entities[1] and playback.position == 2
 
 
 @pytest.mark.skipif(_CLANGXX is None or _NM is None, reason="clang++/g++ and nm/llvm-nm are required")

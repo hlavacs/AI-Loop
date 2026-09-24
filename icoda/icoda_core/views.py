@@ -658,6 +658,7 @@ class CallEdge:
     label: str = ""
     loop: bool = False  # recursion or a call back towards the root
     uncertain: bool = False
+    free: bool = False  # trace-only attachment for a statically disconnected function
 
 
 @dataclass
@@ -701,7 +702,8 @@ def library_roots(model: DerivedModel) -> tuple[str, ...]:
 
 
 def layout_call_view(model: DerivedModel, root: str | tuple[str, ...], depth: int = 3, callers: bool = False,
-                     selected: str | None = None) -> CallViewLayout:
+                     selected: str | None = None, required_paths: tuple[tuple[str, ...], ...] = (),
+                     free_functions: tuple[str, ...] = ()) -> CallViewLayout:
     """Breadth-first from one entry or a library's API entries, one column per call depth."""
     roots = (root,) if isinstance(root, str) else root
     levels: dict[str, int] = dict.fromkeys(roots, 0)
@@ -717,14 +719,63 @@ def layout_call_view(model: DerivedModel, root: str | tuple[str, ...], depth: in
                 levels[other] = levels[usr] + 1
                 parents[other] = usr
                 queue.append(other)
+    for required_path in required_paths:
+        for level, usr in enumerate(required_path):
+            if usr not in levels:
+                levels[usr] = level
+            if level and usr not in parents:
+                parents[usr] = required_path[level - 1]
+    if roots:
+        for usr in free_functions:
+            if usr not in levels:
+                levels[usr] = 1
+                parents[usr] = roots[0]
     nodes = _call_nodes(model, levels)
     edges = _call_edges(model, levels, callers)
+    if roots:
+        edges.extend(CallEdge(roots[0], usr, free=True) for usr in free_functions if usr in levels)
     path = _path_to(parents, selected) if selected in levels else set()
     width = COLUMN_WIDTH * (max(levels.values(), default=0) + 1)
     height = ROW_HEIGHT * max((list(levels.values()).count(level) for level in set(levels.values())), default=1)
     path_edges = {(usr, parent) if callers else (parent, usr)
                   for usr, parent in parents.items() if usr in path}
     return CallViewLayout(roots[0] if roots else "", nodes, edges, path, width, height, path_edges)
+
+
+def call_path(model: DerivedModel, root: str, target: str) -> tuple[str, ...]:
+    """Return one shortest static call path from ``root`` to ``target``."""
+    if root == target:
+        return (root,)
+    parents: dict[str, str] = {}
+    seen = {root}
+    queue = [root]
+    while queue:
+        source = queue.pop(0)
+        for edge in model.callees(source):
+            if edge.target in seen or edge.target not in model.entities:
+                continue
+            seen.add(edge.target)
+            parents[edge.target] = source
+            if edge.target == target:
+                path = [target]
+                while path[-1] != root:
+                    path.append(parents[path[-1]])
+                return tuple(reversed(path))
+            queue.append(edge.target)
+    return ()
+
+
+def reachable_calls(model: DerivedModel, root: str) -> set[str]:
+    """Return project functions reachable from one static call-graph root."""
+    seen = {root}
+    queue = [root]
+    while queue:
+        source = queue.pop(0)
+        for edge in model.callees(source):
+            if edge.target in model.entities and edge.target not in seen:
+                seen.add(edge.target)
+                queue.append(edge.target)
+    return seen
 
 
 def _call_nodes(model: DerivedModel, levels: dict[str, int]) -> dict[str, CallNode]:

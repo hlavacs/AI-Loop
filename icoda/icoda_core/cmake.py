@@ -9,6 +9,10 @@ from icoda_core import analysis, instrumentation, toolchain
 
 _PRESERVED_OPTIONS = {"CMAKE_BUILD_TYPE", "CMAKE_TOOLCHAIN_FILE", "CMAKE_PREFIX_PATH", "CMAKE_MODULE_PATH",
                       "CMAKE_OSX_ARCHITECTURES", "CMAKE_OSX_SYSROOT", "CMAKE_OSX_DEPLOYMENT_TARGET"}
+_INSTRUMENTED_COMPILER_OPTIONS = {
+    "CMAKE_CXX_FLAGS", "CMAKE_EXE_LINKER_FLAGS", "CMAKE_SHARED_LINKER_FLAGS", "CMAKE_MODULE_LINKER_FLAGS",
+    "CMAKE_CXX_STDLIB_MODULES_JSON", "CMAKE_CXX_MODULE_STD", "CMAKE_EXPERIMENTAL_CXX_IMPORT_STD",
+}
 
 
 def build_directory(root: Path) -> Path | None:
@@ -56,15 +60,19 @@ def cache_values(directory: Path) -> dict[str, tuple[str, str]]:
     return values
 
 
+def _cmake_executable(cached: dict[str, tuple[str, str]], environment: dict[str, str]) -> str | None:
+    recorded = cached.get("CMAKE_COMMAND", ("", ""))[1]
+    return recorded if recorded and Path(recorded).is_file() else shutil.which(
+        "cmake", path=environment.get("PATH"))
+
+
 def clang_configuration(root: Path) -> tuple[Path, list[str], dict[str, str]]:
     """Reuse a Clang tree or configure an isolated one with the project's existing options."""
     previous = build_directory(root)
     cached = cache_values(previous) if previous else {}
     environment = toolchain.clang_build_environment(cached.get("CMAKE_CXX_COMPILER", ("", ""))[1])
     compiler = Path(environment["CXX"]).resolve()
-    recorded_cmake = cached.get("CMAKE_COMMAND", ("", ""))[1]
-    cmake_exe = recorded_cmake if recorded_cmake and Path(recorded_cmake).is_file() else (
-        shutil.which("cmake", path=environment.get("PATH")))
+    cmake_exe = _cmake_executable(cached, environment)
     if cmake_exe is None:
         raise RuntimeError("CMake is required to build this project.")
     directories = [previous] if previous else []
@@ -112,42 +120,50 @@ def instrumented_clang_configuration(
     files = instrumentation.prepare_instrumentation(root, options)
     previous = build_directory(root)
     cached = cache_values(previous) if previous else {}
-    environment = _instrumented_build_environment(cached.get("CMAKE_CXX_COMPILER", ("", ""))[1])
+    previous_compiler = cached.get("CMAKE_CXX_COMPILER", ("", ""))[1]
+    environment = _instrumented_build_environment(previous_compiler)
     compiler = Path(environment["CXX"]).resolve()
-    cmake_exe = shutil.which("cmake", path=environment.get("PATH"))
+    same_compiler = bool(previous_compiler) and Path(previous_compiler).resolve() == compiler
+    cmake_exe = _cmake_executable(cached, environment)
     if cmake_exe is None:
         raise RuntimeError("CMake is required to build this project.")
 
     directory = files.build_directory
     values = cache_values(directory)
+    fresh = False
     if values:
         configured = values.get("CMAKE_CXX_COMPILER", ("", ""))[1]
         source = values.get("CMAKE_HOME_DIRECTORY", ("", ""))[1]
         generator = values.get("CMAKE_GENERATOR", ("", ""))[1]
+        cache_version = values.get("ICODA_CALL_TRACE_CACHE_VERSION", ("", ""))[1]
         if (not configured or Path(configured).resolve() != compiler or not source
-                or Path(source).resolve() != root.resolve() or "Ninja" not in generator):
-            raise RuntimeError(f"ICODA's generated instrumented build at {directory} is stale. "
-                               "Remove that cache directory and retry.")
-        command = configure_command(root, directory)
-        command[0] = cmake_exe
-    else:
+                or Path(source).resolve() != root.resolve() or "Ninja" not in generator
+                or cache_version != str(instrumentation.CACHE_VERSION)):
+            fresh = True
+        else:
+            command = configure_command(root, directory)
+            command[0] = cmake_exe
+    if not values or fresh:
         ninja = shutil.which("ninja", path=environment.get("PATH"))
         if ninja is None:
             raise RuntimeError("Ninja is required to create the instrumented build.")
         command = configure_command(root, directory)
         command[0] = cmake_exe
+        if fresh:
+            command.insert(1, "--fresh")
         if previous is None and (root / "CMakePresets.json").is_file():
             presets = subprocess.run([cmake_exe, "--list-presets"], cwd=root, env=environment,
                                      capture_output=True, text=True, timeout=30, check=False)
             preset = next((name for name in ("debug-clang", "debug") if f'"{name}"' in presets.stdout), None)
             if presets.returncode == 0 and preset:
                 command[1:1] = ["--preset", preset]
-        command += [f"-D{name}:{kind}={value}" for name, (kind, value) in cached.items()
-                    if kind not in ("INTERNAL", "STATIC") and name != "CMAKE_BUILD_TYPE"
-                    and (not name.startswith("CMAKE_") or name in _PRESERVED_OPTIONS)]
         command += ["-G", "Ninja", f"-DCMAKE_MAKE_PROGRAM={ninja}",
                     f"-DCMAKE_C_COMPILER={environment['CC']}",
                     f"-DCMAKE_CXX_COMPILER={environment['CXX']}"]
+    command += [f"-D{name}:{kind}={value}" for name, (kind, value) in cached.items()
+                if kind not in ("INTERNAL", "STATIC") and name != "CMAKE_BUILD_TYPE"
+                and (not name.startswith("CMAKE_") or name in _PRESERVED_OPTIONS
+                     or (same_compiler and name in _INSTRUMENTED_COMPILER_OPTIONS))]
     command += ["-DCMAKE_BUILD_TYPE=Debug", *files.cmake_arguments]
     return directory, command, environment, files
 

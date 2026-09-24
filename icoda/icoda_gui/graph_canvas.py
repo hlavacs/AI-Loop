@@ -247,11 +247,13 @@ class NodeAppearanceCanvas:
             self.canvas.create_text(x, y, text=marker, fill="#c00000",
                                     font=("TkDefaultFont", 10, "bold"))
 
-    def draw_appearance_key(self, *, uncertain_calls: bool = False) -> None:
+    def draw_appearance_key(self, *, uncertain_calls: bool = False, free_calls: bool = False) -> None:
         mode = "RECORDED TEST REACHABILITY — green reached · red not reached" if self.coverage_mode else \
             "STATUS — gray stub · blue implemented · green tested"
         if uncertain_calls:
             mode += " · dashed ? uncertain dynamic call"
+        if free_calls:
+            mode += " · purple trace-only free function"
         self.canvas.create_text(12, 12, anchor="nw", text=mode, fill="#4b5563",
                                 font=("TkDefaultFont", 9, "bold"))
         if self.globally_stale:

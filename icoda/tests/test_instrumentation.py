@@ -30,6 +30,7 @@ def test_prepare_instrumentation_generates_bounded_failure_safe_runtime(tmp_path
     assert "__cyg_profile_func_enter" in runtime and "__cyg_profile_func_exit" in runtime
     assert "add_compile_options(-finstrument-functions)" in injection
     assert "add_library(icoda_call_trace_runtime SHARED" in injection
+    assert f'ICODA_CALL_TRACE_CACHE_VERSION "{instrumentation.CACHE_VERSION}"' in injection
     assert files.build_directory == tmp_path / ".icoda/cache/instrumented-debug-build"
     assert files.cmake_arguments[0] == "-DICODA_CALL_TRACE_ENABLED=ON"
     assert files.cmake_arguments[1].startswith("-DCMAKE_PROJECT_INCLUDE=")
@@ -45,8 +46,12 @@ def test_instrumentation_duration_must_be_positive_and_finite(tmp_path: Path, se
 def test_instrumented_cmake_configuration_is_debug_and_isolated(tmp_path: Path, monkeypatch) -> None:
     ordinary = tmp_path / "build/release"
     ordinary.mkdir(parents=True)
+    recorded_cmake = tmp_path / "cmake-4.3/bin/cmake"
+    recorded_cmake.parent.mkdir(parents=True)
+    recorded_cmake.touch()
     (ordinary / "CMakeCache.txt").write_text(
         f"CMAKE_HOME_DIRECTORY:INTERNAL={tmp_path}\n"
+        f"CMAKE_COMMAND:INTERNAL={recorded_cmake}\n"
         "CMAKE_CXX_COMPILER:FILEPATH=g++\n"
         "CMAKE_GENERATOR:INTERNAL=Ninja\n"
         "CMAKE_BUILD_TYPE:STRING=Release\n"
@@ -63,6 +68,7 @@ def test_instrumented_cmake_configuration_is_debug_and_isolated(tmp_path: Path, 
 
     assert directory == tmp_path / ".icoda/cache/instrumented-debug-build"
     assert files.build_directory == directory and actual_environment == environment
+    assert command[0] == str(recorded_cmake)
     assert "-DCMAKE_BUILD_TYPE=Debug" in command
     assert "-DKEEP_SETTING:BOOL=retained" in command
     assert not any(part == "-DCMAKE_BUILD_TYPE:STRING=Release" for part in command)
@@ -70,6 +76,43 @@ def test_instrumented_cmake_configuration_is_debug_and_isolated(tmp_path: Path, 
     normal_directory, normal_command, _ = cmake.clang_configuration(tmp_path)
     assert normal_directory == tmp_path / "build/debug-clang"
     assert not any("ICODA_CALL_TRACE" in part or "call-instrumentation" in part for part in normal_command)
+
+
+def test_instrumented_configuration_refreshes_a_partial_failed_cache(tmp_path: Path, monkeypatch) -> None:
+    ordinary = tmp_path / "build/debug"
+    ordinary.mkdir(parents=True)
+    compiler = tmp_path / "clang++"
+    recorded_cmake = tmp_path / "cmake-4.3/bin/cmake"
+    recorded_cmake.parent.mkdir(parents=True)
+    recorded_cmake.touch()
+    (ordinary / "CMakeCache.txt").write_text(
+        f"CMAKE_HOME_DIRECTORY:INTERNAL={tmp_path}\n"
+        f"CMAKE_COMMAND:INTERNAL={recorded_cmake}\n"
+        f"CMAKE_CXX_COMPILER:FILEPATH={compiler}\n"
+        "CMAKE_GENERATOR:INTERNAL=Ninja\n",
+        encoding="utf-8",
+    )
+    (ordinary / "build.ninja").touch()
+    failed = tmp_path / ".icoda/cache/instrumented-debug-build"
+    failed.mkdir(parents=True)
+    (failed / "CMakeCache.txt").write_text(
+        f"CMAKE_CXX_COMPILER:UNINITIALIZED={compiler}\n", encoding="utf-8")
+    with (ordinary / "CMakeCache.txt").open("a", encoding="utf-8") as cache:
+        cache.write("CMAKE_CXX_FLAGS:STRING=-stdlib=libc++\n"
+                    "CMAKE_EXE_LINKER_FLAGS:STRING=-stdlib=libc++\n"
+                    "CMAKE_CXX_STDLIB_MODULES_JSON:FILEPATH=/llvm/libc++.modules.json\n")
+    environment = {"CC": str(tmp_path / "clang"), "CXX": str(compiler), "PATH": "tools"}
+    monkeypatch.setattr(cmake, "_instrumented_build_environment", lambda _preferred: environment)
+    monkeypatch.setattr(cmake.shutil, "which", lambda name, **_kwargs: name)
+
+    directory, command, _actual_environment, _files = cmake.instrumented_clang_configuration(
+        tmp_path, instrumentation.InstrumentationOptions(enabled=True))
+
+    assert directory == failed
+    assert command[:2] == [str(recorded_cmake), "--fresh"]
+    assert "-DCMAKE_CXX_FLAGS:STRING=-stdlib=libc++" in command
+    assert "-DCMAKE_EXE_LINKER_FLAGS:STRING=-stdlib=libc++" in command
+    assert "-DCMAKE_CXX_STDLIB_MODULES_JSON:FILEPATH=/llvm/libc++.modules.json" in command
 
 
 @pytest.mark.skipif(_CMAKE is None or _CXX is None, reason="cmake and clang++/g++ are required")
@@ -165,6 +208,9 @@ def test_target_operation_selects_instrumented_configuration_only_when_enabled(t
         tmp_path, model, selected, "run", lambda: False, options)
 
     assert len(calls) == 3 and all(env["PATH"].startswith(str(directory)) for _, env in calls)
+    loader_path = "PATH" if executables.sys.platform == "win32" else (
+        "DYLD_LIBRARY_PATH" if executables.sys.platform == "darwin" else "LD_LIBRARY_PATH")
+    assert all(env[loader_path].startswith(str(directory)) for _, env in calls)
     assert outcome.message.endswith(f"call trace: {files.trace_file}")
     assert outcome.trace_file == files.trace_file
     assert executables.Outcome((), None, "", "ordinary run").trace_file is None

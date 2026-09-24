@@ -211,7 +211,9 @@ def test_call_trace_playback_selects_recorded_functions_and_reports_bad_trace(
     trace.write_text(
         "# icoda-call-trace-v1\n"
         "E\t1\tt\t0\t0x1\t0x0\tmain\tapp\n"
-        "E\t2\tt\t1\t0x2\t0x1\tdemo::work()\tapp\n",
+        "E\t2\tt\t1\t0x2\t0x1\tdemo::work()\tapp\n"
+        "X\t3\tt\t1\t0x2\t0x1\tdemo::work()\tapp\n"
+        "E\t4\tt\t1\t0x2\t0x1\tdemo::work()\tapp\n",
         encoding="utf-8",
     )
     app.last_trace_file = trace
@@ -229,13 +231,30 @@ def test_call_trace_playback_selects_recorded_functions_and_reports_bad_trace(
     assert app.call_view.playback_status_var.get() == "call 1 of 2: main"
     app.call_view.next_call()
     assert app.call_view.selected == "work"
-    assert app.call_view.playback_status_var.get() == "call 2 of 2: demo::work"
+    assert app.call_view.playback_status_var.get() == "call 2 of 2: demo::work — 2 consecutive calls"
+    assert app.call_view.playback_edge_counts == {("main", "work"): 2}
+    labels = []
+    monkeypatch.setattr(app.call_view.canvas, "create_text",
+                        lambda *args, **kwargs: labels.append(kwargs["text"]))
+    edge = next(edge for edge in app.call_view.layout.edges
+                if (edge.source, edge.target) == ("main", "work"))
+    app.call_view._draw_edge(edge)
+    assert "×2" in labels
     app.call_view.previous_call()
     assert app.call_view.selected == "main"
     assert app.call_view.playback_status_var.get() == "call 1 of 2: main"
+    assert not app.call_view.playback_edge_counts
     app.call_view.reset_playback()
     assert app.call_view.selected is None
     assert app.call_view.playback_status_var.get() == "call 0 of 2"
+    monkeypatch.setattr(app.call_view, "release_hierarchy", lambda _event: False)
+    monkeypatch.setattr(app.call_view, "toggle_expansion_at", lambda _x, _y: False)
+    monkeypatch.setattr(app.call_view, "node_at", lambda _x, _y: "work")
+    app.call_view.dragged = False
+    app.call_view.on_release(SimpleNamespace(x=1, y=1, num=1))
+    assert app.call_view.selected == "work"
+    assert app.call_view.playback.position == 2
+    assert app.call_view.playback_status_var.get() == "call 2 of 2: demo::work — 2 consecutive calls"
 
     malformed = tmp_path / "broken.tsv"
     malformed.write_text("not a trace\n", encoding="utf-8")
@@ -437,14 +456,15 @@ def test_empty_trace_disables_playback_and_explains_missing_symbols(app_module, 
 
 
 @pytest.mark.parametrize("library_mode", [False, True])
-def test_playback_preserves_entry_graph_and_camera_for_calls_outside_depth(app_module, library_mode):
+def test_playback_keeps_every_call_inside_the_entry_graph(app_module, library_mode, monkeypatch):
     from icoda_core import call_trace
-    from icoda_gui.call_view import CallViewCanvas
+    from icoda_gui.call_view import FREE_CALL_COLOUR, CallViewCanvas
 
     model = DerivedModel("/p")
     for name in ("main", "api", "child", "deep", "disconnected"):
         model.add_entity(Entity(name, Kind.FUNCTION, name, name, "app.cpp", 1,
                                 exported=name in {"main", "api"}))
+    model.add_entity(Entity("detached_ctor", Kind.CONSTRUCTOR, "Detached", "Detached::Detached", "app.cpp", 1))
     model.add_edge(Edge(EdgeKind.CALLS, "main", "child"))
     model.add_edge(Edge(EdgeKind.CALLS, "child", "deep"))
     selected = []
@@ -459,19 +479,42 @@ def test_playback_preserves_entry_graph_and_camera_for_calls_outside_depth(app_m
     viewport = view.scale, view.offset, view.fit_scale, view.user_zoomed
     trace = call_trace.CallTrace(tuple(call_trace.CallEvent(
         i, call_trace.EventKind.ENTRY, i, "thread", i, hex(i), None, name, None, model.entities[name])
-        for i, name in enumerate(("main", "deep", "disconnected"))))
+        for i, name in enumerate(("main", "deep", "disconnected", "disconnected", "detached_ctor"))))
     view.set_playback(call_trace.CallPlayback(trace))
+    if not library_mode:
+        assert {"disconnected", "detached_ctor"} <= set(view.layout.nodes)
+        assert view.layout.nodes["disconnected"].level == view.layout.nodes["detached_ctor"].level == 1
+        assert {(edge.source, edge.target) for edge in view.layout.edges if edge.free} == {
+            ("main", "disconnected"), ("main", "detached_ctor")}
     for expected in ("main", "deep", "disconnected"):
         view.next_call()
         assert view.selected == expected and selected[-1] == expected
         assert view.root_usr == original_root and view.root_var.get() == original_label
-        assert {usr: (n.x, n.y) for usr, n in view.layout.nodes.items()} == original_nodes
+        assert expected in view.layout.nodes
+        assert {usr: (view.layout.nodes[usr].x, view.layout.nodes[usr].y)
+                for usr in original_nodes} == original_nodes
         assert (view.scale, view.offset, view.fit_scale, view.user_zoomed) == viewport
-        if expected != "main":
-            assert "outside the current diagram" in view.playback_status_var.get()
+        assert "outside the current diagram" not in view.playback_status_var.get()
+        if not library_mode and expected == "deep":
+            assert view.layout.nodes[expected].level == 2
+            assert any((edge.source, edge.target, edge.free) == ("child", "deep", False)
+                       for edge in view.layout.edges)
+        if not library_mode and expected == "disconnected":
+            assert view.layout.nodes[expected].level == 1
+            edge = next(edge for edge in view.layout.edges
+                        if (edge.source, edge.target, edge.free) == ("main", "disconnected", True))
+            assert view.playback_edge_counts == {("main", "disconnected"): 2}
+            lines, labels = [], []
+            monkeypatch.setattr(view.canvas, "create_line",
+                                lambda *args, lines=lines, **kwargs: lines.append(kwargs))
+            monkeypatch.setattr(view.canvas, "create_text",
+                                lambda *args, labels=labels, **kwargs: labels.append(kwargs["text"]))
+            view._draw_edge(edge)
+            assert lines[0]["fill"] == FREE_CALL_COLOUR and "×2" in labels
     view.previous_call()
-    assert view.selected == "deep" and view.root_usr == original_root
+    assert view.selected == "deep" and view.root_usr == original_root and "deep" in view.layout.nodes
     view.reset_playback()
     assert view.selected is None and view.root_usr == original_root
-    assert set(view.layout.nodes) == set(original_nodes)
+    expected_nodes = set(original_nodes) if library_mode else {*original_nodes, "disconnected", "detached_ctor"}
+    assert set(view.layout.nodes) == expected_nodes
     assert "outside" not in view.playback_status_var.get()

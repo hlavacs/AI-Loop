@@ -18,6 +18,7 @@ from icoda_gui import graph_canvas, zoom_controls
 
 BOX_WIDTH, BOX_HEIGHT = views.CALL_BOX_WIDTH, views.CALL_BOX_HEIGHT
 ADDED, CHANGED = "#2ca02c", "#ff7f0e"
+FREE_CALL_COLOUR = "#9467bd"
 
 
 class CallViewCanvas(graph_canvas.GraphCanvas):
@@ -42,6 +43,8 @@ class CallViewCanvas(graph_canvas.GraphCanvas):
         self.added: set[str] = set()
         self.changed: set[str] = set()
         self.playback: call_trace.CallPlayback | None = None
+        self.playback_free_functions: tuple[str, ...] = ()
+        self.playback_edge_counts: dict[tuple[str, str], int] = {}
         self.depth_var = tk.IntVar(value=3)
         self.callers_var = tk.BooleanVar(value=False)
         self.root_var = tk.StringVar(value="")
@@ -104,6 +107,13 @@ class CallViewCanvas(graph_canvas.GraphCanvas):
 
     def set_playback(self, playback: call_trace.CallPlayback) -> None:
         self.playback = playback
+        self.playback_free_functions = ()
+        if (not self.library_mode and self.model is not None
+                and self.entry_usr in self.model.entities):
+            reachable = views.reachable_calls(self.model, self.entry_usr)
+            self.playback_free_functions = tuple(
+                entity.usr for entity in playback.entities if entity.usr not in reachable
+            )
         self._clear_playback_selection()
         self.playback_status_var.set(playback.status)
         for label in ("Previous call", "Next call", "Reset"):
@@ -134,6 +144,17 @@ class CallViewCanvas(graph_canvas.GraphCanvas):
         self._clear_playback_selection()
         self._update_playback_status()
 
+    def seek_first_call(self, usr: str) -> bool:
+        """Jump loaded playback to a diagram function's first recorded call."""
+        if self.playback is None:
+            return False
+        entity = self.playback.seek_first_call(usr)
+        if entity is None:
+            return False
+        self._select_playback_entity(entity.usr)
+        self._update_playback_status()
+        return True
+
     def _update_playback_status(self) -> None:
         if self.playback is None:
             return
@@ -144,6 +165,13 @@ class CallViewCanvas(graph_canvas.GraphCanvas):
 
     def _select_playback_entity(self, usr: str) -> None:
         # Playback is a selection, not a request to replace the entry-point graph.
+        if not self.library_mode and self.model is not None and self.entry_usr in self.model.entities:
+            self.root_usr = self.entry_usr
+        self.playback_edge_counts = {}
+        if self.playback is not None and self.playback.current_repeat_count > 1:
+            self.playback_edge_counts = {
+                (caller, usr): count for caller, count in self.playback.current_caller_counts.items()
+            }
         self.select(usr)
         if self.focus_node is not None:
             self.focus_node(usr)
@@ -151,6 +179,7 @@ class CallViewCanvas(graph_canvas.GraphCanvas):
             self.select_node(usr)
 
     def _clear_playback_selection(self) -> None:
+        self.playback_edge_counts = {}
         self.select(None)
         if self.focus_node is not None:
             self.focus_node(None)
@@ -200,9 +229,39 @@ class CallViewCanvas(graph_canvas.GraphCanvas):
             self.hide_hierarchy()
             return
         roots = views.library_roots(self.model) if self.root_usr is None else (self.root_usr,)
-        self.layout = views.layout_call_view(self.model, roots, int(self.depth_var.get() or 3),
-                                             bool(self.callers_var.get()), self.selected)
-        label = self.layout.nodes[self.root_usr].label if self.root_usr else f"Library API ({len(roots)})"
+        base_root_count = len(roots)
+        depth = int(self.depth_var.get() or 3)
+        callers = bool(self.callers_var.get())
+        self.layout = views.layout_call_view(self.model, roots, depth, callers, self.selected)
+        current = self.playback.current_entity if self.playback is not None else None
+        if self.root_usr is not None and self.playback is not None:
+            required_paths: list[tuple[str, ...]] = []
+            free_functions = list(self.playback_free_functions)
+            if current is not None and current.usr == self.selected:
+                path = views.call_path(self.model, self.root_usr, current.usr)
+                if path:
+                    required_paths.append(path)
+                    for source, _target in self.playback_edge_counts:
+                        caller_path = views.call_path(self.model, self.root_usr, source)
+                        if caller_path:
+                            required_paths.append(caller_path)
+                        else:
+                            free_functions.append(source)
+                else:
+                    if current.usr not in free_functions:
+                        free_functions.append(current.usr)
+                    if self.playback is not None and self.playback.current_repeat_count > 1:
+                        self.playback_edge_counts = {
+                            (self.root_usr, current.usr): self.playback.current_repeat_count
+                        }
+            self.layout = views.layout_call_view(
+                self.model, roots, depth, callers, self.selected,
+                tuple(required_paths), tuple(dict.fromkeys(free_functions)),
+            )
+        elif current is not None and current.usr == self.selected and current.usr not in self.layout.nodes:
+            roots += (current.usr,)
+            self.layout = views.layout_call_view(self.model, roots, depth, callers, self.selected)
+        label = self.layout.nodes[self.root_usr].label if self.root_usr else f"Library API ({base_root_count})"
         self.root_var.set(label + (" (callers)" if self.callers_var.get() else ""))
         if self.user_zoomed:
             self.redraw()
@@ -233,18 +292,22 @@ class CallViewCanvas(graph_canvas.GraphCanvas):
                 self._draw_node(node)
                 visible_count += 1
         self.draw_filter_empty(visible_count)
-        self.draw_appearance_key(uncertain_calls=True)
+        self.draw_appearance_key(uncertain_calls=True, free_calls=True)
         self.draw_expansion_layer()
 
     def _focused_edge(self, edge: views.CallEdge) -> bool:
         assert self.layout is not None
-        return (edge.source, edge.target) in self.layout.path_edges or edge.source == self.selected
+        endpoints = (edge.source, edge.target)
+        return (endpoints in self.layout.path_edges or edge.source == self.selected
+                or endpoints in self.playback_edge_counts)
 
     def _draw_edge(self, edge: views.CallEdge) -> None:
         assert self.layout is not None
         a, b = self.layout.nodes[edge.source], self.layout.nodes[edge.target]
         width = 3 if self._focused_edge(edge) else 1
-        colour = self.edge_colour(edge.source, edge.target, "#1f77b4")
+        colour = self.edge_colour(edge.source, edge.target, FREE_CALL_COLOUR if edge.free else "#1f77b4")
+        repeat_count = self.playback_edge_counts.get((edge.source, edge.target), 0)
+        repeat_label = f"×{repeat_count}" if repeat_count else ""
         if edge.loop and a is b:
             x, y = self.to_screen(a.x + BOX_WIDTH / 2, a.y)
             radius, half_height = max(24 * self.scale, 16), BOX_HEIGHT * self.scale / 4
@@ -255,8 +318,9 @@ class CallViewCanvas(graph_canvas.GraphCanvas):
                 loop_options["dash"] = (6, 4)
             self.canvas.create_line(x + 3, y - half_height, x + radius, y - half_height,
                                     x + radius, y + half_height, x + 3, y + half_height, **loop_options)
-            if edge.uncertain:
-                self.canvas.create_text(x + radius, y - half_height - 8, text="?", fill=colour,
+            loop_label = " · ".join(part for part in (repeat_label, "?" if edge.uncertain else "") if part)
+            if loop_label:
+                self.canvas.create_text(x + radius, y - half_height - 8, text=loop_label, fill=colour,
                                         font=("TkDefaultFont", max(int(10 * self.scale), 6), "bold"))
             return
         half = BOX_WIDTH / 2 if a.x <= b.x else -BOX_WIDTH / 2  # leave from the side that faces the target
@@ -269,7 +333,8 @@ class CallViewCanvas(graph_canvas.GraphCanvas):
             options["dash"] = (4, 3)
         self.canvas.create_line(x1, y1, x2, y2, **options)
         label = f"{edge.label} · ?" if edge.label and edge.uncertain else "?" if edge.uncertain else edge.label
-        if label and self.scale > 0.5:
+        label = " · ".join(part for part in (label, repeat_label) if part)
+        if label and (self.scale > 0.5 or repeat_label):
             self.canvas.create_text((x1 + x2) / 2, (y1 + y2) / 2 - 8 * self.scale, text=label,
                                     fill=colour, font=("TkDefaultFont", max(int(9 * self.scale), 6)))
 
@@ -305,6 +370,8 @@ class CallViewCanvas(graph_canvas.GraphCanvas):
                 if self.focus_node is not None:
                     self.focus_node(None)
             else:
+                if self.seek_first_call(node):
+                    return
                 if node != self.selected:
                     self.select(node)
                     if self.focus_node is not None:
