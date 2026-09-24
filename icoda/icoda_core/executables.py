@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import os
 import shlex
+import shutil
 from collections import defaultdict
 from collections.abc import Callable
 from dataclasses import dataclass, replace
@@ -260,6 +261,12 @@ def operate(root: Path, model: DerivedModel, selected: Entry | None, action: str
         command.extend(("--config", target.configuration))
     run(command, "Build")
     if action == "run":
+        if instrumentation_files is not None and target.artifact is not None:
+            runtime = instrumentation_files.build_directory / "icoda_call_trace_runtime.dll"
+            deployed = target.artifact.parent / runtime.name
+            if runtime.is_file() and runtime.resolve() != deployed.resolve():
+                # Windows prefers a DLL beside the executable over the updated one on PATH.
+                shutil.copy2(runtime, deployed)
         run([str(target.artifact)], f"Running {target.name}", timeout=3600)
     message = f"{target.name}: {'finished (exit 0)' if action == 'run' else 'build passed'}"
     if action == "run" and instrumentation_files is not None:

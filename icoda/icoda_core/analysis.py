@@ -969,7 +969,10 @@ def _unit_result(command: CompileCommand, parser: Parser, extractor: Extractor, 
     if cache_file and cache_file.is_file():
         cached = json.loads(cache_file.read_text(encoding="utf-8"))
         if cached.get("key") == unit_cache_key(command, cached["result"]["contributing"], root, libclang_version):
-            return UnitResult.from_json(cached["result"])
+            result = UnitResult.from_json(cached["result"])
+            # Missing generated modules can appear without any source change.
+            if not result.file.errors:
+                return result
     try:
         unit, shadow = parser.parse(command)
     except cindex.TranslationUnitLoadError as exc:

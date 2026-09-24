@@ -281,3 +281,11 @@ def test_terminal_uses_ordinary_approvals_and_quotes_shell_values(tmp_path, monk
     assert "Größe" in script
     shell = json.loads(script.split("do script ")[1].split("\nend tell")[0])
     assert shlex.split(shell) == ["cd", str(cwd), "&&", *command]
+
+
+def test_compiler_crash_is_not_reported_as_failed_tests():
+    issue = recovery.diagnose("Build failed: clang++: error: clang frontend command failed due to signal\n"
+                              "clang version 20.1.8\nResources.ixx:127")
+    assert issue.code == "compiler_crash"
+    assert "compiler crashed" in issue.summary
+    assert "20.1.8" in issue.detail and "Resources.ixx:127" in issue.detail

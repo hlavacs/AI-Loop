@@ -1,5 +1,6 @@
 """Instrumented-build runtime generation and isolated CMake configuration."""
 
+import json
 import os
 import shutil
 from pathlib import Path
@@ -22,8 +23,10 @@ def test_prepare_instrumentation_generates_bounded_failure_safe_runtime(tmp_path
     runtime = files.runtime_source.read_text(encoding="utf-8")
     injection = files.cmake_include.read_text(encoding="utf-8")
     assert "trace_duration_ns = UINT64_C(2500000000)" in runtime
-    assert str((tmp_path / "traces/calls.tsv").resolve()) in runtime
+    assert json.dumps(str((tmp_path / "traces/calls.tsv").resolve())) in runtime
     assert "if (!trace_output)" in runtime and "elapsed > trace_duration_ns" in runtime
+    assert "std::setvbuf(trace_output, nullptr, _IOLBF, BUFSIZ)" in runtime
+    assert "std::fflush(trace_output)" in runtime
     assert "__cyg_profile_func_enter" in runtime and "__cyg_profile_func_exit" in runtime
     assert "add_compile_options(-finstrument-functions)" in injection
     assert "add_library(icoda_call_trace_runtime SHARED" in injection
@@ -133,6 +136,10 @@ def test_target_operation_selects_instrumented_configuration_only_when_enabled(t
     directory = tmp_path / ".icoda/cache/instrumented-debug-build"
     target = executables.Target("demo", "Debug", directory, tmp_path / "demo", frozenset({str(tmp_path / "m.cpp")}))
     selected = executables.Entry("main", "m.cpp", 1, target)
+    directory.mkdir(parents=True)
+    (directory / "icoda_call_trace_runtime.dll").write_bytes(b"updated runtime")
+    deployed = tmp_path / "icoda_call_trace_runtime.dll"
+    deployed.write_bytes(b"stale runtime")
     options = instrumentation.InstrumentationOptions(enabled=True)
     files = instrumentation.InstrumentationFiles(
         tmp_path / "runtime.cpp", tmp_path / "inject.cmake", directory,
@@ -147,6 +154,8 @@ def test_target_operation_selects_instrumented_configuration_only_when_enabled(t
 
     def run(command, **kwargs):
         calls.append((command, kwargs["env"]))
+        if command == [str(target.artifact)]:
+            assert deployed.read_bytes() == b"updated runtime"
         return process.ProcessResult(command, 0, "ok\n", "")
 
     monkeypatch.setattr(process, "run_bounded", run)

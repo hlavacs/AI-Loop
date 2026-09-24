@@ -40,6 +40,12 @@ def diagnose(text: str) -> Diagnosis:
     """Classify evidence rather than asking a broken provider to diagnose itself."""
     detail = redact(text)[-18000:]
     lower = detail.lower()
+    if any(marker in lower for marker in ("clang frontend command failed due to signal",
+                                           "internal compiler error", "llvm error:")):
+        return Diagnosis("compiler_crash", "The compiler crashed while building the project.",
+                         "Inspect the compiler version, failing source and crash report in Details. "
+                         "Retry with a compatible compiler version or a source workaround; "
+                         "this is not a failed test.", detail)
     if "requires a newer version of codex" in lower:
         return Diagnosis("outdated_codex", "The installed Codex CLI is too old for the selected model.",
                          "Update that CLI, then retry. You can also choose another installed provider "

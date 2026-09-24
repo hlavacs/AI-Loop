@@ -230,8 +230,10 @@ class Troubleshooting:
         if result.cancelled:
             raise steps.StepCancelled()
         if not result.ok:
-            return "Automatic investigation could not complete:\n" + recovery.diagnose(
-                result.stderr or result.stdout).text()
+            detail = "\n".join(part for part in (result.stderr, result.stdout) if part.strip())
+            diagnosis = recovery.diagnose(detail)
+            return ("Automatic investigation could not complete:\n" + diagnosis.text()
+                    + f"\n\nCLI exit code: {result.returncode}\n" + (diagnosis.detail or "No CLI output was returned."))
         return result.stdout
 
     def _present(self, outcome: str) -> None:

@@ -166,7 +166,8 @@ static void initialise_trace() {{
         __atomic_store_n(&trace_state, -1, __ATOMIC_RELEASE);
         return;
     }}
-    std::setvbuf(trace_output, nullptr, _IOLBF, 0);
+    // Buffered modes require a nonzero size in the Windows CRT.
+    std::setvbuf(trace_output, nullptr, _IOLBF, BUFSIZ);
     if (std::fprintf(trace_output,
             "# icoda-call-trace-v1\\n"
             "# columns=event\\ttimestamp_ns\\tthread\\tdepth\\tfunction\\tcaller\\tsymbol\\tmodule\\n") < 0) {{
@@ -249,6 +250,7 @@ static void record_event(char event, void *function, void *caller, unsigned dept
     const std::uint64_t now = monotonic_ns();
     const std::uint64_t elapsed = now >= trace_start_ns ? now - trace_start_ns : 0;
     if (elapsed > trace_duration_ns) {{
+        std::fflush(trace_output);
         __atomic_store_n(&trace_state, 3, __ATOMIC_RELEASE);
         unlock_trace();
         return;

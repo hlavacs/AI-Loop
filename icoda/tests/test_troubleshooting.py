@@ -587,3 +587,14 @@ def test_ui_callback_exception_keeps_completion_queue_alive(app_module, tmp_path
     complete(_pending)
     assert "Prompt" in app.status.get()
     assert "save permission" in app.recovery.transcript.get("1.0", "end")
+
+
+def test_failed_investigation_retains_cli_evidence_and_redacts_secrets(app_module, tmp_path, monkeypatch):
+    app, _pending = window(app_module, tmp_path)
+    monkeypatch.setattr(recovery, "invoke", lambda *args, **kwargs: recovery.RecoveryResult(
+        ProcessResult([], 7, "provider diagnostic on stdout", "specific CLI failure password=secret123")))
+    text = app.recovery._investigate(recovery.diagnose("Build failed"),
+                                    app.provider_field.selection(), tmp_path, lambda: None)
+    assert "CLI exit code: 7" in text and "specific CLI failure" in text
+    assert "provider diagnostic on stdout" in text
+    assert "secret123" not in text and "[redacted]" in text

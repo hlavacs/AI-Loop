@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import os
 import shutil
 import subprocess
@@ -543,3 +544,27 @@ def test_libcxx_beside_the_compiler_is_used(tmp_path: Path) -> None:
     assert analysis.libcxx_arguments(str(compiler), [], platform="linux") == []
     assert analysis.libcxx_arguments(str(compiler), ["-nostdinc++"], platform="darwin") == []
     assert analysis.libcxx_arguments("/usr/bin/c++", [], platform="darwin") == []
+
+
+def test_failed_cached_parse_is_retried_without_source_changes(tmp_path):
+    source = tmp_path / "a.cpp"
+    source.write_text("import generated;\n", encoding="utf-8")
+    command = analysis.CompileCommand(str(source), str(tmp_path), (), "clang++", False)
+    cache = tmp_path / "cache"
+    file = cache / "units" / f"{analysis._sha1(command.file.encode())}.json"
+    file.parent.mkdir(parents=True)
+    failed = analysis.UnitResult(FileInfo("a.cpp", errors=("module not found",)), ["a.cpp"])
+    file.write_text(json.dumps({"key": analysis.unit_cache_key(command, ["a.cpp"], tmp_path, "test"),
+                                "result": failed.to_json()}), encoding="utf-8")
+    calls = []
+    class Parser:
+        def parse(self, command):
+            calls.append(command)
+            return object(), None
+    class Extractor:
+        def extract(self, *_args):
+            return analysis.UnitResult(FileInfo("a.cpp"), ["a.cpp"])
+    result = analysis._unit_result(command, Parser(), Extractor(), tmp_path, cache, "test")
+    assert calls == [command] and not result.file.errors
+    analysis._unit_result(command, Parser(), Extractor(), tmp_path, cache, "test")
+    assert calls == [command]  # Successful results still use the cache.
