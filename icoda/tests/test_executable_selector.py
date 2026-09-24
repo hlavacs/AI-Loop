@@ -422,3 +422,15 @@ def test_library_without_callables_has_empty_call_graph(app_module, tmp_path, mo
     selector.select()
     assert set(app.class_view.layout.nodes) == {"Type"}
     assert not app.call_view.layout.nodes and app.call_view.root_var.get() == "Library API (0)"
+
+
+def test_empty_trace_disables_playback_and_explains_missing_symbols(app_module, tmp_path, monkeypatch):
+    from icoda_core import call_trace
+    app = app_module.App(app_module.tk.Tk(), config=persistence.UserConfig(), config_path=tmp_path / "c.json")
+    view = app.call_view
+    states = {}
+    for label in ("Previous call", "Next call", "Reset"):
+        monkeypatch.setattr(view.playback_buttons[label], "state", lambda value, label=label: states.update({label: value}))
+    view.set_playback(call_trace.CallPlayback(call_trace.CallTrace(())))
+    assert all(value == ["disabled"] for value in states.values())
+    assert "No project calls resolved" in view.playback_status_var.get()

@@ -17,6 +17,7 @@ complete event while holding its output lock.
 
 from __future__ import annotations
 
+import json
 import shutil
 from bisect import bisect_right
 from collections import defaultdict
@@ -25,7 +26,7 @@ from dataclasses import dataclass, replace
 from enum import Enum
 from pathlib import Path
 
-from icoda_core import process
+from icoda_core import process, toolchain
 from icoda_core.model import CALLABLE_KINDS, DerivedModel, Entity
 
 FORMAT_HEADER = "# icoda-call-trace-v1"
@@ -120,6 +121,8 @@ class CallPlayback:
 
     @property
     def status(self) -> str:
+        if not self.total:
+            return "No project calls resolved. Check the executable/PDB and reload the trace."
         if self._position == 0:
             return f"call 0 of {self.total}"
         entity = self._calls[self._position - 1]
@@ -186,13 +189,16 @@ def load_trace(path: Path, model: DerivedModel | None = None,
     resolved_names = _symbolize(events)
     resolver = _EntityResolver(model)
     resolved_events = []
+    entities: dict[str | None, Entity | None] = {}
     for event in events:
         supplied = symbol_names.get(event.identifier) if symbol_names else None
         if supplied is None and symbol_names:
             supplied = symbol_names.get(event.function_id)
         function_name = supplied or resolved_names.get((event.module, event.function_id))
+        if function_name not in entities:
+            entities[function_name] = resolver.resolve(function_name)
         resolved_events.append(replace(
-            event, function_name=function_name, entity=resolver.resolve(function_name)))
+            event, function_name=function_name, entity=entities[function_name]))
     return CallTrace(tuple(resolved_events))
 
 
@@ -238,6 +244,8 @@ def _demangle(symbols: list[str]) -> dict[str, str]:
 
 
 def _module_symbols(module: str, function_ids: set[str]) -> dict[str, str]:
+    if Path(module).suffix.lower() in {".exe", ".dll"}:
+        return _windows_module_symbols(module, function_ids)
     executable = shutil.which("nm") or shutil.which("llvm-nm")
     if executable is None:
         return {}
@@ -262,6 +270,36 @@ def _module_symbols(module: str, function_ids: set[str]) -> dict[str, str]:
         if index >= 0:
             resolved[function_id] = available[index][1]
     return resolved
+
+
+def _windows_module_symbols(module: str, function_ids: set[str]) -> dict[str, str]:
+    """Resolve recorded PE image-relative addresses through the executable's PDB."""
+    executable = shutil.which("llvm-symbolizer")
+    if executable is None:
+        executable = next((str(path) for candidate in toolchain.candidates()
+                           if (path := Path(candidate.path).with_name("llvm-symbolizer.exe")).is_file()), None)
+    if executable is None:
+        return {}
+    addresses = sorted(address for address in function_ids
+                       if address.startswith("0x") and all(c in "0123456789abcdefABCDEF" for c in address[2:])
+                       and len(address) > 2)
+    symbols = {}
+    for start in range(0, len(addresses), 256):
+        try:
+            result = process.run_bounded(
+                [executable, f"--obj={module}", "--relative-address", "--no-inlines", "--output-style=JSON"],
+                input_text="\n".join(addresses[start:start + 256]) + "\n", timeout=30, max_output=2_000_000)
+            if not result.ok:
+                continue
+            for line in result.stdout.splitlines():
+                item = json.loads(line)
+                frames = item.get("Symbol", [])
+                name = frames[0].get("FunctionName") if frames else None
+                if name and name != "??":
+                    symbols[item["Address"]] = name
+        except (OSError, ValueError, KeyError):
+            continue
+    return symbols
 
 
 def _parse_nm(output: str) -> list[tuple[int, str]]:

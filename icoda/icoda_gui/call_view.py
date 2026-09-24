@@ -107,7 +107,7 @@ class CallViewCanvas(graph_canvas.GraphCanvas):
         self._clear_playback_selection()
         self.playback_status_var.set(playback.status)
         for label in ("Previous call", "Next call", "Reset"):
-            self.playback_buttons[label].state(["!disabled"])
+            self.playback_buttons[label].state(["!disabled"] if playback.total else ["disabled"])
 
     def next_call(self) -> None:
         if self.playback is None:

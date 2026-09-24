@@ -1,5 +1,7 @@
 """Versioned call-trace parsing, model resolution, and playback cursor behavior."""
 
+import json
+import re
 import shutil
 from pathlib import Path
 
@@ -190,7 +192,7 @@ def test_real_instrumented_cpp_trace_plays_main_work_helper(tmp_path: Path) -> N
 def test_invalid_trace_reports_a_format_error(tmp_path: Path, contents: str) -> None:
     path = tmp_path / "broken.tsv"
     path.write_text(contents, encoding="utf-8")
-    with pytest.raises(call_trace.TraceFormatError, match=str(path)):
+    with pytest.raises(call_trace.TraceFormatError, match=re.escape(str(path))):
         call_trace.load_trace(path)
 
 
@@ -198,3 +200,34 @@ def test_cursor_rejects_a_position_outside_the_trace() -> None:
     trace = call_trace.CallTrace(())
     with pytest.raises(IndexError):
         trace.seek(1)
+
+
+def test_windows_pdb_trace_resolution_uses_image_relative_addresses(tmp_path, monkeypatch):
+    path = tmp_path / "calls.tsv"
+    module = str(tmp_path / "game.exe")
+    path.write_text(F"{call_trace.FORMAT_HEADER}\nE\t1\tt\t0\t0x1000\t0x0\t\t{module}\n", encoding="utf-8")
+    monkeypatch.setattr(call_trace.shutil, "which", lambda name: "symbolizer" if name == "llvm-symbolizer" else None)
+    def run(command, **kwargs):
+        assert command == ["symbolizer", f"--obj={module}", "--relative-address", "--no-inlines", "--output-style=JSON"]
+        assert kwargs["input_text"] == "0x1000\n"
+        return process.ProcessResult(command, 0, json.dumps({"Address": "0x1000", "Symbol": [{"FunctionName": "main"}]}), "")
+    monkeypatch.setattr(call_trace.process, "run_bounded", run)
+    model = _model(tmp_path)
+    playback = call_trace.CallPlayback(call_trace.load_trace(path, model))
+    assert playback.total == 1 and playback.next_call() is model.entities["u:main"]
+
+
+def test_symbolizer_is_discovered_beside_visual_studio_libclang(tmp_path, monkeypatch):
+    from types import SimpleNamespace
+    tool = tmp_path / "llvm-symbolizer.exe"
+    tool.touch()
+    monkeypatch.setattr(call_trace.shutil, "which", lambda _name: None)
+    monkeypatch.setattr(call_trace.toolchain, "candidates", lambda: [SimpleNamespace(path=str(tmp_path / "libclang.dll"))])
+    calls = []
+    def run(command, **kwargs):
+        calls.append(command)
+        return process.ProcessResult(command, 0, '{"Address":"0x1","Symbol":[{"FunctionName":"??"}]}', "")
+    monkeypatch.setattr(call_trace.process, "run_bounded", run)
+    assert call_trace._module_symbols("game.exe", {"0x1"}) == {}
+    assert calls[0][0] == str(tool)
+    assert "No project calls resolved" in call_trace.CallPlayback(call_trace.CallTrace(())).status
