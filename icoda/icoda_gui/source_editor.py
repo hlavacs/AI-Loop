@@ -5,7 +5,7 @@ import sys
 import tkinter as tk
 from collections.abc import Callable
 from pathlib import Path
-from tkinter import filedialog, messagebox, ttk
+from tkinter import filedialog, font, messagebox, ttk
 from typing import Any
 
 from icoda_core import source_edit
@@ -64,6 +64,8 @@ class SourceEditor:
         body.pack(fill=tk.BOTH, expand=True, padx=4, pady=3)
         self.text = tk.Text(body, width=40, height=10, wrap="none", undo=True, autoseparators=True,
                             maxundo=200, font="TkFixedFont", exportselection=False, state="disabled")
+        tab_width = font.Font(root=self.text, font="TkFixedFont").measure("    ")
+        self.text.configure(tabs=(tab_width,), tabstyle="wordprocessor")
         vertical = ttk.Scrollbar(body, orient=tk.VERTICAL, command=self.text.yview)
         horizontal = ttk.Scrollbar(body, orient=tk.HORIZONTAL, command=self.text.xview)
         self.text.configure(yscrollcommand=vertical.set, xscrollcommand=horizontal.set)
