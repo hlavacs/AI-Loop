@@ -220,16 +220,16 @@ def test_call_trace_playback_selects_recorded_functions_and_reports_bad_trace(
     buttons = app.call_view.playback_buttons
     assert all(button.kwargs["state"] == app_module.tk.DISABLED
                for label, button in buttons.items() if label != "Load trace")
-    states = {label: [] for label in ("Previous call", "Next call", "Reset")}
+    states = {label: [] for label in ("Previous call", "Step Into", "Reset")}
     for label, values in states.items():
         monkeypatch.setattr(buttons[label], "state", lambda value, values=values: values.append(value))
 
     app.load_call_trace()
     assert all(values == [["!disabled"]] for values in states.values())
-    app.call_view.next_call()
+    app.call_view.step_into()
     assert app.call_view.selected == "main"
     assert app.call_view.playback_status_var.get() == "call 1 of 2: main"
-    app.call_view.next_call()
+    app.call_view.step_into()
     assert app.call_view.selected == "work"
     assert app.call_view.playback_status_var.get() == "call 2 of 2: demo::work — 2 consecutive calls"
     assert app.call_view.playback_edge_counts == {("main", "work"): 2}
@@ -448,7 +448,7 @@ def test_empty_trace_disables_playback_and_explains_missing_symbols(app_module, 
     app = app_module.App(app_module.tk.Tk(), config=persistence.UserConfig(), config_path=tmp_path / "c.json")
     view = app.call_view
     states = {}
-    for label in ("Previous call", "Next call", "Reset"):
+    for label in ("Previous call", "Step Into", "Reset"):
         monkeypatch.setattr(view.playback_buttons[label], "state", lambda value, label=label: states.update({label: value}))
     view.set_playback(call_trace.CallPlayback(call_trace.CallTrace(())))
     assert all(value == ["disabled"] for value in states.values())
@@ -487,7 +487,7 @@ def test_playback_keeps_every_call_inside_the_entry_graph(app_module, library_mo
         assert {(edge.source, edge.target) for edge in view.layout.edges if edge.free} == {
             ("main", "disconnected"), ("main", "detached_ctor")}
     for expected in ("main", "deep", "disconnected"):
-        view.next_call()
+        view.step_into()
         assert view.selected == expected and selected[-1] == expected
         assert view.root_usr == original_root and view.root_var.get() == original_label
         assert expected in view.layout.nodes

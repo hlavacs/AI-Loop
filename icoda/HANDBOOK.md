@@ -559,14 +559,14 @@ added and changed entities receive distinct outlines.
 
 *Dashed edges and a question mark preserve uncertainty instead of presenting dynamic dispatch as a false fact.*
 
-After loading a recorded call trace, **Step Into** behaves exactly like **Next call**: it advances to the next
+After loading a recorded call trace, **Step Into** advances to the next
 resolved function call in recorded order, combining consecutive calls to the same function. **Step Over** skips
 the current call's descendants and selects the next call at the same or a shallower depth. **Step Out** selects
 the next call at a strictly shallower depth. Over and Out stay on the current recorded thread and require a
 matching return for the current invocation.
 
-All three controls select the function in the graph and source editor, with the same call count, repeat counts,
-and highlighting as **Next call**. Return events never become separate stops. A step is disabled when no eligible
+All three controls select the function in the graph and source editor, with call counts, repeat counts,
+and highlighting. Return events never become separate stops. A step is disabled when no eligible
 call was recorded; the last selected call stays visible at the end. These are function-level steps through a
 recording, which does not contain source-line execution. **Previous call** moves to the preceding grouped call,
 and **Reset** returns playback to the beginning.

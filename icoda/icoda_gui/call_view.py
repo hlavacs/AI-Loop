@@ -91,9 +91,8 @@ class CallViewCanvas(graph_canvas.GraphCanvas):
         playback.pack(fill=tk.X, pady=(2, 0))
         self.playback_buttons = {}
         for label, command in (("Load trace", self._load_trace), ("Previous call", self.previous_call),
-                               ("Next call", self.next_call), ("Step Over", self.step_over),
-                               ("Step Into", self.step_into), ("Step Out", self.step_out),
-                               ("Reset", self.reset_playback)):
+                               ("Step Over", self.step_over), ("Step Into", self.step_into),
+                               ("Step Out", self.step_out), ("Reset", self.reset_playback)):
             button = ttk.Button(playback, text=label, command=command,
                                 state=tk.NORMAL if label == "Load trace" else tk.DISABLED)
             button.pack(side=tk.LEFT, padx=(0, 4))
@@ -118,7 +117,7 @@ class CallViewCanvas(graph_canvas.GraphCanvas):
             )
         self._clear_playback_selection()
         self.playback_status_var.set(playback.status)
-        for label in ("Previous call", "Next call", "Reset"):
+        for label in ("Previous call", "Reset"):
             self.playback_buttons[label].state(["!disabled"] if playback.total else ["disabled"])
         self._update_playback_status()
 
@@ -138,14 +137,6 @@ class CallViewCanvas(graph_canvas.GraphCanvas):
         if entity is None:
             self._clear_playback_selection()
         else:
-            self._select_playback_entity(entity.usr)
-        self._update_playback_status()
-
-    def next_call(self) -> None:
-        if self.playback is None:
-            return
-        entity = self.playback.next_call()
-        if entity is not None:
             self._select_playback_entity(entity.usr)
         self._update_playback_status()
 
