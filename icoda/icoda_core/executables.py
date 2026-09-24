@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import os
 import shlex
 from collections import defaultdict
 from collections.abc import Callable
@@ -10,7 +11,7 @@ from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any
 
-from icoda_core import analysis, cmake, process, steps
+from icoda_core import analysis, cmake, instrumentation, process, steps
 from icoda_core.cmake import build_directory
 from icoda_core.model import DerivedModel, Kind
 
@@ -63,6 +64,7 @@ class Outcome:
     selected: Entry | None
     output: str
     message: str
+    trace_file: Path | None = None
 
 
 def _json(path: Path) -> dict[str, Any]:
@@ -188,12 +190,14 @@ def scope_model(model: DerivedModel, selected: Entry | None, *, root: Path | Non
 
 
 def operate(root: Path, model: DerivedModel, selected: Entry | None, action: str,
-            cancelled: Callable[[], bool]) -> Outcome:
-    """Refresh targets, or build/run exactly one target. Never guess when several targets share a main."""
+            cancelled: Callable[[], bool],
+            instrumentation_options: instrumentation.InstrumentationOptions | None = None) -> Outcome:
+    """Refresh, build, or run one target, optionally in an isolated instrumented Debug tree."""
     if action == "run" and selected is not None and selected.is_library:
         raise steps.StepError("A library has no executable to run. Use Build or select an executable.")
     output: list[str] = []
     environment = None
+    instrumentation_files: instrumentation.InstrumentationFiles | None = None
 
     def run(command: list[str], stage: str, timeout: float = 600) -> None:
         if cancelled():
@@ -206,20 +210,26 @@ def operate(root: Path, model: DerivedModel, selected: Entry | None, action: str
             reason = "timed out" if result.timed_out else f"exit {result.returncode}"
             raise steps.StepError(f"{stage} failed ({reason}).\n" + "\n".join(output))
 
-    if action == "refresh":
-        directory = build_directory(root)
-        if directory is None:
-            raise steps.StepError("Configure/build this CMake project first with Project → Build, then refresh targets.")
-        configure = cmake.configure_command(root, directory)
-    else:
-        try:
+    if action == "refresh" and build_directory(root) is None:
+        raise steps.StepError("Configure/build this CMake project first with Project → Build, then refresh targets.")
+    try:
+        if action != "refresh" and instrumentation_options is not None and instrumentation_options.enabled:
+            directory, configure, environment, instrumentation_files = (
+                cmake.instrumented_clang_configuration(root, instrumentation_options))
+            environment = dict(environment)
+            environment["PATH"] = str(directory) + os.pathsep + environment.get("PATH", "")
+        else:
             directory, configure, environment = cmake.clang_configuration(root)
-        except (RuntimeError, OSError) as exc:
-            raise steps.StepError(str(exc)) from exc
+    except (RuntimeError, OSError, ValueError) as exc:
+        raise steps.StepError(str(exc)) from exc
     run(configure, "CMake configuration")
     if action != "refresh":
         try:
-            cmake.verify_clang(directory)
+            if instrumentation_files is not None:
+                assert environment is not None
+                cmake.verify_compiler(directory, environment["CXX"])
+            else:
+                cmake.verify_clang(directory)
         except RuntimeError as exc:
             raise steps.StepError(str(exc)) from exc
     choices = entries(model, read_targets(root, directory))
@@ -251,5 +261,8 @@ def operate(root: Path, model: DerivedModel, selected: Entry | None, action: str
     run(command, "Build")
     if action == "run":
         run([str(target.artifact)], f"Running {target.name}", timeout=3600)
-    return Outcome(choices, chosen, "\n".join(output),
-                   f"{target.name}: {'finished (exit 0)' if action == 'run' else 'build passed'}")
+    message = f"{target.name}: {'finished (exit 0)' if action == 'run' else 'build passed'}"
+    if action == "run" and instrumentation_files is not None:
+        message += f"; call trace: {instrumentation_files.trace_file}"
+    trace_file = instrumentation_files.trace_file if action == "run" and instrumentation_files is not None else None
+    return Outcome(choices, chosen, "\n".join(output), message, trace_file)

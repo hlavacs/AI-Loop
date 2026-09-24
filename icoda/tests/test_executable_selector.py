@@ -5,7 +5,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from icoda_core import clusters, executables, persistence, prompt, session, steps, views
+from icoda_core import clusters, executables, instrumentation, persistence, prompt, session, steps, views
 from icoda_core.model import DerivedModel, Edge, EdgeKind, Entity, FileInfo, Kind
 
 
@@ -157,6 +157,91 @@ def test_success_and_ambiguity_update_choices_without_running_an_arbitrary_targe
     selector.operate("run")
     assert not results and selector.output.get("1.0", "end").strip() == "first output"
     assert persistence.ProjectStore(tmp_path).load_ui()["executable"] == [source.file, "first", "Debug"]
+
+
+def test_run_passes_call_trace_options_only_when_enabled(app_module, tmp_path, monkeypatch):
+    app = app_module.App(app_module.tk.Tk(), config=persistence.UserConfig(), config_path=tmp_path / "c.json")
+    app.show(opened(tmp_path))
+    selector = app.executables
+    selector.choice_var.set(selector.choices[0].label)
+    selector.select()
+    calls = []
+
+    def operate(*args, **kwargs):
+        calls.append(kwargs.get("instrumentation_options"))
+        trace_file = tmp_path / "calls.tsv" if calls[-1] is not None else None
+        return executables.Outcome(selector.choices, selector.selected, "", "finished", trace_file)
+
+    monkeypatch.setattr(executables, "operate", operate)
+    app.run_async = lambda work, done: done(work())
+    selector.operate("run")
+    selector.record_trace_var.set(True)
+    selector.trace_seconds_var.set("7")
+    selector.operate("run")
+
+    assert calls == [None, instrumentation.InstrumentationOptions(True, 7.0)]
+    assert app.last_trace_file == tmp_path / "calls.tsv"
+    selector.trace_seconds_var.set("0")
+    selector.operate("run")
+    assert len(calls) == 2 and "positive number" in app.status.get()
+
+
+def test_call_trace_playback_selects_recorded_functions_and_reports_bad_trace(
+        app_module, tmp_path, monkeypatch):
+    app = app_module.App(app_module.tk.Tk(), config=persistence.UserConfig(), config_path=tmp_path / "c.json")
+    project = opened(tmp_path)
+    main = project.model.entities["first"]
+    main.usr = "main"
+    project.model.entities = {"main": main}
+    work_file = "examples/first/work.cpp"
+    project.model.files[work_file] = FileInfo(work_file)
+    project.model.add_entity(Entity("work", Kind.FUNCTION, "work", "demo::work", work_file, 1))
+    project.model.add_edge(Edge(EdgeKind.CALLS, "main", "work", main.file, 1))
+    app.show(project)
+
+    def immediately(work, done):
+        try:
+            result = work()
+        except Exception as exc:  # noqa: BLE001  (mirror UiTasks exception delivery)
+            result = exc
+        done(result)
+
+    app.run_async = immediately
+    trace = tmp_path / "calls.tsv"
+    trace.write_text(
+        "# icoda-call-trace-v1\n"
+        "E\t1\tt\t0\t0x1\t0x0\tmain\tapp\n"
+        "E\t2\tt\t1\t0x2\t0x1\tdemo::work()\tapp\n",
+        encoding="utf-8",
+    )
+    app.last_trace_file = trace
+    buttons = app.call_view.playback_buttons
+    assert all(button.kwargs["state"] == app_module.tk.DISABLED
+               for label, button in buttons.items() if label != "Load trace")
+    states = {label: [] for label in ("Previous call", "Next call", "Reset")}
+    for label, values in states.items():
+        monkeypatch.setattr(buttons[label], "state", lambda value, values=values: values.append(value))
+
+    app.load_call_trace()
+    assert all(values == [["!disabled"]] for values in states.values())
+    app.call_view.next_call()
+    assert app.call_view.selected == "main"
+    assert app.call_view.playback_status_var.get() == "call 1 of 2: main"
+    app.call_view.next_call()
+    assert app.call_view.selected == "work"
+    assert app.call_view.playback_status_var.get() == "call 2 of 2: demo::work"
+    app.call_view.previous_call()
+    assert app.call_view.selected == "main"
+    assert app.call_view.playback_status_var.get() == "call 1 of 2: main"
+    app.call_view.reset_playback()
+    assert app.call_view.selected is None
+    assert app.call_view.playback_status_var.get() == "call 0 of 2"
+
+    malformed = tmp_path / "broken.tsv"
+    malformed.write_text("not a trace\n", encoding="utf-8")
+    app.last_trace_file = malformed
+    app.load_call_trace()
+    assert "Could not load call trace" in app.status.get()
 
 
 def test_all_views_show_only_selected_executable_and_shared_dependencies(app_module, tmp_path, monkeypatch):

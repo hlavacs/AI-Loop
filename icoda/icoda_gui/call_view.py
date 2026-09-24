@@ -12,7 +12,7 @@ from collections.abc import Callable
 from tkinter import ttk
 from typing import Any
 
-from icoda_core import views
+from icoda_core import call_trace, views
 from icoda_core.model import DerivedModel
 from icoda_gui import graph_canvas, zoom_controls
 
@@ -27,7 +27,8 @@ class CallViewCanvas(graph_canvas.GraphCanvas):
                  resolve_actions: graph_canvas.ActionResolver | None = None,
                  dispatch_action: graph_canvas.ActionDispatcher | None = None,
                  focus_node: Callable[[str | None], None] | None = None,
-                 select_node: Callable[[str], None] | None = None) -> None:
+                 select_node: Callable[[str], None] | None = None,
+                 load_trace: Callable[[], None] | None = None) -> None:
         super().__init__(parent, resolve_actions, dispatch_action)
         self.open_editor = open_editor
         self.focus_node = focus_node
@@ -40,10 +41,13 @@ class CallViewCanvas(graph_canvas.GraphCanvas):
         self.selected: str | None = None
         self.added: set[str] = set()
         self.changed: set[str] = set()
+        self.playback: call_trace.CallPlayback | None = None
         self.depth_var = tk.IntVar(value=3)
         self.callers_var = tk.BooleanVar(value=False)
         self.root_var = tk.StringVar(value="")
         self.hover_var = tk.StringVar(value="")
+        self.playback_status_var = tk.StringVar(value="No trace loaded")
+        self.load_trace = load_trace
         self._build_toolbar()
         self.build_canvas()
 
@@ -80,6 +84,70 @@ class CallViewCanvas(graph_canvas.GraphCanvas):
                                                                                                   expand=True)
         self.toolbar_controls = {"from-main": from_main, "depth-label": depth_label, "depth": depth,
                                  "callers": callers, **zoom_widgets}
+        playback = ttk.Frame(bar)
+        playback.pack(fill=tk.X, pady=(2, 0))
+        self.playback_buttons = {}
+        for label, command in (("Load trace", self._load_trace), ("Previous call", self.previous_call),
+                               ("Next call", self.next_call), ("Reset", self.reset_playback)):
+            button = ttk.Button(playback, text=label, command=command,
+                                state=tk.NORMAL if label == "Load trace" else tk.DISABLED)
+            button.pack(side=tk.LEFT, padx=(0, 4))
+            self.playback_buttons[label] = button
+        ttk.Label(playback, textvariable=self.playback_status_var, anchor="w").pack(
+            side=tk.LEFT, fill=tk.X, expand=True, padx=(4, 0))
+
+    # -- trace playback -------------------------------------------------------------------
+
+    def _load_trace(self) -> None:
+        if self.load_trace is not None:
+            self.load_trace()
+
+    def set_playback(self, playback: call_trace.CallPlayback) -> None:
+        self.playback = playback
+        self._clear_playback_selection()
+        self.playback_status_var.set(playback.status)
+        for label in ("Previous call", "Next call", "Reset"):
+            self.playback_buttons[label].state(["!disabled"])
+
+    def next_call(self) -> None:
+        if self.playback is None:
+            return
+        entity = self.playback.next_call()
+        if entity is not None:
+            self._select_playback_entity(entity.usr)
+        self.playback_status_var.set(self.playback.status)
+
+    def previous_call(self) -> None:
+        if self.playback is None:
+            return
+        entity = self.playback.previous_call()
+        if entity is None:
+            self._clear_playback_selection()
+        else:
+            self._select_playback_entity(entity.usr)
+        self.playback_status_var.set(self.playback.status)
+
+    def reset_playback(self) -> None:
+        if self.playback is None:
+            return
+        self.playback.reset()
+        self._clear_playback_selection()
+        self.playback_status_var.set(self.playback.status)
+
+    def _select_playback_entity(self, usr: str) -> None:
+        if self.layout is None or usr not in self.layout.nodes:
+            self.root_usr = usr
+        self.user_zoomed = False
+        self.select(usr)
+        if self.focus_node is not None:
+            self.focus_node(usr)
+        if self.select_node is not None:
+            self.select_node(usr)
+
+    def _clear_playback_selection(self) -> None:
+        self.select(None)
+        if self.focus_node is not None:
+            self.focus_node(None)
 
     # -- state ----------------------------------------------------------------------------
 

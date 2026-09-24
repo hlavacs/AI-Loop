@@ -23,6 +23,7 @@ from icoda_core import (
     __version__,
     agent,
     analysis,
+    call_trace,
     clusters,
     coverage_index,
     executables,
@@ -517,6 +518,7 @@ class App:
         self.project: Path | None = None
         self.opened: session.OpenedProject | None = None
         self.displayed: session.OpenedProject | None = None
+        self.last_trace_file: Path | None = None
         self._call_source_root: Path | None = None
         self._entities_model: DerivedModel | None = None
         self._entities_root: Path | None = None
@@ -733,6 +735,34 @@ class App:
     def show_call_view(self) -> None:
         self.views.select(1)
 
+    def load_call_trace(self) -> None:
+        """Load the latest recorded trace, asking for a file when this session has none."""
+        model = self.call_view.model
+        if model is None:
+            self.status.set("Open a project before loading a call trace")
+            return
+        path = self.last_trace_file
+        if path is None:
+            chosen = filedialog.askopenfilename(
+                parent=self.root, title="Load call trace", filetypes=(("ICODA call traces", "*.tsv"),
+                                                                       ("All files", "*")))
+            if not chosen:
+                return
+            path = Path(chosen)
+        self.status.set(f"Loading call trace: {path}")
+
+        def done(result: Any) -> None:
+            if isinstance(result, Exception):
+                self.status.set(f"Could not load call trace: {result}")
+                return
+            if self.call_view.model is not model:
+                return
+            self.call_view.set_playback(result)
+            self.show_call_view()
+            self.status.set(f"Call trace loaded: {path}")
+
+        self.run_async(lambda: call_trace.CallPlayback(call_trace.load_trace(path, model)), done)
+
     def show_class_view(self) -> None:
         self.views.select(2)
 
@@ -815,7 +845,7 @@ class App:
         self.views.add(file_view, text="File View")
         self.call_view = call_view.CallViewCanvas(
             self.views, self.open_call_source, self.graph_actions, self.dispatch_graph_action,
-            self.focus_graph_node, self.select_call_node)
+            self.focus_graph_node, self.select_call_node, self.load_call_trace)
         self.views.add(self.call_view.frame, text="Call View")
         self.class_view = class_view.ClassViewCanvas(
             self.views, self.open_editor, self.graph_actions, self.dispatch_graph_action,

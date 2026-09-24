@@ -2,12 +2,13 @@
 
 from __future__ import annotations
 
+import math
 import tkinter as tk
 from pathlib import Path
 from tkinter import ttk
 from typing import Any
 
-from icoda_core import executables, persistence, process, recovery, session, steps
+from icoda_core import executables, instrumentation, persistence, process, recovery, session, steps
 from icoda_core.model import DerivedModel
 from icoda_gui import tooltip
 
@@ -23,6 +24,8 @@ class ExecutableSelector:
         self.selected: executables.Entry | None = None
         self.running = False
         self.choice_var = tk.StringVar(value="No targets")
+        self.record_trace_var = tk.BooleanVar(value=False)
+        self.trace_seconds_var = tk.StringVar(value="5")
         ttk.Label(bar, text="Executable / library:").pack(side=tk.LEFT, padx=(4, 4))
         self.buttons = {}
         for label, command in (("Output", self.show_output), ("Stop", self.stop),
@@ -35,6 +38,13 @@ class ExecutableSelector:
         self.combo = ttk.Combobox(bar, textvariable=self.choice_var, state="readonly", width=45)
         self.combo.pack(side=tk.LEFT, fill=tk.X, expand=True, padx=(0, 6))
         self.combo.bind("<<ComboboxSelected>>", self.select)
+        self.record_trace = ttk.Checkbutton(
+            bar, text="Record call trace", variable=self.record_trace_var, command=self.update_controls)
+        self.record_trace.pack(side=tk.LEFT, padx=(0, 4))
+        self.trace_seconds = ttk.Spinbox(
+            bar, from_=0.1, to=3600, width=5, textvariable=self.trace_seconds_var)
+        self.trace_seconds.pack(side=tk.LEFT)
+        ttk.Label(bar, text="seconds").pack(side=tk.LEFT, padx=(2, 6))
         tooltip.attach(self.combo, "Whole project shows all analysed sources. Choose an executable or library "
                        "to display its sources and dependencies "
                        "in all code views. The choice is saved per project. Libraries expose functions and methods "
@@ -122,6 +132,9 @@ class ExecutableSelector:
             if label == "Run" and self.selected is not None and self.selected.is_library:
                 enabled = False
             self.buttons[label].state(["!disabled"] if enabled else ["disabled"])
+        run_enabled = cmake and self.selected is not None and not self.selected.is_library
+        self.record_trace.state(["!disabled"] if run_enabled else ["disabled"])
+        self.trace_seconds.state(["!disabled"] if run_enabled and self.record_trace_var.get() else ["disabled"])
         self.buttons["Stop"].state(["!disabled"] if self.running else ["disabled"])
 
     def show_output(self) -> None:
@@ -152,6 +165,17 @@ class ExecutableSelector:
             return
         if self.window.panel.busy:  # saving source may start analysis; wait for its current model
             return
+        instrumentation_options = None
+        if action == "run" and self.record_trace_var.get():
+            try:
+                duration = float(self.trace_seconds_var.get())
+            except (TypeError, ValueError):
+                duration = 0
+            if not math.isfinite(duration) or duration <= 0:
+                self.window.status.set("Call trace seconds must be a positive number")
+                return
+            instrumentation_options = instrumentation.InstrumentationOptions(
+                enabled=True, duration_seconds=duration)
         project, model, selected = self.project, self.model, self.selected
         self.running = True
         self.window.steps.cancel_requested = False
@@ -187,10 +211,17 @@ class ExecutableSelector:
                 self.window.show_executable()
                 self._output(result.output)
                 self.window.status.set(result.message)
+                if result.trace_file is not None:
+                    self.window.last_trace_file = result.trace_file
                 session.log_event(result.message + "\n" + result.output, project)
                 if action == "refresh" and not model.files:
                     self.window.open_project(project)
             self.update_controls()
 
-        self.window.run_async(lambda: executables.operate(
-            project, model, selected, action, lambda: self.window.steps.cancel_requested), done)
+        def work() -> executables.Outcome:
+            arguments = (project, model, selected, action, lambda: self.window.steps.cancel_requested)
+            if instrumentation_options is None:
+                return executables.operate(*arguments)
+            return executables.operate(*arguments, instrumentation_options=instrumentation_options)
+
+        self.window.run_async(work, done)

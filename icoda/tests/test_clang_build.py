@@ -63,6 +63,29 @@ def test_migration_retains_project_options_but_not_old_compiler_flags(tmp_path, 
     assert (old / "CMakeCache.txt").read_text() == contents
 
 
+def test_existing_clang_tree_reuses_its_recorded_cmake(tmp_path, monkeypatch):
+    directory = tmp_path / "build/debug"
+    directory.mkdir(parents=True)
+    compiler = tmp_path / "clang++"
+    recorded_cmake = tmp_path / "cmake-4.3/bin/cmake"
+    recorded_cmake.parent.mkdir(parents=True)
+    recorded_cmake.touch()
+    (directory / "CMakeCache.txt").write_text(
+        f"CMAKE_HOME_DIRECTORY:INTERNAL={tmp_path}\n"
+        f"CMAKE_COMMAND:INTERNAL={recorded_cmake}\n"
+        f"CMAKE_CXX_COMPILER:FILEPATH={compiler}\n"
+        "CMAKE_GENERATOR:INTERNAL=Ninja\n"
+    )
+    monkeypatch.setattr(toolchain, "clang_build_environment", lambda *_args: {
+        "CXX": str(compiler), "CC": str(tmp_path / "clang"), "PATH": "",
+    })
+
+    selected, command, _environment = cmake.clang_configuration(tmp_path)
+
+    assert selected == directory
+    assert command[0] == str(recorded_cmake)
+
+
 def test_toolchain_override_is_rejected(tmp_path):
     (tmp_path / "CMakeCache.txt").write_text("CMAKE_CXX_COMPILER:FILEPATH=g++\n")
     with pytest.raises(RuntimeError, match="overrode Clang"):

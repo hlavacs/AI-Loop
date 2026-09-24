@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import os
 from collections.abc import Callable, Sequence
 from pathlib import Path
 from typing import Any
@@ -373,7 +374,7 @@ class _LifecycleAssertions:
         self.app.steps.action("propose")
         _assert_stop(
             self.app, self.store, phase=persistence.ProjectPhase.IMPLEMENTATION,
-            title="Implement Formatter.normalize", delta="~ method service.Formatter.normalize",
+            title="Implement Formatter.normalize", delta="CHANGE method service.Formatter.normalize",
             source_diff="+        return value.strip()", live={"approve", "reject"},
             gate="code approval after build passed and tests passed", queue=self.queue, cursor=0,
             iterations=[0, 0, 1, 1, 2, 2],
@@ -400,7 +401,7 @@ class _LifecycleAssertions:
         self.app.steps.action("propose")
         _assert_stop(
             self.app, self.store, phase=persistence.ProjectPhase.IMPLEMENTATION,
-            title="Implement main", delta="~ function service.main",
+            title="Implement main", delta="CHANGE function service.main",
             source_diff='+    return f"ready:{value}"', live={"approve", "reject"},
             gate="code approval after build passed and tests passed", queue=self.queue, cursor=1,
             iterations=[0, 0, 1, 1, 2, 2, 2, 3],
@@ -519,7 +520,7 @@ def test_step_runner_unified_diff_and_full_file_produce_identical_candidate_and_
 
 def test_step_runner_lf_unified_diff_ignores_platform_linesep_and_matches_full_file_bytes(
         tmp_path: Path, monkeypatch: Any) -> None:
-    monkeypatch.setattr(steps.os, "linesep", "\r\n")
+    monkeypatch.setattr(os, "linesep", "\r\n")
     full_provider = ScriptedProvider([_reply("Update LF file", {"service.py": DIFF_UPDATED_SOURCE})])
     diff = """diff --git a/service.py b/service.py
 --- a/service.py

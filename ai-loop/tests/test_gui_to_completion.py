@@ -12,6 +12,7 @@ import worker
 from ai_loop import db
 from ai_loop.config import CLAUDE_REQUEST_STREAM, CODEX_TASK_STREAM, DONE_STREAM
 from ai_loop.queues import decode
+from ai_loop.specification_fields import default_code_profile, editor_record
 from ai_loop.specification_gui import document_to_record, open_specification_editor
 from ai_loop.specifications import SpecificationService
 from ai_loop.verification_orchestrator import evaluate_completion_gate
@@ -201,7 +202,8 @@ def test_start_implementation_gui_reaches_verified_done(
             run_background=immediate_runner,
             implementation_work_factory=app._formal_implementation_work,
         )
-        editor.record = document_to_record(document())
+        editor.record = editor_record(document_to_record(document()))
+        editor.record["code_profile"] = default_code_profile("Python")
         editor._load_record_into_widgets()
         editor._refresh_assessment()
         editor.save_draft()
