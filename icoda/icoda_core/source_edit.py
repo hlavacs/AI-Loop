@@ -38,6 +38,37 @@ def source_path(root: Path, relative: str) -> Path:
     return path
 
 
+def find_source(root: Path, file: str) -> tuple[str, ...]:
+    """Find a moved source inside this root, preferring the longest matching path suffix."""
+    relative = relative_path(root, file)
+    if source_path(root, relative).is_file():
+        return (relative,)
+    root = root.resolve()
+    wanted = tuple(os.path.normcase(part) for part in reversed(Path(relative).parts))
+    best, matches = 0, []
+    for directory, children, files in os.walk(root):
+        children[:] = [name for name in children if name.lower() not in {".git", ".icoda"}]
+        for name in files:
+            if os.path.normcase(name) != wanted[0]:
+                continue
+            candidate = (Path(directory) / name).relative_to(root)
+            try:
+                if not source_path(root, candidate.as_posix()).is_file():
+                    continue
+            except ValueError:
+                continue  # A symlink must not escape the selected project or worktree.
+            score = 0
+            for actual, expected in zip(reversed(candidate.parts), wanted):
+                if os.path.normcase(actual) != expected:
+                    break
+                score += 1
+            if score > best:
+                best, matches = score, []
+            if score == best:
+                matches.append(candidate.as_posix())
+    return tuple(sorted(matches))
+
+
 def _read(path: Path) -> bytes:
     with path.open("rb") as stream:
         data = stream.read(MAX_BYTES + 1)

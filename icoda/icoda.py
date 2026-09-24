@@ -198,10 +198,10 @@ class FileViewCanvas(graph_canvas.NodeAppearanceCanvas):
                             and self.expansion_result is not None and self.expansion_result.graph.nodes) else 0
         available_width, available_height = max(width - hierarchy - 24, 100), max(height - 60, 100)
         self._fit_graph(available_width, available_height)
-        if self.organised and self.focused_group is None and self.scale < 1.0:
+        if self.focused_group is None and (self.scale < 1.0 or self._boxes_overlap()):
             self.overview = True
             self._fit_graph(available_width, available_height)
-        if not self.organised and self._boxes_overlap():
+        if not self.organised and not self.overview and self._boxes_overlap():
             column_width = max(box[2] - box[0] for box in self.node_boxes.values()) + 4
             row_height = max(box[3] - box[1] for box in self.node_boxes.values()) + 8
             columns = max(1, int((available_width + 4) / column_width))
@@ -408,7 +408,7 @@ class FileViewCanvas(graph_canvas.NodeAppearanceCanvas):
         if abs(actual_factor - 1.0) < 0.001:
             return
         origin_x, origin_y = origin or (float(self.canvas.winfo_width()) / 2, float(self.canvas.winfo_height()) / 2)
-        overview = self.organised and self.focused_group is None and target < 1.0
+        overview = self.focused_group is None and target < 1.0
         if self.overview and not overview and self._draw_layout and self._draw_layout.nodes:
             nearest = min(self._draw_layout.nodes.values(),
                           key=lambda n: math.hypot(n.x * self.scale + self.offset[0] - origin_x,
@@ -1700,9 +1700,24 @@ class App:
             if entity is not None:
                 file, line = entity.file, entity.line
         file = file.removeprefix("file:")
-        if self.source_editor.open_file(selected_root, file, line) and reveal:
-            self.side_views.select(self.source_editor.frame)
-            self.source_editor.text.focus_set()
+        original = file
+        path = selected_root / file
+        if not path.exists():
+            matches = source_edit.find_source(selected_root, file)
+            if len(matches) != 1:
+                message = (f"Multiple source files match {file}. Use Source Editor > Open to choose a file."
+                           if matches else f"Source file not found in {selected_root}: {file}. "
+                           "Reload the project; rebuild if this is a generated file.")
+                self.status.set(message)
+                self.source_editor.info.set(message)
+                return
+            file = matches[0]
+        if self.source_editor.open_file(selected_root, file, line):
+            if file != original:
+                self.status.set(f"Located source: {original} → {file}")
+            if reveal:
+                self.side_views.select(self.source_editor.frame)
+                self.source_editor.text.focus_set()
 
     def open_call_source(self, file: str, line: int = 1) -> None:
         self.open_editor(file, line, root=self._call_source_root or self.project)

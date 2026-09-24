@@ -220,20 +220,63 @@ def test_organise_ignores_result_after_project_changes(app_module, tmp_path: Pat
     assert view.layout is replacement and not view.organised
 
 
+@pytest.mark.parametrize("group_count", [4, 12])
+def test_crowded_file_view_starts_with_clusters_before_organising(
+        app_module, tmp_path: Path, monkeypatch, group_count: int) -> None:
+    app = app_module.App(app_module.tk.Tk(), config=persistence.UserConfig(), config_path=tmp_path / "c.json")
+    model = DerivedModel(str(tmp_path))
+    grouping = clusters.Clustering([])
+    for group in range(group_count):
+        files = [f"group{group}/file{i}.cpp" for i in range(16)]
+        model.files.update({file: FileInfo(file, unit="source") for file in files})
+        grouping.clusters.append(clusters.Cluster(str(group), f"Group {group}", files))
+    layout = views.layout_file_view(model, grouping)
+    view = app.view
+
+    def graph_bounds(tag):
+        boxes = list(view.node_boxes.values())
+        if tag == "file-graph" and boxes:
+            return (min(box[0] for box in boxes), min(box[1] for box in boxes),
+                    max(box[2] for box in boxes), max(box[3] for box in boxes))
+        return None
+
+    monkeypatch.setattr(view.canvas, "bbox", graph_bounds)
+    view.show(layout)
+    for action in (view.redraw, view.fit, lambda: view.on_resize(None)):
+        action()
+        assert view.overview and not view.organised and not view.compact, (view.scale, view.compact)
+        assert view.layout is layout
+        assert set(view._draw_layout.nodes) == {f"cluster:{group}" for group in range(group_count)}
+        assert all(node.kind == "cluster" for node in view._draw_layout.nodes.values())
+        assert all(node.label.endswith("16 files") for node in view._draw_layout.nodes.values())
+
+    view.open_group("cluster:0")
+    assert not view.overview and set(view.layout.nodes) == set(grouping.clusters[0].files)
+    view.fit()
+    assert view.focused_group == "cluster:0" and not view.overview
+    view.back_to_overview()
+    assert view.overview and view.layout is layout
+    view.show(opened_project(tmp_path).layout)
+    assert not view.overview and view.focused_group is None
+
+
+@pytest.mark.parametrize("organised", [False, True])
 @pytest.mark.parametrize("entry", ["zoom", "double_click"])
 def test_opened_group_stays_active_until_explicit_return_to_overview(
-        app_module, tmp_path: Path, monkeypatch, entry: str) -> None:
+        app_module, tmp_path: Path, monkeypatch, entry: str, organised: bool) -> None:
     from types import SimpleNamespace
 
     app = app_module.App(app_module.tk.Tk(), config=persistence.UserConfig(), config_path=tmp_path / "c.json")
     view = app.view
     view.show(opened_project(tmp_path).layout)
     complete_layout = view.layout
-    view.organised, view.overview = True, True
+    view.organised, view.overview = organised, True
     view.scale, view.fit_scale = .5, .2
     view.offset, view.user_zoomed = (31.0, 47.0), True
-    parent_viewport = (view.scale, view.offset, view.fit_scale, view.user_zoomed)
     view.redraw()
+    view.zoom(1.1)
+    assert view.overview and view.focused_group is None
+    parent_viewport = (view.scale, view.offset, view.fit_scale, view.user_zoomed)
     assert set(view._draw_layout.nodes) == {"cluster:src", "external:std"}
     if entry == "zoom":
         node = view._draw_layout.nodes["cluster:src"]
