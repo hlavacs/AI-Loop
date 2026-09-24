@@ -137,6 +137,13 @@ to the overview. The choice is saved per project. Build works in the overview; R
 The diagram filter `namespace:vve` matches that namespace only; `namespace:vve::*` also includes child namespaces.
 Class members use their class's namespace.
 
+File, Class and Call views split oversized code groups into at most 40 files, classes or functions.
+Grouping compares relationship communities at several resolutions with namespace and identifier themes,
+then recursively refines large groups. Sparse or uniform graphs use balanced groups built around their
+strongest connections. Group labels identify themes found in the source; double-click a group to inspect
+it and use **Overview** to return. Oversized pinned file groups are displayed as smaller children while
+retaining the saved parent assignment and name.
+
 Entity tooltips include a **Purpose** sentence from the source documentation, along with the existing source,
 signature, status, requirements, and test information. After opening or reloading a project, ICODA automatically
 asks the selected CLI LLM to add missing purpose comments throughout the analysed project. It preserves existing

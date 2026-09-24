@@ -1550,7 +1550,7 @@ class App:
                 persistence.ProjectStore(self.project).load_layout(), self.displayed.clustering, context.cluster_id))
         elif action == graph_canvas.UNPIN_CLUSTER:
             self._apply_cluster_layout(clusters.unpin_cluster(
-                persistence.ProjectStore(self.project).load_layout(), context.cluster_id))
+                persistence.ProjectStore(self.project).load_layout(), context.cluster_id, self.displayed.clustering))
         elif action == graph_canvas.RENAME_CLUSTER:
             name = simpledialog.askstring(
                 "Rename cluster", "Cluster name:", initialvalue=context.cluster_name, parent=self.root)

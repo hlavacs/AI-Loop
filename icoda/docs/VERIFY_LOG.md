@@ -5542,3 +5542,27 @@ Verification:
   The Class View canvas was mapped. No VVE source files were edited.
 - Ruff passes for all changed Python files. Broader source-editor tests still have Windows failures involving
   POSIX permission expectations, symlink privileges and default text encoding; those are outside this repair.
+
+
+## 2026-09-24 — bounded thematic diagram clusters
+
+Class and Call overview groups previously inherited File View membership without checking their entity
+count, so one group could contain hundreds of classes or functions. Oversized file groups were split
+alphabetically, and applying pins afterward could bypass the file limit.
+
+A shared deterministic splitter now compares connected components, fixed-seed Louvain communities at
+three resolutions, and source/namespace/identifier themes. Candidate scoring rewards internal relationships
+and shared themes and penalizes singleton fragmentation. Groups are refined recursively to at most 40
+nodes; when no useful partition exists, balanced groups grow along strong relationships with thematic tie
+breaks. Every node is retained exactly once. Large pinned file groups retain their parent assignment while
+presenting bounded children; unpinning one child leaves sibling pins intact. Smaller groups keep their IDs.
+
+Verification:
+
+- 171 related tests passed: clustering, themed and dense synthetic graphs, disconnected and star graphs,
+  insertion-order determinism, pins, overview navigation, views, filtering, expansion and application wiring.
+- The VVE cached model's largest File View cluster decreased from 40 to 17 files; its largest Class View
+  cluster decreased from 109 to 27 classes. All classes remain reachable in 23 groups.
+- Native Tk checks opened every VVE file and class group, checked their node limits and membership, and
+  returned to the overview successfully. No project source or saved layout was changed by these checks.
+- Ruff and git diff --check pass.

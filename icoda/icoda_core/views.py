@@ -14,7 +14,9 @@ import re
 from collections import defaultdict
 from dataclasses import dataclass, field, replace
 
-from icoda_core import class_view, mind_map
+import networkx as nx
+
+from icoda_core import class_view, diagram_partition, mind_map
 from icoda_core.clusters import Clustering
 from icoda_core.model import CALLABLE_KINDS, DerivedModel, EdgeKind, Entity, Kind
 
@@ -375,7 +377,7 @@ def file_view_overview(layout: FileViewLayout, visible: set[str]) -> FileViewLay
 
 def entity_view_overview(model: DerivedModel, clustering: Clustering, members: set[str],
                          arrows: list[Arrow], unit: str) -> tuple[FileViewLayout, dict[str, set[str]]]:
-    """Use stable File View cluster IDs for a compact function or class overview."""
+    """Refine File View groups into bounded, themed function or class groups."""
     files = {file: cluster.id for cluster in clustering.clusters for file in cluster.files}
     names = {cluster.id: cluster.name for cluster in clustering.clusters}
     groups: dict[str, set[str]] = defaultdict(set)
@@ -388,9 +390,35 @@ def entity_view_overview(model: DerivedModel, clustering: Clustering, members: s
         owners[usr] = key
         groups[key].add(usr)
         nodes[key] = Node(key, label, 0, 0, key, "cluster")
+    graph = nx.Graph()
+    graph.add_nodes_from(sorted(members))
+    for arrow in arrows:
+        if arrow.source in members and arrow.target in members and arrow.source != arrow.target:
+            weight = sum(arrow.counts.values()) or 1
+            old = graph.get_edge_data(arrow.source, arrow.target, {}).get("weight", 0)
+            graph.add_edge(arrow.source, arrow.target, weight=old + weight)
+    hints = {usr: diagram_partition.topics(entity.file, entity.qualified_name)
+             if (entity := model.entities.get(usr)) else diagram_partition.topics(usr)
+             for usr in sorted(members)}
+    for key, group in list(groups.items()):
+        if len(group) <= diagram_partition.MAX_GROUP_SIZE:
+            continue
+        parts = diagram_partition.split(graph.subgraph(group), hints)
+        parent = nodes.pop(key)
+        del groups[key]
+        index = 1
+        for part in parts:
+            while f"{key}#{index}" in nodes:
+                index += 1
+            child = f"{key}#{index}"
+            topic = diagram_partition.theme(part, hints, sorted(group))
+            label = f"{parent.label} / {topic} ({index})"
+            groups[child] = set(part)
+            nodes[child] = Node(child, label, 0, 0, child, "cluster")
+            owners.update((usr, child) for usr in part)
     for key, node in nodes.items():
         count = len(groups[key])
-        plural = "libraries" if key == "external:overview" else unit
+        plural = "libraries" if key.startswith("external:overview") else unit
         singular = {"classes": "class", "functions": "function", "libraries": "library"}[plural]
         node.label += f"\n{count} {singular if count == 1 else plural}"
     relations = [replace(arrow, source=owners[arrow.source], target=owners[arrow.target])

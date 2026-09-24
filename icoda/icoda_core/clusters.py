@@ -15,13 +15,14 @@ from pathlib import PurePosixPath
 
 import networkx as nx
 
+from icoda_core import diagram_partition
 from icoda_core.model import DerivedModel, EdgeKind
 
 EDGE_WEIGHTS = {EdgeKind.CALLS: 1.0, EdgeKind.USES_TYPE: 1.0, EdgeKind.INHERITS: 2.0, EdgeKind.IMPORTS: 1.0,
                 EdgeKind.INCLUDES: 1.0}
 HYSTERESIS = 1.5
 HOME_PULL = 0.5
-MAX_CLUSTER_SIZE = 40
+MAX_CLUSTER_SIZE = diagram_partition.MAX_GROUP_SIZE
 LOUVAIN_SEED = 0
 SEEDED_LABEL_PROPAGATION = "seeded_label_propagation"
 LOUVAIN = "louvain"
@@ -32,6 +33,7 @@ class Cluster:
     id: str
     name: str
     files: list[str] = field(default_factory=list)
+    parent_id: str | None = None
 
 
 @dataclass
@@ -75,11 +77,12 @@ class Clustering:
 
 
 def cluster_is_pinned(layout: Layout, clustering: Clustering, cluster_id: str) -> bool:
-    """A cluster is pinned when every current member records that cluster id."""
+    """Every member is pinned to this cluster or to its oversized parent."""
     cluster = next((item for item in clustering.clusters if item.id == cluster_id), None)
     if cluster is None or not cluster.files:
         return False
-    return all(layout.pins.get(file) == cluster_id for file in cluster.files)
+    return all(layout.pins.get(file) in {cluster_id, cluster.parent_id} and file in layout.pins
+               for file in cluster.files)
 
 
 def pin_cluster(layout: Layout, clustering: Clustering, cluster_id: str) -> LayoutDecision:
@@ -108,9 +111,11 @@ def unpin_file(layout: Layout, file: str) -> LayoutDecision:
     return _layout_decision(layout, layout.names, pins)
 
 
-def unpin_cluster(layout: Layout, cluster_id: str) -> LayoutDecision:
-    """Remove every file pin targeting ``cluster_id`` so ordinary clustering decides membership again."""
-    pins = {file: target for file, target in layout.pins.items() if target != cluster_id}
+def unpin_cluster(layout: Layout, cluster_id: str, clustering: Clustering | None = None) -> LayoutDecision:
+    """Unpin a cluster or one displayed child of an oversized pinned cluster."""
+    members = {file for cluster in clustering.clusters for file in cluster.files if cluster.id == cluster_id} \
+        if clustering is not None else set()
+    pins = {file: target for file, target in layout.pins.items() if target != cluster_id and file not in members}
     return _layout_decision(layout, layout.names, pins)
 
 
@@ -171,17 +176,31 @@ def seeded_label_propagation(graph: nx.Graph, seeds: dict[str, str], iterations:
     return labels
 
 
-def split_large(labels: dict[str, str], max_size: int = MAX_CLUSTER_SIZE) -> dict[str, str]:
-    """Split any label group above ``max_size`` into numbered chunks of sorted files."""
+def split_large(labels: dict[str, str], max_size: int = MAX_CLUSTER_SIZE,
+                graph: nx.Graph | None = None, hints: diagram_partition.Topics | None = None) -> dict[str, str]:
+    """Refine oversized groups using relationships and themes, with a deterministic size bound."""
+    if max_size < 1:
+        raise ValueError("max_size must be positive")
     groups: dict[str, list[str]] = defaultdict(list)
     for file in sorted(labels):
         groups[labels[file]].append(file)
+    if graph is None:
+        graph = nx.Graph()
+        graph.add_nodes_from(labels)
+    hints = hints or {file: diagram_partition.topics(file) for file in labels}
     result = dict(labels)
-    for label, files in groups.items():
+    used = set(labels.values())
+    for label, files in sorted(groups.items()):
         if len(files) <= max_size:
             continue
-        for index, file in enumerate(files):
-            result[file] = f"{label}#{index // max_size + 1}"
+        parts = diagram_partition.split(graph.subgraph(files), hints, max_size)
+        index = 1
+        for part in parts:
+            while f"{label}#{index}" in used:
+                index += 1
+            key = f"{label}#{index}"
+            used.add(key)
+            result.update((file, key) for file in part)
     return result
 
 
@@ -193,7 +212,7 @@ def _needs_louvain(graph: nx.Graph, labels: dict[str, str]) -> bool:
 def _louvain_labels(graph: nx.Graph, seeds: dict[str, str]) -> dict[str, str] | None:
     """Return fixed-seed Louvain communities with stable directory-derived labels, if available."""
     detect = getattr(nx.algorithms.community, "louvain_communities", None)
-    if detect is None:
+    if detect is None or not graph.number_of_edges():
         return None
     communities = sorted(tuple(sorted(community))
                          for community in detect(graph, weight="weight", seed=LOUVAIN_SEED))
@@ -216,7 +235,7 @@ def _louvain_labels(graph: nx.Graph, seeds: dict[str, str]) -> dict[str, str] | 
 
 
 def cluster_files(model: DerivedModel, layout: Layout | None = None, max_size: int = MAX_CLUSTER_SIZE) -> Clustering:
-    """Cluster the project's files; pins and names from ``layout`` are applied last."""
+    """Cluster files, apply saved choices, then refine oversized groups without dropping their pins."""
     layout = layout or Layout()
     graph = file_graph(model)
     seeds = {file: directory_seed(file) for file in graph.nodes}
@@ -227,19 +246,29 @@ def cluster_files(model: DerivedModel, layout: Layout | None = None, max_size: i
         if fallback_labels is not None:
             labels = fallback_labels
             algorithm = LOUVAIN
-    labels = split_large(labels, max_size)
     for file, cluster_id in layout.pins.items():
         if file in labels:
             labels[file] = cluster_id
-    return Clustering(_build_clusters(labels, layout), algorithm)
+    parents = dict(labels)
+    hints = {file: diagram_partition.topics(file, model.files[file].module) for file in labels}
+    labels = split_large(labels, max_size, graph, hints)
+    return Clustering(_build_clusters(labels, layout, parents, hints), algorithm)
 
 
-def _build_clusters(labels: dict[str, str], layout: Layout) -> list[Cluster]:
+def _build_clusters(labels: dict[str, str], layout: Layout, parents: dict[str, str],
+                    hints: diagram_partition.Topics) -> list[Cluster]:
     grouped: dict[str, list[str]] = defaultdict(list)
     for file in sorted(labels):
         grouped[labels[file]].append(file)
     clusters = []
     for cluster_id in sorted(grouped):
         default_name = PurePosixPath(cluster_id).name or cluster_id
-        clusters.append(Cluster(cluster_id, layout.names.get(cluster_id, default_name), grouped[cluster_id]))
+        files = grouped[cluster_id]
+        parent = parents[files[0]] if parents[files[0]] != cluster_id else None
+        if "#" in cluster_id:
+            base = parent or cluster_id.split("#", 1)[0]
+            title = layout.names.get(base, PurePosixPath(base).name or base)
+            topic = diagram_partition.theme(files, hints, sorted(labels))
+            default_name = f"{title} / {topic} ({cluster_id.rsplit('#', 1)[1]})"
+        clusters.append(Cluster(cluster_id, layout.names.get(cluster_id, default_name), files, parent))
     return clusters
