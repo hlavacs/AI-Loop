@@ -788,3 +788,38 @@ def test_reread_guards_busy_missing_and_changed_project(app_module, tmp_path, mo
     app.project = tmp_path
     app.edit_specification()
     assert app.spec_editor is editor
+
+
+@pytest.mark.parametrize("filtered", [False, True])
+def test_single_file_in_overview_opens_source_and_never_enters_group(app_module, tmp_path, monkeypatch, filtered):
+    from types import SimpleNamespace
+
+    from icoda_core.graph_filter import NodeDecision
+
+    app = app_module.App(app_module.tk.Tk(), config=persistence.UserConfig(), config_path=tmp_path / "c.json")
+    project = opened_project(tmp_path)
+    if not filtered:
+        project.clustering.clusters[0].files.remove("src/b.cpp")
+        project.clustering.clusters.append(clusters.Cluster("single", "Single", ["src/b.cpp"]))
+        project.layout = views.layout_file_view(project.model, project.clustering)
+    view = app.view
+    view.show(project.layout)
+    view.overview = True
+    view.scale, view.fit_scale = .5, .2
+    if filtered:
+        view.set_graph_filter({"src/a.cpp": NodeDecision(hidden=True)}, filter_active=True)
+    view.redraw()
+    assert view._draw_layout.nodes["src/b.cpp"].kind == "file"
+    opened = []
+    monkeypatch.setattr(app, "open_editor", opened.append)
+    monkeypatch.setattr(view, "node_at", lambda *_: "src/b.cpp")
+    view.on_double_click(SimpleNamespace(x=0, y=0))
+    assert opened == ["src/b.cpp"]
+    assert view.overview and view.focused_group is None
+    view.open_group("src/b.cpp")
+    view.open_group("cluster:src" if filtered else "cluster:single")
+    assert view.overview and view.focused_group is None
+    node = view._draw_layout.nodes["src/b.cpp"]
+    view.zoom(3, view.to_screen(node.x, node.y))
+    assert view.scale > 1 and view.overview and view.focused_group is None
+    assert view._overview_viewport is None

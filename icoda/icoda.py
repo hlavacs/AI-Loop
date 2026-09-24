@@ -420,8 +420,10 @@ class FileViewCanvas(graph_canvas.NodeAppearanceCanvas):
             nearest = min(self._draw_layout.nodes.values(),
                           key=lambda n: math.hypot(n.x * self.scale + self.offset[0] - origin_x,
                                                    n.y * self.scale + self.offset[1] - origin_y))
-            self.open_group(nearest.id)
-            return
+            if self._is_overview_group(nearest.id):
+                self.open_group(nearest.id)
+                return
+            overview = True  # A standalone file stays in the overview when zoomed.
         elif not self.overview and overview:
             self.fit()
             return
@@ -473,15 +475,26 @@ class FileViewCanvas(graph_canvas.NodeAppearanceCanvas):
         if self.release_hierarchy(event) or self.dragged:
             return
         node = self.node_at(event.x, event.y)
-        if self.overview and node is not None:
+        if self.overview and node is not None and self._is_overview_group(node):
             self.open_group(node)
             return
         if node is not None and not node.startswith("external:"):
             self.app.open_editor(node)
 
+    def _is_overview_group(self, node_id: str) -> bool:
+        source = self._original_layout
+        if source is None:
+            return False
+        if node_id == "external:overview":
+            return sum(node.kind == "external" and self.node_visible(key)
+                       for key, node in source.nodes.items()) > 1
+        return any(node_id == f"cluster:{circle.id}"
+                   and sum(self.node_visible(file) for file in circle.files) > 1
+                   for circle in source.circles)
+
     def open_group(self, node_id: str) -> None:
         """Enter a subdiagram and remember the parent viewport for an explicit return."""
-        if not self.overview or self._original_layout is None:
+        if not self.overview or not self._is_overview_group(node_id):
             return
         self._overview_viewport = (self.scale, self.offset, self.fit_scale, self.user_zoomed)
         self.focused_group = node_id
