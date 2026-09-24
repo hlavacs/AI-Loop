@@ -254,3 +254,39 @@ def test_recursive_library_without_interface_still_has_an_entry() -> None:
     assert views.library_roots(model) == ("a",)
     assert set(views.layout_call_view(model, views.library_roots(model)).nodes) == {"a", "b"}
     assert views.library_roots(DerivedModel("/empty")) == ()
+
+
+@pytest.mark.parametrize("library_mode", [False, True])
+def test_call_selection_thickens_entry_path_and_direct_outgoing_calls(library_mode, monkeypatch) -> None:
+    model = DerivedModel("/p")
+    for name in ("main", "api", "middle", "selected", "child", "sibling", "grandchild"):
+        model.add_entity(Entity(name, Kind.FUNCTION, name, name, "lib.cpp", 1,
+                                exported=name in {"main", "api"}))
+    for source, target in (("main", "middle"), ("middle", "selected"), ("main", "sibling"),
+                           ("api", "sibling"), ("selected", "child"), ("selected", "selected"),
+                           ("selected", "middle"), ("child", "grandchild")):
+        model.add_edge(Edge(EdgeKind.CALLS, source, target, uncertain=target == "child"))
+    view = CallViewCanvas(tk.Tk(), lambda *_: None)
+    view.library_mode = library_mode
+    view.depth_var.set(5)
+    view.show(model)
+    view.select("selected")
+    assert view.layout.path == {"main", "middle", "selected"}
+    lines = []
+    monkeypatch.setattr(view.canvas, "create_line", lambda *args, **kwargs: lines.append(kwargs))
+    for edge in view.layout.edges:
+        lines.clear()
+        view._draw_edge(edge)
+        expected = 3 if edge.source == "selected" or (edge.source, edge.target) in {
+            ("main", "middle"), ("middle", "selected")} else 1
+        assert len(lines) == 1 and lines[0]["width"] == expected
+        assert lines[0]["arrow"] == tk.LAST
+        if edge.uncertain:
+            assert lines[0]["dash"] == (6, 4)
+    view.select("child")
+    assert view.layout.path == {"main", "middle", "selected", "child"}
+    view.select(None)
+    lines.clear()
+    for edge in view.layout.edges:
+        view._draw_edge(edge)
+    assert lines and all(line["width"] == 1 for line in lines)

@@ -1,7 +1,7 @@
 """The Call View: the function-level call graph from a root, one column per call depth.
 
 Functions are boxes coloured by status; a proposal's new entities get a green outline and changed ones an orange
-outline; the path from the root to the selected function is drawn thick; a call back towards the root (recursion)
+outline; the path from the root to the selected function and its outgoing calls are drawn thick; a call back towards the root (recursion)
 is drawn as a loop. Zoom, pan, hover and double click behave as in the File View.
 """
 
@@ -165,7 +165,7 @@ class CallViewCanvas(graph_canvas.GraphCanvas):
         assert self.layout is not None
         a, b = self.layout.nodes[edge.source], self.layout.nodes[edge.target]
         on_path = edge.source in self.layout.path and edge.target in self.layout.path
-        width = 3 if on_path else 1
+        width = 3 if on_path or edge.source == self.selected else 1
         colour = self.edge_colour(edge.source, edge.target, "#1f77b4")
         if edge.loop and a is b:
             x, y = self.to_screen(a.x + BOX_WIDTH / 2, a.y)
