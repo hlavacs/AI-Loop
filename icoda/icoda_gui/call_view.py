@@ -115,7 +115,7 @@ class CallViewCanvas(graph_canvas.GraphCanvas):
         entity = self.playback.next_call()
         if entity is not None:
             self._select_playback_entity(entity.usr)
-        self.playback_status_var.set(self.playback.status)
+        self._update_playback_status()
 
     def previous_call(self) -> None:
         if self.playback is None:
@@ -125,19 +125,25 @@ class CallViewCanvas(graph_canvas.GraphCanvas):
             self._clear_playback_selection()
         else:
             self._select_playback_entity(entity.usr)
-        self.playback_status_var.set(self.playback.status)
+        self._update_playback_status()
 
     def reset_playback(self) -> None:
         if self.playback is None:
             return
         self.playback.reset()
         self._clear_playback_selection()
-        self.playback_status_var.set(self.playback.status)
+        self._update_playback_status()
+
+    def _update_playback_status(self) -> None:
+        if self.playback is None:
+            return
+        status = self.playback.status
+        if self.selected is not None and self.layout is not None and self.selected not in self.layout.nodes:
+            status += " — outside the current diagram; source shown in editor"
+        self.playback_status_var.set(status)
 
     def _select_playback_entity(self, usr: str) -> None:
-        if self.layout is None or usr not in self.layout.nodes:
-            self.root_usr = usr
-        self.user_zoomed = False
+        # Playback is a selection, not a request to replace the entry-point graph.
         self.select(usr)
         if self.focus_node is not None:
             self.focus_node(usr)

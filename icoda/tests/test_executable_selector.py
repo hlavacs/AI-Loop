@@ -434,3 +434,44 @@ def test_empty_trace_disables_playback_and_explains_missing_symbols(app_module, 
     view.set_playback(call_trace.CallPlayback(call_trace.CallTrace(())))
     assert all(value == ["disabled"] for value in states.values())
     assert "No project calls resolved" in view.playback_status_var.get()
+
+
+@pytest.mark.parametrize("library_mode", [False, True])
+def test_playback_preserves_entry_graph_and_camera_for_calls_outside_depth(app_module, library_mode):
+    from icoda_core import call_trace
+    from icoda_gui.call_view import CallViewCanvas
+
+    model = DerivedModel("/p")
+    for name in ("main", "api", "child", "deep", "disconnected"):
+        model.add_entity(Entity(name, Kind.FUNCTION, name, name, "app.cpp", 1,
+                                exported=name in {"main", "api"}))
+    model.add_edge(Edge(EdgeKind.CALLS, "main", "child"))
+    model.add_edge(Edge(EdgeKind.CALLS, "child", "deep"))
+    selected = []
+    view = CallViewCanvas(app_module.tk.Tk(), lambda *_: None, select_node=selected.append)
+    view.library_mode = library_mode
+    view.entry_usr = "main"
+    view.depth_var.set(1)
+    view.show(model)
+    view.zoom(2)
+    original_root, original_label = view.root_usr, view.root_var.get()
+    original_nodes = {usr: (node.x, node.y) for usr, node in view.layout.nodes.items()}
+    viewport = view.scale, view.offset, view.fit_scale, view.user_zoomed
+    trace = call_trace.CallTrace(tuple(call_trace.CallEvent(
+        i, call_trace.EventKind.ENTRY, i, "thread", i, hex(i), None, name, None, model.entities[name])
+        for i, name in enumerate(("main", "deep", "disconnected"))))
+    view.set_playback(call_trace.CallPlayback(trace))
+    for expected in ("main", "deep", "disconnected"):
+        view.next_call()
+        assert view.selected == expected and selected[-1] == expected
+        assert view.root_usr == original_root and view.root_var.get() == original_label
+        assert {usr: (n.x, n.y) for usr, n in view.layout.nodes.items()} == original_nodes
+        assert (view.scale, view.offset, view.fit_scale, view.user_zoomed) == viewport
+        if expected != "main":
+            assert "outside the current diagram" in view.playback_status_var.get()
+    view.previous_call()
+    assert view.selected == "deep" and view.root_usr == original_root
+    view.reset_playback()
+    assert view.selected is None and view.root_usr == original_root
+    assert set(view.layout.nodes) == set(original_nodes)
+    assert "outside" not in view.playback_status_var.get()
