@@ -33,10 +33,7 @@ where git >nul 2>nul || (
     echo icoda: git is required. Run: winget install --id Git.Git -e 1>&2
     exit /b 1
 )
-where cmake >nul 2>nul || echo icoda: cmake not found ^(winget install Kitware.CMake^); building projects will not work. 1>&2
-where ninja >nul 2>nul || echo icoda: ninja not found ^(winget install Ninja-build.Ninja^); building projects will not work. 1>&2
-where clang-cl >nul 2>nul || echo icoda: clang-cl not found; install the "C++ Clang tools for Windows" component of Visual Studio. 1>&2
-if "%VCPKG_ROOT%"=="" echo icoda: VCPKG_ROOT is not set; library installation will be unavailable. 1>&2
+rem icoda.py initializes the Visual Studio environment before checking the build tools.
 
 if not exist "%VENV_PY%" (
     echo icoda: .icoda-venv is missing. Run these commands from %SCRIPT_DIR%: 1>&2

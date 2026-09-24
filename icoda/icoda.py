@@ -10,6 +10,8 @@ import math
 import os
 import queue
 import shlex
+import shutil
+import subprocess
 import sys
 import threading
 import tkinter as tk
@@ -1826,6 +1828,25 @@ def parse_args(argv: list[str]) -> Path | None:
     return Path(argv[0]) if argv else None
 
 
+def configure_windows_toolchain() -> None:
+    """Let ordinary Windows shells use installed VS tools before reporting missing prerequisites."""
+    if sys.platform != "win32":
+        return
+    try:
+        os.environ.update(toolchain._windows_build_environment(dict(os.environ)))
+    except (OSError, RuntimeError, subprocess.SubprocessError) as exc:
+        print(f"icoda: could not initialize Visual Studio's C++ environment: {exc}", file=sys.stderr)
+    for executable, guidance in (
+        ("cmake", " (winget install Kitware.CMake); building projects will not work."),
+        ("ninja", " (winget install Ninja-build.Ninja); building projects will not work."),
+        ("clang-cl", '; install the "C++ Clang tools for Windows" component of Visual Studio.'),
+    ):
+        if shutil.which(executable) is None:
+            print(f"icoda: {executable} not found{guidance}", file=sys.stderr)
+    if not os.environ.get("VCPKG_ROOT"):
+        print("icoda: VCPKG_ROOT is not set; library installation will be unavailable.", file=sys.stderr)
+
+
 def configure_tk_libraries() -> None:
     """Locate the base Python installation's Tcl/Tk scripts on Windows."""
     if sys.platform != "win32":
@@ -1842,6 +1863,7 @@ def configure_tk_libraries() -> None:
 
 def main(argv: list[str] | None = None) -> int:
     project = parse_args(sys.argv[1:] if argv is None else argv)
+    configure_windows_toolchain()
     configure_tk_libraries()
     root = tk.Tk()
     app = App(root, project, watchdog=True)
