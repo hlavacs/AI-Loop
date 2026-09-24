@@ -668,7 +668,7 @@ class GroupedGraphCanvas(GraphCanvas):
         raise NotImplementedError
 
     def open_group(self, group: str) -> None:
-        if not self.overview or group not in self.groups:
+        if not self.overview or group not in self.groups or len(self.groups[group]) < 2:
             return
         self._overview_viewport = (self.scale, self.offset, self.fit_scale, self.user_zoomed)
         self.focused_group, self.overview = group, False
@@ -734,8 +734,9 @@ class GroupedGraphCanvas(GraphCanvas):
             if candidates and self.scale * factor >= max(1.0, self.fit_scale * 1.3):
                 nearest = min(candidates, key=lambda node: sum(
                     (a - b) ** 2 for a, b in zip(self.to_screen(node.x, node.y), point, strict=True)))
-                self.open_group(nearest.id)
-                return
+                if nearest.kind == "cluster":
+                    self.open_group(nearest.id)
+                    return
         if self.focused_group is None:
             super().zoom(factor, origin)
             return

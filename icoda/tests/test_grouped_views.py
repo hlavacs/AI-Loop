@@ -183,7 +183,7 @@ def test_dense_class_subview_keeps_members_visible_and_highlights_connections_on
     assert view.focused_group == "cluster:a" and not view.overview
 
 
-def test_single_class_group_keeps_all_details_when_fitted_organised_or_zoomed(monkeypatch) -> None:
+def test_single_class_is_inline_with_all_details_when_fitted_or_zoomed(monkeypatch) -> None:
     model, grouping = grouped_model()
     for index in range(1, 8):
         model.entities[f"c{index}"].file = "b.cpp"
@@ -203,17 +203,29 @@ def test_single_class_group_keeps_all_details_when_fitted_organised_or_zoomed(mo
         return create_text(*args, **kwargs)
 
     monkeypatch.setattr(view.canvas, "create_text", record_text)
-    view.open_group("cluster:a")
-    assert view.scale < .5 and set(view.layout.nodes) == {"c0"}
+    assert set(view.overview_layout.nodes) == {"c0", "cluster:b"}
+    assert view.overview_layout.nodes["c0"].kind == "class"
+    assert "cluster:a" not in view.groups
+    view.open_group("c0")
+    assert view.overview and view.focused_group is None
     expected = {"class C0", "1 data · 60 methods", "value: int"}
     expected.update(f"void run{index}()  [implemented]" for index in range(60))
-    for action in (view.redraw, view.fit, view.organise, lambda: view.on_resize(None),
-                   lambda: view.zoom(.1), view.reset_zoom):
+    for action in (view.redraw, view.fit, lambda: view.on_resize(None),
+                   lambda: view.zoom(.1)):
         labels.clear()
         action()
+        view.redraw()
         assert expected <= set(labels)
         assert {"field", *(f"method{index}" for index in range(60))} <= set(view.item_nodes.values())
-        assert view.focused_group == "cluster:a" and not view.overview
+        assert view.focused_group is None and view.overview
+    point = view.to_screen(view.overview_layout.nodes["c0"].x, view.overview_layout.nodes["c0"].y)
+    view.zoom(2 / view.scale, point)
+    assert view.overview and view.focused_group is None
+    opened = []
+    view.open_editor = lambda *args: opened.append(args)
+    monkeypatch.setattr(view, "node_at", lambda *_: "c0")
+    view.on_double_click(SimpleNamespace(x=0, y=0))
+    assert opened == [("a.cpp", 2)]
 
 
 @pytest.mark.parametrize("interface", ["export", "header", "inferred"])
@@ -290,3 +302,69 @@ def test_call_selection_thickens_entry_path_and_direct_outgoing_calls(library_mo
     for edge in view.layout.edges:
         view._draw_edge(edge)
     assert lines and all(line["width"] == 1 for line in lines)
+
+
+def test_class_overview_draws_typed_connections_between_clusters_and_singletons(monkeypatch):
+    model, grouping = grouped_model()
+    model.files["single.cpp"] = FileInfo("single.cpp")
+    model.add_entity(Entity("single", Kind.CLASS, "Single", "Single", "single.cpp", 1))
+    model.add_entity(Entity("field", Kind.FIELD, "value", "Single::value", "single.cpp", 2, parent="single"))
+    model.add_entity(Entity("method", Kind.METHOD, "run", "C0::run", "a.cpp", 3, parent="c0"))
+    model.add_edge(Edge(EdgeKind.USES_TYPE, "field", "c8"))
+    model.add_edge(Edge(EdgeKind.USES_TYPE, "method", "single"))
+    view = ClassViewCanvas(tk.Tk(), lambda *_: None)
+    view.group_clustering = grouping
+    view.show(model)
+    drawn = []
+    original = view._draw_edge
+    def record(edge, nodes=None):
+        drawn.append(edge)
+        original(edge, nodes)
+    monkeypatch.setattr(view, "_draw_edge", record)
+    view.redraw()
+    assert {(e.source, e.target, e.kind.value, e.count) for e in drawn} == {
+        ("cluster:b", "cluster:a", "inheritance", 12),
+        ("single", "cluster:b", "composition", 1),
+        ("cluster:a", "single", "usage", 1)}
+    assert {"single", "field", "cluster:a", "cluster:b"} <= set(view.item_nodes.values())
+    panels = list(view._overview_panels.values())
+    for i, a in enumerate(panels):
+        for b in panels[i+1:]:
+            assert abs(a.x-b.x) >= (a.width+b.width)/2 or abs(a.y-b.y) >= (a.height+b.height)/2
+    drawn.clear()
+    view.set_graph_filter({"single": NodeDecision(hidden=True)}, filter_active=True)
+    assert [(e.source, e.target) for e in drawn] == [("cluster:b", "cluster:a")]
+
+
+@pytest.mark.parametrize("library_mode", [False, True])
+def test_call_click_filters_arrows_and_background_restores_them(library_mode, monkeypatch):
+    model = DerivedModel("/p")
+    for name in ("main", "api", "parent", "chosen", "child", "other"):
+        model.add_entity(Entity(name, Kind.FUNCTION, name, name, "lib.cpp", 1,
+                                exported=name in {"main", "api"}))
+    pairs = {("main", "parent"), ("parent", "chosen"), ("chosen", "child"),
+             ("chosen", "chosen"), ("parent", "main"), ("main", "other"), ("api", "other")}
+    for source, target in sorted(pairs):
+        model.add_edge(Edge(EdgeKind.CALLS, source, target))
+    focused = []
+    view = CallViewCanvas(tk.Tk(), lambda *_: None, focus_node=focused.append)
+    view.library_mode = library_mode
+    view.show(model)
+    all_edges = {(e.source, e.target) for e in view.layout.edges}
+    drawn = []
+    monkeypatch.setattr(view, "_draw_edge", lambda edge: drawn.append((edge.source, edge.target)))
+    monkeypatch.setattr(view, "node_at", lambda *_: "chosen")
+    click = SimpleNamespace(x=0, y=0, num=1)
+    view.on_release(click)
+    assert set(drawn) == {("main", "parent"), ("parent", "chosen"),
+                          ("chosen", "child"), ("chosen", "chosen")}
+    assert set(view.item_nodes.values()) == set(view.layout.nodes)
+    monkeypatch.setattr(view, "node_at", lambda *_: None)
+    view.dragged = True
+    view.on_release(click)
+    assert view.selected == "chosen"
+    view.dragged = False
+    drawn.clear()
+    view.on_release(click)
+    assert view.selected is None and not view.layout.path
+    assert set(drawn) == all_edges and focused == ["chosen", None]

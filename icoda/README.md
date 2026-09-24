@@ -142,7 +142,9 @@ Grouping compares relationship communities at several resolutions with namespace
 then recursively refines large groups. Sparse or uniform graphs use balanced groups built around their
 strongest connections. Group labels identify themes found in the source; double-click a group to inspect
 it and use **Overview** to return. Oversized pinned file groups are displayed as smaller children while
-retaining the saved parent assignment and name.
+retaining the saved parent assignment and name. Class overview connections show aggregated inheritance,
+composition and usage relations. A group containing only one class appears directly as a class panel,
+including its members, instead of a cluster to open.
 
 Inside a group, entities use a force-directed layout: relationships pull connected entities together,
 repulsion separates unrelated entities, and collision handling respects label and class-panel sizes.

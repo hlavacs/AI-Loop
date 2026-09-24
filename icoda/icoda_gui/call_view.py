@@ -150,7 +150,8 @@ class CallViewCanvas(graph_canvas.GraphCanvas):
             self.hide_hierarchy()
             return
         for edge in self.layout.edges:
-            if self.edge_visible(edge.source, edge.target):
+            if self.edge_visible(edge.source, edge.target) and (
+                    self.selected not in self.layout.nodes or self._focused_edge(edge)):
                 self._draw_edge(edge)
         visible_count = 0
         for node in self.layout.nodes.values():
@@ -161,11 +162,14 @@ class CallViewCanvas(graph_canvas.GraphCanvas):
         self.draw_appearance_key(uncertain_calls=True)
         self.draw_expansion_layer()
 
+    def _focused_edge(self, edge: views.CallEdge) -> bool:
+        assert self.layout is not None
+        return (edge.source, edge.target) in self.layout.path_edges or edge.source == self.selected
+
     def _draw_edge(self, edge: views.CallEdge) -> None:
         assert self.layout is not None
         a, b = self.layout.nodes[edge.source], self.layout.nodes[edge.target]
-        on_path = edge.source in self.layout.path and edge.target in self.layout.path
-        width = 3 if on_path or edge.source == self.selected else 1
+        width = 3 if self._focused_edge(edge) else 1
         colour = self.edge_colour(edge.source, edge.target, "#1f77b4")
         if edge.loop and a is b:
             x, y = self.to_screen(a.x + BOX_WIDTH / 2, a.y)
@@ -222,7 +226,11 @@ class CallViewCanvas(graph_canvas.GraphCanvas):
             return
         if not self.dragged and getattr(event, "num", 1) == 1:
             node = self.node_at(event.x, event.y)
-            if node is not None:
+            if node is None:
+                self.select(None)
+                if self.focus_node is not None:
+                    self.focus_node(None)
+            else:
                 if node != self.selected:
                     self.select(node)
                     if self.focus_node is not None:

@@ -5,11 +5,12 @@ from __future__ import annotations
 import math
 import tkinter as tk
 from collections.abc import Callable
+from dataclasses import replace
 from tkinter import ttk
 from typing import Any
 
 from icoda_core import class_view as class_graph
-from icoda_core import views
+from icoda_core import force_layout, views
 from icoda_core.model import DerivedModel
 from icoda_gui import graph_canvas, zoom_controls
 
@@ -35,6 +36,7 @@ class ClassViewCanvas(graph_canvas.GroupedGraphCanvas):
         self.model: DerivedModel | None = None
         self.graph = class_graph.ClassGraph()
         self.layout: views.ClassViewLayout | None = None
+        self._overview_panels: dict[str, views.ClassNodeLayout] = {}
         self.selected: str | None = None
         self.edge_focus: str | None = None
         self.summary_var = tk.StringVar(value="No model")
@@ -86,7 +88,64 @@ class ClassViewCanvas(graph_canvas.GroupedGraphCanvas):
         self.layout = views.layout_class_view(graph)
         if self.focused_group is not None or not self.overview:
             self.layout = views.organise_class_view(self.layout)
+        if self.overview:
+            self._arrange_overview()
         self.organise_button.configure(state=tk.DISABLED if self.overview or not graph.nodes else tk.NORMAL)
+
+    def _arrange_overview(self) -> None:
+        """Fit full singleton class panels alongside compact multi-class groups."""
+        assert self.layout is not None and self.overview_layout is not None
+        panels = {}
+        for key, node in self.overview_layout.nodes.items():
+            if node.kind != "cluster":
+                panels[key] = self.layout.nodes[key]
+            else:
+                representative = self.layout.nodes[min(self.groups[key])]
+                width = max(220, max(map(len, node.label.splitlines())) * 8 + 24)
+                panels[key] = replace(representative, width=width, height=76)
+        positions, width, height = force_layout.arrange(
+            {key: (panel.width, panel.height) for key, panel in panels.items()},
+            ((edge.source, edge.target, edge.weight) for edge in self.overview_layout.file_arrows), gap=70)
+        self._overview_panels = {key: replace(panel, x=positions[key][0], y=positions[key][1])
+                                 for key, panel in panels.items()}
+        self.overview_layout = replace(self.overview_layout, width=width, height=height, nodes={
+            key: replace(node, x=positions[key][0], y=positions[key][1])
+            for key, node in self.overview_layout.nodes.items()})
+
+    def draw_group_overview(self) -> bool:
+        if not self.overview or self.overview_layout is None:
+            return False
+        visible = {key: {usr for usr in members if self.node_visible(usr)}
+                   for key, members in self.groups.items()}
+        owners = {usr: key for key, members in visible.items() for usr in members}
+        counts: dict[tuple[str, str, class_graph.ClassEdgeKind], int] = {}
+        for edge in self.graph.edges:
+            source, target = owners.get(edge.source), owners.get(edge.target)
+            if source is not None and target is not None and source != target:
+                key = source, target, edge.kind
+                counts[key] = counts.get(key, 0) + edge.count
+        for (source, target, kind), count in counts.items():
+            self._draw_edge(class_graph.ClassEdge(kind, source, target, count), self._overview_panels)
+        for key, node in self.overview_layout.nodes.items():
+            if not visible[key]:
+                continue
+            panel = self._overview_panels[key]
+            if node.kind != "cluster":
+                self._draw_node(panel)
+                continue
+            x, y = self.to_screen(panel.x, panel.y)
+            w, h = panel.width * self.scale / 2, panel.height * self.scale / 2
+            box = self.canvas.create_rectangle(x-w, y-h, x+w, y+h, fill="#e5e7eb", outline="#64748b", width=2)
+            label = node.label
+            if len(visible[key]) != len(self.groups[key]):
+                label = label.split("\n")[0] + f"\n{len(visible[key])} / {len(self.groups[key])} visible"
+            text = self.canvas.create_text(x, y, text=label, justify=tk.CENTER, fill="#333333",
+                                           font=("TkDefaultFont", max(7, int(11 * self.scale))))
+            self.item_nodes[box] = self.item_nodes[text] = key
+        self.draw_filter_empty(sum(bool(members) for members in visible.values()))
+        self.draw_appearance_key()
+        self.draw_expansion_layer()
+        return True
 
     def organise(self) -> None:
         """Repack the current subdiagram without changing the active group or its parent viewport."""
@@ -137,9 +196,11 @@ class ClassViewCanvas(graph_canvas.GroupedGraphCanvas):
                                 text="No classes or structs in this model.", fill="#666666",
                                 font=("TkDefaultFont", 12))
 
-    def _draw_edge(self, edge: class_graph.ClassEdge) -> None:
+    def _draw_edge(self, edge: class_graph.ClassEdge,
+                   nodes: dict[str, views.ClassNodeLayout] | None = None) -> None:
         assert self.layout is not None
-        source, target = self.layout.nodes[edge.source], self.layout.nodes[edge.target]
+        nodes = self.layout.nodes if nodes is None else nodes
+        source, target = nodes[edge.source], nodes[edge.target]
         if source is target:
             self._draw_loop(source, edge)
             return
@@ -239,7 +300,7 @@ class ClassViewCanvas(graph_canvas.GroupedGraphCanvas):
             return
         if not self.dragged and getattr(event, "num", 1) == 1 and self.toggle_expansion_at(event.x, event.y):
             return
-        if self.overview:
+        if self.overview and self.node_at(event.x, event.y) not in (self.model.entities if self.model else {}):
             return
         if not self.dragged and getattr(event, "num", 1) == 1:
             self.selected = self.node_at(event.x, event.y)
@@ -276,7 +337,7 @@ class ClassViewCanvas(graph_canvas.GroupedGraphCanvas):
         if self.release_hierarchy(event) or self.dragged:
             return
         usr = self.node_at(event.x, event.y)
-        if self.overview and usr is not None:
+        if self.overview and usr is not None and usr not in (self.model.entities if self.model else {}):
             self.open_group(usr)
             return
         entity = self.model.entities.get(usr) if self.model is not None and usr else None

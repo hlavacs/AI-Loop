@@ -396,7 +396,18 @@ def entity_view_overview(model: DerivedModel, clustering: Clustering, members: s
             groups[child] = set(part)
             nodes[child] = Node(child, label, 0, 0, child, "cluster")
             owners.update((usr, child) for usr in part)
+    if unit == "classes":
+        for key, group in list(groups.items()):
+            if len(group) == 1:
+                usr = next(iter(group))
+                entity = model.entities[usr]
+                del nodes[key], groups[key]
+                groups[usr] = group
+                owners[usr] = usr
+                nodes[usr] = Node(usr, entity.qualified_name, 0, 0, "", entity.kind.value)
     for key, node in nodes.items():
+        if node.kind != "cluster":
+            continue
         count = len(groups[key])
         plural = "libraries" if key.startswith("external:overview") else unit
         singular = {"classes": "class", "functions": "function", "libraries": "library"}[plural]
@@ -657,6 +668,7 @@ class CallViewLayout:
     path: set[str]
     width: float
     height: float
+    path_edges: set[tuple[str, str]] = field(default_factory=set)
 
 
 def default_root(model: DerivedModel) -> str | None:
@@ -710,7 +722,9 @@ def layout_call_view(model: DerivedModel, root: str | tuple[str, ...], depth: in
     path = _path_to(parents, selected) if selected in levels else set()
     width = COLUMN_WIDTH * (max(levels.values(), default=0) + 1)
     height = ROW_HEIGHT * max((list(levels.values()).count(level) for level in set(levels.values())), default=1)
-    return CallViewLayout(roots[0] if roots else "", nodes, edges, path, width, height)
+    path_edges = {(usr, parent) if callers else (parent, usr)
+                  for usr, parent in parents.items() if usr in path}
+    return CallViewLayout(roots[0] if roots else "", nodes, edges, path, width, height, path_edges)
 
 
 def _call_nodes(model: DerivedModel, levels: dict[str, int]) -> dict[str, CallNode]:
