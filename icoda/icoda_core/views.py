@@ -13,6 +13,7 @@ import math
 import re
 from collections import defaultdict
 from dataclasses import dataclass, field, replace
+from pathlib import Path
 
 import networkx as nx
 
@@ -667,9 +668,29 @@ def default_root(model: DerivedModel) -> str | None:
     return callables[0].usr if callables else None
 
 
+def library_roots(model: DerivedModel) -> tuple[str, ...]:
+    """Infer API entries from exports/headers, falling back to source call components.
+
+    One representative per incoming-free recursive component avoids losing cycles.
+    """
+    functions = {e.usr: e for e in model.entities.values() if e.kind in CALLABLE_KINDS}
+    graph = nx.DiGraph()
+    graph.add_nodes_from(functions)
+    graph.add_edges_from((e.source, e.target) for e in model.edges_of(EdgeKind.CALLS)
+                        if e.source in functions and e.target in functions)
+    headers = {".h", ".hh", ".hpp", ".hxx", ".h++", ".inl"}
+    roots = {usr for usr, e in functions.items()
+             if e.exported or Path(e.declaration_file or e.file).suffix.lower() in headers}
+    if not roots and functions:
+        components = nx.condensation(graph)
+        roots = {min(data["members"], key=lambda usr: (functions[usr].qualified_name, usr))
+                 for node, data in components.nodes(data=True) if components.in_degree(node) == 0}
+    return tuple(sorted(roots, key=lambda usr: (functions[usr].qualified_name, usr)))
+
+
 def layout_call_view(model: DerivedModel, root: str | tuple[str, ...], depth: int = 3, callers: bool = False,
                      selected: str | None = None) -> CallViewLayout:
-    """Breadth-first from one entry or a library's function set, one column per call depth."""
+    """Breadth-first from one entry or a library's API entries, one column per call depth."""
     roots = (root,) if isinstance(root, str) else root
     levels: dict[str, int] = dict.fromkeys(roots, 0)
     parents: dict[str, str] = {}
@@ -734,15 +755,3 @@ def _path_to(parents: dict[str, str], selected: str | None) -> set[str]:
         path.add(current)
         current = parents.get(current)
     return path
-
-
-def call_view_group(layout: CallViewLayout, members: set[str]) -> CallViewLayout:
-    """Keep call metadata and arrange the selected group's functions using springs."""
-    nodes = {usr: node for usr, node in layout.nodes.items() if usr in members}
-    edges = [edge for edge in layout.edges if edge.source in nodes and edge.target in nodes]
-    positions, width, height = force_layout.arrange(
-        {usr: (CALL_BOX_WIDTH, CALL_BOX_HEIGHT) for usr in nodes},
-        ((edge.source, edge.target, 1.0) for edge in edges), gap=30.0)
-    return replace(layout, nodes={usr: replace(node, x=positions[usr][0], y=positions[usr][1])
-                                  for usr, node in nodes.items()},
-                   edges=edges, path=layout.path & nodes.keys(), width=width, height=height)

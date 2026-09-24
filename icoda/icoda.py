@@ -1362,7 +1362,7 @@ class App:
         if document is not None and document.relative not in model.files and not self.source_editor.dirty:
             self.source_editor.clear()
         self.view.show(layout)
-        self.call_view.group_clustering = self.class_view.group_clustering = clustering
+        self.class_view.group_clustering = clustering
         self.call_view.show(model)
         self.class_view.show(model)
         log = steplog.StepLog(store.steps_path)

@@ -1,4 +1,4 @@
-"""Call/Class group scope is independent of camera navigation and call graph rebuilding."""
+"""Class group navigation and ungrouped Call waterfall regressions."""
 from __future__ import annotations
 
 import tkinter as tk
@@ -29,7 +29,7 @@ def grouped_model() -> tuple[DerivedModel, clusters.Clustering]:
     return model, grouping
 
 
-@pytest.mark.parametrize("canvas_type", [CallViewCanvas, ClassViewCanvas])
+@pytest.mark.parametrize("canvas_type", [ClassViewCanvas])
 def test_group_camera_stays_scoped_until_explicit_back(canvas_type, monkeypatch) -> None:
     model, grouping = grouped_model()
     view = canvas_type(tk.Tk(), lambda *_: None)
@@ -70,12 +70,14 @@ def test_group_camera_stays_scoped_until_explicit_back(canvas_type, monkeypatch)
     assert view.focused_group is None and view.overview
 
 
-def test_call_selection_and_depth_changes_keep_group_even_when_it_shrinks() -> None:
-    model, grouping = grouped_model()
+def test_call_waterfall_keeps_all_functions_and_camera_when_selected() -> None:
+    model, _ = grouped_model()
     view = CallViewCanvas(tk.Tk(), lambda *_: None)
-    view.group_clustering = grouping
+    view.entry_usr = "f0"
     view.show(model)
-    view.open_group("cluster:a")
+    assert len(view.layout.nodes) == 20
+    assert view.layout.nodes["f0"].level == 0
+    assert all(node.level == 1 for usr, node in view.layout.nodes.items() if usr != "f0")
     view.zoom(2)
     viewport = view.scale, view.offset
     view.select("f1")
@@ -84,21 +86,16 @@ def test_call_selection_and_depth_changes_keep_group_even_when_it_shrinks() -> N
     view.callers_var.set(True)
     view.controls_changed()
     assert set(view.layout.nodes) == {"f0"}
-    assert view.focused_group == "cluster:a" and not view.overview
-    view.fit()
-    view.zoom(.01)
-    assert set(view.layout.nodes) == {"f0"} and not view.overview
     view.callers_var.set(False)
     view.controls_changed()
-    assert len(view.layout.nodes) == 8 and not view.overview
-    view.back_to_overview()
-    assert len(view.layout.nodes) == 20 and view.overview
-    view.open_group("cluster:b")
+    assert len(view.layout.nodes) == 20
     view.set_root("f2")
-    assert view.focused_group is None and set(view.layout.nodes) == {"f2"}
+    assert set(view.layout.nodes) == {"f2"}
+    view.from_main()
+    assert len(view.layout.nodes) == 20
 
 
-@pytest.mark.parametrize("canvas_type,prefix", [(CallViewCanvas, "f"), (ClassViewCanvas, "c")])
+@pytest.mark.parametrize("canvas_type,prefix", [(ClassViewCanvas, "c")])
 def test_filtered_overview_counts_and_relations_only_use_visible_entities(canvas_type, prefix, monkeypatch) -> None:
     model, grouping = grouped_model()
     view = canvas_type(tk.Tk(), lambda *_: None)
@@ -119,14 +116,8 @@ def test_group_layout_preserves_call_metadata_and_singleton_cluster_id() -> None
     model, grouping = grouped_model()
     model.add_edge(Edge(EdgeKind.CALLS, "f1", "f1", label="recursive", uncertain=True))
     complete = views.layout_call_view(model, "f0")
-    detail = views.call_view_group(complete, {"f1", "f2"})
     assert set(complete.nodes) == {f"f{i}" for i in range(20)}
-    assert set(detail.nodes) == {"f1", "f2"}
-    assert detail.width > 0 and detail.height > 0
-    assert all(0 < node.x < detail.width and 0 < node.y < detail.height for node in detail.nodes.values())
-    assert {usr: node.level for usr, node in detail.nodes.items()} == {
-        usr: complete.nodes[usr].level for usr in detail.nodes}
-    edge, = detail.edges
+    edge = next(edge for edge in complete.edges if edge.source == edge.target == "f1")
     assert edge.label == "recursive" and edge.loop and edge.uncertain
     overview, groups = views.entity_view_overview(model, grouping, {"f1"}, [], "functions")
     assert groups == {"cluster:a": {"f1"}}
@@ -223,3 +214,43 @@ def test_single_class_group_keeps_all_details_when_fitted_organised_or_zoomed(mo
         assert expected <= set(labels)
         assert {"field", *(f"method{index}" for index in range(60))} <= set(view.item_nodes.values())
         assert view.focused_group == "cluster:a" and not view.overview
+
+
+@pytest.mark.parametrize("interface", ["export", "header", "inferred"])
+def test_library_api_roots_lead_to_shared_helpers_and_recursive_calls(interface) -> None:
+    model = DerivedModel("/p")
+    for name in ("api_a", "api_b", "helper", "leaf"):
+        entity = Entity(name, Kind.FUNCTION, name, name, "library.cpp", 1)
+        if name.startswith("api_"):
+            entity.exported = interface == "export"
+            entity.declaration_file = "library.hpp" if interface == "header" else ""
+        model.add_entity(entity)
+    for source, target in (("api_a", "helper"), ("api_b", "helper"),
+                           ("helper", "leaf"), ("leaf", "helper")):
+        model.add_edge(Edge(EdgeKind.CALLS, source, target))
+    view = CallViewCanvas(tk.Tk(), lambda *_: None)
+    view.library_mode = True
+    view.show(model)
+    assert views.library_roots(model) == ("api_a", "api_b")
+    assert {usr: n.level for usr, n in view.layout.nodes.items()} == {
+        "api_a": 0, "api_b": 0, "helper": 1, "leaf": 2}
+    assert len(view.layout.edges) == 4
+    assert next(e for e in view.layout.edges if e.source == "leaf").loop
+    view.depth_var.set(1)
+    view.controls_changed()
+    assert set(view.layout.nodes) == {"api_a", "api_b", "helper"}
+    view.set_root("helper")
+    assert view.layout.nodes["helper"].level == 0
+    view.from_main()
+    assert view.layout.nodes["helper"].level == 1
+
+
+def test_recursive_library_without_interface_still_has_an_entry() -> None:
+    model = DerivedModel("/p")
+    for name in ("b", "a"):
+        model.add_entity(Entity(name, Kind.FUNCTION, name, name, "lib.cpp", 1))
+    model.add_edge(Edge(EdgeKind.CALLS, "a", "b"))
+    model.add_edge(Edge(EdgeKind.CALLS, "b", "a"))
+    assert views.library_roots(model) == ("a",)
+    assert set(views.layout_call_view(model, views.library_roots(model)).nodes) == {"a", "b"}
+    assert views.library_roots(DerivedModel("/empty")) == ()

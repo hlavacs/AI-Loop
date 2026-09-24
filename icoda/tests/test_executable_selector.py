@@ -294,7 +294,7 @@ def test_library_selection_scopes_all_views_shows_function_set_and_restores(app_
     assert set(app.class_view.model.files) == set(app.call_view.model.files) == {library_file}
     assert set(app.call_view.layout.nodes) == {"api", "unused"}
     assert app.call_view.library_mode and app.call_view.root_usr is None
-    assert app.call_view.root_var.get() == "Library functions (2)"
+    assert app.call_view.root_var.get() == "Library API (2)"
     assert set(app.coverage_view.index.entry_map()) == {"api", "unused"}
     assert all(issue.file == library_file for issue in app.issue_view.issues)
     assert "file:examples/first/main.cpp" not in app.mind_map_view.tree.node_map()
@@ -336,4 +336,4 @@ def test_library_without_callables_has_empty_call_graph(app_module, tmp_path, mo
     selector.choice_var.set(next(entry.label for entry in selector.choices if entry.is_library))
     selector.select()
     assert set(app.class_view.layout.nodes) == {"Type"}
-    assert not app.call_view.layout.nodes and app.call_view.root_var.get() == "Library functions (0)"
+    assert not app.call_view.layout.nodes and app.call_view.root_var.get() == "Library API (0)"

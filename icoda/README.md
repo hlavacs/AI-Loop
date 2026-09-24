@@ -137,7 +137,7 @@ to the overview. The choice is saved per project. Build works in the overview; R
 The diagram filter `namespace:vve` matches that namespace only; `namespace:vve::*` also includes child namespaces.
 Class members use their class's namespace.
 
-File, Class and Call views split oversized code groups into at most 40 files, classes or functions.
+File and Class views split oversized code groups into at most 40 files or classes.
 Grouping compares relationship communities at several resolutions with namespace and identifier themes,
 then recursively refines large groups. Sparse or uniform graphs use balanced groups built around their
 strongest connections. Group labels identify themes found in the source; double-click a group to inspect
@@ -146,8 +146,13 @@ retaining the saved parent assignment and name.
 
 Inside a group, entities use a force-directed layout: relationships pull connected entities together,
 repulsion separates unrelated entities, and collision handling respects label and class-panel sizes.
-This layout is applied automatically when opening a File, Class or Call group. Panning, zooming and
+This layout is applied automatically when opening a File or Class group. Panning, zooming and
 resizing preserve its positions; **Organise** also uses the force layout.
+
+Call View uses a layered waterfall: the selected executable starts at `main()`, while a library
+starts at API functions inferred from exports or header declarations. Without interface metadata,
+functions with no incoming calls (or representatives of recursive entry components) become roots.
+Successive columns show callees at each depth; recursive and shared calls retain their arrows.
 
 Entity tooltips include a **Purpose** sentence from the source documentation, along with the existing source,
 signature, status, requirements, and test information. After opening or reloading a project, ICODA automatically

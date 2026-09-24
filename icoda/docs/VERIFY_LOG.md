@@ -5589,3 +5589,20 @@ Verification:
   overlaps, and confirmed Fit/resize/zoom leave node positions unchanged. A 34-function Call group rendered
   with its exact membership preserved.
 - Ruff and git diff --check pass. No project source or saved layout was changed by the native checks.
+
+
+## 2026-09-24 — Restore the Call waterfall
+
+Call View now draws the existing breadth-first depth layout directly, without cluster overview or
+force placement. Executable selection starts at its main function. Library roots are inferred from
+exported functions or header declarations; when those are unavailable, incoming-free call components
+supply roots (including a stable representative for recursive components). This is an inferred API:
+the cached entity model does not record C++ access control or symbol visibility. Depth, callers,
+selection paths, recursive edges, shared callees, source navigation and proposal markers remain intact.
+File and Class clustering and force layouts are unchanged.
+
+Verification: 112 relevant tests passed across grouped views, target selection, view geometry, app
+integration and force geometry. Regressions cover multiple library roots, shared helpers, recursive
+components, depth changes, entry restoration and camera preservation. Native Tk rendered the cached
+VVE executable from main with 86 functions and 249 call arrows; library-mode rendering also completed.
+Ruff and git diff --check passed. Native checks did not modify VVE source or project state.

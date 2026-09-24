@@ -13,14 +13,14 @@ from tkinter import ttk
 from typing import Any
 
 from icoda_core import views
-from icoda_core.model import CALLABLE_KINDS, DerivedModel
+from icoda_core.model import DerivedModel
 from icoda_gui import graph_canvas, zoom_controls
 
 BOX_WIDTH, BOX_HEIGHT = views.CALL_BOX_WIDTH, views.CALL_BOX_HEIGHT
 ADDED, CHANGED = "#2ca02c", "#ff7f0e"
 
 
-class CallViewCanvas(graph_canvas.GroupedGraphCanvas):
+class CallViewCanvas(graph_canvas.GraphCanvas):
     """Toolbar (root, depth, callers) and canvas; ``show`` lays out a model, ``show_proposal`` a proposal's delta."""
 
     def __init__(self, parent: Any, open_editor: Callable[[str, int], None],
@@ -34,7 +34,6 @@ class CallViewCanvas(graph_canvas.GroupedGraphCanvas):
         self.select_node = select_node
         self.model: DerivedModel | None = None
         self.layout: views.CallViewLayout | None = None
-        self._full_layout: views.CallViewLayout | None = None
         self.root_usr: str | None = None
         self.entry_usr: str | None = None
         self.library_mode = False
@@ -62,7 +61,6 @@ class CallViewCanvas(graph_canvas.GroupedGraphCanvas):
             zoom_in=lambda: self.zoom(zoom_controls.ZOOM_IN),
         )
         zoom.pack(side=tk.RIGHT)
-        self.build_group_navigation(root_row)
         ttk.Label(root_row, textvariable=self.root_var, anchor="w").pack(side=tk.LEFT, fill=tk.X, expand=True,
                                                                           padx=(2, 0))
         controls = ttk.Frame(bar)
@@ -87,12 +85,11 @@ class CallViewCanvas(graph_canvas.GroupedGraphCanvas):
 
     def show(self, model: DerivedModel, root: str | None = None, added: set[str] | None = None,
              changed: set[str] | None = None) -> None:
-        self.reset_groups()
         self.model = model
         self.added, self.changed = added or set(), changed or set()
         self.root_usr = root or (None if self.library_mode else
                                  self.entry_usr if self.entry_usr in model.entities else views.default_root(model))
-        self.toolbar_controls["from-main"].configure(text="Library functions" if self.library_mode else "From main")
+        self.toolbar_controls["from-main"].configure(text="Library API" if self.library_mode else "From main")
         self.user_zoomed = False
         self.relayout()
 
@@ -102,7 +99,6 @@ class CallViewCanvas(graph_canvas.GroupedGraphCanvas):
 
     def set_root(self, usr: str) -> None:
         if self.model is not None and usr in self.model.entities:
-            self.reset_groups()
             self.root_usr, self.user_zoomed = usr, False
             self.relayout()
 
@@ -112,7 +108,6 @@ class CallViewCanvas(graph_canvas.GroupedGraphCanvas):
 
     def from_main(self) -> None:
         if self.model is not None:
-            self.reset_groups()
             entry = self.entry_usr if self.entry_usr in self.model.entities else views.default_root(self.model)
             self.root_usr, self.user_zoomed = None if self.library_mode else entry, False
             self.relayout()
@@ -124,23 +119,16 @@ class CallViewCanvas(graph_canvas.GroupedGraphCanvas):
     def relayout(self) -> None:
         """Lay the graph out again; fit it unless the developer has zoomed or panned."""
         if self.model is None or (self.root_usr is None and not self.library_mode):
-            self.layout = self._full_layout = None
-            self.overview_layout, self.overview = None, False
+            self.layout = None
             self.root_var.set("")
             self.item_nodes = {}
             self.canvas.delete("all")
             self.hide_hierarchy()
             return
-        roots = tuple(entity.usr for entity in sorted(self.model.entities.values(),
-                                                      key=lambda e: (e.qualified_name, e.usr))
-                      if entity.kind in CALLABLE_KINDS) if self.root_usr is None else (self.root_usr,)
-        self._full_layout = views.layout_call_view(self.model, roots, int(self.depth_var.get() or 3),
+        roots = views.library_roots(self.model) if self.root_usr is None else (self.root_usr,)
+        self.layout = views.layout_call_view(self.model, roots, int(self.depth_var.get() or 3),
                                              bool(self.callers_var.get()), self.selected)
-        self.configure_groups(self.model, set(self._full_layout.nodes),
-                              [views.Arrow(edge.source, edge.target, {views.EdgeKind.CALLS: 1})
-                               for edge in self._full_layout.edges], "functions")
-        self.apply_group_layout()
-        label = self._full_layout.nodes[self.root_usr].label if self.root_usr else f"Library functions ({len(roots)})"
+        label = self.layout.nodes[self.root_usr].label if self.root_usr else f"Library API ({len(roots)})"
         self.root_var.set(label + (" (callers)" if self.callers_var.get() else ""))
         if self.user_zoomed:
             self.redraw()
@@ -149,14 +137,7 @@ class CallViewCanvas(graph_canvas.GroupedGraphCanvas):
 
     # -- geometry -------------------------------------------------------------------------
 
-    def apply_group_layout(self) -> None:
-        self.layout = self._full_layout
-        if self.layout is not None and self.focused_group is not None:
-            self.layout = views.call_view_group(self.layout, self.groups.get(self.focused_group, set()))
-
     def diagram_size(self) -> tuple[float, float] | None:
-        if self.overview and self.overview_layout is not None:
-            return self.overview_layout.width, self.overview_layout.height
         return None if self.layout is None else (self.layout.width, self.layout.height)
 
     # -- drawing --------------------------------------------------------------------------
@@ -167,8 +148,6 @@ class CallViewCanvas(graph_canvas.GroupedGraphCanvas):
         self.item_nodes = {}
         if self.layout is None:
             self.hide_hierarchy()
-            return
-        if self.draw_group_overview():
             return
         for edge in self.layout.edges:
             if self.edge_visible(edge.source, edge.target):
@@ -241,8 +220,6 @@ class CallViewCanvas(graph_canvas.GroupedGraphCanvas):
             return
         if not self.dragged and getattr(event, "num", 1) == 1 and self.toggle_expansion_at(event.x, event.y):
             return
-        if self.overview:
-            return
         if not self.dragged and getattr(event, "num", 1) == 1:
             node = self.node_at(event.x, event.y)
             if node is not None:
@@ -270,9 +247,6 @@ class CallViewCanvas(graph_canvas.GroupedGraphCanvas):
         if self.release_hierarchy(event) or self.dragged:
             return
         usr = self.node_at(event.x, event.y)
-        if self.overview and usr is not None:
-            self.open_group(usr)
-            return
         entity = self.model.entities.get(usr) if self.model is not None and usr else None
         if entity is not None:
             self.open_editor(entity.file, entity.line)
