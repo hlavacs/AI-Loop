@@ -144,6 +144,11 @@ strongest connections. Group labels identify themes found in the source; double-
 it and use **Overview** to return. Oversized pinned file groups are displayed as smaller children while
 retaining the saved parent assignment and name.
 
+Inside a group, entities use a force-directed layout: relationships pull connected entities together,
+repulsion separates unrelated entities, and collision handling respects label and class-panel sizes.
+This layout is applied automatically when opening a File, Class or Call group. Panning, zooming and
+resizing preserve its positions; **Organise** also uses the force layout.
+
 Entity tooltips include a **Purpose** sentence from the source documentation, along with the existing source,
 signature, status, requirements, and test information. After opening or reloading a project, ICODA automatically
 asks the selected CLI LLM to add missing purpose comments throughout the analysed project. It preserves existing

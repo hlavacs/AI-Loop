@@ -84,7 +84,7 @@ class ClassViewCanvas(graph_canvas.GroupedGraphCanvas):
                                            tuple(edge for edge in graph.edges
                                                  if edge.source in members and edge.target in members))
         self.layout = views.layout_class_view(graph)
-        if self.focused_group is not None:
+        if self.focused_group is not None or not self.overview:
             self.layout = views.organise_class_view(self.layout)
         self.organise_button.configure(state=tk.DISABLED if self.overview or not graph.nodes else tk.NORMAL)
 

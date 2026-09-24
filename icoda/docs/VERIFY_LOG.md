@@ -5566,3 +5566,26 @@ Verification:
 - Native Tk checks opened every VVE file and class group, checked their node limits and membership, and
   returned to the overview successfully. No project source or saved layout was changed by these checks.
 - Ruff and git diff --check pass.
+
+
+## 2026-09-24 — force-directed placement inside diagram groups
+
+Dense file groups previously used rows, and class groups packed panels into columns. A shared deterministic
+spring layout now attracts connected entities, repels other nodes and resolves collisions using actual node
+widths and heights. It starts from a non-grid seed, retains all graph metadata, and requires no new dependency.
+The final collision pass guarantees label/panel separation, including unusually tall class panels.
+
+File groups measure their labels and cache the resulting positions. Class groups retain complete member
+panels, and Call groups preserve call depth, loops, uncertainty and path metadata while using spring geometry.
+The layout is applied on entry; pan, zoom, Fit and resize do not restart the simulation. File View's matrix
+fallback is removed. The global call-depth view and the hierarchical mind map keep their existing semantics.
+
+Verification:
+
+- 174 related tests pass, including deterministic insertion-order independence, star/clique/disconnected
+  graphs, tall-panel collision handling, relationship proximity, preserved graph metadata, and stable camera
+  navigation. Updated geometry assertions check the intended force placement rather than the old grid.
+- Native Tk checks on VVE opened eight multi-file groups and all 23 class groups, verified no rectangle
+  overlaps, and confirmed Fit/resize/zoom leave node positions unchanged. A 34-function Call group rendered
+  with its exact membership preserved.
+- Ruff and git diff --check pass. No project source or saved layout was changed by the native checks.

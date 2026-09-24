@@ -16,7 +16,7 @@ from icoda_core import views
 from icoda_core.model import CALLABLE_KINDS, DerivedModel
 from icoda_gui import graph_canvas, zoom_controls
 
-BOX_WIDTH, BOX_HEIGHT = 200.0, 30.0
+BOX_WIDTH, BOX_HEIGHT = views.CALL_BOX_WIDTH, views.CALL_BOX_HEIGHT
 ADDED, CHANGED = "#2ca02c", "#ff7f0e"
 
 

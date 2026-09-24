@@ -16,7 +16,7 @@ from dataclasses import dataclass, field, replace
 
 import networkx as nx
 
-from icoda_core import class_view, diagram_partition, mind_map
+from icoda_core import class_view, diagram_partition, force_layout, mind_map
 from icoda_core.clusters import Clustering
 from icoda_core.model import CALLABLE_KINDS, DerivedModel, EdgeKind, Entity, Kind
 
@@ -225,11 +225,7 @@ def layout_file_view(model: DerivedModel, clustering: Clustering, width: float =
 
 def organise_file_view(layout: FileViewLayout,
                        sizes: dict[str, tuple[float, float]] | None = None) -> FileViewLayout:
-    """Make room for file labels, then relax cluster centres using their relations.
-
-    A bounded, deterministic spring calculation needs no numerical-library dependency. Cluster
-    membership stays unchanged; dense clusters use compact rows and external libraries stay below the files.
-    """
+    """Arrange files with size-aware springs, then relax the cluster centres."""
     if not layout.circles:
         return layout
     sizes = sizes or {key: (max(map(len, node.label.splitlines())) * 8.0 + 24.0,
@@ -238,32 +234,15 @@ def organise_file_view(layout: FileViewLayout,
     circles = []
     radii = []
     for circle in layout.circles:
-        members = [layout.nodes[file] for file in circle.files]
-        if len(members) > 8:
-            width = max(sizes[node.id][0] for node in members)
-            height = max(sizes[node.id][1] for node in members)
-            columns = max(1, math.ceil(math.sqrt(len(members) * height / width)))
-            rows = math.ceil(len(members) / columns)
-            for i, node in enumerate(members):
-                row, column = divmod(i, columns)
-                nodes[node.id] = replace(node, x=circle.cx + (column - (columns - 1) / 2) * width,
-                                        y=circle.cy + (row - (rows - 1) / 2) * height)
-            radius = math.hypot((columns - 1) * width, (rows - 1) * height) / 2
-            circles.append(replace(circle, radius=radius))
-            radii.append(radius + max(width, height) / 2)
-            continue
-        factor = 1.0
-        for i, a in enumerate(members):
-            for b in members[i + 1:]:
-                dx, dy = abs(a.x - b.x), abs(a.y - b.y)
-                width, height = (sizes[a.id][0] + sizes[b.id][0]) / 2, (sizes[a.id][1] + sizes[b.id][1]) / 2
-                factor = max(factor, min(width / dx if dx > .001 else math.inf,
-                                         height / dy if dy > .001 else math.inf))
-        for node in members:
-            nodes[node.id] = replace(node, x=circle.cx + (node.x - circle.cx) * factor,
-                                    y=circle.cy + (node.y - circle.cy) * factor)
-        circles.append(replace(circle, radius=circle.radius * factor))
-        radii.append(circles[-1].radius + max((max(sizes[n.id]) / 2 for n in members), default=0.0))
+        members = {file: sizes[file] for file in circle.files}
+        edges = [(arrow.source, arrow.target, arrow.weight) for arrow in layout.file_arrows
+                 if arrow.source in members and arrow.target in members]
+        positions, width, height = force_layout.arrange(members, edges, gap=24.0)
+        for file, (x, y) in positions.items():
+            nodes[file] = replace(nodes[file], x=circle.cx + x - width / 2, y=circle.cy + y - height / 2)
+        radius = max((math.hypot(x - width / 2, y - height / 2) for x, y in positions.values()), default=0.0)
+        circles.append(replace(circle, radius=radius))
+        radii.append(radius + max((max(size) / 2 for size in members.values()), default=0.0))
     layout = replace(layout, circles=circles, nodes=nodes)
     index = {circle.id: i for i, circle in enumerate(circles)}
     weights: dict[tuple[int, int], int] = defaultdict(int)
@@ -554,38 +533,14 @@ def layout_class_view(graph: class_view.ClassGraph) -> ClassViewLayout:
 
 
 def organise_class_view(layout: ClassViewLayout) -> ClassViewLayout:
-    """Pack actual panel heights in balanced columns, visiting related classes first."""
+    """Place related panels near one another using springs and actual rectangular bounds."""
     if not layout.nodes:
         return layout
-    relations: dict[tuple[str, str, EdgeKind], int] = defaultdict(int)
-    neighbours: dict[str, dict[str, int]] = defaultdict(lambda: defaultdict(int))
-    for edge in layout.edges:
-        if edge.source == edge.target:
-            continue
-        relations[edge.source, edge.target, EdgeKind.USES_TYPE] += edge.count
-        neighbours[edge.source][edge.target] += edge.count
-        neighbours[edge.target][edge.source] += edge.count
-    order = _order_files(sorted(layout.nodes), relations)
-    gap = CLASS_PANEL_GAP
-    column_width = max(node.width for node in layout.nodes.values()) + gap
-    area = sum(column_width * (node.height + gap) for node in layout.nodes.values())
-    columns = min(len(order), max(1, round(math.sqrt(area * 1.5) / column_width)))
-    tops = [gap] * columns
-    nodes: dict[str, ClassNodeLayout] = {}
-    for usr in order:
-        node = layout.nodes[usr]
-        related = [(nodes[other], weight) for other, weight in neighbours[usr].items() if other in nodes]
-        scores = []
-        for column in range(columns):
-            x, y = gap + node.width / 2 + column * column_width, tops[column] + node.height / 2
-            distance = sum(math.hypot(x - other.x, y - other.y) * weight for other, weight in related)
-            scores.append(tops[column] + .25 * distance / max(sum(weight for _, weight in related), 1))
-        column = min(range(columns), key=scores.__getitem__)
-        nodes[usr] = replace(node, x=gap + node.width / 2 + column * column_width,
-                             y=tops[column] + node.height / 2)
-        tops[column] += node.height + gap
-    return replace(layout, nodes=nodes, width=max(node.x + node.width / 2 for node in nodes.values()) + gap,
-                   height=max(tops))
+    sizes = {usr: (node.width, node.height) for usr, node in layout.nodes.items()}
+    positions, width, height = force_layout.arrange(
+        sizes, ((edge.source, edge.target, edge.count) for edge in layout.edges), gap=CLASS_PANEL_GAP)
+    nodes = {usr: replace(node, x=positions[usr][0], y=positions[usr][1]) for usr, node in layout.nodes.items()}
+    return replace(layout, nodes=nodes, width=width, height=height)
 
 
 def _class_panel_height(node: class_view.ClassNode) -> float:
@@ -668,6 +623,7 @@ def _mind_map_node_layout(node: mind_map.MindMapNode, depth: int, row: int) -> M
 
 # --------------------------------------------------------------------------- Call View
 
+CALL_BOX_WIDTH, CALL_BOX_HEIGHT = 200.0, 30.0
 COLUMN_WIDTH = 260.0
 ROW_HEIGHT = 44.0
 @dataclass
@@ -781,16 +737,12 @@ def _path_to(parents: dict[str, str], selected: str | None) -> set[str]:
 
 
 def call_view_group(layout: CallViewLayout, members: set[str]) -> CallViewLayout:
-    """Keep internal calls and repack the group's columns without empty rows or depths."""
-    per_level: dict[int, list[CallNode]] = defaultdict(list)
-    for usr, node in layout.nodes.items():
-        if usr in members:
-            per_level[node.level].append(node)
-    nodes = {}
-    for column, level in enumerate(sorted(per_level)):
-        for row, node in enumerate(per_level[level]):
-            nodes[node.usr] = replace(node, x=COLUMN_WIDTH * (column + .5), y=ROW_HEIGHT * (row + .5))
-    return replace(layout, nodes=nodes,
-                   edges=[edge for edge in layout.edges if edge.source in nodes and edge.target in nodes],
-                   path=layout.path & nodes.keys(), width=COLUMN_WIDTH * max(len(per_level), 1),
-                   height=ROW_HEIGHT * max((len(items) for items in per_level.values()), default=1))
+    """Keep call metadata and arrange the selected group's functions using springs."""
+    nodes = {usr: node for usr, node in layout.nodes.items() if usr in members}
+    edges = [edge for edge in layout.edges if edge.source in nodes and edge.target in nodes]
+    positions, width, height = force_layout.arrange(
+        {usr: (CALL_BOX_WIDTH, CALL_BOX_HEIGHT) for usr in nodes},
+        ((edge.source, edge.target, 1.0) for edge in edges), gap=30.0)
+    return replace(layout, nodes={usr: replace(node, x=positions[usr][0], y=positions[usr][1])
+                                  for usr, node in nodes.items()},
+                   edges=edges, path=layout.path & nodes.keys(), width=width, height=height)

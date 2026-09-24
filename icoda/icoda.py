@@ -82,6 +82,7 @@ class FileViewCanvas(graph_canvas.NodeAppearanceCanvas):
         self.app = app
         self.layout: views.FileViewLayout | None = None
         self._original_layout: views.FileViewLayout | None = None
+        self._group_layouts: dict[str, views.FileViewLayout] = {}
         self.compact = False
         self.organised = False
         self.overview = False
@@ -140,6 +141,7 @@ class FileViewCanvas(graph_canvas.NodeAppearanceCanvas):
 
     def show(self, layout: views.FileViewLayout) -> None:
         self.layout = self._original_layout = layout
+        self._group_layouts.clear()
         self._overview_key = None
         self.edge_focus = None
         self.organised = False
@@ -157,12 +159,7 @@ class FileViewCanvas(graph_canvas.NodeAppearanceCanvas):
         source = self._original_layout
         if source is None or not source.nodes:
             return
-        sizes = {}
-        for node in source.nodes.values():
-            item = self.canvas.create_text(0, 0, text=node.label, font=("TkDefaultFont", 12))
-            left, top, right, bottom = self.canvas.bbox(item) or (0, 0, len(node.label) * 8, 18)
-            self.canvas.delete(item)
-            sizes[node.id] = (right - left + 24.0, bottom - top + 18.0)
+        sizes = self._measure_nodes(source)
         self.organise_button.configure(state=tk.DISABLED)
 
         def done(result: views.FileViewLayout | Exception) -> None:
@@ -173,19 +170,33 @@ class FileViewCanvas(graph_canvas.NodeAppearanceCanvas):
                 self.app.status.set(f"Could not organise file clusters: {result}")
                 return
             self._original_layout = result
+            self._group_layouts.clear()
             self._overview_key = None
             self.organised = True
             self.fit()
 
         self.app.run_async(lambda: views.organise_file_view(source, sizes), done)
 
+    def _measure_nodes(self, source: views.FileViewLayout) -> dict[str, tuple[float, float]]:
+        sizes = {}
+        for node in source.nodes.values():
+            item = self.canvas.create_text(0, 0, text=node.label, font=("TkDefaultFont", 12))
+            left, top, right, bottom = self.canvas.bbox(item) or (0, 0, len(node.label) * 8, 18)
+            self.canvas.delete(item)
+            sizes[node.id] = (right - left + 24.0, bottom - top + 18.0)
+        return sizes
+
     def fit(self) -> None:
         """Fit the current group or complete diagram, including its labels, inside the visible canvas."""
         self.edge_focus = None
         self.user_zoomed = False
         source = self._original_layout or self.layout
-        self.layout = views.file_view_group(source, self.focused_group) \
-            if source is not None and self.focused_group is not None else source
+        self.layout = source
+        if source is not None and self.focused_group is not None:
+            if self.focused_group not in self._group_layouts:
+                scoped = views.file_view_group(source, self.focused_group)
+                self._group_layouts[self.focused_group] = views.organise_file_view(scoped, self._measure_nodes(scoped))
+            self.layout = self._group_layouts[self.focused_group]
         self.compact = False
         self.overview = False
         if self.layout is None or not self.layout.nodes:
@@ -201,13 +212,8 @@ class FileViewCanvas(graph_canvas.NodeAppearanceCanvas):
         if self.focused_group is None and (self.scale < 1.0 or self._boxes_overlap()):
             self.overview = True
             self._fit_graph(available_width, available_height)
-        if not self.organised and not self.overview and self._boxes_overlap():
-            column_width = max(box[2] - box[0] for box in self.node_boxes.values()) + 4
-            row_height = max(box[3] - box[1] for box in self.node_boxes.values()) + 8
-            columns = max(1, int((available_width + 4) / column_width))
-            self.layout = views.compact_file_view(self.layout, columns, column_width, row_height)
-            self.compact = True
-            self.scale, self.offset = 1.0, (0.0, 0.0)
+        if self.focused_group is None and not self.organised and not self.overview and self._boxes_overlap():
+            self.layout = views.organise_file_view(self.layout, self._measure_nodes(self.layout))
             self._fit_graph(available_width, available_height)
         self.fit_scale = self.scale
         self.redraw()

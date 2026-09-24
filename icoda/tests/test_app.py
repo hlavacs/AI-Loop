@@ -287,6 +287,7 @@ def test_opened_group_stays_active_until_explicit_return_to_overview(
     assert view.focused_group == "cluster:src" and not view.overview
     assert set(view.layout.nodes) == {"src/a.cpp", "src/b.cpp"}
     assert view._original_layout is complete_layout
+    positions = {key: (node.x, node.y) for key, node in view.layout.nodes.items()}
     view.zoom(.05)
     assert view.scale < 1.0 and not view.overview
     before = view.offset
@@ -301,6 +302,7 @@ def test_opened_group_stays_active_until_explicit_return_to_overview(
     view.reset_zoom()
     assert view.focused_group == "cluster:src" and not view.overview
     assert set(view._draw_layout.nodes) == {"src/a.cpp", "src/b.cpp"}
+    assert {key: (node.x, node.y) for key, node in view.layout.nodes.items()} == positions
     view.overview_button.kwargs["command"]()
     assert view.focused_group is None and view.overview and view.layout is complete_layout
     assert (view.scale, view.offset, view.fit_scale, view.user_zoomed) == parent_viewport

@@ -159,20 +159,22 @@ def test_organise_file_view_brings_connected_clusters_closer_and_preserves_conte
     organised = views.organise_file_view(original)
     before = {circle.id: circle for circle in original.circles}
     after = {circle.id: circle for circle in organised.circles}
-    assert math.hypot(after["app"].cx - after["core"].cx, after["app"].cy - after["core"].cy) < \
-        math.hypot(before["app"].cx - before["core"].cx, before["app"].cy - before["core"].cy)
+    # Compare free space between groups; their radii now reflect the internal spring layout.
+    assert math.hypot(after["app"].cx - after["core"].cx, after["app"].cy - after["core"].cy) \
+        - after["app"].radius - after["core"].radius < \
+        math.hypot(before["app"].cx - before["core"].cx, before["app"].cy - before["core"].cy) \
+        - before["app"].radius - before["core"].radius
     assert original == saved and views.organise_file_view(original) == organised
     assert organised.file_arrows == original.file_arrows
     assert organised.cluster_arrows == original.cluster_arrows
     assert organised.nodes.keys() == original.nodes.keys()
     for circle in organised.circles:
         old = before[circle.id]
-        assert (circle.name, circle.radius, circle.files) == (old.name, old.radius, old.files)
+        assert (circle.name, circle.files) == (old.name, old.files)
         for file in circle.files:
             node, previous = organised.nodes[file], original.nodes[file]
             assert node.cluster == previous.cluster
-            assert node.x - circle.cx == pytest.approx(previous.x - old.cx)
-            assert node.y - circle.cy == pytest.approx(previous.y - old.cy)
+            assert math.hypot(node.x - circle.cx, node.y - circle.cy) <= circle.radius + 1e-6
         for other in organised.circles:
             if other.id != circle.id:
                 assert math.hypot(circle.cx - other.cx, circle.cy - other.cy) >= circle.radius + other.radius

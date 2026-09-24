@@ -122,7 +122,10 @@ def test_group_layout_preserves_call_metadata_and_singleton_cluster_id() -> None
     detail = views.call_view_group(complete, {"f1", "f2"})
     assert set(complete.nodes) == {f"f{i}" for i in range(20)}
     assert set(detail.nodes) == {"f1", "f2"}
-    assert detail.width == views.COLUMN_WIDTH and detail.height == 2 * views.ROW_HEIGHT
+    assert detail.width > 0 and detail.height > 0
+    assert all(0 < node.x < detail.width and 0 < node.y < detail.height for node in detail.nodes.values())
+    assert {usr: node.level for usr, node in detail.nodes.items()} == {
+        usr: complete.nodes[usr].level for usr in detail.nodes}
     edge, = detail.edges
     assert edge.label == "recursive" and edge.loop and edge.uncertain
     overview, groups = views.entity_view_overview(model, grouping, {"f1"}, [], "functions")
