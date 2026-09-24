@@ -559,16 +559,17 @@ added and changed entities receive distinct outlines.
 
 *Dashed edges and a question mark preserve uncertainty instead of presenting dynamic dispatch as a false fact.*
 
-After loading a recorded call trace, **Step Into** advances to the next resolved function entry or return.
-**Step Over** skips the next nested call and stops after it returns; **Step Out** runs to the current invocation's
-return. The active function is selected in the graph and source editor. Steps stay on the selected recorded
-thread, and the status shows the event, thread, and call depth. These are function-level steps through a recording;
-the trace does not contain source-line execution. A step is disabled when its destination was not recorded,
-including a missing return in an incomplete trace.
+After loading a recorded call trace, **Step Into** behaves exactly like **Next call**: it advances to the next
+resolved function call in recorded order, combining consecutive calls to the same function. **Step Over** skips
+the current call's descendants and selects the next call at the same or a shallower depth. **Step Out** selects
+the next call at a strictly shallower depth. Over and Out stay on the current recorded thread and require a
+matching return for the current invocation.
 
-**Next call** and **Previous call** retain grouped call navigation, combining consecutive calls to the same
-function. The stepping controls visit individual invocations, including repeated and recursive calls.
-**Reset** returns playback to the beginning.
+All three controls select the function in the graph and source editor, with the same call count, repeat counts,
+and highlighting as **Next call**. Return events never become separate stops. A step is disabled when no eligible
+call was recorded; the last selected call stays visible at the end. These are function-level steps through a
+recording, which does not contain source-line execution. **Previous call** moves to the preceding grouped call,
+and **Reset** returns playback to the beginning.
 
 **Class View** shows classes and structs with fields and methods. It distinguishes inheritance, composition,
 aggregation, and usage relations. Callable members include their implementation status.

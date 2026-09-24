@@ -91,19 +91,14 @@ class CallViewCanvas(graph_canvas.GraphCanvas):
         playback.pack(fill=tk.X, pady=(2, 0))
         self.playback_buttons = {}
         for label, command in (("Load trace", self._load_trace), ("Previous call", self.previous_call),
-                               ("Next call", self.next_call), ("Reset", self.reset_playback)):
+                               ("Next call", self.next_call), ("Step Over", self.step_over),
+                               ("Step Into", self.step_into), ("Step Out", self.step_out),
+                               ("Reset", self.reset_playback)):
             button = ttk.Button(playback, text=label, command=command,
                                 state=tk.NORMAL if label == "Load trace" else tk.DISABLED)
             button.pack(side=tk.LEFT, padx=(0, 4))
             self.playback_buttons[label] = button
-        stepping = ttk.Frame(bar)
-        stepping.pack(fill=tk.X, pady=(2, 0))
-        for label, command in (("Step Over", self.step_over), ("Step Into", self.step_into),
-                               ("Step Out", self.step_out)):
-            button = ttk.Button(stepping, text=label, command=command, state=tk.DISABLED)
-            button.pack(side=tk.LEFT, padx=(0, 4))
-            self.playback_buttons[label] = button
-        ttk.Label(stepping, textvariable=self.playback_status_var, anchor="w").pack(
+        ttk.Label(playback, textvariable=self.playback_status_var, anchor="w", width=1).pack(
             side=tk.LEFT, fill=tk.X, expand=True, padx=(4, 0))
 
     # -- trace playback -------------------------------------------------------------------

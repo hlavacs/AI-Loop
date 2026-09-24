@@ -124,7 +124,8 @@ def test_real_instrumented_cmake_run_records_playable_call_sequence(tmp_path: Pa
         "volatile int result = 0;\n"
         "__attribute__((noinline)) void helper() { ++result; }\n"
         "namespace demo { __attribute__((noinline)) void work() { helper(); } }\n"
-        "int main() { demo::work(); return result == 1 ? 0 : 1; }\n",
+        "__attribute__((noinline)) void after() { ++result; }\n"
+        "int main() { demo::work(); after(); return result == 2 ? 0 : 1; }\n",
         encoding="utf-8",
     )
     (root / "CMakeLists.txt").write_text(
@@ -134,12 +135,14 @@ def test_real_instrumented_cmake_run_records_playable_call_sequence(tmp_path: Pa
         encoding="utf-8",
     )
     model = DerivedModel(str(root), files={"main.cpp": FileInfo("main.cpp")})
-    model.add_entity(Entity("main", Kind.FUNCTION, "main", "main", "main.cpp", 4,
+    model.add_entity(Entity("main", Kind.FUNCTION, "main", "main", "main.cpp", 5,
                             signature="int main()"))
     model.add_entity(Entity("work", Kind.FUNCTION, "work", "demo::work", "main.cpp", 3,
                             signature="void work()"))
     model.add_entity(Entity("helper", Kind.FUNCTION, "helper", "helper", "main.cpp", 2,
                             signature="void helper()"))
+    model.add_entity(Entity("after", Kind.FUNCTION, "after", "after", "main.cpp", 4,
+                            signature="void after()"))
     regular_directory = root / "build/debug"
     regular_directory.mkdir(parents=True)
     marker = regular_directory / "untouched"
@@ -148,7 +151,7 @@ def test_real_instrumented_cmake_run_records_playable_call_sequence(tmp_path: Pa
         "demo", "Debug", regular_directory, regular_directory / "demo",
         frozenset({str(source.resolve())}),
     )
-    entry = executables.Entry("main", "main.cpp", 4, target)
+    entry = executables.Entry("main", "main.cpp", 5, target)
 
     outcome = executables.operate(
         root, model, entry, "run", lambda: False,
@@ -163,16 +166,18 @@ def test_real_instrumented_cmake_run_records_playable_call_sequence(tmp_path: Pa
     assert playback.next_call() is model.entities["main"]
     assert playback.next_call() is model.entities["work"]
     assert playback.next_call() is model.entities["helper"]
-    assert playback.status == "call 3 of 3: helper"
+    assert playback.status == "call 3 of 4: helper"
+    assert playback.next_call() is model.entities["after"]
     assert playback.next_call() is None
-    assert playback.step_out() is model.entities["work"]
-    assert playback.step_out() is model.entities["main"]
+    playback.seek_first_call("helper")
+    assert playback.step_out() is model.entities["after"]
     assert playback.step_out() is None
-    assert playback.current_entity is None
+    assert playback.current_entity is model.entities["after"]
     playback.reset()
     assert playback.step_into() is model.entities["main"]
-    assert playback.step_over() is model.entities["main"]
-    assert "returned from" in playback.status
+    assert playback.step_into() is model.entities["work"]
+    assert playback.step_over() is model.entities["after"]
+    assert playback.status == "call 4 of 4: after"
     assert playback.step_into() is None
     assert not playback.can_step("into")
     instrumented_directory = root / ".icoda/cache/instrumented-debug-build"
