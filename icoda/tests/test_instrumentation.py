@@ -165,6 +165,16 @@ def test_real_instrumented_cmake_run_records_playable_call_sequence(tmp_path: Pa
     assert playback.next_call() is model.entities["helper"]
     assert playback.status == "call 3 of 3: helper"
     assert playback.next_call() is None
+    assert playback.step_out() is model.entities["work"]
+    assert playback.step_out() is model.entities["main"]
+    assert playback.step_out() is None
+    assert playback.current_entity is None
+    playback.reset()
+    assert playback.step_into() is model.entities["main"]
+    assert playback.step_over() is model.entities["main"]
+    assert "returned from" in playback.status
+    assert playback.step_into() is None
+    assert not playback.can_step("into")
     instrumented_directory = root / ".icoda/cache/instrumented-debug-build"
     assert outcome.selected is not None and outcome.selected.target is not None
     assert outcome.selected.target.build_dir == instrumented_directory

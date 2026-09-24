@@ -20,7 +20,7 @@ from __future__ import annotations
 import json
 import re
 import shutil
-from bisect import bisect_right
+from bisect import bisect_left, bisect_right
 from collections import defaultdict
 from collections.abc import Mapping
 from dataclasses import dataclass, replace
@@ -114,22 +114,39 @@ class _PlaybackCall:
 
 
 class CallPlayback:
-    """Navigate visually distinct resolved function entries in a trace."""
+    """Navigate grouped calls or step recorded function frames on one thread."""
 
     def __init__(self, trace: CallTrace) -> None:
+        self._events = trace.events
+        self._frames: dict[int, int | None] = {}
+        self._returns: dict[int, int] = {}
+        self._stops: dict[str, list[int]] = defaultdict(list)
+        self._entry_calls: dict[int, int] = {}
+        self._call_entries: list[int] = []
         calls: list[_PlaybackCall] = []
-        stacks: dict[str, list[Entity | None]] = defaultdict(list)
-        for event in trace.events:
+        stacks: dict[str, list[int | None]] = defaultdict(list)
+        for index, event in enumerate(trace.events):
             stack = stacks[event.thread_id]
             if event.kind == EventKind.EXIT:
+                entry = stack[event.depth] if event.depth < len(stack) else None
                 del stack[event.depth:]
+                if entry is None or trace.events[entry].identifier != event.identifier:
+                    continue
+                self._returns[entry] = index
+                parent = next((frame for frame in reversed(stack)
+                               if frame is not None and trace.events[frame].entity is not None), None)
+                if trace.events[entry].entity is not None or parent is not None:
+                    self._frames[index] = parent
+                    self._stops[event.thread_id].append(index)
                 continue
             del stack[event.depth:]
             stack.extend([None] * (event.depth - len(stack)))
-            caller = stack[-1] if stack else None
-            stack.append(event.entity)
+            caller = trace.events[stack[-1]].entity if stack and stack[-1] is not None else None
+            stack.append(index)
             if event.entity is None:
                 continue
+            self._frames[index] = index
+            self._stops[event.thread_id].append(index)
             if calls and calls[-1].entity.usr == event.entity.usr:
                 calls[-1].count += 1
                 if caller is not None:
@@ -137,8 +154,10 @@ class CallPlayback:
             else:
                 caller_counts = {caller.usr: 1} if caller is not None else {}
                 calls.append(_PlaybackCall(event.entity, 1, caller_counts))
+                self._call_entries.append(index)
+            self._entry_calls[index] = len(calls)
         self._calls = tuple(calls)
-        self._position = 0
+        self.reset()
 
     @property
     def position(self) -> int:
@@ -156,20 +175,35 @@ class CallPlayback:
 
     @property
     def current_entity(self) -> Entity | None:
-        return self._calls[self._position - 1].entity if self._position else None
+        frame = self._frames.get(self._event_index)
+        return self._events[frame].entity if frame is not None else None
 
     @property
     def current_repeat_count(self) -> int:
+        if self._stepping:
+            return 1 if self.current_entity is not None else 0
         return self._calls[self._position - 1].count if self._position else 0
 
     @property
     def current_caller_counts(self) -> Mapping[str, int]:
+        if self._stepping:
+            return {}
         return self._calls[self._position - 1].caller_counts if self._position else {}
 
     @property
     def status(self) -> str:
         if not self.total:
             return "No project calls resolved. Check the executable/PDB and reload the trace."
+        if self._stepping:
+            event = self._events[self._event_index]
+            entity = self.current_entity
+            frame = self._frames[self._event_index]
+            location = (f"depth {self._events[frame].depth}: {entity.qualified_name or entity.name}"
+                        if frame is not None and entity is not None else "no resolved caller")
+            action = (f" — returned from {event.function_name or event.function_id}"
+                      if event.kind == EventKind.EXIT else "")
+            return (f"event {self._event_index + 1} of {len(self._events)} · "
+                    f"thread {event.thread_id} · {location}{action}")
         if self._position == 0:
             return f"call 0 of {self.total}"
         call = self._calls[self._position - 1]
@@ -178,30 +212,88 @@ class CallPlayback:
 
     def next_call(self) -> Entity | None:
         """Select and return the next resolved entry, or ``None`` at the end."""
-        if self._position >= self.total:
+        index = bisect_right(self._call_entries, self._event_index)
+        if index >= self.total:
             return None
-        entity = self._calls[self._position].entity
-        self._position += 1
-        return entity
+        return self._select_event(self._call_entries[index], stepping=False)
 
     def previous_call(self) -> Entity | None:
         """Select and return the preceding resolved entry, or ``None`` at the start."""
-        if self._position <= 1:
-            self._position = 0
+        index = bisect_left(self._call_entries, self._event_index) - 1
+        if index < 0:
+            self.reset()
             return None
-        self._position -= 1
-        return self._calls[self._position - 1].entity
+        return self._select_event(self._call_entries[index], stepping=False)
 
     def seek_first_call(self, usr: str) -> Entity | None:
         """Select the first visual call of ``usr`` without moving when it is absent."""
         for index, call in enumerate(self._calls):
             if call.entity.usr == usr:
-                self._position = index + 1
-                return call.entity
+                return self._select_event(self._call_entries[index], stepping=False)
         return None
 
     def reset(self) -> None:
         self._position = 0
+        self._event_index = -1
+        self._stepping = False
+        self._targets: dict[str, int | None] = {}
+
+    def _select_event(self, index: int, *, stepping: bool = True) -> Entity | None:
+        self._event_index = index
+        frame = self._frames[index]
+        self._position = self._entry_calls[frame] if frame is not None else 0
+        self._stepping = stepping
+        self._targets.clear()
+        return self.current_entity
+
+    def _step_target(self, mode: str) -> int | None:
+        if self._event_index < 0:
+            return self._call_entries[0] if self._call_entries and mode != "out" else None
+        frame = self._frames[self._event_index]
+        if mode == "out":
+            target = self._returns.get(frame) if frame is not None else None
+            return target if target is not None and target > self._event_index else None
+        event = self._events[self._event_index]
+        stops = self._stops[event.thread_id]
+        start = bisect_right(stops, self._event_index)
+        if mode == "into" or frame is None:
+            return stops[start] if start < len(stops) else None
+        # At function granularity, Over skips the next child invocation, stopping
+        # after its return (or after this frame returns if it has no more children).
+        depth = self._events[frame].depth
+        for offset in range(start, len(stops)):
+            index = stops[offset]
+            candidate = self._events[index]
+            if candidate.kind == EventKind.EXIT and candidate.depth <= depth + 1:
+                return index
+        return None
+
+    def can_step(self, mode: str) -> bool:
+        """Whether a recorded destination exists for Into, Over, or Out."""
+        if mode not in ("into", "over", "out"):
+            raise ValueError(mode)
+        if mode not in self._targets:
+            self._targets[mode] = self._step_target(mode)
+        return self._targets[mode] is not None
+
+    def _step(self, mode: str) -> Entity | None:
+        if not self.can_step(mode):
+            return None
+        target = self._targets[mode]
+        assert target is not None
+        return self._select_event(target)
+
+    def step_into(self) -> Entity | None:
+        """Select the next resolved entry or return on the selected thread."""
+        return self._step("into")
+
+    def step_over(self) -> Entity | None:
+        """Skip a child invocation and select the frame active after its return."""
+        return self._step("over")
+
+    def step_out(self) -> Entity | None:
+        """Run to this invocation's recorded return and select its known caller."""
+        return self._step("out")
 
 
 def load_trace(path: Path, model: DerivedModel | None = None,

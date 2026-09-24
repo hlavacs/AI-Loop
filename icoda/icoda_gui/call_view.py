@@ -96,7 +96,14 @@ class CallViewCanvas(graph_canvas.GraphCanvas):
                                 state=tk.NORMAL if label == "Load trace" else tk.DISABLED)
             button.pack(side=tk.LEFT, padx=(0, 4))
             self.playback_buttons[label] = button
-        ttk.Label(playback, textvariable=self.playback_status_var, anchor="w").pack(
+        stepping = ttk.Frame(bar)
+        stepping.pack(fill=tk.X, pady=(2, 0))
+        for label, command in (("Step Over", self.step_over), ("Step Into", self.step_into),
+                               ("Step Out", self.step_out)):
+            button = ttk.Button(stepping, text=label, command=command, state=tk.DISABLED)
+            button.pack(side=tk.LEFT, padx=(0, 4))
+            self.playback_buttons[label] = button
+        ttk.Label(stepping, textvariable=self.playback_status_var, anchor="w").pack(
             side=tk.LEFT, fill=tk.X, expand=True, padx=(4, 0))
 
     # -- trace playback -------------------------------------------------------------------
@@ -118,6 +125,26 @@ class CallViewCanvas(graph_canvas.GraphCanvas):
         self.playback_status_var.set(playback.status)
         for label in ("Previous call", "Next call", "Reset"):
             self.playback_buttons[label].state(["!disabled"] if playback.total else ["disabled"])
+        self._update_playback_status()
+
+    def step_into(self) -> None:
+        self._step_playback("into")
+
+    def step_over(self) -> None:
+        self._step_playback("over")
+
+    def step_out(self) -> None:
+        self._step_playback("out")
+
+    def _step_playback(self, mode: str) -> None:
+        if self.playback is None or not self.playback.can_step(mode):
+            return
+        entity = getattr(self.playback, f"step_{mode}")()
+        if entity is None:
+            self._clear_playback_selection()
+        else:
+            self._select_playback_entity(entity.usr)
+        self._update_playback_status()
 
     def next_call(self) -> None:
         if self.playback is None:
@@ -162,6 +189,9 @@ class CallViewCanvas(graph_canvas.GraphCanvas):
         if self.selected is not None and self.layout is not None and self.selected not in self.layout.nodes:
             status += " — outside the current diagram; source shown in editor"
         self.playback_status_var.set(status)
+        for label, mode in (("Step Into", "into"), ("Step Over", "over"), ("Step Out", "out")):
+            self.playback_buttons[label].state(
+                ["!disabled"] if self.playback.can_step(mode) else ["disabled"])
 
     def _select_playback_entity(self, usr: str) -> None:
         # Playback is a selection, not a request to replace the entry-point graph.
