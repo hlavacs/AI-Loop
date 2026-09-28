@@ -289,3 +289,22 @@ def test_compiler_crash_is_not_reported_as_failed_tests():
     assert issue.code == "compiler_crash"
     assert "compiler crashed" in issue.summary
     assert "20.1.8" in issue.detail and "Resources.ixx:127" in issue.detail
+
+
+def test_desktop_default_runner_keeps_interrupted_worktree_without_recovery_journal(tmp_path):
+    """The extension checkpoint is opt-in; desktop cancel/reopen behavior is unchanged."""
+    import runpy
+    from pathlib import Path
+
+    runpy.run_path(str(Path(__file__).parent / "fixtures/fake_workflow.py"))["prepare"](tmp_path)
+    def cancelled(_prompt, _cwd):
+        raise steps.StepCancelled()
+    runner = steps.StepRunner(tmp_path, persistence.UserConfig(), invoke=cancelled)
+    with pytest.raises(steps.StepCancelled):
+        runner.propose(prompt.StepRequest("architecture", 1))
+    assert (runner.store.dir / "worktree/.git").is_file()
+    assert not recovery.proposal_journal(tmp_path).exists()
+    from dataclasses import replace
+    runner.store.save_state(replace(runner.store.load_state(), phase=persistence.ProjectPhase.IMPLEMENTATION))
+    with pytest.raises(steps.StepError, match="has not been approved"):
+        runner.propose(prompt.StepRequest("implementation", 1))

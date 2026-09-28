@@ -131,13 +131,15 @@ describe the separate AI-Loop application and are not ICODA plans or specificati
   `icoda/icoda_python.bash:choose_icoda_python`.
 - Auxiliary CLI entry points: `icoda/icoda_core/provider_check.py:main` and the analysis child process
   `icoda/icoda_core/session.py:main`. There is no TUI or web entry point; neither is planned.
-- Core package: 48 top-level Python modules under `icoda/icoda_core/`, counting every `*.py` file including
+- Core package: 49 top-level Python modules under `icoda/icoda_core/`, counting every `*.py` file including
   `__init__.py`, and including the phase/queue, grouping, coverage/rules/mind-map,
-  common graph-status/filter/expansion, and Python-analysis slices added after the original baseline.
+  common graph-status/filter/expansion, Python-analysis, and headless `service.py` slices added after the original baseline.
 - GUI package: 18 Python modules under `icoda/icoda_gui/`, including all six overview surfaces, the Troubleshooting and Source Editor tabs, and their shared controls.
-- Tests: 78 Python test modules under `icoda/tests/`, counting the 71 top-level `test_*.py` modules plus the 7
+- Tests: 81 Python test modules under `icoda/tests/`, counting the 74 top-level `test_*.py` modules plus the 7
   `*_acceptance.py` programs (`gui`, `recovery_gui`, `editor_gui`, `simulation`, `performance`, and `real_provider`). Supporting `verify.py`,
   `conftest.py`, `tk_stub.py`, `diag_apple.py`, and the CMake/C++23 sample project are not included in that count.
+  The count includes `test_service.py` and corrects the pre-existing two-module discrepancy
+  documented in `VSCODE_MIGRATION.md`.
 
 ## Capability matrix
 

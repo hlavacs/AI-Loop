@@ -103,9 +103,10 @@ def parse(text: str) -> FilterDescription:
 
 def derive(model: DerivedModel, graph: Graph, appearances: NodeAppearanceMap,
            criteria: FilterDescription = EMPTY_FILTER, *, focus_usr: str | None = None,
-           neighborhood_depth: int = 0) -> NodeDecisionMap:
+           neighborhood_depth: int = 0, focus_node: str | None = None) -> NodeDecisionMap:
     """Return one frozen decision map shared unchanged by all diagram canvases."""
-    reachable = _neighborhood(graph, focus_usr, neighborhood_depth)
+    seeds = (_node_usrs(model, graph, focus_node) or (focus_node,)) if focus_node else ()
+    reachable = _neighborhood(graph, focus_usr, neighborhood_depth, seeds)
     namespaces = _entity_namespaces(model) if criteria.namespace else {}
     decisions: dict[str, NodeDecision] = {}
     for node_id in graph.nodes:
@@ -227,11 +228,12 @@ def _has_edge_type(edges: Iterable[Edge], usr: str, wanted: str) -> bool:
                for edge in edges)
 
 
-def _neighborhood(graph: Graph, focus_usr: str | None, depth: int) -> frozenset[str]:
-    if not focus_usr or depth <= 0 or focus_usr not in graph.nodes:
+def _neighborhood(graph: Graph, focus_usr: str | None, depth: int,
+                  seeds: tuple[str, ...] = ()) -> frozenset[str]:
+    reached = set(seeds or ((focus_usr,) if focus_usr else ())) & set(graph.nodes)
+    if not reached or depth <= 0:
         return frozenset()
-    reached = {focus_usr}
-    frontier = {focus_usr}
+    frontier = set(reached)
     for _ in range(depth):
         adjacent = {endpoint for edge in graph.edges if edge.source in frontier or edge.target in frontier
                     for endpoint in (edge.source, edge.target)}

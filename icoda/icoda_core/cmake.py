@@ -3,7 +3,10 @@
 import os
 import shutil
 import subprocess
+import threading
+from collections.abc import Callable
 from pathlib import Path
+from typing import Any
 
 from icoda_core import analysis, instrumentation, toolchain
 
@@ -66,13 +69,16 @@ def _cmake_executable(cached: dict[str, tuple[str, str]], environment: dict[str,
         "cmake", path=environment.get("PATH"))
 
 
-def clang_configuration(root: Path) -> tuple[Path, list[str], dict[str, str]]:
+def clang_configuration(root: Path, *, environment: dict[str, str] | None = None,
+                        tools: dict[str, str] | None = None,
+                        run: Callable[[list[str]], str] | None = None) -> tuple[Path, list[str], dict[str, str]]:
     """Reuse a Clang tree or configure an isolated one with the project's existing options."""
     previous = build_directory(root)
     cached = cache_values(previous) if previous else {}
-    environment = toolchain.clang_build_environment(cached.get("CMAKE_CXX_COMPILER", ("", ""))[1])
+    environment = dict(environment) if environment is not None else toolchain.clang_build_environment(
+        cached.get("CMAKE_CXX_COMPILER", ("", ""))[1])
     compiler = Path(environment["CXX"]).resolve()
-    cmake_exe = _cmake_executable(cached, environment)
+    cmake_exe = (tools or {}).get("cmake") or _cmake_executable(cached, environment)
     if cmake_exe is None:
         raise RuntimeError("CMake is required to build this project.")
     directories = [previous] if previous else []
@@ -91,17 +97,12 @@ def clang_configuration(root: Path) -> tuple[Path, list[str], dict[str, str]]:
     if (directory / "CMakeCache.txt").exists():
         raise RuntimeError(f"{directory} already uses a different toolchain. Choose a new build directory "
                            "or move that build aside before building with Clang.")
-    ninja = shutil.which("ninja", path=environment.get("PATH"))
+    ninja = (tools or {}).get("ninja") or shutil.which("ninja", path=environment.get("PATH"))
     if ninja is None:
         raise RuntimeError("Ninja is required to create the Clang build. Install Ninja and retry Build.")
     command = configure_command(root, directory)
     command[0] = cmake_exe
-    if previous is None and (root / "CMakePresets.json").is_file():
-        presets = subprocess.run([cmake_exe, "--list-presets"], cwd=root, env=environment,
-                                 capture_output=True, text=True, timeout=30, check=False)
-        preset = next((name for name in ("debug-clang", "debug") if f'"{name}"' in presets.stdout), None)
-        if presets.returncode == 0 and preset:
-            command[1:1] = ["--preset", preset]
+    _apply_preset(root, previous, cmake_exe, environment, command, run)
     # Project/dependency options survive migration; compiler flags and generated paths do not.
     command += [f"-D{name}:{kind}={value}" for name, (kind, value) in cached.items()
                 if kind not in ("INTERNAL", "STATIC")
@@ -114,17 +115,19 @@ def clang_configuration(root: Path) -> tuple[Path, list[str], dict[str, str]]:
 
 
 def instrumented_clang_configuration(
-        root: Path, options: instrumentation.InstrumentationOptions,
+        root: Path, options: instrumentation.InstrumentationOptions, *,
+        environment: dict[str, str] | None = None, tools: dict[str, str] | None = None,
+        run: Callable[[list[str]], str] | None = None,
 ) -> tuple[Path, list[str], dict[str, str], instrumentation.InstrumentationFiles]:
     """Configure the opt-in instrumented Debug tree without changing the ordinary build tree."""
     files = instrumentation.prepare_instrumentation(root, options)
     previous = build_directory(root)
     cached = cache_values(previous) if previous else {}
     previous_compiler = cached.get("CMAKE_CXX_COMPILER", ("", ""))[1]
-    environment = _instrumented_build_environment(previous_compiler)
+    environment = dict(environment) if environment is not None else _instrumented_build_environment(previous_compiler)
     compiler = Path(environment["CXX"]).resolve()
     same_compiler = bool(previous_compiler) and Path(previous_compiler).resolve() == compiler
-    cmake_exe = _cmake_executable(cached, environment)
+    cmake_exe = (tools or {}).get("cmake") or _cmake_executable(cached, environment)
     if cmake_exe is None:
         raise RuntimeError("CMake is required to build this project.")
 
@@ -144,19 +147,14 @@ def instrumented_clang_configuration(
             command = configure_command(root, directory)
             command[0] = cmake_exe
     if not values or fresh:
-        ninja = shutil.which("ninja", path=environment.get("PATH"))
+        ninja = (tools or {}).get("ninja") or shutil.which("ninja", path=environment.get("PATH"))
         if ninja is None:
             raise RuntimeError("Ninja is required to create the instrumented build.")
         command = configure_command(root, directory)
         command[0] = cmake_exe
         if fresh:
             command.insert(1, "--fresh")
-        if previous is None and (root / "CMakePresets.json").is_file():
-            presets = subprocess.run([cmake_exe, "--list-presets"], cwd=root, env=environment,
-                                     capture_output=True, text=True, timeout=30, check=False)
-            preset = next((name for name in ("debug-clang", "debug") if f'"{name}"' in presets.stdout), None)
-            if presets.returncode == 0 and preset:
-                command[1:1] = ["--preset", preset]
+        _apply_preset(root, previous, cmake_exe, environment, command, run)
         command += ["-G", "Ninja", f"-DCMAKE_MAKE_PROGRAM={ninja}",
                     f"-DCMAKE_C_COMPILER={environment['CC']}",
                     f"-DCMAKE_CXX_COMPILER={environment['CXX']}"]
@@ -168,22 +166,45 @@ def instrumented_clang_configuration(
     return directory, command, environment, files
 
 
-def _instrumented_build_environment(preferred: str | None) -> dict[str, str]:
+def _apply_preset(root: Path, previous: Path | None, executable: str,
+                  environment: dict[str, str], command: list[str],
+                  run: Callable[[list[str]], str] | None) -> None:
+    """Read presets with the caller's process ownership when provided."""
+    if previous is not None or not (root / "CMakePresets.json").is_file():
+        return
+    args = [executable, "--list-presets"]
+    if run is not None:
+        output = run(args)
+    else:
+        result = subprocess.run(args, cwd=root, env=environment, capture_output=True,
+                                text=True, timeout=30, check=False)
+        output = result.stdout if result.returncode == 0 else ""
+    preset = next((name for name in ("debug-clang", "debug") if f'"{name}"' in output), None)
+    if preset:
+        command[1:1] = ["--preset", preset]
+
+
+def _instrumented_build_environment(preferred: str | None, *,
+                                    environ: dict[str, str] | None = None,
+                                    cancel_event: threading.Event | None = None) -> dict[str, str]:
     """Select Clang when directly available, otherwise GCC for function instrumentation."""
+    kwargs: dict[str, Any] = {} if environ is None else {"environ": environ}
+    if cancel_event is not None:
+        kwargs["cancel_event"] = cancel_event
     clang_error: RuntimeError | None = None
     if preferred and "clang" in Path(preferred).name.lower():
         try:
-            return toolchain.clang_build_environment(preferred)
+            return toolchain.clang_build_environment(preferred, **kwargs)
         except RuntimeError as exc:
             clang_error = exc
-    clang = shutil.which("clang++")
+    clang = shutil.which("clang++", path=environ.get("PATH") if environ is not None else None)
     if clang is not None:
         try:
-            return toolchain.clang_build_environment(clang)
+            return toolchain.clang_build_environment(clang, **kwargs)
         except RuntimeError as exc:
             clang_error = exc
 
-    environment = dict(os.environ)
+    environment = dict(os.environ if environ is None else environ)
     gnu_preferred = preferred if preferred and "clang" not in Path(preferred).name.lower() else None
     compiler = None
     for choice in (gnu_preferred, environment.get("CXX"), "g++"):
@@ -195,7 +216,7 @@ def _instrumented_build_environment(preferred: str | None) -> dict[str, str]:
         # Retain the regular selector's versioned-Clang discovery and actionable error.
         if clang_error is not None:
             raise clang_error
-        return toolchain.clang_build_environment(preferred)
+        return toolchain.clang_build_environment(preferred, **kwargs)
     compiler_path = Path(compiler)
     c_name = compiler_path.name.replace("g++", "gcc")
     c_compiler = None

@@ -7,10 +7,12 @@ import re
 import shutil
 import subprocess
 import sys
+import threading
 from collections.abc import Callable, Iterable, Mapping
 from dataclasses import dataclass
 from functools import lru_cache
 from pathlib import Path
+from typing import Any
 
 # Apple's clang numbering differs from LLVM's; this table maps the Apple major version to the LLVM major
 # version it was branched from (Xcode 13 -> LLVM 12, Xcode 14 -> 14, Xcode 15 -> 16, Xcode 16 -> 17,
@@ -18,25 +20,13 @@ from pathlib import Path
 APPLE_TO_LLVM_MAJOR = {12: 10, 13: 12, 14: 14, 15: 16, 16: 17, 17: 19}
 
 
-def clang_build_environment(preferred: str | None = None) -> dict[str, str]:
+def clang_build_environment(preferred: str | None = None, *, environ: Mapping[str, str] | None = None,
+                            preferred_only: bool = False, cancel_event: threading.Event | None = None) -> dict[str, str]:
     """Select module-capable Clang on every host, including the Windows SDK environment."""
-    environment = dict(os.environ)
-    if sys.platform == "win32":
-        environment = _windows_build_environment(environment)
-    choices = [preferred, environment.get("CXX")]
-    if sys.platform == "darwin" and shutil.which("brew"):
-        result = subprocess.run(["brew", "--prefix", "llvm"], capture_output=True, text=True,
-                                timeout=30, check=False)
-        if result.returncode == 0:
-            choices.append(str(Path(result.stdout.strip()) / "bin/clang++"))
-    choices.append(shutil.which("clang++", path=environment.get("PATH")))
-    if sys.platform.startswith("linux"):
-        versioned = [path for directory in os.get_exec_path(environment)
-                     for path in Path(directory).glob("clang++-[0-9]*")]
-        choices.extend(str(path) for path in sorted(versioned, key=lambda p: _version_key(p.name), reverse=True))
-    for candidate in candidates(environ=environment):
-        directory = Path(candidate.path).parent
-        choices.append(str(directory / ("clang++.exe" if sys.platform == "win32" else "../bin/clang++")))
+    environment = dict(os.environ if environ is None else environ)
+    if sys.platform == "win32" and environ is None:
+        environment = _windows_build_environment(environment, **({"cancel_event": cancel_event} if cancel_event else {}))
+    choices = [preferred] if preferred_only else _clang_choices(preferred, environment, cancel_event)
     for choice in dict.fromkeys(choices):
         if not choice:
             continue
@@ -55,8 +45,7 @@ def clang_build_environment(preferred: str | None = None) -> dict[str, str]:
         c_compiler = compiler.with_name(f"clang{suffix}{extension}")
         if scanner is None or not c_compiler.is_file():
             continue
-        result = subprocess.run([str(compiler), "--version"], capture_output=True, text=True,
-                                timeout=30, check=False, env=environment)
+        result = _probe([str(compiler), "--version"], environment, 30, cancel_event)
         match = re.search(r"clang version (\d+)", result.stdout + result.stderr)
         if result.returncode or match is None or int(match.group(1)) < 16:
             continue
@@ -67,30 +56,119 @@ def clang_build_environment(preferred: str | None = None) -> dict[str, str]:
                        "(Homebrew LLVM on macOS, the Visual Studio LLVM component on Windows).")
 
 
-def _windows_build_environment(environment: dict[str, str]) -> dict[str, str]:
+def _clang_choices(preferred: str | None, environment: Mapping[str, str],
+                   cancel_event: threading.Event | None = None) -> list[str | None]:
+    """Share the desktop's compiler preference and installed-tool discovery order."""
+    choices = [preferred, environment.get("CXX")]
+    if sys.platform == "darwin" and shutil.which("brew", path=environment.get("PATH")):
+        result = _probe(["brew", "--prefix", "llvm"], environment, 30, cancel_event)
+        if result.returncode == 0:
+            choices.append(str(Path(result.stdout.strip()) / "bin/clang++"))
+    choices.append(shutil.which("clang++", path=environment.get("PATH")))
+    if sys.platform.startswith("linux"):
+        versioned = [path for directory in os.get_exec_path(environment)
+                     for path in Path(directory).glob("clang++-[0-9]*")]
+        choices.extend(str(path) for path in sorted(versioned, key=lambda p: _version_key(p.name), reverse=True))
+    for candidate in candidates(platform=sys.platform, environ=environment):
+        directory = Path(candidate.path).parent
+        choices.append(str(directory / ("clang++.exe" if sys.platform == "win32" else "../bin/clang++")))
+    return choices
+
+
+def _windows_build_environment(environment: dict[str, str], *,
+                               cancel_event: threading.Event | None = None) -> dict[str, str]:
     """Load Visual Studio's SDK paths even when ICODA starts outside a developer prompt."""
     base = environment.get("ProgramFiles(x86)", environment.get("PROGRAMFILES(X86)", r"C:\Program Files (x86)"))
     vswhere = Path(base) / "Microsoft Visual Studio/Installer/vswhere.exe"
     if not vswhere.is_file():
         return environment
-    result = subprocess.run([str(vswhere), "-latest", "-prerelease", "-products", "*", "-requires",
+    result = _probe([str(vswhere), "-latest", "-prerelease", "-products", "*", "-requires",
                              "Microsoft.VisualStudio.Component.VC.Tools.x86.x64", "-property", "installationPath"],
-                            capture_output=True, text=True, timeout=30, check=False)
+                    environment, 30, cancel_event)
     if result.returncode or not result.stdout.strip():
         return environment
     install = Path(result.stdout.strip().splitlines()[-1])
     vcvars = install / "VC/Auxiliary/Build/vcvars64.bat"
-    result = subprocess.run(f'cmd /d /s /c ""{vcvars}" >nul && set"',
-                            capture_output=True, text=True, timeout=60, check=False, env=environment)
+    # Expand the quoted batch path inside cmd; avoid embedded quotes in Windows argv serialization.
+    probe_env = {**environment, "ICODA_VCVARS_COMMAND": f'"{vcvars}"'}
+    result = _probe([environment.get("COMSPEC", "cmd.exe"), "/d", "/c", "call %ICODA_VCVARS_COMMAND% >nul && set"],
+                    probe_env, 60, cancel_event)
     if result.returncode:
         raise RuntimeError("Could not initialize Visual Studio's C++ environment: " + result.stderr.strip())
+    previous_command = environment.get("ICODA_VCVARS_COMMAND")
     environment = {key.upper(): value for line in result.stdout.splitlines()
                    if "=" in line and not line.startswith("=") for key, value in [line.split("=", 1)]}
+    environment.pop("ICODA_VCVARS_COMMAND", None)
+    if previous_command is not None:
+        environment["ICODA_VCVARS_COMMAND"] = previous_command
     directories = [install / "VC/Tools/Llvm/x64/bin",
                    install / "Common7/IDE/CommonExtensions/Microsoft/CMake/CMake/bin",
                    install / "Common7/IDE/CommonExtensions/Microsoft/CMake/Ninja"]
     environment["PATH"] = os.pathsep.join(map(str, directories)) + os.pathsep + environment.get("PATH", "")
     return environment
+
+
+TOOL_SETTINGS = {"cmake": "cmakePath", "ninja": "ninjaPath", "clang": "clangPath",
+                 "llvm-symbolizer": "llvmSymbolizerPath"}
+
+
+def inspect_tools(overrides: Mapping[str, str], *, cancel_event: threading.Event | None = None) -> dict[str, Any]:
+    """Inspect independent tools and a child-only environment; never alter the process environment."""
+    original = dict(os.environ)
+    environment, diagnostics = dict(original), []
+    if sys.platform == "win32":
+        try:
+            environment = _windows_build_environment(environment, **({"cancel_event": cancel_event} if cancel_event else {}))
+        except (OSError, RuntimeError, subprocess.SubprocessError) as exc:
+            diagnostics.append(str(exc))
+    compiler = None
+    try:
+        environment = clang_build_environment(overrides.get("clangPath"), environ=environment,
+                                              preferred_only=bool(overrides.get("clangPath")),
+                                              **({"cancel_event": cancel_event} if cancel_event else {}))
+        compiler = environment["CXX"]
+    except (OSError, RuntimeError, subprocess.SubprocessError) as exc:
+        diagnostics.append(str(exc))
+    tools = [_inspect_tool(name, overrides.get(key), compiler, environment, original)
+             for name, key in TOOL_SETTINGS.items()]
+    directories = list(dict.fromkeys(str(Path(tool["path"]).parent) for tool in tools if tool["path"]))
+    if directories:
+        environment["PATH"] = os.pathsep.join([*directories, environment.get("PATH", "")])
+    baseline = {key.upper() if sys.platform == "win32" else key: value for key, value in original.items()}
+    additions = {key: value for key, value in environment.items() if baseline.get(key) != value}
+    return {"tools": tools, "environment": additions, "diagnostics": diagnostics}
+
+
+def _probe(command: list[str], environment: Mapping[str, str], timeout: float,
+           cancel_event: threading.Event | None) -> subprocess.CompletedProcess[str]:
+    """Give service discovery probes the same request ownership as builds."""
+    if cancel_event is None:
+        return subprocess.run(command, capture_output=True, text=True, timeout=timeout,
+                              check=False, env=environment)
+    from icoda_core import process
+
+    result = process.run_bounded(command, env=environment, timeout=timeout, cancel_event=cancel_event)
+    if result.cancelled:
+        raise InterruptedError("Tool discovery cancelled.")
+    if result.timed_out:
+        raise subprocess.TimeoutExpired(command, timeout)
+    return subprocess.CompletedProcess(command, result.returncode, result.stdout, result.stderr)
+
+
+def _inspect_tool(name: str, override: str | None, compiler: str | None,
+                  environment: Mapping[str, str], original: Mapping[str, str]) -> dict[str, Any]:
+    """Resolve explicit overrides first, retaining provenance and independent missing results."""
+    command = "clang++" if name == "clang" else name
+    path = compiler if name == "clang" else shutil.which(override or command, path=environment.get("PATH"))
+    if path is None and name == "llvm-symbolizer" and not override:
+        suffix = ".exe" if sys.platform == "win32" else ""
+        path = next((str(tool) for candidate in candidates(platform=sys.platform, environ=environment)
+                     if (tool := Path(candidate.path).parent / ("" if suffix else "../bin")
+                         / (command + suffix)).is_file()), None)
+    inherited = shutil.which(command, path=original.get("PATH", ""))
+    source = "missing" if path is None else "override" if override else (
+        "path" if inherited and os.path.abspath(path) == os.path.abspath(inherited) else "discovered")
+    return {"name": name, "path": os.path.abspath(path) if path else None, "source": source}
 
 
 @dataclass(frozen=True)
@@ -138,7 +216,7 @@ def _mac_candidates(globber: Callable[[str], Iterable[str]]) -> list[Candidate]:
 def _windows_candidates(environ: Mapping[str, str], globber: Callable[[str], Iterable[str]]) -> list[Candidate]:
     found: list[Candidate] = []
     for var in ("ProgramFiles", "ProgramFiles(x86)"):
-        base = environ.get(var)
+        base = environ.get(var) or environ.get(var.upper())
         if not base:
             continue
         pattern = os.path.join(base, "Microsoft Visual Studio", "*", "*", "VC", "Tools", "Llvm", "x64", "bin",

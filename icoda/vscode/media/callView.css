@@ -1,0 +1,95 @@
+body {
+  margin: 0; height: 100vh; display: flex; flex-direction: column; overflow: hidden;
+  color: var(--vscode-editor-foreground); background: var(--vscode-editor-background);
+  font: var(--vscode-font-size) var(--vscode-font-family);
+}
+#toolbar {
+  display: flex; align-items: center; flex-wrap: nowrap; gap: 8px; overflow-x: auto;
+  flex: 0 0 auto; padding: 5px 8px; border-bottom: 1px solid var(--vscode-panel-border);
+}
+#toolbar.call-toolbar { overflow: visible; }
+#toolbar:not(.call-toolbar) > * { flex-shrink: 0; white-space: nowrap; }
+#traceToolbar { position: relative; display: flex; gap: 4px; flex: 0 1 48em; min-width: 32px; }
+#traceButtons { display: flex; gap: 4px; flex-wrap: nowrap; }
+#traceButtons:empty { display: none; }
+#traceToolbar button, #graphControls > *, label { flex-shrink: 0; white-space: nowrap; }
+#graphControls { display: flex; align-items: center; gap: 8px; flex: 1 1 32em; min-width: 0; overflow-x: auto; }
+#traceMenu {
+  position: absolute; top: 100%; left: 0; z-index: 2; display: flex; flex-direction: column;
+  align-items: flex-start; gap: 4px; padding: 6px; max-width: calc(100vw - 32px);
+  max-height: calc(100vh - 80px); overflow: auto;
+  color: var(--vscode-menu-foreground, var(--vscode-editor-foreground));
+  background: var(--vscode-menu-background, var(--vscode-editor-background));
+  border: 1px solid var(--vscode-menu-border, var(--vscode-panel-border));
+}
+[hidden] { display: none !important; }
+#traceStatus { max-width: 260px; overflow: hidden; text-overflow: ellipsis; }
+label { display: inline-flex; align-items: center; gap: 4px; }
+input, select, button { font: inherit; border: 1px solid var(--vscode-input-border, transparent); border-radius: 2px; }
+input, select { color: var(--vscode-input-foreground); background: var(--vscode-input-background); padding: 3px; }
+input[type="checkbox"] { accent-color: var(--vscode-focusBorder); }
+button { padding: 3px 8px; color: var(--vscode-button-secondaryForeground); background: var(--vscode-button-secondaryBackground); cursor: pointer; }
+button:hover { background: var(--vscode-button-secondaryHoverBackground); }
+button:disabled { color: var(--vscode-disabledForeground); cursor: default; }
+:focus-visible { outline: 2px solid var(--vscode-focusBorder); outline-offset: -2px; }
+#root { max-width: 190px; }
+#depth { width: 3.5em; }
+#filter { width: 145px; }
+#graph { flex: 1 1 auto; min-height: 0; width: 100%; touch-action: none; user-select: none; }
+#graph.dragging { cursor: grabbing; }
+#status { flex: 0 0 auto; margin: 0; padding: 4px 8px; font-size: 0.9em; white-space: normal; overflow: auto; max-height: 5em; }
+.node { cursor: pointer; }
+.node rect { fill: var(--vscode-editorWidget-background); stroke: var(--vscode-symbolIcon-functionForeground, var(--vscode-editor-foreground)); stroke-width: 1.5; }
+.node text { fill: var(--vscode-editor-foreground); font-size: 11px; pointer-events: none; }
+.node .badge { font-size: 9px; text-anchor: end; }
+.node.stub rect { fill: var(--vscode-diffEditor-removedTextBackground); stroke: var(--vscode-errorForeground); }
+.node.implemented rect { fill: var(--vscode-diffEditor-insertedTextBackground); stroke: var(--vscode-symbolIcon-functionForeground); }
+.node.tested rect { fill: var(--vscode-diffEditor-insertedTextBackground); stroke: var(--vscode-testing-iconPassed, var(--vscode-charts-green)); }
+.node.external rect { fill: var(--vscode-editor-inactiveSelectionBackground); stroke: var(--vscode-descriptionForeground); }
+.node.root rect { stroke-width: 2.5; }
+.node.added rect { stroke: var(--vscode-gitDecoration-addedResourceForeground); stroke-width: 3; }
+.node.changed rect { stroke: var(--vscode-gitDecoration-modifiedResourceForeground); stroke-width: 3; stroke-dasharray: 5 2; }
+.node.selected rect, .node:focus-visible > rect { stroke: var(--vscode-focusBorder); stroke-width: 3; }
+.node.selected text { font-weight: bold; }
+.edge path { fill: none; stroke: var(--vscode-charts-blue, var(--vscode-editor-foreground)); stroke-width: 1.4; marker-end: url(#arrow); }
+.edge.loop path { stroke-dasharray: 4 3; }
+.edge.uncertain path { stroke-dasharray: 7 4; }
+.edge.free path { stroke: var(--vscode-charts-purple); }
+.edge.recorded path { stroke: var(--vscode-focusBorder); stroke-width: 2.5; }
+.edge text { fill: var(--vscode-editor-foreground); font-size: 10px; text-anchor: middle; }
+#arrow path { fill: var(--vscode-charts-blue, var(--vscode-editor-foreground)); }
+body.vscode-high-contrast .node rect, body.vscode-high-contrast-light .node rect { stroke-width: 2.5; }
+
+body.vscode-high-contrast, body.vscode-high-contrast-light {
+  --icoda-contrast-border: var(--vscode-contrastBorder, var(--vscode-editor-foreground));
+}
+body:is(.vscode-high-contrast, .vscode-high-contrast-light) :is(button, input, select, #traceMenu, #toolbar) {
+  border-color: var(--icoda-contrast-border);
+}
+body:is(.vscode-high-contrast, .vscode-high-contrast-light) :is(.node, .member, .expand) > rect {
+  stroke: var(--icoda-contrast-border);
+}
+body:is(.vscode-high-contrast, .vscode-high-contrast-light) :focus-visible {
+  outline: 3px solid var(--vscode-focusBorder); outline-offset: -3px;
+}
+body:is(.vscode-high-contrast, .vscode-high-contrast-light) :is(.node, .member, .expand):focus-visible > rect,
+body:is(.vscode-high-contrast, .vscode-high-contrast-light) .selected > rect {
+  stroke: var(--vscode-focusBorder); stroke-width: 3;
+}
+
+/* Shared filter popover and backend-derived emphasis for all four diagrams. */
+#graphOptions { flex-shrink: 0; }
+#graphOptions summary { cursor: pointer; padding: 3px; }
+.graph-options {
+  position: fixed; top: 38px; right: 8px; z-index: 4;
+  display: flex; flex-direction: column; gap: 8px; padding: 10px;
+  max-width: calc(100vw - 36px); white-space: normal;
+  color: var(--vscode-editor-foreground); background: var(--vscode-editorWidget-background);
+  border: 1px solid var(--vscode-focusBorder);
+}
+.graph-options label { display: flex; gap: 8px; flex-wrap: wrap; }
+#graphQuery { width: 23em; max-width: 100%; box-sizing: border-box; }
+#graphNeighborhood { width: 4em; }
+.graph-filtered { display: none; }
+.graph-dimmed { opacity: 0.4; }
+.graph-dimmed:focus-within, .graph-dimmed:hover { opacity: 1; }

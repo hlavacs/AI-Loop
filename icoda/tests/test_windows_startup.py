@@ -68,3 +68,65 @@ def test_other_platforms_do_not_initialize_windows_tools(app_module, monkeypatch
                         lambda env: pytest.fail("Windows discovery on another platform"))
     app_module.configure_windows_toolchain()
     assert not capsys.readouterr().err
+
+
+@pytest.fixture
+def visual_studio_tools(tmp_path, monkeypatch):
+    from pathlib import Path
+
+    from icoda_core import toolchain
+
+    install = tmp_path / "Visual Studio"
+    llvm = install / "VC/Tools/Llvm/x64/bin"
+    cmake = install / "Common7/IDE/CommonExtensions/Microsoft/CMake"
+    tools = {"cmake": cmake / "CMake/bin/cmake.exe", "ninja": cmake / "Ninja/ninja.exe",
+             "clang": llvm / "clang++.exe", "llvm-symbolizer": llvm / "llvm-symbolizer.exe"}
+    vswhere = tmp_path / "Microsoft Visual Studio/Installer/vswhere.exe"
+    for path in (*tools.values(), vswhere, llvm / "clang.exe", llvm / "clang-scan-deps.exe"):
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.touch()
+    monkeypatch.setattr(toolchain.sys, "platform", "win32")
+    monkeypatch.setattr(os, "environ", {"PATH": "", "ProgramFiles(x86)": str(tmp_path), "KEEP": "original"})
+    monkeypatch.setattr(toolchain, "candidates", lambda **_kwargs: [])
+
+    def which(name, *, path=None):
+        candidates = [Path(name)] if Path(name).is_absolute() else [
+            Path(directory) / (name + ".exe") for directory in (path or "").split(os.pathsep) if directory]
+        return next((str(candidate) for candidate in candidates if candidate.is_file()), None)
+
+    monkeypatch.setattr(toolchain.shutil, "which", which)
+    return install, tools, vswhere
+
+
+def test_service_finds_vs_bundled_tools_without_path(visual_studio_tools, monkeypatch):
+    from icoda_core import toolchain
+    from icoda_core.service import Service
+
+    install, tools, vswhere = visual_studio_tools
+    before, calls = dict(os.environ), []
+
+    def run(command, **kwargs):
+        calls.append((command, kwargs))
+        if command[0] == "cmd.exe":
+            assert command[1:3] == ["/d", "/c"]
+            assert command[3] == "call %ICODA_VCVARS_COMMAND% >nul && set"
+            assert kwargs["env"]["ICODA_VCVARS_COMMAND"] == f'"{install / "VC/Auxiliary/Build/vcvars64.bat"}"'
+            output = "Path=\nINCLUDE=windows-sdk\nLIB=sdk-libs\nKEEP=original\n"
+        elif command[0] == str(vswhere):
+            output = str(install) + "\n"
+        else:
+            assert command == [str(tools["clang"]), "--version"]
+            assert kwargs["env"]["INCLUDE"] == "windows-sdk" and kwargs["env"]["LIB"] == "sdk-libs"
+            output = "clang version 18.1.8"
+        return subprocess.CompletedProcess(command, 0, output, "")
+
+    monkeypatch.setattr(toolchain.subprocess, "run", run)
+    backend = Service()
+    backend.initialize({"protocolVersion": 1})
+    report = backend.dispatch({"method": "toolchain.inspect", "params": {}})
+    assert report["tools"] == [{"name": name, "path": str(path), "source": "discovered"}
+                               for name, path in tools.items()]
+    assert not report["errors"] and not report["diagnostics"]
+    assert report["environment"]["INCLUDE"] == "windows-sdk" and report["environment"]["LIB"] == "sdk-libs"
+    assert report["environment"]["CXX"] == str(tools["clang"])
+    assert "KEEP" not in report["environment"] and len(calls) == 3 and os.environ == before

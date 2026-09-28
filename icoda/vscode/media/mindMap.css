@@ -1,0 +1,15 @@
+@import url('./fileView.css');
+#summary { white-space: nowrap; }
+.node text { font-size: 12px; }
+.node .detail { fill: var(--vscode-descriptionForeground); font-size: 10px; }
+.node.file > rect, .node.class > rect, .node.function > rect { fill: var(--vscode-editorWidget-background); }
+.node.implemented > rect { stroke: var(--vscode-charts-blue, var(--vscode-editor-foreground)); }
+.node.tested > rect { stroke: var(--vscode-charts-green, var(--vscode-editor-foreground)); }
+.node.stub > rect { stroke: var(--vscode-charts-orange, var(--vscode-editor-foreground)); }
+.node.selected > rect, .node:focus-visible > rect { stroke: var(--vscode-focusBorder); stroke-width: 3; }
+.expand { cursor: pointer; }
+.node .expand rect { fill: var(--vscode-button-secondaryBackground); stroke: var(--vscode-contrastBorder, transparent); }
+.node .expand text { fill: var(--vscode-button-secondaryForeground); font-size: 16px; }
+.expand:focus-visible rect { stroke: var(--vscode-focusBorder); stroke-width: 3; }
+.edge path { marker-end: none; }
+body.vscode-high-contrast .node > rect, body.vscode-high-contrast-light .node > rect { stroke: var(--vscode-editor-foreground); }

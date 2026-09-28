@@ -81,6 +81,14 @@ def build_index(model: DerivedModel,
     return CoverageIndex(entries, tuple(entry.usr for entry in entries if not entry.covered))
 
 
+def scoped_index(model: DerivedModel, log: StepLog | Iterable[StepRecord],
+                 scoped_model: DerivedModel) -> CoverageIndex:
+    """Retain whole-project test evidence while restricting displayed callable rows."""
+    complete = build_index(model, log)
+    entries = tuple(entry for entry in complete.entries if entry.usr in scoped_model.entities)
+    return CoverageIndex(entries, tuple(entry.usr for entry in entries if not entry.covered))
+
+
 def _entry(entity: Entity, evidence: Iterable[CoverageEvidence]) -> CoverageEntry:
     evidence = tuple(evidence)
     all_tests = tuple(sorted({test for item in evidence for test in item.tests}))

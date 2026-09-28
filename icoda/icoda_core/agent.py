@@ -6,6 +6,7 @@ Prompt assembly and response validation follow in M2.
 from __future__ import annotations
 
 import json
+import os
 import re
 import shutil
 import time
@@ -113,8 +114,30 @@ def editing_provider(provider: Provider) -> Provider:
 
 
 def binary_available(provider: Provider, binary: str | None = None) -> bool:
-    candidate = binary or provider.command
-    return Path(candidate).is_file() or shutil.which(candidate) is not None
+    return provider_binary(provider, binary) is not None
+
+
+def provider_binary(provider: Provider, binary: str | None = None) -> str | None:
+    """Resolve a CLI without executing it; preserve symlinks such as venv launchers."""
+    candidate = str(Path(binary or provider.command).expanduser())
+    found = candidate if Path(candidate).is_file() else shutil.which(candidate)
+    return os.path.abspath(found) if found else None
+
+
+def authentication_configured(provider: Provider) -> bool:
+    """Detect local auth markers without reading credentials or executing a provider.
+
+    Presence is not a successful login check. Keychain-only or unrecognised setups
+    may return False; callers must not treat it as proof that login is unavailable.
+    """
+    if provider.id == "codex":
+        directory = Path(os.environ.get("CODEX_HOME") or Path.home() / ".codex")
+        return bool(os.environ.get("OPENAI_API_KEY")) or (directory / "auth.json").is_file()
+    if provider.id == "claude":
+        directory = Path(os.environ.get("CLAUDE_CONFIG_DIR") or Path.home() / ".claude")
+        return any(bool(os.environ.get(key)) for key in ("ANTHROPIC_API_KEY", "CLAUDE_CODE_OAUTH_TOKEN")) \
+            or (directory / ".credentials.json").is_file()
+    return False
 
 
 def check_provider(

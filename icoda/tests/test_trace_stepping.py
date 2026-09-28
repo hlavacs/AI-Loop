@@ -25,6 +25,36 @@ def nested():
         ("X", 1, "second", "a"), ("X", 0, "main", "a"))
 
 
+@pytest.mark.parametrize("mode, destinations", [
+    ("into", ["C", "D", "E"]),
+    ("over", ["D", "E"]),
+    ("out", ["E"]),
+])
+def test_main_a_b_c_d_e_steps_from_b_never_select_returns(mode, destinations):
+    trace = playback(
+        ("E", 0, "main", "a"), ("E", 1, "A", "a"),
+        ("E", 2, "B", "a"), ("E", 3, "C", "a"),
+        ("X", 3, "C", "a"), ("X", 2, "B", "a"),
+        ("E", 2, "D", "a"), ("X", 2, "D", "a"),
+        ("X", 1, "A", "a"), ("E", 1, "E", "a"),
+        ("X", 1, "E", "a"), ("X", 0, "main", "a"))
+    # Every return resolves too; exposing one would add a duplicate visible stop.
+    assert trace.total == 6
+    for name in ("main", "A", "B"):
+        assert trace.step_into().usr == name
+    assert trace.position == 3 and trace.current_entity.usr == "B"
+    assert trace.can_step(mode)
+    selected = getattr(trace, f"step_{mode}")()
+    assert selected.usr == destinations[0]
+    assert trace.position == {"C": 4, "D": 5, "E": 6}[selected.usr]
+    visible = [selected.usr]
+    while (selected := trace.step_into()) is not None:
+        visible.append(selected.usr)
+    assert visible == destinations
+    assert trace.position == 6 and trace.current_entity.usr == "E"
+    assert not any(trace.can_step(action) for action in ("into", "over", "out"))
+
+
 def test_into_matches_next_call_and_never_stops_on_returns(nested):
     def visit(action):
         visited = []
@@ -144,6 +174,40 @@ def test_group_navigation_and_reset_after_depth_steps(nested):
     assert nested.position == 0 and nested.current_entity is None
     assert nested.status == "call 0 of 5"
     assert nested.can_step("into") and not nested.can_step("out")
+
+
+def test_out_requires_the_callers_matching_return():
+    trace = playback(("E", 0, "main", "a"), ("E", 1, "A", "a"),
+                     ("E", 2, "B", "a"), ("X", 2, "B", "a"),
+                     ("E", 1, "unrelated", "a"))
+    trace.seek_first_call("B")
+    assert not trace.can_step("out")
+    assert trace.step_out() is None
+    assert trace.current_entity.usr == "B"
+    assert trace.step_into().usr == "unrelated"
+
+
+@pytest.mark.parametrize("mode", ["over", "out"])
+def test_grouped_calls_require_all_selected_thread_invocations_to_return(mode):
+    trace = playback(("E", 0, "main", "a"), ("E", 1, "A", "a"),
+                     ("E", 2, "B", "a"), ("X", 2, "B", "a"),
+                     ("E", 2, "B", "a"), ("X", 1, "A", "a"),
+                     ("E", 1, "E", "a"))
+    trace.seek_first_call("B")
+    assert trace.current_repeat_count == 2
+    assert trace.current_caller_counts == {"A": 2}
+    assert not trace.can_step(mode)
+    assert getattr(trace, f"step_{mode}")() is None
+    assert trace.current_entity.usr == "B"
+
+
+def test_over_cannot_jump_into_a_replacement_parent_invocation():
+    trace = playback(("E", 0, "main", "a"), ("E", 1, "A", "a"),
+                     ("E", 2, "B", "a"), ("X", 2, "B", "a"),
+                     ("E", 1, "unknown", "a"), ("E", 2, "D", "a"))
+    trace.seek_first_call("B")
+    assert not trace.can_step("over")
+    assert trace.step_into().usr == "D"
 
 
 def test_buttons_update_graph_source_and_availability(app_module, tmp_path, nested, monkeypatch):

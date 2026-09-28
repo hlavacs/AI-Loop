@@ -5,12 +5,11 @@ from __future__ import annotations
 import math
 import tkinter as tk
 from collections.abc import Callable
-from dataclasses import replace
 from tkinter import ttk
 from typing import Any
 
 from icoda_core import class_view as class_graph
-from icoda_core import force_layout, views
+from icoda_core import views
 from icoda_core.model import DerivedModel
 from icoda_gui import graph_canvas, zoom_controls
 
@@ -95,37 +94,16 @@ class ClassViewCanvas(graph_canvas.GroupedGraphCanvas):
     def _arrange_overview(self) -> None:
         """Fit full singleton class panels alongside compact multi-class groups."""
         assert self.layout is not None and self.overview_layout is not None
-        panels = {}
-        for key, node in self.overview_layout.nodes.items():
-            if node.kind != "cluster":
-                panels[key] = self.layout.nodes[key]
-            else:
-                representative = self.layout.nodes[min(self.groups[key])]
-                width = max(220, max(map(len, node.label.splitlines())) * 8 + 24)
-                panels[key] = replace(representative, width=width, height=76)
-        positions, width, height = force_layout.arrange(
-            {key: (panel.width, panel.height) for key, panel in panels.items()},
-            ((edge.source, edge.target, edge.weight) for edge in self.overview_layout.file_arrows), gap=70)
-        self._overview_panels = {key: replace(panel, x=positions[key][0], y=positions[key][1])
-                                 for key, panel in panels.items()}
-        self.overview_layout = replace(self.overview_layout, width=width, height=height, nodes={
-            key: replace(node, x=positions[key][0], y=positions[key][1])
-            for key, node in self.overview_layout.nodes.items()})
+        self._overview_panels, self.overview_layout = views.arrange_class_overview(
+            self.layout, self.overview_layout, self.groups)
 
     def draw_group_overview(self) -> bool:
         if not self.overview or self.overview_layout is None:
             return False
         visible = {key: {usr for usr in members if self.node_visible(usr)}
                    for key, members in self.groups.items()}
-        owners = {usr: key for key, members in visible.items() for usr in members}
-        counts: dict[tuple[str, str, class_graph.ClassEdgeKind], int] = {}
-        for edge in self.graph.edges:
-            source, target = owners.get(edge.source), owners.get(edge.target)
-            if source is not None and target is not None and source != target:
-                key = source, target, edge.kind
-                counts[key] = counts.get(key, 0) + edge.count
-        for (source, target, kind), count in counts.items():
-            self._draw_edge(class_graph.ClassEdge(kind, source, target, count), self._overview_panels)
+        for edge in views.class_overview_edges(self.graph, visible):
+            self._draw_edge(edge, self._overview_panels)
         for key, node in self.overview_layout.nodes.items():
             if not visible[key]:
                 continue

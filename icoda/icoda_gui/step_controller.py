@@ -6,12 +6,11 @@ back on the Tk thread. Dialogs ask for a rejection reason or adaptation constrai
 
 from __future__ import annotations
 
-import json
 from collections.abc import Callable, Sequence
-from dataclasses import asdict, replace
+from dataclasses import replace
 from pathlib import Path
 from tkinter import messagebox, simpledialog
-from typing import Any
+from typing import Any, cast
 
 from icoda_core import (
     adaptation,
@@ -157,20 +156,12 @@ class StepController:
         if "rephrase" not in panel.enabled_actions:
             return
         proposal, approach, project = self.proposal, self.approach, self.window.project
-        description = (proposal.response.rationale if proposal and proposal.response else
-                       approach.plan if approach and not panel.approach_approved else "")
+        candidate = proposal if proposal and proposal.response else (approach if not panel.approach_approved else None)
+        if candidate is None:
+            return
+        description, context = steps.rephrase_context(candidate)
         if not description.strip():
             return
-        if proposal is not None and proposal.response is not None:
-            context = proposal.source_diff or json.dumps(
-                [asdict(change) for change in proposal.response.files], indent=2)
-            if proposal.delta is not None:
-                context += "\n\nChanged declarations:\n" + proposal.delta.summary()
-        else:
-            assert approach is not None
-            context = ("Planned files:\n" + "\n".join(approach.files) +
-                       "\nPlanned names:\n" + "\n".join(approach.entities) +
-                       "\nThis is a plan only. No implementation or test result is supplied.")
         runner = self._ensure_runner()
         self.cancel_requested = False
         runner.begin()
@@ -188,10 +179,7 @@ class StepController:
                 self.window.status.set("Could not rephrase — original description kept")
                 dialogs.show_error("Rephrase", str(result))
                 return
-            if proposal is not None and proposal.response is not None:
-                proposal.response = replace(proposal.response, rationale=result)
-            elif approach is not None:
-                approach.plan = result
+            steps.replace_description(candidate, result)
             panel.refresh_description()
             self.window.status.set("Step description simplified")
 
@@ -202,8 +190,7 @@ class StepController:
         request = replace(self.window.panel.request(), constraints=constraints, focus=focus)
 
         def work() -> steps.Approach:
-            runner.prepare()
-            return runner.propose_approach(request)
+            return cast(steps.Approach, steps.run_workflow(runner, request, "implementation_approach"))
 
         self._start(work, self._show_approach, "asking the agent for an approach", cancellable=True, notify=True)
 
@@ -222,8 +209,7 @@ class StepController:
         request = replace(self.window.panel.request(), constraints=constraints, focus=focus)
 
         def work() -> steps.Proposal:
-            runner.prepare()
-            return runner.propose(request)
+            return cast(steps.Proposal, steps.run_workflow(runner, request, "proposal"))
 
         self._start(work, self._show_proposal, "asking the agent for the next step", cancellable=True, notify=True)
 
@@ -315,9 +301,7 @@ class StepController:
         proposal = self.proposal
         if proposal is None or not proposal.ok:
             return
-        if proposal.delta is not None and proposal.delta.signature_changes \
-                and self.confirmed_signature_proposal is not proposal:
-            raise steps.StepError(SIGNATURE_CONFIRMATION_REQUIRED)
+        steps.require_signature_confirmation(proposal, self.confirmed_signature_proposal is proposal)
         runner = self._ensure_runner()
 
         def done(record: steps.StepRecord) -> None:
@@ -360,7 +344,8 @@ class StepController:
         assert self.window.project is not None
         store = persistence.ProjectStore(Path(self.window.project))
         enabled = bool(self.window.panel.auto_approve_var.get())
-        store.save_state(replace(store.load_state(), auto_approve=enabled))
+        store.save_state(implementation_queue.update_settings(
+            store.load_state(), auto_approve=enabled))
         self._automatic_approvals_remaining = None
         self.window.status.set("automatic approval enabled" if enabled else "automatic approval disabled")
         if enabled:
@@ -430,7 +415,8 @@ class StepController:
         batch_size = self.window.panel.implementation_batch_size()
         if batch_size == state.implementation_batch_size:
             return
-        store.save_state(replace(state, implementation_batch_size=batch_size, approved_approach=""))
+        store.save_state(implementation_queue.update_settings(
+            state, batch_size=batch_size))
         self.approach = None
         self.window.status.set(f"implementation batch size set to {batch_size}")
         self.window.reload()
@@ -444,7 +430,7 @@ class StepController:
         scope = self.window.panel.implementation_scope()
         if scope.value == state.implementation_scope:
             return
-        store.save_state(implementation_queue.select_scope(self.window.opened.model, state, scope))
+        store.save_state(implementation_queue.update_settings(state, model=self.window.opened.model, scope=scope.value))
         self.approach = None
         self.window.panel.show(None)
         self.window.status.set(f"implementation scope set to {dict(implementation_queue.SCOPE_LABELS)[scope]}")
@@ -458,7 +444,7 @@ class StepController:
         store = persistence.ProjectStore(Path(self.window.project))
         state = store.load_state()
         mode = self.window.panel.implementation_grouping()
-        updated = replace(state, implementation_grouping=mode.value, approved_approach="")
+        updated = implementation_queue.update_settings(state, grouping_mode=mode.value)
         store.save_state(updated)
         batch, refusal = self._implementation_batch(opened.model, updated)
         names = tuple(opened.model.entities[usr].qualified_name for usr in batch)

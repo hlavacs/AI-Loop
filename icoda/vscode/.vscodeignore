@@ -1,0 +1,9 @@
+**
+!package.json
+!README.md
+!out/*.js
+!media/**
+!backend/icoda_core/*.py
+!backend/icoda_core/*.json
+!backend/constraints.txt
+!backend/LICENSE.txt

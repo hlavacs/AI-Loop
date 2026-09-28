@@ -95,7 +95,7 @@ def load_schema() -> dict[str, Any]:
     return json.loads(SCHEMA_PATH.read_text(encoding="utf-8"))
 
 
-def validate(spec: Specification) -> list[str]:
+def validate(spec: Any) -> list[str]:
     """Human-readable problems; an empty list means the specification is valid."""
     validator = jsonschema.Draft202012Validator(load_schema())
     problems = []
@@ -130,18 +130,30 @@ def _place(spec: Specification, parts: list[str]) -> str:
     return label
 
 
-def _cross_reference_problems(spec: Specification) -> list[str]:
-    known_use_cases = {u.get("id") for u in spec.get("use_cases", [])}
+def _cross_reference_problems(spec: Any) -> list[str]:
+    # Native JSON editors can supply malformed sections; schema findings already describe those.
+    if not isinstance(spec, dict):
+        return []
+    records = {section: _valid_records(spec.get(section)) for section in RECORD_SECTIONS}
+    known_use_cases = {u.get("id") for u in records["use_cases"]}
     problems = []
-    for requirement in spec.get("requirements", []):
-        for use_case in requirement.get("use_cases", []):
+    for requirement in records["requirements"]:
+        references = requirement.get("use_cases", [])
+        for use_case in references if isinstance(references, list) else []:
+            if not isinstance(use_case, str):
+                continue
             if use_case not in known_use_cases:
                 problems.append(f"Requirements {requirement.get('id')}: unknown use case {use_case}")
     for section in RECORD_SECTIONS:
-        ids = [r.get("id") for r in spec.get(section, [])]
+        ids = [r.get("id") for r in records[section]]
         if len(ids) != len(set(ids)):
             problems.append(f"{SECTION_LABELS[section]}: duplicate ids")
     return problems
+
+
+def _valid_records(value: Any) -> list[dict[str, Any]]:
+    return [record for record in value if isinstance(record, dict)
+            and isinstance(record.get("id", ""), str)] if isinstance(value, list) else []
 
 
 def next_id(spec: Specification, section: str) -> str:

@@ -10,7 +10,7 @@ from threading import Event
 from tkinter import ttk
 from typing import Any
 
-from icoda_core import agent, documentation, process, recovery, session, source_watch, steps, terminal
+from icoda_core import agent, documentation, process, recovery, session, steps, terminal
 from icoda_gui import provider_field, tasks
 
 
@@ -290,12 +290,13 @@ class Troubleshooting:
     def ensure_purpose_comments(self) -> None:
         """Complete missing source comments automatically, with at most two attempts per entity."""
         opened = self.window.opened
-        if (opened is None or opened.root != self.project or self.purpose_busy or self.busy or self.window.panel.busy
-                or self.window._pending_analyses or self.window._editor_refresh_pending is not None
-                or self.window.source_editor.dirty):
+        if opened is None or opened.root != self.project:
             return
         model = opened.model  # The whole project, even when the diagrams show only one target.
-        if model.stale or any(info.errors for info in model.files.values()):
+        if documentation.completion_refusal(
+                idle=not (self.purpose_busy or self.busy or self.window.panel.busy
+                          or self.window._pending_analyses or self.window._editor_refresh_pending is not None),
+                unsaved=self.window.source_editor.dirty, model=model):
             return  # Fix analysis before asking an agent to document incomplete source facts.
         missing = documentation.missing_entities(model)
         usrs = {entity.usr for entity in missing}
@@ -349,9 +350,10 @@ class Troubleshooting:
                 self._controls()
                 return
             # Applying files and reloading must not interrupt a foreground step or unsaved editor buffer.
-            if (self.busy or self.window.panel.busy or self.window._pending_analyses
-                    or self.window._editor_refresh_pending is not None or self.window.source_editor.dirty
-                    or self.window.steps.proposal is not None):
+            if documentation.completion_refusal(
+                    idle=not (self.busy or self.window.panel.busy or self.window._pending_analyses
+                              or self.window._editor_refresh_pending is not None),
+                    unsaved=self.window.source_editor.dirty, proposal=self.window.steps.proposal is not None):
                 self.window.root.after(250, lambda: done(result))
                 return
             self.purpose_busy = False
@@ -361,14 +363,7 @@ class Troubleshooting:
                 self.purpose_attempts = {usr: 2 for usr in self.purpose_attempts}
                 self._append("ICODA purpose comments", "Background comment request cancelled.")
             else:
-                changed = False
-                skipped = list(result.skipped)
-                for original, text in result.edits:
-                    try:
-                        original.save(text)  # Refuses a file changed by the user since the snapshot.
-                        changed = True
-                    except (OSError, ValueError):
-                        skipped.append(original.relative)
+                changed, skipped = documentation.apply(result)
                 response = result.response
                 answer = (response.result.stdout if response.result.ok else
                           (response.diagnosis or recovery.diagnose(response.result.stderr)).text())
@@ -410,16 +405,14 @@ class Troubleshooting:
         changed = False
         self._set_busy(True)
 
-        def work() -> recovery.RecoveryResult:
+        def source_changed(value: bool) -> None:
             nonlocal changed
-            before = source_watch.snapshot_project(cwd)
-            try:
-                return recovery.invoke(
-                    provider, selection.model or provider.default_model, request, cwd, binary=selection.binary,
-                    timeout=1800, cancelled=lambda: self.cancelled, writable=True)
-            finally:
-                after = source_watch.snapshot_project(cwd)
-                changed = before is None or after is None or bool(source_watch.changed_files(before, after))
+            changed = value
+
+        def work() -> recovery.RecoveryResult:
+            return recovery.send_conversation(
+                provider, selection.model or provider.default_model, request, cwd, binary=selection.binary,
+                cancelled=lambda: self.cancelled, changed=source_changed)
 
         def done(result: Any) -> None:
             if token != self.generation:

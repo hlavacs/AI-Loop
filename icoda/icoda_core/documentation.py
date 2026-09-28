@@ -4,12 +4,13 @@ from __future__ import annotations
 
 import ast
 import difflib
+import shutil
 import tempfile
 from collections.abc import Callable, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 
-from icoda_core import bodyhash, git, recovery, source_edit
+from icoda_core import agent, bodyhash, git, recovery, source_edit
 from icoda_core.model import DerivedModel, Entity
 
 
@@ -47,6 +48,82 @@ class Completion:
     response: recovery.RecoveryResult
     edits: list[tuple[source_edit.Document, str]]
     skipped: list[str]
+    candidate: Path | None = None
+    checked_files: list[source_edit.Document] = field(default_factory=list)
+
+
+def validate_candidate(completion: Completion) -> None:
+    """Refuse any changed source or candidate before applying the checked edits."""
+    if completion.candidate is None or not completion.candidate.is_dir():
+        raise ValueError("The purpose-comment candidate is missing.")
+    for document in [*(original for original, _text in completion.edits), *completion.checked_files]:
+        # Saving unchanged text only checks the shared Document snapshot; it writes nothing.
+        document.save(document.text)
+
+
+def apply(completion: Completion) -> tuple[bool, list[str]]:
+    """Apply the desktop's checked edits, preserving files changed since the snapshot."""
+    changed = False
+    skipped = list(completion.skipped)
+    for original, text in completion.edits:
+        try:
+            original.save(text)
+            changed = True
+        except (OSError, ValueError):
+            skipped.append(original.relative)
+    return changed, skipped
+
+
+def reject(completion: Completion) -> None:
+    """Discard the private candidate without changing project source."""
+    if completion.candidate is not None:
+        if completion.candidate.exists():
+            shutil.rmtree(completion.candidate)
+        completion.candidate = None
+        completion.checked_files.clear()
+
+
+def completion_refusal(*, idle: bool, unsaved: bool, proposal: bool = False,
+                       model: DerivedModel | None = None) -> str:
+    """Shared desktop idle/buffer/proposal gate; source facts must also be complete."""
+    if not idle:
+        return "Wait until ICODA is idle before proposing purpose comments."
+    if unsaved:
+        return "Save or close unsaved documents before proposing purpose comments."
+    if proposal:
+        return "An existing proposal must be reviewed before purpose comments can proceed."
+    if model is not None and (model.stale or any(info.errors for info in model.files.values())):
+        return "Analyse the project successfully before proposing purpose comments."
+    return ""
+
+
+def propose(root: Path, model: DerivedModel, provider: agent.Provider, model_id: str, binary: str,
+            *, idle: bool, unsaved: bool, proposal: bool, cancelled: Callable[[], bool],
+            progress: Callable[[str], None]) -> Completion:
+    """Use the desktop's private-copy workflow, retaining a candidate for later review only."""
+    refusal = completion_refusal(idle=idle, unsaved=unsaved, proposal=proposal, model=model)
+    if refusal:
+        raise ValueError(refusal)
+    pending = missing_entities(model)
+    progress(f"Proposing purpose comments for {len(pending)} entities")
+    message = completion_prompt(pending)
+    def invoke(scratch: Path) -> recovery.RecoveryResult:
+        return recovery.invoke(provider, model_id, message, scratch, binary=binary, writable=True,
+                               cancelled=cancelled, progress=progress)
+    result = complete(root, tuple(model.files), invoke)
+    if not result.response.result.ok or cancelled():
+        return result
+    directory = root / ".icoda" / "cache"
+    directory.mkdir(parents=True, exist_ok=True)
+    result.candidate = Path(tempfile.mkdtemp(prefix="purpose-", dir=directory))
+    for original, text in result.edits:
+        target = result.candidate / original.relative
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_bytes(original.original)
+        checked = source_edit.Document.load(result.candidate, original.relative)
+        checked.save(text)
+        result.checked_files.append(checked)
+    return result
 
 
 def complete(root: Path, files: Sequence[str], invoke: Callable[[Path], recovery.RecoveryResult]) -> Completion:

@@ -1,0 +1,15 @@
+@import url('./callView.css');
+.node rect { stroke: var(--vscode-descriptionForeground); }
+.node.cluster rect, .node.external rect {
+  fill: var(--vscode-sideBar-background, var(--vscode-editorWidget-background)); stroke: var(--vscode-descriptionForeground);
+}
+.node.cluster text, .node.external text { fill: var(--vscode-editor-foreground); }
+.node text { font-size: 12px; }
+.node.selected rect, .node:focus-visible > rect { stroke: var(--vscode-focusBorder); stroke-width: 3; }
+#breadcrumb { max-width: 260px; overflow: hidden; text-overflow: ellipsis; }
+#clusterMenu {
+  position: fixed; z-index: 2; display: flex; flex-direction: column; padding: 4px;
+  background: var(--vscode-menu-background, var(--vscode-editorWidget-background));
+  border: 1px solid var(--vscode-menu-border, var(--vscode-contrastBorder, var(--vscode-descriptionForeground)));
+}
+#clusterMenu[hidden] { display: none; }

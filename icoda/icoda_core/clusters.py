@@ -76,6 +76,22 @@ class Clustering:
         return next((i for i, c in enumerate(self.clusters) if file in c.files), -1)
 
 
+def with_parents(clustering: Clustering, layout: Layout) -> Clustering:
+    """Include the saved parents of bounded children for hierarchical navigation.
+
+    Leaves stay first so cluster_of and existing membership decisions still select
+    the bounded child. Parents are summaries, not a second clustering pass.
+    """
+    parents: dict[str, list[str]] = defaultdict(list)
+    identifiers = {cluster.id for cluster in clustering.clusters}
+    for cluster in clustering.clusters:
+        if cluster.parent_id and cluster.parent_id not in identifiers:
+            parents[cluster.parent_id].extend(cluster.files)
+    summaries = [Cluster(key, layout.names.get(key, PurePosixPath(key).name or key), sorted(files))
+                 for key, files in sorted(parents.items())]
+    return Clustering([*clustering.clusters, *summaries], clustering.algorithm)
+
+
 def cluster_is_pinned(layout: Layout, clustering: Clustering, cluster_id: str) -> bool:
     """Every member is pinned to this cluster or to its oversized parent."""
     cluster = next((item for item in clustering.clusters if item.id == cluster_id), None)

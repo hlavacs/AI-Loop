@@ -142,6 +142,12 @@ class StepLog:
         return phases[-1] if phases else ARCHITECTURE
 
 
+def introducing_record(records: list[StepRecord], iteration: int | None) -> StepRecord | None:
+    """Select the latest code record for a Mind Map introduction, as in the desktop step panel."""
+    return next((record for record in reversed(records) if record.number == iteration
+                 and record.round != APPROACH_ROUND and record.decision in ("approved", "manual")), None)
+
+
 def apply_statuses(model: DerivedModel, log: StepLog) -> None:
     """Apply effective status history and demote tested callables when their evidence is stale."""
     statuses: dict[str, tuple[str, str, tuple[str, ...]]] = {}

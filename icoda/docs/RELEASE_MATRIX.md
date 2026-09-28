@@ -15,8 +15,10 @@ system that was not executed.
 
 ## Platform-seam inventory
 
-The current source inventory contains 48 top-level Python modules under `icoda_core/`, counting every `*.py` file
-including `__init__.py`, and 78 Python test modules under `tests/`, counting 71 top-level `test_*.py` modules plus the 7 `*_acceptance.py` programs. Supporting test utilities and the sample project are excluded.
+The source inventory adds the headless `service.py` for 49 top-level Python modules under `icoda_core/`, counting every `*.py` file
+including `__init__.py`, and adds `test_service.py` for 81 Python test modules under `tests/`, counting 74 top-level `test_*.py` modules plus the 7 `*_acceptance.py` programs. Supporting test utilities and the sample project are excluded.
+These counts correct the pre-existing two-test-module discrepancy documented in `VSCODE_MIGRATION.md`;
+they do not update the historical platform qualification results above.
 
 The required worktree-root platform-seam inventory command now produces:
 

@@ -2,12 +2,16 @@
 
 from __future__ import annotations
 
+import hashlib
+import json
 import shutil
 import subprocess
 from collections.abc import Sequence
 from dataclasses import dataclass
 from difflib import unified_diff
 from pathlib import Path
+
+from icoda_core import process
 
 
 class GitError(RuntimeError):
@@ -28,8 +32,12 @@ class Change:
 
 def run_git(args: Sequence[str], cwd: Path | str, check: bool = True) -> subprocess.CompletedProcess[str]:
     """Run ``git`` with ``args`` in ``cwd``; raise :class:`GitError` on failure when ``check`` is set."""
-    result = subprocess.run(["git", "--no-optional-locks", *args], cwd=str(cwd), capture_output=True,
-                            text=True, check=False)
+    command = ["git", "--no-optional-locks", *args]
+    if process.current_cancellation() is None:
+        result = subprocess.run(command, cwd=str(cwd), capture_output=True, text=True, check=False)
+    else:
+        owned = process.run_bounded(command, cwd=cwd)
+        result = subprocess.CompletedProcess(command, owned.returncode, owned.stdout, owned.stderr)
     if check and result.returncode != 0:
         raise GitError(f"git {' '.join(args)} failed in {cwd}: {result.stderr.strip() or result.stdout.strip()}")
     return result
@@ -90,6 +98,24 @@ def working_tree_diff(repo: Path | str) -> str:
                  if change.status == "A" and run_git(["cat-file", "-e", f"HEAD:{change.path}"], root,
                                                       check=False).returncode != 0]
     return "\n".join(part for part in (tracked, *additions) if part).rstrip()
+
+
+def review_fingerprint(repo: Path) -> str:
+    """Hash reviewable files (including unchanged inputs), HEAD and index without staging anything."""
+    paths = run_git(["ls-files", "-z", "--cached", "--others", "--exclude-standard"], repo).stdout
+    digest = hashlib.sha256()
+    digest.update(run_git(["rev-parse", "HEAD"], repo).stdout.encode())
+    digest.update(run_git(["ls-files", "--stage", "-z"], repo).stdout.encode())
+    for name in sorted(set(paths.split("\0")) - {""}):
+        path = repo / name
+        metadata = (name, path.lstat().st_mode if path.exists() or path.is_symlink() else None)
+        digest.update(json.dumps(metadata, ensure_ascii=True).encode())
+        if path.is_symlink():
+            content = str(path.readlink()).encode()
+        else:
+            content = path.read_bytes() if path.is_file() else b""
+        digest.update(hashlib.sha256(content).digest())
+    return digest.hexdigest()
 
 
 def _untracked_diff(repo: Path, path: str) -> str:

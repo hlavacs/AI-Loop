@@ -7,6 +7,7 @@ import os
 import shlex
 import shutil
 import sys
+import threading
 from collections import defaultdict
 from collections.abc import Callable
 from dataclasses import dataclass, replace
@@ -191,51 +192,122 @@ def scope_model(model: DerivedModel, selected: Entry | None, *, root: Path | Non
                    externals={name: item for name, item in model.externals.items() if name in externals})
 
 
-def operate(root: Path, model: DerivedModel, selected: Entry | None, action: str,
-            cancelled: Callable[[], bool],
-            instrumentation_options: instrumentation.InstrumentationOptions | None = None) -> Outcome:
-    """Refresh, build, or run one target, optionally in an isolated instrumented Debug tree."""
-    if action == "run" and selected is not None and selected.is_library:
-        raise steps.StepError("A library has no executable to run. Use Build or select an executable.")
-    output: list[str] = []
-    environment = None
-    instrumentation_files: instrumentation.InstrumentationFiles | None = None
+class OperationError(steps.StepError):
+    """Retain the failing child stage for headless clients and the desktop error UI."""
 
-    def run(command: list[str], stage: str, timeout: float = 600) -> None:
-        if cancelled():
+    def __init__(self, message: str, stage: str):
+        super().__init__(message)
+        self.stage = stage
+
+
+def _operation_runner(root: Path, cancelled: Callable[[], bool], environment: dict[str, str],
+                      cancel_event: threading.Event | None, output: list[str],
+                      progress: Callable[[str], None], log: Callable[[str], None]) -> Callable[..., str]:
+    """Use the shared bounded runner for every owned configure/build/run process."""
+    def run(command: list[str], stage: str, timeout: float = 600) -> str:
+        if cancelled() or (cancel_event is not None and cancel_event.is_set()):
             raise steps.StepCancelled()
-        result = process.run_bounded(command, cwd=root, timeout=timeout, env=environment)
+        progress(stage)
+        log("$ " + shlex.join(command) + "\n")
+        try:
+            result = process.run_bounded(command, cwd=root, timeout=timeout, env=environment,
+                                         cancel_event=cancel_event, output=log)
+        except OSError as exc:
+            raise OperationError(str(exc), stage) from exc
         output.append("$ " + shlex.join(command) + "\n" + result.stdout + result.stderr)
         if result.cancelled or cancelled():
             raise steps.StepCancelled()
         if not result.ok:
             reason = "timed out" if result.timed_out else f"exit {result.returncode}"
-            raise steps.StepError(f"{stage} failed ({reason}).\n" + "\n".join(output))
+            raise OperationError(f"{stage} failed ({reason}).\n" + "\n".join(output), stage)
+        return result.stdout
+    return run
 
+
+def _operation_configuration(root: Path, action: str, options: instrumentation.InstrumentationOptions | None,
+                             environment: dict[str, str] | None, tools: dict[str, str] | None,
+                             run: Callable[[list[str]], str]) -> tuple[
+                                 Path, list[str], dict[str, str], instrumentation.InstrumentationFiles | None]:
+    """Share ordinary and isolated instrumentation setup between both frontends."""
+    files = None
     if action == "refresh" and build_directory(root) is None:
         raise steps.StepError("Configure/build this CMake project first with Project → Build, then refresh targets.")
+    kwargs: dict[str, Any] = {} if environment is None else {"environment": environment, "tools": tools, "run": run}
     try:
-        if action != "refresh" and instrumentation_options is not None and instrumentation_options.enabled:
-            directory, configure, environment, instrumentation_files = (
-                cmake.instrumented_clang_configuration(root, instrumentation_options))
-            environment = dict(environment)
-            environment["PATH"] = str(directory) + os.pathsep + environment.get("PATH", "")
-            loader_path = "PATH" if sys.platform == "win32" else (
+        if action != "refresh" and options is not None and options.enabled:
+            directory, configure, child_env, files = cmake.instrumented_clang_configuration(root, options, **kwargs)
+            child_env = dict(child_env)
+            child_env["PATH"] = str(directory) + os.pathsep + child_env.get("PATH", "")
+            loader = "PATH" if sys.platform == "win32" else (
                 "DYLD_LIBRARY_PATH" if sys.platform == "darwin" else "LD_LIBRARY_PATH")
-            if loader_path != "PATH":
-                environment[loader_path] = str(directory) + os.pathsep + environment.get(loader_path, "")
+            if loader != "PATH":
+                child_env[loader] = str(directory) + os.pathsep + child_env.get(loader, "")
         else:
-            directory, configure, environment = cmake.clang_configuration(root)
+            directory, configure, child_env = cmake.clang_configuration(root, **kwargs)
+    except steps.StepCancelled:
+        raise
     except (RuntimeError, OSError, ValueError) as exc:
         raise steps.StepError(str(exc)) from exc
+    return directory, configure, child_env, files
+
+
+def _operation_choice(choices: tuple[Entry, ...], selected: Entry) -> Entry | None:
+    """Match the same target across ordinary and instrumented build configurations."""
+    matches = [entry for entry in choices if entry.file == selected.file and entry.target is not None]
+    exact = next((entry for entry in matches if entry.key == selected.key), None)
+    if exact is None and selected.target:
+        exact = next((entry for entry in matches if entry.target and entry.target.name == selected.target.name), None)
+    chosen = exact or (matches[0] if len(matches) == 1 and selected.target is None else None)
+    if chosen is not None or matches:
+        return chosen
+    if selected.target is not None and selected.is_library:
+        raise steps.StepError(f"CMake library target {selected.target.name} is no longer available. "
+                              "Refresh targets and select a library again.")
+    raise steps.StepError(f"No CMake executable target contains {selected.file}. "
+                          "Add it to an add_executable target and refresh targets.")
+
+
+def _build_target(target: Target, action: str, executable: str,
+                  files: instrumentation.InstrumentationFiles | None, run: Callable[..., str]) -> None:
+    """Build the chosen CMake artifact and optionally run it from the project root."""
+    if action == "run" and (target.is_library or target.artifact is None):
+        raise steps.StepError("The selected target has no executable to run. Refresh targets and choose again.")
+    command = [executable, "--build", str(target.build_dir), "--target", target.name]
+    if target.configuration:
+        command.extend(("--config", target.configuration))
+    run(command, "Build")
+    if action == "run":
+        if files is not None and target.artifact is not None:
+            runtime = files.build_directory / "icoda_call_trace_runtime.dll"
+            deployed = target.artifact.parent / runtime.name
+            if runtime.is_file() and runtime.resolve() != deployed.resolve():
+                # Windows prefers a DLL beside the executable over the updated one on PATH.
+                shutil.copy2(runtime, deployed)
+        run([str(target.artifact)], f"Running {target.name}", timeout=3600)
+
+
+def operate(root: Path, model: DerivedModel, selected: Entry | None, action: str,
+            cancelled: Callable[[], bool],
+            instrumentation_options: instrumentation.InstrumentationOptions | None = None, *,
+            environment: dict[str, str] | None = None, tools: dict[str, str] | None = None,
+            cancel_event: threading.Event | None = None,
+            progress: Callable[[str], None] = lambda _text: None,
+            log: Callable[[str], None] = lambda _text: None) -> Outcome:
+    """Refresh, build, or run one target, optionally in an isolated instrumented Debug tree."""
+    if action == "run" and selected is not None and selected.is_library:
+        raise steps.StepError("A library has no executable to run. Use Build or select an executable.")
+    output: list[str] = []
+    child_env = dict(os.environ if environment is None else environment)
+    run = _operation_runner(root, cancelled, child_env, cancel_event, output, progress, log)
+    directory, configure, configured_env, files = _operation_configuration(
+        root, action, instrumentation_options, environment, tools,
+        lambda command: run(command, "CMake presets", 30))
+    child_env.clear()
+    child_env.update(configured_env)
     run(configure, "CMake configuration")
     if action != "refresh":
         try:
-            if instrumentation_files is not None:
-                assert environment is not None
-                cmake.verify_compiler(directory, environment["CXX"])
-            else:
-                cmake.verify_clang(directory)
+            cmake.verify_compiler(directory, child_env["CXX"]) if files else cmake.verify_clang(directory)
         except RuntimeError as exc:
             raise steps.StepError(str(exc)) from exc
     choices = entries(model, read_targets(root, directory))
@@ -243,38 +315,14 @@ def operate(root: Path, model: DerivedModel, selected: Entry | None, action: str
         return Outcome(choices, choose(choices, selected.key if selected else None), "\n".join(output),
                        "Executable / library target list refreshed")
     assert selected is not None
-    matches = [entry for entry in choices if entry.file == selected.file and entry.target is not None]
-    exact = next((entry for entry in matches if entry.key == selected.key), None)
-    if exact is None and selected.target:
-        exact = next((entry for entry in matches if entry.target and entry.target.name == selected.target.name), None)
-    chosen = exact or (matches[0] if len(matches) == 1 and selected.target is None else None)
+    chosen = _operation_choice(choices, selected)
     if chosen is None:
-        if matches:
-            return Outcome(choices, None, "\n".join(output),
-                           "Choose a CMake target/configuration, then press Build or Run again")
-        if selected.target is not None and selected.is_library:
-            raise steps.StepError(f"CMake library target {selected.target.name} is no longer available. "
-                                  "Refresh targets and select a library again.")
-        raise steps.StepError(f"No CMake executable target contains {selected.file}. "
-                              "Add it to an add_executable target and refresh targets.")
+        return Outcome(choices, None, "\n".join(output),
+                       "Choose a CMake target/configuration, then press Build or Run again")
     assert chosen.target is not None
-    target = chosen.target
-    if action == "run" and (target.is_library or target.artifact is None):
-        raise steps.StepError("The selected target has no executable to run. Refresh targets and choose again.")
-    command = [configure[0], "--build", str(target.build_dir), "--target", target.name]
-    if target.configuration:
-        command.extend(("--config", target.configuration))
-    run(command, "Build")
-    if action == "run":
-        if instrumentation_files is not None and target.artifact is not None:
-            runtime = instrumentation_files.build_directory / "icoda_call_trace_runtime.dll"
-            deployed = target.artifact.parent / runtime.name
-            if runtime.is_file() and runtime.resolve() != deployed.resolve():
-                # Windows prefers a DLL beside the executable over the updated one on PATH.
-                shutil.copy2(runtime, deployed)
-        run([str(target.artifact)], f"Running {target.name}", timeout=3600)
-    message = f"{target.name}: {'finished (exit 0)' if action == 'run' else 'build passed'}"
-    if action == "run" and instrumentation_files is not None:
-        message += f"; call trace: {instrumentation_files.trace_file}"
-    trace_file = instrumentation_files.trace_file if action == "run" and instrumentation_files is not None else None
+    _build_target(chosen.target, action, configure[0], files, run)
+    message = f"{chosen.target.name}: {'finished (exit 0)' if action == 'run' else 'build passed'}"
+    trace_file = files.trace_file if action == "run" and files is not None else None
+    if trace_file is not None:
+        message += f"; call trace: {trace_file}"
     return Outcome(choices, chosen, "\n".join(output), message, trace_file)

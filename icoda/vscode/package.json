@@ -1,0 +1,695 @@
+{
+  "name": "icoda",
+  "displayName": "ICODA",
+  "publisher": "icoda",
+  "description": "ICODA project and backend commands for VS Code.",
+  "version": "0.1.0",
+  "private": true,
+  "license": "SEE LICENSE IN backend/LICENSE.txt",
+  "engines": {
+    "vscode": "^1.74.0"
+  },
+  "categories": [
+    "Other"
+  ],
+  "main": "./out/extension.js",
+  "activationEvents": [
+    "onCommand:icoda.tracePrevious",
+    "onCommand:icoda.traceOver",
+    "onCommand:icoda.traceInto",
+    "onCommand:icoda.traceOut",
+    "onCommand:icoda.traceReset",
+    "onView:icoda.proposals",
+    "onCommand:icoda.reviewProposal",
+    "onCommand:icoda.approveProposal",
+    "onCommand:icoda.rejectProposal",
+    "onCommand:icoda.adaptProposal",
+    "onCommand:icoda.rebuildProposal",
+    "onCommand:icoda.undoLastStep",
+    "onCommand:icoda.commitManualEdits",
+    "onCommand:icoda.showStepHistory",
+    "onCommand:icoda.openProposalDiff",
+    "onView:icoda.workflows",
+    "onCommand:icoda.proposeArchitecture",
+    "onCommand:icoda.proposeImplementationApproach",
+    "onCommand:icoda.runImplementationQueue",
+    "onCommand:icoda.cancelAIWorkflow",
+    "onCommand:icoda.proposePurposeComments",
+    "onCommand:icoda.applyPurposeComments",
+    "onCommand:icoda.rejectPurposeComments",
+    "onView:icoda.specification",
+    "onCommand:icoda.openSpecification",
+    "onCommand:icoda.validateSpecification",
+    "onCommand:icoda.advancePhase",
+    "onCommand:icoda.selectProviderModel",
+    "onCommand:icoda.openProject",
+    "onCommand:icoda.newProject",
+    "onCommand:icoda.analyseProject",
+    "onCommand:icoda.selectTarget",
+    "onCommand:icoda.revealEntity",
+    "onCommand:icoda.showCallView",
+    "onCommand:icoda.showProposalCallView",
+    "onCommand:icoda.openFileView",
+    "onCommand:icoda.openClassView",
+    "onCommand:icoda.openMindMap",
+    "onCommand:icoda.revealInFileView",
+    "onCommand:icoda.assignFileCluster",
+    "onCommand:icoda.showOutput",
+    "onCommand:icoda.showToolchain",
+    "onCommand:icoda.refreshTargets",
+    "onCommand:icoda.buildTarget",
+    "onCommand:icoda.testProject",
+    "onCommand:icoda.runTarget",
+    "onCommand:icoda.recordTrace",
+    "onCommand:icoda.restartBackend",
+    "onCommand:icoda.refreshIssues",
+    "onCommand:icoda.refreshCoverage",
+    "onView:icoda.issues",
+    "onView:icoda.coverage",
+    "onView:icoda.project",
+    "onCommand:icoda.queueBatchSize",
+    "onCommand:icoda.queueScope",
+    "onCommand:icoda.queueGrouping",
+    "onCommand:icoda.queueAutoApprove",
+    "onCommand:icoda.recoverProposal",
+    "onCommand:icoda.sendConversation",
+    "onCommand:icoda.showConversation",
+    "onCommand:icoda.rephrase",
+    "onCommand:icoda.openCLI"
+  ],
+  "capabilities": {
+    "untrustedWorkspaces": {
+      "supported": "limited",
+      "description": "All ICODA views and commands except Show Output require workspace trust to start Python. The Project view shows only a placeholder until trusted.",
+      "restrictedConfigurations": [
+        "icoda.pythonPath",
+        "icoda.toolchain.cmakePath",
+        "icoda.toolchain.ninjaPath",
+        "icoda.toolchain.clangPath",
+        "icoda.toolchain.llvmSymbolizerPath"
+      ]
+    },
+    "virtualWorkspaces": false
+  },
+  "contributes": {
+    "commands": [
+      {
+        "command": "icoda.tracePrevious",
+        "title": "Previous Call",
+        "category": "ICODA",
+        "enablement": "activeWebviewPanelId == icoda.callView && !editorTextFocus && !inputFocus && icoda.projectOpen && isWorkspaceTrusted"
+      },
+      {
+        "command": "icoda.traceOver",
+        "title": "Step Over",
+        "category": "ICODA",
+        "enablement": "activeWebviewPanelId == icoda.callView && !editorTextFocus && !inputFocus && icoda.projectOpen && isWorkspaceTrusted"
+      },
+      {
+        "command": "icoda.traceInto",
+        "title": "Step Into",
+        "category": "ICODA",
+        "enablement": "activeWebviewPanelId == icoda.callView && !editorTextFocus && !inputFocus && icoda.projectOpen && isWorkspaceTrusted"
+      },
+      {
+        "command": "icoda.traceOut",
+        "title": "Step Out",
+        "category": "ICODA",
+        "enablement": "activeWebviewPanelId == icoda.callView && !editorTextFocus && !inputFocus && icoda.projectOpen && isWorkspaceTrusted"
+      },
+      {
+        "command": "icoda.traceReset",
+        "title": "Reset Trace Playback",
+        "category": "ICODA",
+        "enablement": "activeWebviewPanelId == icoda.callView && !editorTextFocus && !inputFocus && icoda.projectOpen && isWorkspaceTrusted"
+      },
+      {
+        "command": "icoda.reviewProposal",
+        "title": "Review Proposal",
+        "category": "ICODA",
+        "enablement": "icoda.projectOpen && isWorkspaceTrusted"
+      },
+      {
+        "command": "icoda.approveProposal",
+        "title": "Approve Proposal",
+        "category": "ICODA",
+        "enablement": "icoda.projectOpen && isWorkspaceTrusted"
+      },
+      {
+        "command": "icoda.rejectProposal",
+        "title": "Reject Proposal",
+        "category": "ICODA",
+        "enablement": "icoda.projectOpen && isWorkspaceTrusted"
+      },
+      {
+        "command": "icoda.adaptProposal",
+        "title": "Adapt Proposal",
+        "category": "ICODA",
+        "enablement": "icoda.projectOpen && isWorkspaceTrusted"
+      },
+      {
+        "command": "icoda.rebuildProposal",
+        "title": "Rebuild Proposal",
+        "category": "ICODA",
+        "enablement": "icoda.projectOpen && isWorkspaceTrusted"
+      },
+      {
+        "command": "icoda.undoLastStep",
+        "title": "Undo Last Step",
+        "category": "ICODA",
+        "enablement": "icoda.projectOpen && isWorkspaceTrusted"
+      },
+      {
+        "command": "icoda.commitManualEdits",
+        "title": "Commit Manual Edits",
+        "category": "ICODA",
+        "enablement": "icoda.projectOpen && isWorkspaceTrusted"
+      },
+      {
+        "command": "icoda.showStepHistory",
+        "title": "Show Step History",
+        "category": "ICODA",
+        "enablement": "icoda.projectOpen && isWorkspaceTrusted"
+      },
+      {
+        "command": "icoda.openProposalDiff",
+        "title": "Open Proposal Diff",
+        "category": "ICODA",
+        "enablement": "icoda.projectOpen && isWorkspaceTrusted"
+      },
+      {
+        "command": "icoda.proposeArchitecture",
+        "title": "Propose Architecture",
+        "category": "ICODA",
+        "enablement": "icoda.projectOpen && isWorkspaceTrusted"
+      },
+      {
+        "command": "icoda.proposeImplementationApproach",
+        "title": "Propose Implementation Approach",
+        "category": "ICODA",
+        "enablement": "icoda.projectOpen && isWorkspaceTrusted"
+      },
+      {
+        "command": "icoda.runImplementationQueue",
+        "title": "Run Implementation Queue",
+        "category": "ICODA",
+        "enablement": "icoda.projectOpen && isWorkspaceTrusted"
+      },
+      {
+        "command": "icoda.cancelAIWorkflow",
+        "title": "Cancel AI Workflow",
+        "category": "ICODA",
+        "enablement": "icoda.projectOpen && isWorkspaceTrusted"
+      },
+      {
+        "command": "icoda.proposePurposeComments",
+        "title": "Propose Purpose Comments",
+        "category": "ICODA",
+        "enablement": "icoda.projectOpen && isWorkspaceTrusted"
+      },
+      {
+        "command": "icoda.applyPurposeComments",
+        "title": "Apply Purpose Comments",
+        "category": "ICODA",
+        "enablement": "icoda.projectOpen && isWorkspaceTrusted"
+      },
+      {
+        "command": "icoda.rejectPurposeComments",
+        "title": "Reject Purpose Comments",
+        "category": "ICODA",
+        "enablement": "icoda.projectOpen && isWorkspaceTrusted"
+      },
+      {
+        "command": "icoda.openSpecification",
+        "title": "Open Specification",
+        "category": "ICODA",
+        "icon": "$(edit)",
+        "enablement": "icoda.projectOpen && isWorkspaceTrusted"
+      },
+      {
+        "command": "icoda.validateSpecification",
+        "title": "Validate Specification",
+        "category": "ICODA",
+        "icon": "$(check)",
+        "enablement": "icoda.projectOpen && isWorkspaceTrusted"
+      },
+      {
+        "command": "icoda.advancePhase",
+        "title": "Advance Phase",
+        "category": "ICODA",
+        "icon": "$(arrow-right)",
+        "enablement": "icoda.projectOpen && isWorkspaceTrusted"
+      },
+      {
+        "command": "icoda.selectProviderModel",
+        "title": "Select Provider/Model",
+        "category": "ICODA",
+        "icon": "$(settings-gear)",
+        "enablement": "icoda.projectOpen && isWorkspaceTrusted"
+      },
+      {
+        "command": "icoda.refreshIssues",
+        "title": "Refresh Issues",
+        "category": "ICODA",
+        "icon": "$(refresh)",
+        "enablement": "icoda.projectOpen && isWorkspaceTrusted"
+      },
+      {
+        "command": "icoda.refreshCoverage",
+        "title": "Refresh Coverage",
+        "category": "ICODA",
+        "icon": "$(refresh)",
+        "enablement": "icoda.projectOpen && isWorkspaceTrusted"
+      },
+      {
+        "command": "icoda.newProject",
+        "title": "New Project",
+        "category": "ICODA",
+        "enablement": "isWorkspaceTrusted"
+      },
+      {
+        "command": "icoda.openProject",
+        "title": "Open Project",
+        "category": "ICODA",
+        "enablement": "isWorkspaceTrusted"
+      },
+      {
+        "command": "icoda.analyseProject",
+        "title": "Analyse Project",
+        "category": "ICODA",
+        "enablement": "isWorkspaceTrusted"
+      },
+      {
+        "command": "icoda.selectTarget",
+        "title": "Select Target",
+        "category": "ICODA",
+        "enablement": "icoda.projectOpen && isWorkspaceTrusted"
+      },
+      {
+        "command": "icoda.revealEntity",
+        "title": "Go to Entity",
+        "category": "ICODA",
+        "enablement": "icoda.projectOpen && isWorkspaceTrusted"
+      },
+      {
+        "command": "icoda.showCallView",
+        "title": "Show Call View",
+        "category": "ICODA",
+        "enablement": "icoda.projectOpen && isWorkspaceTrusted"
+      },
+      {
+        "command": "icoda.showProposalCallView",
+        "title": "Show Proposal Call View",
+        "category": "ICODA",
+        "enablement": "icoda.projectOpen && isWorkspaceTrusted"
+      },
+      {
+        "command": "icoda.openFileView",
+        "title": "Open File View",
+        "category": "ICODA",
+        "enablement": "icoda.projectOpen && isWorkspaceTrusted"
+      },
+      {
+        "command": "icoda.openClassView",
+        "title": "Open Class View",
+        "category": "ICODA",
+        "enablement": "icoda.projectOpen && isWorkspaceTrusted"
+      },
+      {
+        "command": "icoda.openMindMap",
+        "title": "Open Mind Map",
+        "category": "ICODA",
+        "enablement": "icoda.projectOpen && isWorkspaceTrusted"
+      },
+      {
+        "command": "icoda.revealInFileView",
+        "title": "Reveal in File View",
+        "category": "ICODA",
+        "enablement": "icoda.projectOpen && isWorkspaceTrusted"
+      },
+      {
+        "command": "icoda.assignFileCluster",
+        "title": "Assign File to Cluster",
+        "category": "ICODA",
+        "enablement": "icoda.projectOpen && isWorkspaceTrusted"
+      },
+      {
+        "command": "icoda.showOutput",
+        "title": "Show Output",
+        "category": "ICODA"
+      },
+      {
+        "command": "icoda.showToolchain",
+        "title": "Show Toolchain",
+        "category": "ICODA",
+        "enablement": "isWorkspaceTrusted"
+      },
+      {
+        "command": "icoda.refreshTargets",
+        "title": "Refresh Targets",
+        "category": "ICODA",
+        "enablement": "icoda.projectOpen && isWorkspaceTrusted"
+      },
+      {
+        "command": "icoda.buildTarget",
+        "title": "Build Target",
+        "category": "ICODA",
+        "enablement": "icoda.projectOpen && isWorkspaceTrusted"
+      },
+      {
+        "command": "icoda.testProject",
+        "title": "Run All Project Tests",
+        "category": "ICODA",
+        "enablement": "icoda.projectOpen && isWorkspaceTrusted"
+      },
+      {
+        "command": "icoda.runTarget",
+        "title": "Run Target",
+        "category": "ICODA",
+        "enablement": "icoda.projectOpen && isWorkspaceTrusted"
+      },
+      {
+        "command": "icoda.recordTrace",
+        "title": "Record Trace",
+        "category": "ICODA",
+        "enablement": "icoda.projectOpen && isWorkspaceTrusted"
+      },
+      {
+        "command": "icoda.restartBackend",
+        "title": "Restart Backend",
+        "category": "ICODA",
+        "enablement": "isWorkspaceTrusted"
+      },
+      {
+        "command": "icoda.queueBatchSize",
+        "title": "Set Queue Batch Size",
+        "category": "ICODA",
+        "enablement": "icoda.projectOpen && isWorkspaceTrusted"
+      },
+      {
+        "command": "icoda.queueScope",
+        "title": "Set Queue Scope",
+        "category": "ICODA",
+        "enablement": "icoda.projectOpen && isWorkspaceTrusted"
+      },
+      {
+        "command": "icoda.queueGrouping",
+        "title": "Set Queue Grouping",
+        "category": "ICODA",
+        "enablement": "icoda.projectOpen && isWorkspaceTrusted"
+      },
+      {
+        "command": "icoda.queueAutoApprove",
+        "title": "Set Queue Automatic Approval",
+        "category": "ICODA",
+        "enablement": "icoda.projectOpen && isWorkspaceTrusted"
+      },
+      {
+        "command": "icoda.recoverProposal",
+        "title": "Recover Interrupted Proposal",
+        "category": "ICODA",
+        "enablement": "icoda.projectOpen && isWorkspaceTrusted"
+      },
+      {
+        "command": "icoda.sendConversation",
+        "title": "Send Conversation",
+        "category": "ICODA",
+        "enablement": "icoda.projectOpen && isWorkspaceTrusted"
+      },
+      {
+        "command": "icoda.showConversation",
+        "title": "Show Conversation History",
+        "category": "ICODA",
+        "enablement": "icoda.projectOpen && isWorkspaceTrusted"
+      },
+      {
+        "command": "icoda.rephrase",
+        "title": "Rephrase Current Description",
+        "category": "ICODA",
+        "enablement": "icoda.projectOpen && isWorkspaceTrusted"
+      },
+      {
+        "command": "icoda.openCLI",
+        "title": "Open CLI",
+        "category": "ICODA",
+        "enablement": "icoda.projectOpen && isWorkspaceTrusted"
+      }
+    ],
+    "keybindings": [
+      {
+        "command": "icoda.tracePrevious",
+        "key": "ctrl+alt+left",
+        "when": "activeWebviewPanelId == icoda.callView && !editorTextFocus && !inputFocus && icoda.projectOpen && isWorkspaceTrusted"
+      },
+      {
+        "command": "icoda.traceOver",
+        "key": "ctrl+alt+down",
+        "when": "activeWebviewPanelId == icoda.callView && !editorTextFocus && !inputFocus && icoda.projectOpen && isWorkspaceTrusted"
+      },
+      {
+        "command": "icoda.traceInto",
+        "key": "ctrl+alt+right",
+        "when": "activeWebviewPanelId == icoda.callView && !editorTextFocus && !inputFocus && icoda.projectOpen && isWorkspaceTrusted"
+      },
+      {
+        "command": "icoda.traceOut",
+        "key": "ctrl+alt+up",
+        "when": "activeWebviewPanelId == icoda.callView && !editorTextFocus && !inputFocus && icoda.projectOpen && isWorkspaceTrusted"
+      },
+      {
+        "command": "icoda.traceReset",
+        "key": "ctrl+alt+home",
+        "when": "activeWebviewPanelId == icoda.callView && !editorTextFocus && !inputFocus && icoda.projectOpen && isWorkspaceTrusted"
+      }
+    ],
+    "menus": {
+      "commandPalette": [
+        {
+          "command": "icoda.selectTarget",
+          "when": "icoda.projectOpen"
+        },
+        {
+          "command": "icoda.revealEntity",
+          "when": "icoda.projectOpen"
+        },
+        {
+          "command": "icoda.showCallView",
+          "when": "icoda.projectOpen"
+        },
+        {
+          "command": "icoda.openFileView",
+          "when": "icoda.projectOpen"
+        },
+        {
+          "command": "icoda.openClassView",
+          "when": "icoda.projectOpen"
+        },
+        {
+          "command": "icoda.openMindMap",
+          "when": "icoda.projectOpen"
+        },
+        {
+          "command": "icoda.revealInFileView",
+          "when": "icoda.projectOpen"
+        },
+        {
+          "command": "icoda.assignFileCluster",
+          "when": "icoda.projectOpen"
+        }
+      ],
+      "editor/context": [
+        {
+          "command": "icoda.revealInFileView",
+          "when": "icoda.projectOpen && resourceScheme == file",
+          "group": "navigation"
+        }
+      ],
+      "view/title": [
+        {
+          "command": "icoda.reviewProposal",
+          "when": "view == icoda.proposals",
+          "group": "navigation"
+        },
+        {
+          "command": "icoda.openSpecification",
+          "when": "view == icoda.specification",
+          "group": "navigation"
+        },
+        {
+          "command": "icoda.validateSpecification",
+          "when": "view == icoda.specification",
+          "group": "navigation"
+        },
+        {
+          "command": "icoda.advancePhase",
+          "when": "view == icoda.specification",
+          "group": "navigation"
+        },
+        {
+          "command": "icoda.selectProviderModel",
+          "when": "view == icoda.specification",
+          "group": "navigation"
+        },
+        {
+          "command": "icoda.refreshIssues",
+          "when": "view == icoda.issues",
+          "group": "navigation"
+        },
+        {
+          "command": "icoda.refreshCoverage",
+          "when": "view == icoda.coverage",
+          "group": "navigation"
+        },
+        {
+          "command": "icoda.openFileView",
+          "when": "view == icoda.project && icoda.projectOpen",
+          "group": "navigation"
+        },
+        {
+          "command": "icoda.openClassView",
+          "when": "view == icoda.project && icoda.projectOpen",
+          "group": "navigation"
+        },
+        {
+          "command": "icoda.openMindMap",
+          "when": "view == icoda.project && icoda.projectOpen",
+          "group": "navigation"
+        },
+        {
+          "command": "icoda.analyseProject",
+          "when": "view == icoda.project",
+          "group": "navigation"
+        },
+        {
+          "command": "icoda.selectTarget",
+          "when": "view == icoda.project && icoda.projectOpen",
+          "group": "navigation"
+        },
+        {
+          "command": "icoda.revealEntity",
+          "when": "view == icoda.project && icoda.projectOpen",
+          "group": "navigation"
+        },
+        {
+          "command": "icoda.showCallView",
+          "when": "view == icoda.project && icoda.projectOpen",
+          "group": "navigation"
+        }
+      ]
+    },
+    "configuration": {
+      "title": "ICODA",
+      "properties": {
+        "icoda.backgroundPurposeComments": {
+          "type": "boolean",
+          "default": false,
+          "scope": "resource",
+          "description": "Opt in to purpose-comment proposals after 30 seconds of ICODA/editor inactivity in a trusted workspace. Requires an installed selected provider, clean editor buffers and fresh analysis; waits for other workflows and proposal decisions. Makes one attempt per analysed revision. Review with Apply/Reject Purpose Comments; never applies automatically."
+        },
+        "icoda.autoAnalyse": {
+          "type": "boolean",
+          "default": true,
+          "scope": "resource",
+          "description": "Refresh analysis after saved or external source changes. Waits for unsaved documents, active operations and proposal decisions. Disable to keep a recorded trace loaded while editing; Analyse Project remains available."
+        },
+        "icoda.providerSelection": {
+          "type": "object",
+          "default": {},
+          "scope": "resource",
+          "additionalProperties": false,
+          "properties": {
+            "provider": {
+              "type": "string"
+            },
+            "model": {
+              "type": "string"
+            }
+          },
+          "description": "Compatibility mirror written by Select Provider/Model. ICODA project state is authoritative for the provider, executable and model shown and used by workflows; editing this setting does not override it. Use Select Provider/Model to change the project selection and ICODA's user default for new projects. Selection never invokes a provider or stores credentials."
+        },
+        "icoda.pythonPath": {
+          "type": "string",
+          "default": "",
+          "scope": "machine-overridable",
+          "description": "Python executable path or command (no arguments). Empty uses ICODA's .icoda-venv, then python3/python on PATH. Run Restart Backend after changing this setting."
+        },
+        "icoda.toolchain.cmakePath": {
+          "type": "string",
+          "default": "",
+          "scope": "machine-overridable",
+          "description": "CMake executable path or command (no arguments). Empty uses Python's installed-tool discovery. Run Show Toolchain to inspect this override."
+        },
+        "icoda.toolchain.ninjaPath": {
+          "type": "string",
+          "default": "",
+          "scope": "machine-overridable",
+          "description": "Ninja executable path or command (no arguments). Empty uses Python's installed-tool discovery. Run Show Toolchain to inspect this override."
+        },
+        "icoda.toolchain.clangPath": {
+          "type": "string",
+          "default": "",
+          "scope": "machine-overridable",
+          "description": "Clang C++ driver (clang++ or clang++.exe), path or command without arguments. Requires Clang 16+ with sibling clang and clang-scan-deps. Empty uses Python's installed-tool discovery. Run Show Toolchain to inspect."
+        },
+        "icoda.toolchain.llvmSymbolizerPath": {
+          "type": "string",
+          "default": "",
+          "scope": "machine-overridable",
+          "description": "llvm-symbolizer executable path or command (no arguments). Empty uses Python's installed-tool discovery. Run Show Toolchain to inspect this override."
+        }
+      }
+    },
+    "viewsContainers": {
+      "activitybar": [
+        {
+          "id": "icoda",
+          "title": "ICODA",
+          "icon": "media/icoda.svg"
+        }
+      ]
+    },
+    "views": {
+      "icoda": [
+        {
+          "id": "icoda.project",
+          "name": "Project"
+        },
+        {
+          "id": "icoda.specification",
+          "name": "ICODA Specification"
+        },
+        {
+          "id": "icoda.proposals",
+          "name": "ICODA Proposal Review"
+        },
+        {
+          "id": "icoda.workflows",
+          "name": "ICODA AI Workflows"
+        },
+        {
+          "id": "icoda.issues",
+          "name": "ICODA Issues"
+        },
+        {
+          "id": "icoda.coverage",
+          "name": "ICODA Coverage"
+        }
+      ]
+    }
+  },
+  "scripts": {
+    "compile": "tsc -p .",
+    "watch": "tsc -watch -p .",
+    "test": "node --test out/test/*.test.js",
+    "test:integration": "npm run compile && node out/test/integration/run.js",
+    "package": "npm run compile && node scripts/package.mjs",
+    "test:vsix": "npm run package && node out/test/integration/vsixRun.js"
+  },
+  "devDependencies": {
+    "@types/node": "^22.20.4",
+    "@types/vscode": "1.74.0",
+    "@vscode/test-electron": "2.5.2",
+    "@vscode/vsce": "3.6.0",
+    "typescript": "~5.9.3"
+  }
+}

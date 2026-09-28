@@ -1420,3 +1420,53 @@ def test_watchdog_reports_a_stalled_tk_thread() -> None:
     assert len(reports) == 1  # repeated only after repeat_seconds
     watchdog._beat()
     assert time.monotonic() - watchdog.last_beat < 1
+
+
+def test_desktop_queue_settings_use_shared_updates_and_preserve_controls(tmp_path, monkeypatch):
+    from dataclasses import replace
+    from types import SimpleNamespace
+
+    from icoda_core import grouping, implementation_queue
+
+    window = Window(tmp_path)
+    model = model_with_calls()
+    window.opened = SimpleNamespace(model=model)
+    controller = step_controller.StepController(window)
+    store = persistence.ProjectStore(tmp_path)
+    original = persistence.ProjectState(persistence.ProjectPhase.IMPLEMENTATION,
+        implementation_queue=("u:b", "u:a"), approved_approach="Keep until batch changes")
+    store.save_state(original)
+    window.panel.auto_approve_var.set(True)
+    controller.auto_approve_changed()
+    expected = implementation_queue.update_settings(original, auto_approve=True)
+    assert store.load_state() == expected and expected.approved_approach
+    window.panel.batch_size_var.set(3)
+    controller.batch_size_changed()
+    expected = implementation_queue.update_settings(expected, batch_size=3)
+    assert store.load_state() == expected and not expected.approved_approach
+    store.save_state(replace(expected, approved_approach="Old approach"))
+    window.panel.scope_var.set(dict(implementation_queue.SCOPE_LABELS)[implementation_queue.Scope.SINGLE_ENTITY])
+    controller.scope_changed()
+    expected = implementation_queue.update_settings(expected, model=model, scope="single_entity")
+    assert store.load_state() == expected
+    monkeypatch.setattr(window.panel, "implementation_grouping", lambda: grouping.Mode.FEW_LINE_GROUP)
+    controller.grouping_changed()
+    assert store.load_state() == implementation_queue.update_settings(expected, grouping_mode="few_line_group")
+
+
+def test_desktop_rephrase_delegates_shared_scope_and_publication(tmp_path, monkeypatch):
+    window = Window(tmp_path)
+    runner = steps.StepRunner(tmp_path, window.config, invoke=lambda *_: "Clearer review text")
+    controller = step_controller.StepController(window, lambda *a, **k: runner)
+    candidate = controller.proposal = fake_proposal(tmp_path)
+    window.panel.show(candidate)
+    calls = []
+    original_context, original_replace = steps.rephrase_context, steps.replace_description
+    monkeypatch.setattr(steps, "rephrase_context", lambda item:
+        calls.append(("scope", item)) or original_context(item))
+    monkeypatch.setattr(steps, "replace_description", lambda item, text:
+        calls.append(("publish", item)) or original_replace(item, text))
+    controller.rephrase()
+    assert calls == [("scope", candidate), ("publish", candidate)]
+    assert candidate.response.rationale == "Clearer review text"
+    assert not runner.log.path.exists()

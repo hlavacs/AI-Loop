@@ -30,13 +30,11 @@ from icoda_core import (
     coverage_index,
     executables,
     expansion,
-    generator,
     graph_filter,
     grouping,
     implementation_queue,
     node_status,
     persistence,
-    phases,
     session,
     source_edit,
     source_watch,
@@ -212,7 +210,7 @@ class FileViewCanvas(graph_canvas.NodeAppearanceCanvas):
                             and self.expansion_result is not None and self.expansion_result.graph.nodes) else 0
         available_width, available_height = max(width - hierarchy - 24, 100), max(height - 60, 100)
         self._fit_graph(available_width, available_height)
-        if self.focused_group is None and (self.scale < 1.0 or self._boxes_overlap()):
+        if self.focused_group is None and views.file_view_needs_overview(self.scale, self.node_boxes.values()):
             self.overview = True
             self._fit_graph(available_width, available_height)
         if self.focused_group is None and not self.organised and not self.overview and self._boxes_overlap():
@@ -222,14 +220,7 @@ class FileViewCanvas(graph_canvas.NodeAppearanceCanvas):
         self.redraw()
 
     def _boxes_overlap(self) -> bool:
-        boxes = sorted(self.node_boxes.values())
-        for index, a in enumerate(boxes):
-            for b in boxes[index + 1:]:
-                if b[0] >= a[2]:
-                    break
-                if a[1] < b[3] and b[1] < a[3]:
-                    return True
-        return False
+        return views.file_view_needs_overview(1.0, self.node_boxes.values())
 
     def _fit_graph(self, available_width: float, available_height: float) -> None:
         for _ in range(6):  # text remains readable while node positions and edge geometry scale
@@ -1078,8 +1069,7 @@ class App:
         self.project = Path(path).expanduser().resolve()
         self.recovery.set_project(self.project)
         self._source_snapshot = None
-        self.project.mkdir(parents=True, exist_ok=True)
-        persistence.ProjectStore(self.project).ensure()
+        session.prepare_new_project(self.project)
         self.panel.set_phase(persistence.ProjectPhase.SPECIFICATION)
         self.panel.set_project_facts(True, False, self._provider_ready())
         self.root.title(f"ICODA — {self.project.name}")
@@ -1175,15 +1165,11 @@ class App:
     def _save_specification(self, spec: specification.Specification) -> None:
         """Write ``.icoda/specification.json``; for a project without code, write the skeleton (step 0)."""
         assert self.project is not None
-        store = persistence.ProjectStore(self.project)
-        store.ensure()
-        specification.save(store.specification_path, spec)
-        session.log_event("specification saved", self.project)
-        if (self.project / "CMakeLists.txt").exists() or self._is_existing_specification_edit():
+        written = session.save_project_specification(
+            self.project, spec, existing_edit=self._is_existing_specification_edit())
+        if written is None:
             self._reload_after_specification_save()
             return
-        written = generator.write_skeleton(self.project, self.project.name, spec["code_profile"])
-        phases.transition(store, persistence.ProjectPhase.ARCHITECTURE)
         self.panel.set_phase(persistence.ProjectPhase.ARCHITECTURE)
         session.log_event(f"skeleton written: {written}", self.project)
         if messagebox.askyesno("ICODA", f"Specification saved and the project skeleton written ({len(written)} "
@@ -1422,9 +1408,7 @@ class App:
     def executable_coverage(self, model: DerivedModel, records: list[steplog.StepRecord]) -> coverage_index.CoverageIndex:
         """Keep recorded test evidence while restricting the displayed callable rows."""
         source = self.opened.model if self.opened is not None else model
-        complete = coverage_index.build_index(source, records)
-        entries = tuple(entry for entry in complete.entries if entry.usr in model.entities)
-        return coverage_index.CoverageIndex(entries, tuple(entry.usr for entry in entries if not entry.covered))
+        return coverage_index.scoped_index(source, records, model)
 
     def show_proposal_calls(self, proposal: steps.Proposal) -> None:
         if proposal.model is not None:
@@ -1814,11 +1798,9 @@ class App:
         if self.project is None:
             return
         records = steplog.StepLog(persistence.ProjectStore(self.project).steps_path).records()
-        matching = [record for record in records if record.number == iteration
-                    and record.round != steplog.APPROACH_ROUND
-                    and record.decision in ("approved", "manual")]
-        if matching:
-            self.panel.show_step(matching[-1])
+        record = steplog.introducing_record(records, iteration)
+        if record is not None:
+            self.panel.show_step(record)
 
 
 def parse_args(argv: list[str]) -> Path | None:

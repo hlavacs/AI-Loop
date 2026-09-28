@@ -598,3 +598,18 @@ def test_failed_investigation_retains_cli_evidence_and_redacts_secrets(app_modul
     assert "CLI exit code: 7" in text and "specific CLI failure" in text
     assert "provider diagnostic on stdout" in text
     assert "secret123" not in text and "[redacted]" in text
+
+
+def test_desktop_conversation_delegates_shared_edit_tracking(app_module, tmp_path, monkeypatch):
+    app, pending = window(app_module, tmp_path)
+    calls = []
+    original = recovery.send_conversation
+    monkeypatch.setattr(recovery, "send_conversation", lambda *args, **kwargs:
+        calls.append(args) or original(*args, **kwargs))
+    monkeypatch.setattr(recovery, "invoke", lambda *args, **kwargs:
+        recovery.RecoveryResult(ProcessResult([], 0, "Shared conversation reply", "")))
+    app.recovery.send("Explain the project")
+    complete(pending)
+    assert len(calls) == 1 and calls[0][3] == tmp_path
+    assert app.recovery.history == [("Developer", "Explain the project"), ("Assistant", "Shared conversation reply")]
+    assert not (tmp_path / ".icoda/steps.jsonl").exists()

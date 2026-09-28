@@ -1,0 +1,20 @@
+@import url('./fileView.css');
+.node text { font-size: 12px; }
+.node .counts { fill: var(--vscode-descriptionForeground); font-size: 11px; }
+.member rect { fill: var(--vscode-editor-background); stroke-width: 0.5; }
+.member text { font-size: 11px; }
+.member { cursor: pointer; }
+.member.selected rect, .member:focus-visible rect { stroke: var(--vscode-focusBorder); stroke-width: 3; }
+.edge.inheritance { color: var(--vscode-charts-green, var(--vscode-editor-foreground)); }
+.edge.composition { color: var(--vscode-symbolIcon-classForeground, var(--vscode-editor-foreground)); }
+.edge.usage { color: var(--vscode-charts-blue, var(--vscode-editor-foreground)); }
+.edge path { stroke: currentColor; }
+.edge text { fill: currentColor; }
+.edge.inheritance path { marker-end: url(#inheritance); }
+.edge.composition path { marker-end: none; marker-start: url(#composition); }
+.edge.usage path { stroke-dasharray: 6 4; }
+#inheritance path { fill: var(--vscode-editor-background); stroke: var(--vscode-charts-green, var(--vscode-editor-foreground)); }
+#composition path { fill: var(--vscode-symbolIcon-classForeground, var(--vscode-editor-foreground)); }
+#arrow path { fill: var(--vscode-charts-blue, var(--vscode-editor-foreground)); }
+body.vscode-high-contrast .edge, body.vscode-high-contrast-light .edge { color: var(--vscode-editor-foreground); }
+body.vscode-high-contrast marker path, body.vscode-high-contrast-light marker path { stroke: var(--vscode-editor-foreground); }

@@ -15,7 +15,7 @@ from enum import Enum
 
 import networkx as nx
 
-from icoda_core import clusters
+from icoda_core import clusters, grouping
 from icoda_core.model import CALLABLE_KINDS, DerivedModel, EdgeKind, Entity, Kind
 from icoda_core.persistence import ProjectPhase, ProjectState, ProjectStore
 
@@ -37,6 +37,27 @@ SCOPE_LABELS = (
     (Scope.ENCLOSING_CLUSTER, "Enclosing cluster"),
     (Scope.ALL_REMAINING_LEAVES, "All remaining leaves"),
 )
+
+
+def update_settings(state: ProjectState, *, model: DerivedModel | None = None, batch_size: int | None = None,
+                    scope: str | None = None, grouping_mode: str | None = None,
+                    auto_approve: bool | None = None) -> ProjectState:
+    """Apply the desktop queue controls, invalidating approaches only when their scope changes."""
+    if batch_size is not None:
+        if type(batch_size) is not int or batch_size < 1:
+            raise ValueError("batchSize must be a positive integer")
+        if batch_size != state.implementation_batch_size:
+            state = replace(state, implementation_batch_size=batch_size, approved_approach="")
+    if scope is not None and Scope(scope).value != state.implementation_scope:
+        assert model is not None
+        state = select_scope(model, state, scope)
+    if grouping_mode is not None:
+        state = replace(state, implementation_grouping=grouping.Mode(grouping_mode).value, approved_approach="")
+    if auto_approve is not None:
+        if type(auto_approve) is not bool:
+            raise ValueError("autoApprove must be a boolean")
+        state = replace(state, auto_approve=auto_approve)
+    return state
 
 
 def build(model: DerivedModel) -> tuple[str, ...]:

@@ -406,6 +406,50 @@ def test_new_project_writes_specification_and_skeleton_on_save(app_module, tmp_p
     assert app.spec_editor.to_specification()["goals"] == ["twice", "ship it"]
 
 
+@pytest.mark.parametrize("existing_cmake", [False, True])
+def test_desktop_new_project_shared_creation_preserves_existing_files(app_module, tmp_path, monkeypatch, existing_cmake):
+    project = tmp_path / "existing"
+    project.mkdir()
+    (project / "README.md").write_text("Keep my documentation")
+    if existing_cmake:
+        (project / "CMakeLists.txt").write_text("# Keep my build")
+    prepared, saved = [], []
+    prepare, save = session.prepare_new_project, session.save_project_specification
+
+    def prepare_shared(root):
+        prepared.append(root)
+        return prepare(root)
+
+    def save_shared(root, spec, **kwargs):
+        saved.append(root)
+        return save(root, spec, **kwargs)
+
+    monkeypatch.setattr(session, "prepare_new_project", prepare_shared)
+    monkeypatch.setattr(session, "save_project_specification", save_shared)
+    app = app_module.App(app_module.tk.Tk(), config=persistence.UserConfig(), config_path=tmp_path / "config.json")
+    opened = []
+    app.open_project = opened.append
+    app.new_project(project)
+    assert prepared == [project]
+    assert not persistence.ProjectStore(project).specification_path.exists()
+    spec = specification.default_specification("Independent title", "Python")
+    app._save_specification(spec)
+    assert saved == [project]
+    assert (project / "README.md").read_text() == "Keep my documentation"
+    assert not (project / ".git").exists()
+    store = persistence.ProjectStore(project)
+    assert specification.load(store.specification_path) == spec
+    if existing_cmake:
+        assert (project / "CMakeLists.txt").read_text() == "# Keep my build"
+        assert not (project / "pyproject.toml").exists()
+        assert store.load_state().phase == persistence.ProjectPhase.IMPLEMENTATION
+        assert opened == []
+    else:
+        assert (project / "src/existing.py").is_file()
+        assert store.load_state().phase == persistence.ProjectPhase.ARCHITECTURE
+        assert opened == [project]
+
+
 def test_save_specification_publishes_architecture_phase_before_reload(app_module, tmp_path: Path) -> None:
     app = app_module.App(app_module.tk.Tk(), config=persistence.UserConfig(), config_path=tmp_path / "c.json")
     project = tmp_path / "fresh"

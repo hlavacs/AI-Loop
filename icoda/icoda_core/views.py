@@ -12,6 +12,7 @@ from __future__ import annotations
 import math
 import re
 from collections import defaultdict
+from collections.abc import Iterable
 from dataclasses import dataclass, field, replace
 from pathlib import Path
 
@@ -251,14 +252,14 @@ def organise_file_view(layout: FileViewLayout,
         if arrow.source in index and arrow.target in index:
             source_index, target_index = sorted((index[arrow.source], index[arrow.target]))
             weights[source_index, target_index] += arrow.weight
-    positions = [[circle.cx, circle.cy] for circle in circles]
-    centre_x = sum(p[0] for p in positions) / len(positions)
-    centre_y = sum(p[1] for p in positions) / len(positions)
+    centres = [[circle.cx, circle.cy] for circle in circles]
+    centre_x = sum(p[0] for p in centres) / len(centres)
+    centre_y = sum(p[1] for p in centres) / len(centres)
     for iteration in range(80):
-        forces = [[(centre_x - x) * .01, (centre_y - y) * .01] for x, y in positions]
-        for i, (x, y) in enumerate(positions):
-            for j in range(i + 1, len(positions)):
-                dx, dy = positions[j][0] - x, positions[j][1] - y
+        forces = [[(centre_x - x) * .01, (centre_y - y) * .01] for x, y in centres]
+        for i, (x, y) in enumerate(centres):
+            for j in range(i + 1, len(centres)):
+                dx, dy = centres[j][0] - x, centres[j][1] - y
                 distance = math.hypot(dx, dy)
                 if distance < .001:
                     dx, dy, distance = 1.0, 0.0, 1.0
@@ -271,14 +272,14 @@ def organise_file_view(layout: FileViewLayout,
                 forces[j][0] += fx
                 forces[j][1] += fy
         step = max(20.0, max(radii) * .15) * (1.0 - iteration / 80) + .5
-        for position, (fx, fy) in zip(positions, forces, strict=True):
+        for position, (fx, fy) in zip(centres, forces, strict=True):
             factor = min(1.0, step / max(math.hypot(fx, fy), .001))
             position[0] += fx * factor
             position[1] += fy * factor
-    left = min(p[0] - c.radius for p, c in zip(positions, circles, strict=True)) - 80.0
-    top = min(p[1] - c.radius for p, c in zip(positions, circles, strict=True)) - 80.0
+    left = min(p[0] - c.radius for p, c in zip(centres, circles, strict=True)) - 80.0
+    top = min(p[1] - c.radius for p, c in zip(centres, circles, strict=True)) - 80.0
     moved = [replace(circle, cx=x - left, cy=y - top)
-             for circle, (x, y) in zip(circles, positions, strict=True)]
+             for circle, (x, y) in zip(circles, centres, strict=True)]
     offsets = {old.id: (new.cx - old.cx, new.cy - old.cy)
                for old, new in zip(circles, moved, strict=True)}
     nodes = {key: replace(node, x=node.x + offsets.get(node.cluster, (0.0, 0.0))[0],
@@ -354,6 +355,91 @@ def file_view_overview(layout: FileViewLayout, visible: set[str]) -> FileViewLay
         key: replace(node, x=summary.nodes[key].x, y=summary.nodes[key].y) for key, node in nodes.items()})
 
 
+def file_view_needs_overview(scale: float, boxes: Iterable[tuple[float, float, float, float]]) -> bool:
+    """Use the desktop's readability threshold: fitting shrinks labels or boxes overlap."""
+    if scale < 1.0:
+        return True
+    ordered = sorted(boxes)
+    for index, a in enumerate(ordered):
+        for b in ordered[index + 1:]:
+            if b[0] >= a[2]:
+                break
+            if a[1] < b[3] and b[1] < a[3]:
+                return True
+    return False
+
+
+def file_node_size(node: Node) -> tuple[float, float]:
+    """Headless label estimate, matching organise_file_view's default measurement."""
+    return max(map(len, node.label.splitlines() or [""])) * 8.0 + 24.0, len(node.label.splitlines()) * 18.0 + 18.0
+
+
+def file_view_bounds(layout: FileViewLayout) -> tuple[float, float, float, float]:
+    """Include rectangular labels when fitting a visible level, even for negative coordinates."""
+    boxes = [(node.x - w / 2, node.y - h / 2, node.x + w / 2, node.y + h / 2)
+             for node in layout.nodes.values() for w, h in [file_node_size(node)]]
+    if not boxes:
+        return 0.0, 0.0, 1.0, 1.0
+    return min(b[0] for b in boxes), min(b[1] for b in boxes), max(b[2] for b in boxes), max(b[3] for b in boxes)
+
+
+def file_view_level(model: DerivedModel, clustering: Clustering, group: str | None = None,
+                    width: float = 1000.0, height: float = 700.0) -> tuple[FileViewLayout, bool]:
+    """Project the desktop's initial overview or one bounded group without GUI imports."""
+    identifiers = {cluster.id for cluster in clustering.clusters}
+    parents = {cluster.parent_id for cluster in clustering.clusters} & identifiers
+    if parents:
+        selected = group.removeprefix("cluster:") if group else None
+        level = [cluster for cluster in clustering.clusters
+                 if (cluster.parent_id == selected if selected in parents else cluster.parent_id not in parents)]
+        if selected is None or selected in parents:
+            layout = layout_file_view(model, Clustering(level, clustering.algorithm))
+            visible = {file for cluster in level for file in cluster.files}
+            if selected is None:
+                visible.update(key for key, node in layout.nodes.items() if node.kind == "external")
+            return file_view_overview(layout, visible), True
+        clustering = Clustering([cluster for cluster in clustering.clusters if cluster.id not in parents],
+                                clustering.algorithm)
+    layout = layout_file_view(model, clustering)
+    if group is not None:
+        return organise_file_view(file_view_group(layout, group)), False
+    left, top, right, bottom = file_view_bounds(layout)
+    scale = min(max(width - 24, 100) / max(right - left, 1), max(height - 60, 100) / max(bottom - top, 1))
+    boxes = [(node.x - w / 2, node.y - h / 2, node.x + w / 2, node.y + h / 2)
+             for node in layout.nodes.values() for w, h in [file_node_size(node)]]
+    overview = file_view_needs_overview(scale, boxes)
+    return (file_view_overview(layout, set(layout.nodes)) if overview else layout), overview
+
+
+def file_cluster_path(model: DerivedModel, clustering: Clustering, file: str) -> tuple[str, ...]:
+    """Read file ancestry from the shared expansion hierarchy; singleton files remain inline."""
+    from icoda_core import expansion, graph_filter
+
+    parents = {cluster.parent_id for cluster in clustering.clusters}
+    groups = {file: cluster.id for cluster in clustering.clusters
+              if cluster.id not in parents and len(cluster.files) > 1 for file in cluster.files}
+    names = {cluster.id: cluster.name for cluster in clustering.clusters}
+    hierarchy = expansion.derive(model, graph_filter.project_graph(model, groups, names), {}, {})
+    decision = hierarchy.decision_for(f"file:{file}")
+    path = []
+    while decision is not None and decision.parent is not None:
+        path.append(decision.parent)
+        decision = hierarchy.decision_for(decision.parent)
+    by_id = {"cluster:" + cluster.id: cluster for cluster in clustering.clusters}
+    if not path:
+        cluster = clustering.cluster_of(file)
+        parent = "cluster:" + cluster.parent_id if cluster and cluster.parent_id else None
+        if parent in by_id:
+            path.append(parent)
+    while path and path[-1] in by_id:
+        parent = by_id[path[-1]].parent_id
+        key = "cluster:" + parent if parent else None
+        if key not in by_id or key in path:
+            break
+        path.append(key)
+    return tuple(reversed(path))
+
+
 
 def entity_view_overview(model: DerivedModel, clustering: Clustering, members: set[str],
                          arrows: list[Arrow], unit: str) -> tuple[FileViewLayout, dict[str, set[str]]]:
@@ -364,9 +450,9 @@ def entity_view_overview(model: DerivedModel, clustering: Clustering, members: s
     owners, nodes = {}, {}
     for usr in sorted(members):
         entity = model.entities.get(usr)
-        group = files.get(entity.file, entity.file) if entity else ""
-        key = f"cluster:{group}" if entity else "external:overview"
-        label = names.get(group, group) if entity else "External libraries"
+        group_id = files.get(entity.file, entity.file) if entity else ""
+        key = f"cluster:{group_id}" if entity else "external:overview"
+        label = names.get(group_id, group_id) if entity else "External libraries"
         owners[usr] = key
         groups[key].add(usr)
         nodes[key] = Node(key, label, 0, 0, key, "cluster")
@@ -557,6 +643,66 @@ def organise_class_view(layout: ClassViewLayout) -> ClassViewLayout:
 
 def _class_panel_height(node: class_view.ClassNode) -> float:
     return CLASS_HEADER_HEIGHT + max(len(node.members), 1) * CLASS_MEMBER_HEIGHT + 8.0
+
+
+def arrange_class_overview(layout: ClassViewLayout, overview: FileViewLayout,
+                           groups: dict[str, set[str]]) -> tuple[dict[str, ClassNodeLayout], FileViewLayout]:
+    """Fit full singleton panels alongside compact groups, shared with the desktop canvas."""
+    panels = {}
+    for key, node in overview.nodes.items():
+        if node.kind != "cluster":
+            panels[key] = layout.nodes[key]
+        else:
+            representative = layout.nodes[min(groups[key])]
+            panel_width = max(220, max(map(len, node.label.splitlines())) * 8 + 24)
+            panels[key] = replace(representative, width=panel_width, height=76)
+    positions, width, height = force_layout.arrange(
+        {key: (panel.width, panel.height) for key, panel in panels.items()},
+        ((edge.source, edge.target, edge.weight) for edge in overview.file_arrows), gap=70)
+    panels = {key: replace(panel, x=positions[key][0], y=positions[key][1]) for key, panel in panels.items()}
+    overview = replace(overview, width=width, height=height, nodes={
+        key: replace(node, x=positions[key][0], y=positions[key][1]) for key, node in overview.nodes.items()})
+    return panels, overview
+
+
+def class_overview_edges(graph: class_view.ClassGraph,
+                         groups: dict[str, set[str]]) -> tuple[class_view.ClassEdge, ...]:
+    """Aggregate typed relationships between the visible groups, omitting internal edges."""
+    owners = {usr: key for key, members in groups.items() for usr in members}
+    counts: dict[tuple[str, str, class_view.ClassEdgeKind], int] = {}
+    for edge in graph.edges:
+        source, target = owners.get(edge.source), owners.get(edge.target)
+        if source is not None and target is not None and source != target:
+            key = source, target, edge.kind
+            counts[key] = counts.get(key, 0) + edge.count
+    return tuple(class_view.ClassEdge(kind, source, target, count)
+                 for (source, target, kind), count in counts.items())
+
+
+def class_view_level(model: DerivedModel, clustering: Clustering, group: str | None = None
+                     ) -> tuple[ClassViewLayout, FileViewLayout | None, dict[str, set[str]]]:
+    """Project the desktop's class overview or a bounded group without importing Tk."""
+    graph = class_view.build_class_graph(model)
+    overview: FileViewLayout | None = None
+    groups: dict[str, set[str]] = {}
+    if len(graph.nodes) > 12:
+        arrows = [Arrow(edge.source, edge.target, {EdgeKind.USES_TYPE: edge.count}) for edge in graph.edges]
+        overview, groups = entity_view_overview(model, clustering, {node.usr for node in graph.nodes}, arrows, "classes")
+    if group is not None:
+        if group not in groups or len(groups[group]) < 2:
+            raise ValueError("Choose a class group in the selected target.")
+        members = groups[group]
+        graph = class_view.ClassGraph(tuple(node for node in graph.nodes if node.usr in members),
+                                     tuple(edge for edge in graph.edges
+                                           if edge.source in members and edge.target in members))
+    layout = layout_class_view(graph)
+    if overview is not None and group is None:
+        panels, overview = arrange_class_overview(layout, overview, groups)
+        layout = replace(layout, nodes=panels, edges=class_overview_edges(graph, groups),
+                         width=overview.width, height=overview.height)
+    else:
+        layout = organise_class_view(layout)
+    return layout, overview, groups
 
 
 # --------------------------------------------------------------------------- Mind map

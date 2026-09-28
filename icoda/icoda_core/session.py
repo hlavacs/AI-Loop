@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -16,10 +17,70 @@ from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
 
-from icoda_core import analysis, clusters, persistence, steplog, toolchain, views
+from icoda_core import (
+    analysis,
+    clusters,
+    generator,
+    persistence,
+    phases,
+    process,
+    specification,
+    steplog,
+    toolchain,
+    views,
+)
 from icoda_core.model import DerivedModel
 
 LOG_NAME = "icoda.log"
+
+
+def prepare_new_project(root: Path) -> None:
+    """Desktop phase-zero preparation; existing directories and files are retained."""
+    root.mkdir(parents=True, exist_ok=True)
+    persistence.ProjectStore(root).ensure()
+
+
+def save_project_specification(root: Path, spec: specification.Specification, *,
+                               existing_edit: bool = False) -> list[str] | None:
+    """Save the truth and, on the first save, generate missing skeleton files and advance phase."""
+    store = persistence.ProjectStore(root)
+    store.ensure()
+    specification.save(store.specification_path, spec)
+    log_event("specification saved", root)
+    if (root / "CMakeLists.txt").exists() or existing_edit:
+        return None
+    written = generator.write_skeleton(root, root.name, spec["code_profile"])
+    phases.transition(store, persistence.ProjectPhase.ARCHITECTURE)
+    return written
+
+
+def create_project(parent: Path, name: str, language: str, summary: str = "") -> tuple[Path, list[str]]:
+    """Create a new child folder using the desktop preparation and first-save operations.
+
+    Unlike the desktop's directory picker, this entry point never adopts an existing folder.
+    Names are portable single components; skeleton paths come only from the shared defaults.
+    Git preparation, build and analysis remain explicit later operations.
+    """
+    if (not name.strip() or name in {".", ".."} or name.endswith((".", " "))
+            or re.search(r'[<>:"/\\|?*\x00-\x1f]', name)
+            or re.fullmatch(r"CON|PRN|AUX|NUL|COM[1-9]|LPT[1-9]", name.split(".")[0], re.IGNORECASE)):
+        raise ValueError("Name must be a valid single folder name, without paths or reserved device names.")
+    if not parent.is_absolute() or not parent.is_dir():
+        raise ValueError("Choose an existing absolute parent folder.")
+    if language not in {analysis.CPP_LANGUAGE, analysis.PYTHON_LANGUAGE}:
+        raise ValueError("Language must be C++ or Python.")
+    spec = specification.default_specification(name, language)
+    spec["summary"] = summary
+    problems = specification.validate(spec)
+    if problems:
+        raise ValueError("; ".join(problems))
+    root = parent.resolve() / name
+    # Exclusive creation also rejects files, empty directories and dangling symlinks.
+    root.mkdir()
+    prepare_new_project(root)
+    written = save_project_specification(root, spec)
+    log_event(f"skeleton written: {written}", root)
+    return root, written or []
 
 
 @dataclass
@@ -164,7 +225,13 @@ def analyse_in_child(root: Path, timeout: float = 1800.0) -> AnalysisResult:
     command = [sys.executable, "-m", "icoda_core.session", str(root)]
     env = dict(os.environ, PYTHONPATH=str(Path(__file__).resolve().parent.parent))
     try:
-        completed = subprocess.run(command, capture_output=True, text=True, timeout=timeout, check=False, env=env)
+        if process.current_cancellation() is None:
+            completed = subprocess.run(command, capture_output=True, text=True, timeout=timeout, check=False, env=env)
+        else:
+            result = process.run_bounded(command, timeout=timeout, env=env)
+            if result.timed_out or result.cancelled:
+                return AnalysisResult(None, None, ["analysis cancelled or timed out"])
+            completed = subprocess.CompletedProcess(command, result.returncode, result.stdout, result.stderr)
     except subprocess.TimeoutExpired:
         return AnalysisResult(None, None, [f"analysis did not finish within {int(timeout)} s"])
     if completed.returncode == 0 and completed.stdout.strip():

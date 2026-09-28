@@ -1,0 +1,17 @@
+# icoda-call-trace-v1
+E	0	thread-1	0	main		main	fixture
+E	1	thread-1	1	A		A	fixture
+E	2	thread-1	2	B		B	fixture
+E	3	thread-1	3	A		A	fixture
+E	4	thread-1	4	C		C	fixture
+X	5	thread-1	4	C		C	fixture
+X	6	thread-1	3	A		A	fixture
+E	7	thread-1	3	E		E	fixture
+X	8	thread-1	3	E		E	fixture
+X	9	thread-1	2	B		B	fixture
+E	10	thread-1	2	D		D	fixture
+X	11	thread-1	2	D		D	fixture
+X	12	thread-1	1	A		A	fixture
+E	13	thread-1	1	E		E	fixture
+X	14	thread-1	1	E		E	fixture
+X	15	thread-1	0	main		main	fixture

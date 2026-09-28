@@ -2,13 +2,15 @@
 
 from __future__ import annotations
 
+import codecs
 import os
 import signal
 import subprocess
 import sys
 import threading
 import time
-from collections.abc import Mapping, Sequence
+from collections.abc import Callable, Mapping, Sequence
+from contextlib import contextmanager
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import IO
@@ -56,15 +58,37 @@ class _Tail:
         return (marker + self.data).decode("utf-8", errors="replace")
 
 
-def _pump(stream: IO[bytes], tail: _Tail) -> None:
-    for chunk in iter(lambda: stream.read(4096), b""):
+def _pump(stream: IO[bytes], tail: _Tail, output: Callable[[str], None] | None = None) -> None:
+    decoder = codecs.getincrementaldecoder("utf-8")(errors="replace")
+    for chunk in iter(lambda: stream.read1(4096), b""):  # type: ignore[attr-defined]
         tail.append(chunk)
+        if output is not None:
+            output(decoder.decode(chunk))
+    if output is not None:
+        output(decoder.decode(b"", final=True))
     stream.close()
 
 
 _running: dict[int, subprocess.Popen[bytes]] = {}
 _cancelled: set[int] = set()
 _registry_lock = threading.Lock()
+_scope = threading.local()
+
+
+def current_cancellation() -> threading.Event | None:
+    """Return the optional cancellation owner for nested core operations on this thread."""
+    return getattr(_scope, "cancel_event", None)
+
+
+@contextmanager
+def cancellation_scope(event: threading.Event):
+    """Give a worker's nested core commands one owner without changing desktop cancellation."""
+    previous = getattr(_scope, "cancel_event", None)
+    _scope.cancel_event = event
+    try:
+        yield
+    finally:
+        _scope.cancel_event = previous
 
 
 def cancel_running() -> int:
@@ -146,10 +170,13 @@ def run_bounded(
     input_text: str | None = None,
     env: Mapping[str, str] | None = None,
     cancel_event: threading.Event | None = None,
+    output: Callable[[str], None] | None = None,
 ) -> ProcessResult:
     """Run a bounded command; an explicit cancel event isolates it from foreground cancellation."""
     if isinstance(command, (str, bytes)):
         raise TypeError("command must be an argument sequence, not a shell command string")
+    if cancel_event is None:
+        cancel_event = current_cancellation()
     if cancel_event is not None and cancel_event.is_set():
         return ProcessResult(list(command), -1, "", "", cancelled=True)
     started = time.monotonic()
@@ -168,8 +195,8 @@ def run_bounded(
         _register(process)
     out, err = _Tail(max_output), _Tail(max_output)
     assert process.stdout is not None and process.stderr is not None
-    threads = [threading.Thread(target=_pump, args=(process.stdout, out), daemon=True),
-               threading.Thread(target=_pump, args=(process.stderr, err), daemon=True)]
+    threads = [threading.Thread(target=_pump, args=(process.stdout, out, output), daemon=True),
+               threading.Thread(target=_pump, args=(process.stderr, err, output), daemon=True)]
     for thread in threads:
         thread.start()
     writer = _feed_stdin(process, input_text)

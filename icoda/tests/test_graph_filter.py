@@ -149,3 +149,19 @@ def test_single_entry_parser_is_forgiving_and_explicit() -> None:
     ) == graph_filter.FilterDescription(
         "render all", "function", "tested", True, False, "presentation", "ui", "calls")
     assert graph_filter.parse('"unfinished filter') == graph_filter.FilterDescription(name='"unfinished filter')
+
+
+def test_p04_aggregate_focus_uses_all_file_entities_and_preserves_usr_policy():
+    model, graph, appearances = _facts()
+    file_focus = graph_filter.derive(model, graph, appearances,
+                                    focus_node="file:src/ui.cpp", neighborhood_depth=1)
+    assert not file_focus["u:root"].dimmed
+    assert not file_focus["u:near"].dimmed
+    assert not file_focus["u:far"].dimmed
+    assert file_focus["u:stale"].dimmed
+    assert file_focus == graph_filter.derive(model, graph, appearances,
+        focus_node="cluster:presentation", neighborhood_depth=1)
+    assert graph_filter.derive(model, graph, appearances, focus_node="entity:u:root", neighborhood_depth=1) == (
+        graph_filter.derive(model, graph, appearances, focus_usr="u:root", neighborhood_depth=1))
+    assert not any(item.dimmed for item in graph_filter.derive(
+        model, graph, appearances, focus_node="file:src/ui.cpp", neighborhood_depth=0).values())

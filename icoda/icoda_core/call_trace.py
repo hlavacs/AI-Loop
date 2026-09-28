@@ -120,6 +120,8 @@ class CallPlayback:
         self._events = trace.events
         self._returns: dict[int, int] = {}
         self._call_entries: list[int] = []
+        self._group_entries: list[list[int]] = []
+        self._parents: dict[int, int | None] = {}
         calls: list[_PlaybackCall] = []
         stacks: dict[str, list[int | None]] = defaultdict(list)
         for index, event in enumerate(trace.events):
@@ -134,10 +136,12 @@ class CallPlayback:
             del stack[event.depth:]
             stack.extend([None] * (event.depth - len(stack)))
             caller = trace.events[stack[-1]].entity if stack and stack[-1] is not None else None
+            self._parents[index] = stack[-1] if stack else None
             stack.append(index)
             if event.entity is None:
                 continue
             if calls and calls[-1].entity.usr == event.entity.usr:
+                self._group_entries[-1].append(index)
                 calls[-1].count += 1
                 if caller is not None:
                     calls[-1].caller_counts[caller.usr] = calls[-1].caller_counts.get(caller.usr, 0) + 1
@@ -145,6 +149,7 @@ class CallPlayback:
                 caller_counts = {caller.usr: 1} if caller is not None else {}
                 calls.append(_PlaybackCall(event.entity, 1, caller_counts))
                 self._call_entries.append(index)
+                self._group_entries.append([index])
         self._calls = tuple(calls)
         self.reset()
 
@@ -165,6 +170,11 @@ class CallPlayback:
     @property
     def current_entity(self) -> Entity | None:
         return self._calls[self._position - 1].entity if self._position else None
+
+    @property
+    def current_event(self) -> CallEvent | None:
+        """The first entry representing the selected group, including its thread/depth."""
+        return self._events[self._call_entries[self._position - 1]] if self._position else None
 
     @property
     def current_repeat_count(self) -> int:
@@ -226,10 +236,38 @@ class CallPlayback:
         depth = event.depth - (1 if mode == "out" else 0)
         # Return events bound the invocation but never become visible stops.
         for index in range(bisect_right(self._call_entries, returned), self.total):
-            candidate = self._events[self._call_entries[index]]
-            if candidate.thread_id == event.thread_id and candidate.depth <= depth:
+            destination = self._call_entries[index]
+            candidate = self._events[destination]
+            entries = self._group_entries[self._position - 1]
+            if (candidate.thread_id == event.thread_id and candidate.depth <= depth
+                    and all(self._scope_exited(item, destination, mode) for item in entries
+                            if self._events[item].thread_id == event.thread_id)):
                 return index
         return None
+
+    def _scope_exited(self, entry: int, destination: int, mode: str) -> bool:
+        """Prove every exited invocation up to the destination's shared ancestor."""
+        required = self._parents[entry] if mode == "out" else entry
+        if required is None:
+            return False
+        ancestors: set[int] = set()
+        parent = self._parents[destination]
+        while parent is not None:
+            ancestors.add(parent)
+            parent = self._parents[parent]
+        scope: int | None = entry
+        ended, last_return = False, -1
+        while scope is not None and scope not in ancestors:
+            returned = self._returns.get(scope)
+            if returned is None or not last_return < returned < destination:
+                return False
+            ended = ended or scope == required
+            last_return = returned
+            parent = self._parents[scope]
+            if parent is None and self._events[scope].depth > 0:
+                return False  # The recording did not establish the surrounding stack.
+            scope = parent
+        return ended
 
     def can_step(self, mode: str) -> bool:
         """Whether a recorded destination exists for Into, Over, or Out."""

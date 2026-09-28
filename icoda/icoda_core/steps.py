@@ -7,18 +7,22 @@ includes the step log entry in ``.icoda/steps.jsonl``.
 
 from __future__ import annotations
 
+import json
 import re
 import shlex
 import sys
+import threading
 from collections import defaultdict
 from collections.abc import Callable, Iterable, Mapping, Sequence
-from dataclasses import dataclass, replace
+from dataclasses import asdict, dataclass, replace
 from pathlib import Path
+from typing import Any
 
 from icoda_core import (
     adaptation,
     agent,
     analysis,
+    auto_approve,
     cmake,
     git,
     grouping,
@@ -37,7 +41,7 @@ from icoda_core import (
     toolchain,
 )
 from icoda_core.model import CALLABLE_KINDS, TYPE_KINDS, DerivedModel, Entity, Kind
-from icoda_core.process import cancel_running, run_bounded
+from icoda_core.process import cancel_running, cancellation_scope, run_bounded
 from icoda_core.steplog import APPROACH_ROUND, StepLog, StepRecord, apply_statuses
 
 WORKTREE_DIR = "worktree"
@@ -60,6 +64,16 @@ class StepError(RuntimeError):
 
 class DirtyTree(StepError):
     """Uncommitted changes in the working tree; commit them first (``commit_manual_edits``)."""
+
+
+class SignatureConfirmationRequired(StepError):
+    """The reviewed API changes still need the developer's explicit confirmation."""
+
+
+def require_signature_confirmation(proposal: Proposal, confirmed: bool) -> None:
+    """Share the desktop's per-proposal confirmation gate with headless review."""
+    if proposal.delta is not None and proposal.delta.signature_changes and not confirmed:
+        raise SignatureConfirmationRequired(auto_approve.SIGNATURE_CONFIRMATION_REQUIRED)
 
 
 class ProviderError(StepError):
@@ -147,23 +161,29 @@ def _project_code_profile(root: Path) -> Mapping[str, object]:
 
 
 def build_project(root: Path, timeout: float = BUILD_TIMEOUT,
-                  *, code_profile: Mapping[str, object] | None = None) -> BuildResult:
+                  *, code_profile: Mapping[str, object] | None = None,
+                  environment: dict[str, str] | None = None, tools: dict[str, str] | None = None,
+                  run: Callable[..., str] | None = None) -> BuildResult:
     """Run the profile-selected build check without running the project's tests."""
     commands = gate_commands(root, (), code_profile=code_profile).build
     directory = None
-    environment = None
     if commands[0][0] == "cmake":
         try:
-            directory, configure, environment = cmake.clang_configuration(root)
+            kwargs: dict[str, Any] = {} if environment is None else {"environment": environment, "tools": tools,
+                "run": (lambda command: run(command, "CMake presets", 30)) if run else None}
+            directory, configure, environment = cmake.clang_configuration(root, **kwargs)
         except (RuntimeError, OSError) as exc:
             return BuildResult(False, str(exc))
         commands = [configure, [configure[0], "--build", str(directory)]]
     output = ""
     for command in commands:
-        result = run_bounded(command, cwd=root, timeout=timeout, env=environment)
-        output += result.stdout + result.stderr
-        if not result.ok:
-            return BuildResult(False, _tail(output))
+        if run is not None:
+            output += run(command, "CMake configuration" if directory and command is commands[0] else "Build", timeout)
+        else:
+            result = run_bounded(command, cwd=root, timeout=timeout, env=environment)
+            output += result.stdout + result.stderr
+            if not result.ok:
+                return BuildResult(False, _tail(output))
         if directory is not None and command is commands[0]:
             try:
                 cmake.verify_clang(directory)
@@ -188,10 +208,13 @@ def build_environment(root: Path) -> dict[str, str]:
     return toolchain.clang_build_environment(cache.get("CMAKE_CXX_COMPILER", ("", ""))[1])
 
 
-def test_project(root: Path, command: Sequence[str], timeout: float = BUILD_TIMEOUT) -> TestResult:
+def test_project(root: Path, command: Sequence[str], timeout: float = BUILD_TIMEOUT,
+                 *, run: Callable[..., str] | None = None) -> TestResult:
     """Run the project-configured test command with bounded output and execution time."""
     if not command:
         return TestResult(None, "No project test command is configured.")
+    if run is not None:
+        return TestResult(True, _tail(run(list(command), "Tests", timeout)))
     result = run_bounded(command, cwd=root, timeout=timeout)
     return TestResult(result.ok, _tail(result.stdout + result.stderr))
 
@@ -523,6 +546,42 @@ class Approach:
 # --------------------------------------------------------------------------- the runner
 
 
+def run_workflow(runner: StepRunner, request: prompt.StepRequest, kind: str) -> Proposal | Approach:
+    """Run one desktop proposal round; queue execution stops at the next review gate."""
+    if kind == "architecture" and runner.current_phase() != persistence.ProjectPhase.ARCHITECTURE:
+        raise StepError("Architecture proposals require the architecture phase.")
+    if kind == "implementation_queue":
+        if runner.current_phase() != persistence.ProjectPhase.IMPLEMENTATION:
+            raise StepError("The implementation queue requires the implementation phase.")
+        kind = "proposal" if runner.store.load_state().approved_approach else "implementation_approach"
+    runner.prepare()
+    return runner.propose_approach(request) if kind == "implementation_approach" else runner.propose(request)
+
+
+def rephrase_context(candidate: Proposal | Approach) -> tuple[str, str]:
+    """Current review prose and supporting scope, without changing review evidence."""
+    if isinstance(candidate, Proposal):
+        if candidate.response is None:
+            return "", ""
+        context = candidate.source_diff or json.dumps(
+            [asdict(change) for change in candidate.response.files], indent=2)
+        if candidate.delta is not None:
+            context += "\n\nChanged declarations:\n" + candidate.delta.summary()
+        return candidate.response.rationale, context
+    return candidate.plan, ("Planned files:\n" + "\n".join(candidate.files) +
+        "\nPlanned names:\n" + "\n".join(candidate.entities) +
+        "\nThis is a plan only. No implementation or test result is supplied.")
+
+
+def replace_description(candidate: Proposal | Approach, description: str) -> None:
+    """Publish review prose only; approval, files and recorded replies are untouched."""
+    if isinstance(candidate, Proposal):
+        assert candidate.response is not None
+        candidate.response = replace(candidate.response, rationale=description)
+    else:
+        candidate.plan = description
+
+
 class StepRunner:
     """Drives one project through the step protocol; every method is safe to call from a worker thread."""
 
@@ -531,7 +590,9 @@ class StepRunner:
                  build: Callable[[Path], BuildResult] | None = None,
                  test: Callable[[Path, Sequence[str]], TestResult] | None = None,
                  analyse: Callable[[Path], DerivedModel] | None = None, attempts: int = MAX_ATTEMPTS,
-                 progress: Callable[[str], None] = lambda message: None) -> None:
+                 progress: Callable[[str], None] = lambda message: None,
+                 cancelled: Callable[[], bool] = lambda: False,
+                 checkpoint: Callable[[Proposal | Approach], None] = lambda candidate: None) -> None:
         self.root = root.resolve()
         self.config = config
         self.provider_id, self.binary, self.model_id = provider_id, binary, model
@@ -544,6 +605,8 @@ class StepRunner:
         self.attempts = attempts
         self.progress = progress
         self.cancel_requested = False
+        self.cancelled = cancelled
+        self.checkpoint = checkpoint
 
     # -- cancelling -----------------------------------------------------------------------
 
@@ -557,7 +620,7 @@ class StepRunner:
         self.cancel_requested = False
 
     def _check_cancelled(self) -> None:
-        if self.cancel_requested:
+        if self.cancel_requested or self.cancelled():
             raise StepCancelled()
 
     def rephrase_description(self, description: str, *, context: str = "") -> str:
@@ -684,6 +747,7 @@ class StepRunner:
         if state.approved_approach:
             raise StepError(f"an implementation approach for {self._batch_label(request.batch)!r} is already approved")
         approach = Approach(number, request, target)
+        self.checkpoint(approach)
         for attempt in range(1, self.attempts + 1):
             approach.attempts = attempt
             self._check_cancelled()
@@ -695,6 +759,7 @@ class StepRunner:
             if parsed is not None:
                 approach.plan, approach.entities, approach.files = parsed.plan, parsed.entities, parsed.files
                 approach.error = ""
+                self.checkpoint(approach)
                 return approach
             approach.error = error
             request = replace(request, validation_error=error)
@@ -710,10 +775,9 @@ class StepRunner:
                           rejections=request.rejections or self.log.rejections(number))
         if phase == persistence.ProjectPhase.IMPLEMENTATION:
             request, state = self._targeted_request(request, number)
-            if not state.approved_approach:
-                raise StepError(f"the implementation approach for {self._batch_label(request.batch)!r} "
-                                "has not been approved; propose and approve an approach first")
+            self._require_approved_approach(request, state)
         proposal = Proposal(number, request, self._fresh_worktree())
+        self.checkpoint(proposal)
         for attempt in range(1, self.attempts + 1):
             proposal.attempts = attempt
             self._check_cancelled()
@@ -728,12 +792,18 @@ class StepRunner:
                 continue
             proposal.response, proposal.error = parsed, ""
             proposal.entities = parsed.entities
+            self.checkpoint(proposal)
             self._apply_and_check(proposal)
             if proposal.ok:
                 return proposal
             request = self._retry_request(request, proposal)
         proposal.error = proposal.error or f"no usable proposal after {self.attempts} attempts"
         return proposal
+
+    def _require_approved_approach(self, request: prompt.StepRequest, state: persistence.ProjectState) -> None:
+        if not state.approved_approach:
+            raise StepError(f"the implementation approach for {self._batch_label(request.batch)!r} "
+                            "has not been approved; propose and approve an approach first")
 
     def _targeted_request(self, request: prompt.StepRequest, number: int,
                           round: str = "code") -> tuple[prompt.StepRequest, persistence.ProjectState]:
@@ -939,6 +1009,32 @@ class StepRunner:
         record.reason = reason.strip()
         return self.log.append(record)
 
+    def approve_reviewed(self, candidate: Proposal | Approach, confirmed: bool = False) -> StepRecord:
+        """Apply the desktop review prerequisites before entering the existing decision protocol."""
+        self._require_clean()
+        if not candidate.ok:
+            raise StepError(candidate.error or "Only a proposal passing all gates can be approved.")
+        if isinstance(candidate, Approach):
+            return self.approve_approach(candidate)
+        require_signature_confirmation(candidate, confirmed)
+        return self.approve(candidate)
+
+    def adapt(self, candidate: Proposal | Approach, constraints: tuple[str, ...],
+              entity_summary: str | None = None) -> Proposal | Approach:
+        """Repeat the desktop's adaptation round, retaining request scope and normal gates."""
+        if isinstance(candidate, Proposal):
+            if not candidate.ok or not candidate.entities:
+                raise StepError(adaptation.NO_USABLE_PROPOSAL if not candidate.ok else adaptation.NO_ENTITY_SUMMARY)
+            if entity_summary is not None:
+                parsed = adaptation.parse_summary(entity_summary)
+                if parsed.problems:
+                    raise StepError(adaptation.problems_text(parsed.problems))
+                instruction = adaptation.describe_changes(candidate.entities, parsed.entities)
+                if instruction != adaptation.UNCHANGED_SUMMARY:
+                    constraints = (instruction,)
+        request = replace(candidate.request, constraints=constraints)
+        return run_workflow(self, request, "implementation_approach" if isinstance(candidate, Approach) else "proposal")
+
     def approve(self, proposal: Proposal) -> StepRecord:
         """Promote the worktree, rebuild the project, log the step and commit it."""
         if proposal.response is None or proposal.delta is None or proposal.build.ok is not True:
@@ -983,12 +1079,14 @@ class StepRunner:
                 result = "failed" if test.ok is False else "did not run"
                 raise StepError(f"the promoted project tests {result}:\n" + test.output)
         except BaseException:
-            try:
-                if files:
-                    git.rollback_promotion(self.root, files)
-            finally:
-                _restore_files(metadata)
-                git.run_git(["reset", "-q"], self.root, check=False)
+            # Cancellation stops the operation, never its transactional cleanup.
+            with cancellation_scope(threading.Event()):
+                try:
+                    if files:
+                        git.rollback_promotion(self.root, files)
+                finally:
+                    _restore_files(metadata)
+                    git.run_git(["reset", "-q"], self.root, check=False)
             raise
         try:
             record = self._record(proposal, "approved")
@@ -1015,11 +1113,12 @@ class StepRunner:
                                                       f"{record.title}", *self._author())
             return record
         except BaseException:
-            try:
-                git.rollback_promotion(self.root, files)
-            finally:
-                _restore_files(metadata)
-                git.run_git(["reset", "-q"], self.root, check=False)
+            with cancellation_scope(threading.Event()):
+                try:
+                    git.rollback_promotion(self.root, files)
+                finally:
+                    _restore_files(metadata)
+                    git.run_git(["reset", "-q"], self.root, check=False)
             raise
 
     def _grouping_refusal(self, proposal: Proposal) -> str:
@@ -1124,9 +1223,9 @@ class StepRunner:
 
         outcome = recovery.invoke(provider, self.model_id or provider.default_model, prompt_text, cwd,
                                   binary=self.binary or provider.command, timeout=PROVIDER_TIMEOUT,
-                                  progress=progress, cancelled=lambda: self.cancel_requested)
+                                  progress=progress, cancelled=lambda: self.cancel_requested or self.cancelled())
         result = outcome.result
-        if result.cancelled or self.cancel_requested:
+        if result.cancelled or self.cancel_requested or self.cancelled():
             raise StepCancelled()
         if not result.ok:
             raise ProviderError(outcome.diagnosis or recovery.diagnose(result.stderr or result.stdout))

@@ -3,6 +3,10 @@
 from __future__ import annotations
 
 import json
+import os
+import random
+import subprocess
+import sys
 from pathlib import Path
 
 from icoda_core import clusters, persistence
@@ -55,6 +59,50 @@ def test_directory_seeds_and_deterministic_result() -> None:
     assert [c.files for c in first.clusters] == [c.files for c in second.clusters]
     assert first.cluster_of("dir1/file2.cpp") is first.cluster_of("dir1/hub.cpp")
     assert first.cluster_of("dir1/hub.cpp") is not first.cluster_of("dir2/hub.cpp")
+
+
+def _recursive_file_groups() -> DerivedModel:
+    """Three oversized communities exercise subgraphs smaller than half their parent."""
+    model = DerivedModel("/themes")
+    model.files["other/extra.cpp"] = FileInfo("other/extra.cpp")
+    randomizer = random.Random(0)
+    for theme in ("render", "audio", "physics"):
+        files = [f"src/{index:03}_{theme}.cpp" for index in range(45)]
+        for file in files:
+            model.files[file] = FileInfo(file)
+        for index, source in enumerate(files):
+            for target in files[index + 1:]:
+                if randomizer.random() < .2:
+                    model.add_edge(Edge(EdgeKind.INCLUDES, source, target))
+    return model
+
+
+def test_file_overview_is_identical_across_hash_seeds(tmp_path: Path) -> None:
+    model_path = tmp_path / "model.json"
+    _recursive_file_groups().save(model_path)
+    script = """
+import json, sys
+from dataclasses import asdict
+from pathlib import Path
+from icoda_core import clusters, views
+from icoda_core.model import DerivedModel
+model = DerivedModel.load(Path(sys.argv[1]))
+clustering = clusters.cluster_files(model)
+layout, overview = views.file_view_level(model, clustering)
+assert overview
+assert all(len(cluster.files) <= 40 for cluster in clustering.clusters)
+assert sorted(file for cluster in clustering.clusters for file in cluster.files) == sorted(model.files)
+print(json.dumps({"clustering": asdict(clustering), "layout": asdict(layout)}))
+"""
+    results = []
+    for seed in (0, 1, 2, 42, 12345):
+        result = subprocess.run(
+            [sys.executable, "-c", script, str(model_path)], cwd=Path(__file__).resolve().parents[1],
+            env=dict(os.environ, PYTHONHASHSEED=str(seed)), capture_output=True, text=True,
+            check=True, timeout=30)
+        results.append(result.stdout)
+    # Keep serialized dict/list order: memberships, labels, boxes, geometry and arrows must all agree.
+    assert all(result == results[0] for result in results[1:])
 
 
 def test_collapsed_large_model_falls_back_to_louvain_communities() -> None:

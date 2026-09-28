@@ -42,21 +42,27 @@ def theme(members: Sequence[str], hints: Topics, population: Sequence[str]) -> s
     return best.split(":", 1)[1]
 
 
-def split(graph: nx.Graph, hints: Topics, max_size: int = MAX_GROUP_SIZE) -> list[list[str]]:
-    """Compare community resolutions and theme partitions; recursively bound every group."""
-    if max_size < 1:
-        raise ValueError("max_size must be positive")
-    # Canonical insertion order makes fixed-seed algorithms insensitive to input order.
+def _ordered_graph(graph: nx.Graph) -> nx.Graph:
+    """Canonical node and edge insertion order, including set-backed subgraph views."""
     ordered = nx.Graph()
     ordered.add_nodes_from(sorted(graph))
     ordered.add_weighted_edges_from(sorted(
         (min(a, b), max(a, b), data.get("weight", 1.0))
         for a, b, data in graph.edges(data=True) if a != b))
+    return ordered
+
+
+def split(graph: nx.Graph, hints: Topics, max_size: int = MAX_GROUP_SIZE) -> list[list[str]]:
+    """Compare community resolutions and theme partitions; recursively bound every group."""
+    if max_size < 1:
+        raise ValueError("max_size must be positive")
+    ordered = _ordered_graph(graph)
 
     def divide(nodes: list[str]) -> list[list[str]]:
         if len(nodes) <= max_size:
             return [nodes]
-        subgraph = ordered.subgraph(nodes)
+        # NetworkX subgraph views can iterate sets even when their parent is ordered.
+        subgraph = _ordered_graph(ordered.subgraph(nodes))
         candidates = []
         components = list(nx.connected_components(subgraph))
         if 1 < len(components) < len(nodes):
