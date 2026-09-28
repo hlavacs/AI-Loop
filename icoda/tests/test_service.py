@@ -20,7 +20,7 @@ import test_executables
 
 from icoda_core import __version__, cmake, persistence, python_analysis, toolchain, views
 from icoda_core.model import DerivedModel, Edge, EdgeKind, Entity, FileInfo, Kind
-from icoda_core.service import MAX_MESSAGE_BYTES, OPERATIONS, Service, handle_line
+from icoda_core.service import MAX_MESSAGE_BYTES, OPERATIONS, ProjectLock, Service, ServiceError, handle_line
 
 ROOT = Path(__file__).resolve().parent.parent
 cmake_project = test_executables.project  # Reuse the configure-only multi-executable fixture.
@@ -3525,6 +3525,33 @@ def test_analysis_explicit_cancel_preserves_revision_and_connection(clients, pro
     assert client.ok("targets.list")["modelRevision"] == client.context["modelRevision"]
 
 
+@pytest.mark.skipif(sys.platform != "win32", reason="Windows directory ACL inheritance")
+def test_windows_lock_directory_inherits_parent_permissions(tmp_path, monkeypatch):
+    monkeypatch.setattr(tempfile, "gettempdir", lambda: str(tmp_path))
+    lock = ProjectLock(tmp_path / "project")
+    try:
+        acl = subprocess.run(["icacls", str(tmp_path / "icoda-service-locks")],
+                             capture_output=True, text=True, errors="replace", check=True)
+        assert "(I)" in acl.stdout, "Lock storage must retain inherited Windows access rights"
+    finally:
+        lock.close()
+
+
+@pytest.mark.parametrize("operation", ["mkdir", "open"])
+def test_inaccessible_lock_storage_reports_actionable_error(tmp_path, monkeypatch, operation):
+    monkeypatch.setattr(tempfile, "gettempdir", lambda: str(tmp_path))
+
+    def denied(*args, **kwargs):
+        raise PermissionError("Access denied")
+
+    monkeypatch.setattr(Path, operation, denied)
+    with pytest.raises(ServiceError) as failure:
+        ProjectLock(tmp_path / "project")
+    assert failure.value.error["code"] == "project_lock_unavailable"
+    assert failure.value.error["details"]["lockDirectory"] == str(tmp_path / "icoda-service-locks")
+    assert "permissions" in str(failure.value).lower()
+
+
 def test_project_lock_excludes_second_service_and_releases_on_close(clients, project):
     first, second = clients(), clients()
     opened = open_project(first, project, analyse=False)
@@ -3566,8 +3593,7 @@ def test_project_lock_is_released_on_service_exit(clients, project):
     second.ok("initialize", {"protocolVersion": 1})
     assert_error(second.request("project.open", {"path": str(project)}), "project_locked")
     first.close()  # EOF must release ownership without a project.close request.
-    with pytest.raises(ProcessLookupError):
-        os.kill(first.process.pid, 0)
+    assert first.process.returncode == 0
     assert second.ok("project.open", {"path": str(project)})["root"] == str(project)
 
 

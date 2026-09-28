@@ -277,12 +277,14 @@
         "command": "icoda.analyseProject",
         "title": "Analyse Project",
         "category": "ICODA",
+        "icon": "$(refresh)",
         "enablement": "isWorkspaceTrusted"
       },
       {
         "command": "icoda.selectTarget",
         "title": "Select Target",
         "category": "ICODA",
+        "icon": "$(target)",
         "enablement": "icoda.projectOpen && isWorkspaceTrusted"
       },
       {
@@ -295,6 +297,7 @@
         "command": "icoda.showCallView",
         "title": "Show Call View",
         "category": "ICODA",
+        "icon": "$(call-outgoing)",
         "enablement": "icoda.projectOpen && isWorkspaceTrusted"
       },
       {
@@ -307,12 +310,14 @@
         "command": "icoda.openFileView",
         "title": "Open File View",
         "category": "ICODA",
+        "icon": "$(files)",
         "enablement": "icoda.projectOpen && isWorkspaceTrusted"
       },
       {
         "command": "icoda.openClassView",
         "title": "Open Class View",
         "category": "ICODA",
+        "icon": "$(symbol-class)",
         "enablement": "icoda.projectOpen && isWorkspaceTrusted"
       },
       {
@@ -354,6 +359,7 @@
         "command": "icoda.buildTarget",
         "title": "Build Target",
         "category": "ICODA",
+        "icon": "$(tools)",
         "enablement": "icoda.projectOpen && isWorkspaceTrusted"
       },
       {
@@ -372,6 +378,7 @@
         "command": "icoda.recordTrace",
         "title": "Record Trace",
         "category": "ICODA",
+        "icon": "$(record)",
         "enablement": "icoda.projectOpen && isWorkspaceTrusted"
       },
       {
@@ -543,37 +550,47 @@
         {
           "command": "icoda.openFileView",
           "when": "view == icoda.project && icoda.projectOpen",
-          "group": "navigation"
+          "group": "navigation@5"
         },
         {
           "command": "icoda.openClassView",
           "when": "view == icoda.project && icoda.projectOpen",
-          "group": "navigation"
+          "group": "navigation@6"
         },
         {
           "command": "icoda.openMindMap",
           "when": "view == icoda.project && icoda.projectOpen",
-          "group": "navigation"
+          "group": "2_views@2"
         },
         {
           "command": "icoda.analyseProject",
           "when": "view == icoda.project",
-          "group": "navigation"
+          "group": "navigation@1"
         },
         {
           "command": "icoda.selectTarget",
           "when": "view == icoda.project && icoda.projectOpen",
-          "group": "navigation"
+          "group": "navigation@2"
+        },
+        {
+          "command": "icoda.buildTarget",
+          "when": "view == icoda.project && icoda.projectOpen",
+          "group": "navigation@3"
+        },
+        {
+          "command": "icoda.recordTrace",
+          "when": "view == icoda.project && icoda.projectOpen",
+          "group": "navigation@4"
         },
         {
           "command": "icoda.revealEntity",
           "when": "view == icoda.project && icoda.projectOpen",
-          "group": "navigation"
+          "group": "2_views@3"
         },
         {
           "command": "icoda.showCallView",
           "when": "view == icoda.project && icoda.projectOpen",
-          "group": "navigation"
+          "group": "navigation@7"
         }
       ]
     },

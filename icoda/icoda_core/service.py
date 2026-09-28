@@ -81,8 +81,15 @@ class ProjectLock:
     def __init__(self, root: Path) -> None:
         digest = hashlib.sha256(os.path.normcase(str(root)).encode("utf-8")).hexdigest()
         directory = Path(tempfile.gettempdir()) / "icoda-service-locks"
-        directory.mkdir(mode=0o700, exist_ok=True)
-        self.handle = (directory / (digest + ".lock")).open("a+b")
+        try:
+            # Windows maps 0700 to an owner-only ACL. Inherit the temp parent's
+            # ACL so a helper account cannot exclude the desktop user.
+            directory.mkdir(mode=0o777 if sys.platform == "win32" else 0o700, exist_ok=True)
+            self.handle = (directory / (digest + ".lock")).open("a+b")
+        except OSError as exc:
+            raise ServiceError("project_lock_unavailable",
+                               "Cannot access the project lock directory. Check its permissions: " + str(directory),
+                               {"path": str(root), "lockDirectory": str(directory)}) from exc
         try:
             self.acquire()
         except OSError as exc:
