@@ -65,11 +65,12 @@ export class GraphInteractions {
   dispose(): void { this.disposed = true; this.request++; }
 }
 
-/** A compact, keyboard-accessible popover; never adds a permanent toolbar row. */
-export function graphInteractionControls(): string {
-  return `<details id="graphOptions"><summary>Focus</summary><div class="graph-options">
-<label>Graph filter <input id="graphQuery" type="search" maxlength="256" placeholder="namespace:app::* edge:calls"
- title="Name substring or name:, kind:, status:, covered:, stale:, cluster:, namespace:, edge:. namespace:app is exact; namespace:app::* includes descendants. Expandable groups, Call roots and the selection stay visible."></label>
+/** Keep filtering on the toolbar; Call View already has its own inline filter. */
+export function graphInteractionControls(inlineFilter = true): string {
+  const filter = `<label>${inlineFilter ? "Filter" : "Graph filter"} <input id="graphQuery" type="search" maxlength="256" placeholder="${inlineFilter ? "Name or expression" : "namespace:app::* edge:calls"}"
+ title="Name substring or name:, kind:, status:, covered:, stale:, cluster:, namespace:, edge:. namespace:app is exact; namespace:app::* includes descendants. Expandable groups, Call roots and the selection stay visible."></label>`;
+  return `${inlineFilter ? filter : ""}<details id="graphOptions"><summary>Focus</summary><div class="graph-options">
+${inlineFilter ? "" : filter}
 <label>Neighborhood <input id="graphNeighborhood" type="number" min="0" max="12" value="0"
  title="Relationship hops from the selected source node; 0 disables dimming. File/class nodes include their entities."></label>
 <button id="graphClear">Clear</button><span id="graphFeedback" role="status" aria-live="polite"></span>

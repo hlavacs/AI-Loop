@@ -89,6 +89,7 @@ body:is(.vscode-high-contrast, .vscode-high-contrast-light) .selected > rect {
 }
 .graph-options label { display: flex; gap: 8px; flex-wrap: wrap; }
 #graphQuery { width: 23em; max-width: 100%; box-sizing: border-box; }
+#toolbar > label > #graphQuery { width: 145px; }
 #graphNeighborhood { width: 4em; }
 .graph-filtered { display: none; }
 .graph-dimmed { opacity: 0.4; }
