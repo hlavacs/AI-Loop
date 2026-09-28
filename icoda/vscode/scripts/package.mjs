@@ -21,6 +21,7 @@ try {
   // vsce uses this standard build timestamp to sort entries and fix ZIP mtimes.
   process.env.SOURCE_DATE_EPOCH ??= "315532800";
   execFileSync(process.execPath, [join(root, "node_modules/@vscode/vsce/vsce"), "package",
+    "--baseContentUrl", "https://github.com/hlavacs/AI-Loop/blob/develop/icoda/vscode",
     "--no-dependencies", "--allow-missing-repository", "--out", join(root, "dist")], { cwd: root, stdio: "inherit" });
 } finally {
   // Development must keep resolving live sources, even when staging or vsce fails.

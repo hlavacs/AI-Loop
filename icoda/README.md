@@ -7,8 +7,9 @@ functions while inspecting the source structure, proposed changes, and test evid
 You decide what to build, approve implementation approaches, and review code before it is committed. ICODA
 derives its architecture views from the source code and verifies proposals in an isolated Git worktree.
 
-For the VS Code frontend, see [extension installation and development](vscode/README.md) and the
-[migration parity and acceptance record](docs/VSCODE_MIGRATION.md). Linux is the only tested extension platform; full desktop parity remains incomplete.
+For the VS Code frontend, start with [installation on Windows, Linux and macOS](vscode/INSTALL.md).
+See also [extension usage and development](vscode/README.md) and the
+[migration parity and acceptance record](docs/VSCODE_MIGRATION.md) for qualification and remaining limitations.
 
 **Users** start with [Getting started](docs/GETTING_STARTED.md) (two pages: install, first project, first step),
 then the [Tutorial](docs/TUTORIAL.md) (the complete C++ Score Clamp example) and

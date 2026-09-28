@@ -5,45 +5,18 @@ views, navigate native source editors, and play recorded function calls. Python
 analysis parses source without executing the project. ICODA also exposes target
 build/run/recording, specification, evidence and proposal review commands.
 
-Linux is the only tested installation platform. Windows and macOS installation,
-remote hosts and browser-only VS Code remain pending. This extension needs local
-desktop VS Code (API minimum 1.74; host tests use 1.96.4) and a separately prepared
-Python environment; it does not install dependencies during activation.
+## Install
 
-## Install and prepare the runtime
+Follow the [step-by-step installation guide for Windows, Linux and macOS](INSTALL.md).
+It covers obtaining or building the VSIX, preparing Python, installing optional
+C++ tools, setting executable paths, opening the first project and troubleshooting.
+Use current local desktop VS Code and a separately prepared Python environment;
+the extension does not install dependencies during activation.
 
-Install `dist/icoda-0.1.0.vsix` using **Extensions: Install from VSIX...**, or
-`code --install-extension dist/icoda-0.1.0.vsix` from `icoda/vscode/`. If the archive
-is absent, build it with the **Build, test and debug** commands below. Set **ICODA: Python Path**
-(`icoda.pythonPath`) to your Python interpreter, preserving its virtual-environment
-path. It is the only interpreter override; do not put command arguments in it.
-When blank, ICODA checks `.icoda-venv` under the resolved backend root, then
-`python3`/`python` on PATH. No runtime is bundled.
-
-Prepare Python 3.10+ with the `clang`, `networkx` and `jsonschema` dependencies.
-The pinned versions used in qualification require Python 3.11+ (networkx 3.6.1);
-Python 3.12 was tested. For that setup, create a venv with `python3 -m venv
-icoda-runtime`, then use its interpreter to install:
-
-```sh
-python -m pip install clang==21.1.7 networkx==3.6.1 jsonschema==4.26.0
-```
-
-Use the interpreter in that venv for the command above and for `icoda.pythonPath`.
-For fully constrained transitive dependencies, add `-c` followed by the installed
-extension's `backend/constraints.txt` path. Python 3.10 users need compatible
-versions within `clang>=20,<22`, `networkx>=3,<4`, `jsonschema>=4,<5` instead of
-the qualification pins. The Python bindings are needed even for Python-only
-projects because shared analysis modules import them.
-
-C++ analysis additionally needs compatible native libclang and a generated
-`compile_commands.json` at the project root, under `build/`, or one level below
-`build/`. Install matching LLVM/libclang; the bindings alone do not provide the
-native library. Build/recording needs CMake, Ninja, Clang, symbolization tools and
-the project's dependencies; C++ module projects also need `clang-scan-deps` and
-CMake 3.28+. Git and installed/authenticated provider CLIs are needed only for
-the relevant development workflows, not graph/source browsing. No provider is
-invoked merely by analysis or navigation.
+Linux has extension-host qualification evidence. Windows VSIX installation,
+backend startup and C++ analysis have also been checked; full Windows/macOS UI
+qualification, remote hosts and browser-only VS Code remain pending. See the
+guide's verification scope and the migration record for the precise limits.
 
 ## First project and trace playback
 
@@ -252,7 +225,7 @@ record identifies the three desktop GUI assertions already failing on the base c
 JSON resources, dependency constraints and licence into ignored `backend/`, then
 uses pinned vsce 3.6.0 to write ignored `dist/icoda-0.1.0.vsix`. Staging is cleared
 before copying and removed afterward, including on failure. The archive includes
-compiled `out/*.js`, `media/`, that backend, README and package metadata. It omits
+compiled `out/*.js`, `media/`, that backend, README, installation guide and package metadata. It omits
 TypeScript, tests/fixtures, source maps, `.vscode-test/`, all `node_modules/`, and
 build scripts. There are no runtime npm dependencies. Packaging is local only;
 the publisher identifier `icoda` does not imply a Marketplace publication.
@@ -280,6 +253,6 @@ and AT ledger. `src/extension.ts` owns commands/lifecycle, `src/backendClient.ts
 and `src/sessionState.ts` own transport/identity, and `media/` renders the diagrams.
 `icoda_core/service.py` adapts the shared core; keep stepping in
 `icoda_core/call_trace.py`. Run the relevant suites above and retain separate native
-acceptance evidence before changing a qualification status. Windows/macOS,
-display scaling, high contrast and a ViennaVulkanEngine large-project run remain
-unqualified. Restricted Mode is verified separately on Linux VS Code 1.96.4.
+acceptance evidence before changing a qualification status. Full Windows/macOS UI,
+display scaling, high contrast and a ViennaVulkanEngine large-project frontend journey
+remain unqualified; the Windows backend analysis check is narrower. Restricted Mode is verified separately on Linux VS Code 1.96.4.
