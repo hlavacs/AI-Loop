@@ -15,6 +15,10 @@ import { FileViewModel } from "../fileViewModel";
 import { ClassViewModel } from "../classViewModel";
 import { MindMapModel } from "../mindMapModel";
 import { TestElement } from "./webviewHarness";
+import { callViewHtml } from "../callViewHtml";
+import { fileViewHtml } from "../fileViewHtml";
+import { classViewHtml } from "../classViewHtml";
+import { mindMapHtml } from "../mindMapHtml";
 
 const context = { sessionId: "p04", modelRevision: 1, targetId: null };
 const sourceRootId = "p04:workspace";
@@ -31,6 +35,17 @@ function deferred<T>() {
   const promise = new Promise<T>(done => { resolve = done; });
   return { promise, resolve };
 }
+
+test("all four views have exactly one shared Filter on the toolbar outside Focus", () => {
+  for (const html of [callViewHtml, fileViewHtml, classViewHtml, mindMapHtml]) {
+    const content = html("nonce", "local", "view.js", "view.css");
+    assert.equal((content.match(/type="search"/g) || []).length, 1);
+    assert.match(content, /<label>Filter <input id="graphQuery"/);
+    assert.ok(content.indexOf('id="graphQuery"') < content.indexOf('<details id="graphOptions"'));
+    assert.doesNotMatch(content, /id="filter"/);
+    assert.match(content, /namespace:app is exact/);
+  }
+});
 
 test("P04 graph options use one strict schema in all four webviews", () => {
   for (const parse of [parseCallViewMessage, parseFileViewMessage, parseClassViewMessage, parseMindMapMessage]) {
@@ -122,6 +137,34 @@ test("P04 shared interactions route candidate and recording identities and expos
   model.dispose();
 });
 
+test("shared filter derives parent and split group visibility from matching contents", async () => {
+  const project = session();
+  const graph = { ...identity, nodes: [
+    { id: "parent", filterMembers: ["facade", "simple"] },
+    { id: "cluster:src#1", filterMembers: ["facade"] },
+    { id: "cluster:src#2", filterMembers: ["simple"] },
+    { id: "near", filterMembers: ["facade", "nearby"] },
+  ] };
+  const exact = { facade: { hidden: false, dimmed: true }, simple: { hidden: true, dimmed: false },
+    nearby: { hidden: false, dimmed: false }, "cluster:src#2": { hidden: false, dimmed: false } };
+  const model = new GraphInteractions(project, { request: async <T>(_method: string, params = {}): Promise<T> =>
+    ({ ...identity, decisions: { ...exact,
+      simple: { hidden: (params as { text: string }).text === "namespace:vve", dimmed: false } } }) as T,
+  }, () => {}, assert.fail);
+  model.snapshot(graph, null);
+  await model.control({ type: "graphOptions", text: "namespace:vve", depth: 0 });
+  const filtered = model.snapshot(graph, null).decisions;
+  assert.deepEqual(filtered.parent, { hidden: false, dimmed: true });
+  assert.deepEqual(filtered["cluster:src#1"], { hidden: false, dimmed: true });
+  assert.deepEqual(filtered["cluster:src#2"], { hidden: true, dimmed: false });
+  assert.deepEqual(filtered.near, { hidden: false, dimmed: false });
+  await model.control({ type: "graphOptions", text: "namespace:vve::*", depth: 0 });
+  assert.equal(model.snapshot(graph, null).decisions["cluster:src#2"]!.hidden, false);
+  await model.control({ type: "graphOptions", text: "", depth: 0 });
+  assert.deepEqual(model.snapshot(graph, null).decisions, {});
+  model.dispose();
+});
+
 test("P04 shipped shared controls decorate nodes edges and keyboard focus without moving the scene", () => {
   const doc = { activeElement: undefined as TestElement | undefined, getElementById: (id: string) => elements.get(id) };
   const elements = new Map<string, TestElement & { value?: string }>();
@@ -147,10 +190,12 @@ test("P04 shipped shared controls decorate nodes edges and keyboard focus withou
   b.focus();
   ui.render(state, send);
   assert.equal(classes.get(a)!.get("graph-filtered"), false, "selection stays visible");
-  assert.equal(classes.get(group)!.get("graph-filtered"), false, "expansion gateway stays visible");
+  assert.equal(classes.get(group)!.get("graph-filtered"), true, "a group with no matching contents is hidden");
   assert.equal(classes.get(b)!.get("graph-filtered"), true);
   assert.equal(classes.get(edge)!.get("graph-filtered"), true);
   assert.equal(doc.activeElement, elements.get("graphQuery"));
+  ui.render({ ...state, interactions: { ...state.interactions, decisions: { group: { hidden: false } } } }, send);
+  assert.equal(classes.get(group)!.get("graph-filtered"), false, "a group containing matches stays reachable");
   ui.render({ ...state, interactions: { ...state.interactions, decisions: { B: { dimmed: true } } } }, send);
   assert.equal(classes.get(b)!.get("graph-filtered"), false);
   assert.equal(classes.get(b)!.get("graph-dimmed"), true);

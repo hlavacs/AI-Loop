@@ -25,6 +25,7 @@ const graph: CallViewResponse = {
 function client(reply: (method: string, params: Record<string, unknown>, context?: SessionContext) => unknown) {
   return { request: async <T>(method: string, params = {}, context?: SessionContext): Promise<T> =>
     (method.startsWith("view.state.") ? { ...context, state: { root: null, depth: 3, callers: false, filter: "", viewport: null } }
+      : method === "graph.interactions" ? { ...context, sourceRootId, decisions: {} }
       : await reply(method, params, context)) as T };
 }
 
@@ -45,7 +46,7 @@ function deferred<T>() {
 }
 
 test("render mapping preserves shared layout, recursion, uncertain/shared edges, statuses and markings", () => {
-  const data = callViewRenderData(graph, "", "B");
+  const data = callViewRenderData(graph, "B");
   assert.deepEqual(data.edges, graph.edges);
   assert.equal(data.edges.filter(edge => edge.target === "C").length, 2);
   assert.equal(data.edges.find(edge => edge.source === edge.target)?.loop, true);
@@ -104,18 +105,16 @@ test("P02 stale candidate failures keep source lookup separate and drop late can
   candidate.dispose();
 });
 
-test("entry points and library API roots survive filtering, without moving nodes", () => {
-  const main = callViewRenderData(graph, "example.C");
+test("render mapping leaves visibility to the shared filter and marks entry points and library API roots", () => {
+  const main = callViewRenderData(graph);
   assert.equal(main.root, "main");
-  assert.deepEqual(main.nodes.map(n => n.usr), ["main", "C"]);
-  assert.equal(main.nodes[1]?.x, graph.nodes[3]?.x);
-  assert.deepEqual(callViewRenderData(graph, "no matches").nodes.map(n => n.usr), ["main"]);
-  const library = callViewRenderData({ ...graph, libraryMode: true, root: null, roots: ["main", "A"] }, "no matches");
+  assert.deepEqual(main.nodes.map(n => n.usr), graph.nodes.map(n => n.usr));
+  assert.deepEqual(main.nodes.filter(n => n.root).map(n => n.usr), ["main"]);
+  const library = callViewRenderData({ ...graph, libraryMode: true, root: null, roots: ["main", "A"] });
   assert.equal(library.root, null);
   assert.equal(library.libraryMode, true);
-  assert.deepEqual(library.nodes.map(n => n.usr), ["main", "A"]);
-  assert.ok(library.nodes.every(n => n.root));
-  assert.deepEqual(library.edges, [graph.edges[0]]);
+  assert.deepEqual(library.nodes.filter(n => n.root).map(n => n.usr), ["main", "A"]);
+  assert.deepEqual(library.edges, graph.edges);
 });
 
 test("selection changes only highlighting/source, retaining the chosen root and viewport without view.get", async () => {
@@ -141,7 +140,7 @@ test("selection changes only highlighting/source, retaining the chosen root and 
   assert.equal(view.accepts({ type: "root", version: view.version, usr: "not-in-graph" }), false);
 });
 
-test("depth and callers delegate layout; filter and fit use existing geometry locally", async () => {
+test("depth and callers delegate layout; legacy filter messages use shared filtering without changing geometry", async () => {
   const { project } = session();
   const calls: Record<string, unknown>[] = [];
   const view = new CallViewModel(project, client((_method, params) => { calls.push(params); return graph; }), assert.fail, () => {});
@@ -151,9 +150,57 @@ test("depth and callers delegate layout; filter and fit use existing geometry lo
   assert.deepEqual(calls.at(-1), { view: "call", root: null, depth: 5, callers: true });
   await view.control({ type: "filter", version: view.version, text: "example.C" });
   await view.control({ type: "fit", version: view.version, width: 1000, height: 500 });
-  assert.deepEqual(view.render().graph?.nodes.map(n => n.usr), ["main", "C"]);
+  assert.equal(view.render().interactions.text, "example.C");
+  assert.deepEqual(view.render().graph?.nodes.map(n => n.usr), graph.nodes.map(n => n.usr));
   assert.ok(view.viewport!.scale > 0 && view.viewport!.scale < 1);
   assert.equal(calls.length, 3);
+});
+
+test("Call toolbar expressions use shared decisions, persist and restore without local substring filtering", async () => {
+  const { project } = session();
+  let saved = { root: null, depth: 3, callers: false, filter: "", viewport: null } as Record<string, unknown>;
+  const requests: { text: string; sourceRootId: string }[] = [];
+  const backend = { request: async <T>(method: string, params: Record<string, unknown> = {}, identity?: SessionContext): Promise<T> => {
+    if (method === "view.state.set") saved = params.state as typeof saved;
+    if (method.startsWith("view.state.")) return { ...identity, state: saved } as T;
+    if (method === "graph.interactions") {
+      requests.push(params as typeof requests[number]);
+      const matches = params.text === "namespace:vve::*" ? ["A", "B"] : ["A"];
+      return { ...context, sourceRootId, decisions: Object.fromEntries(graph.nodes.map(node =>
+        [node.usr, { hidden: !matches.includes(node.usr), dimmed: false }])) } as T;
+    }
+    assert.equal(method, "view.get");
+    return graph as T;
+  } };
+  let view = new CallViewModel(project, backend, assert.fail, () => {});
+  await view.sync();
+  view.viewport = { x: 12, y: 34, scale: 1.2 };
+  const original = view.render().graph;
+  for (const text of ["namespace:vve", "namespace:vve::*", "name:Engine kind:method", "Engine"]) {
+    await view.control({ type: "graphOptions", version: view.version, text, depth: 0 });
+    const rendered = view.render();
+    assert.equal(requests.at(-1)?.text, text);
+    assert.equal(requests.at(-1)?.sourceRootId, sourceRootId);
+    assert.equal(rendered.interactions.text, text);
+    assert.equal(rendered.interactions.decisions.A!.hidden, false);
+    assert.equal(rendered.interactions.decisions.B!.hidden, text !== "namespace:vve::*");
+    assert.deepEqual(rendered.graph, original, "the decorator applies visibility to the full graph");
+    assert.deepEqual(view.viewport, { x: 12, y: 34, scale: 1.2 });
+  }
+  await view.control({ type: "graphOptions", version: view.version, text: "namespace:vve", depth: 0 });
+  await view.saveState();
+  assert.equal(saved.filter, "namespace:vve");
+  view.dispose();
+  // Reopening with an in-memory graph and reopening after restart both retain the expression.
+  for (const restart of [false, true]) {
+    if (restart) { project.reset(); project.identity.accept(project.identity.capture(), context, "open"); }
+    view = new CallViewModel(project, backend, assert.fail, () => {});
+    await view.sync();
+    assert.equal(view.render().interactions.text, "namespace:vve");
+    await Promise.resolve();
+    assert.equal(view.render().interactions.decisions.B!.hidden, true);
+    view.dispose();
+  }
 });
 
 test("stale session/revision/target read responses are rejected through SessionState", async () => {

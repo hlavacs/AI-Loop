@@ -2046,7 +2046,8 @@ def class_node(project: ProjectSession, key: str, panel: ClassNodeLayout,
     node = panel.node
     result = {"id": key, "x": panel.x, "y": panel.y, "width": panel.width, "height": panel.height}
     if summary is not None and summary.kind == "cluster":
-        return {**result, "kind": "cluster", "label": summary.label, "count": len(groups[key]), "expandable": True}
+        return {**result, "kind": "cluster", "label": summary.label, "count": len(groups[key]), "expandable": True,
+                "filterMembers": sorted(groups[key])}
     return {**result, **class_source(project, node), "kind": node.kind.value, "label": node.qualified_name,
             "expandable": False, "members": [{**class_source(project, member), "name": member.name,
                 "kind": member.kind.value, "declaration": member.declaration, "status": member.status,
@@ -2312,10 +2313,12 @@ def file_node(project: ProjectSession, node: Node, clustering: Clustering, choic
               "expandable": node.kind == "cluster" or node.id == "external:overview"}
     if node.kind == "cluster":
         cluster = next(item for item in clustering.clusters if item.id == node.cluster)
-        result.update(name=cluster.name, fileCount=len(cluster.files),
+        result.update(name=cluster.name, fileCount=len(cluster.files), filterMembers=list(cluster.files),
                       pinned=clusters.cluster_is_pinned(choices, clustering, cluster.id),
                       renamed=cluster.id in choices.names or cluster.parent_id in choices.names,
                       parentId=cluster.parent_id)
+    elif node.id == "external:overview":
+        result["filterMembers"] = ["external:" + library for library in project.scoped_model().externals]
     elif node.kind == "file":
         try:
             file = source_edit.relative_path(project.store.root, node.id)

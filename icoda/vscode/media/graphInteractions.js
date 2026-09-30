@@ -41,8 +41,8 @@
         const id = item.getAttribute("data-id") || item.getAttribute("data-usr");
         const node = nodes.get(id);
         const selected = id === next.selected || node?.members?.some(member => member.usr === next.selected);
-        // Keep navigation gateways, roots and the current source/trace stop reachable.
-        const keep = selected || roots.has(id) || node?.expandable;
+        // Nonmatching groups are filtered too; matching contents keep gateways reachable.
+        const keep = selected || roots.has(id);
         const hidden = Boolean(decisions[id]?.hidden && !keep);
         const dimmed = Boolean(decisions[id]?.dimmed && !selected);
         item.classList.toggle("graph-filtered", hidden);
@@ -57,7 +57,7 @@
         edge.classList.toggle("graph-dimmed", Boolean(a?.dimmed || b?.dimmed));
       }
       const hidden = [...flags.values()].filter(item => item.hidden).length;
-      feedback.textContent = interaction.error || (interaction.pending ? "Updating…" : `${hidden} hidden · groups and selection stay visible`);
+      feedback.textContent = interaction.error || (interaction.pending ? "Updating…" : `${hidden} hidden · matching groups, roots and selection stay visible`);
     },
   };
 })();

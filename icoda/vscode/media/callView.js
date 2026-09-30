@@ -3,7 +3,7 @@
 const vscode = acquireVsCodeApi();
 const svg = document.getElementById("graph");
 const scene = document.getElementById("scene");
-const controls = Object.fromEntries(["root", "depth", "callers", "filter", "fit", "zoomIn", "zoomOut"]
+const controls = Object.fromEntries(["root", "depth", "callers", "fit", "zoomIn", "zoomOut"]
   .map(id => [id, document.getElementById(id)]));
 const traceControls = Object.fromEntries(["previous", "over", "into", "out", "reset"]
   .map(action => [action, document.getElementById(`trace${action[0].toUpperCase()}${action.slice(1)}`)]));
@@ -15,7 +15,6 @@ const playbackButtons = [document.getElementById("traceLoad"), ...Object.values(
 let state;
 let viewport;
 let drawnVersion;
-let drawnFilter;
 let drawnTrace;
 let drag;
 let moved = false;
@@ -177,8 +176,6 @@ function updateControls(next) {
   controls.root.value = next.root ?? "";
   controls.depth.value = String(next.depth);
   controls.callers.checked = next.callers;
-  // Keep in-flight typing until its own round trip; no HTML interpolation of user text.
-  if (document.activeElement !== controls.filter) controls.filter.value = next.filter;
   for (const control of Object.values(controls)) control.disabled = next.loading || !next.graph;
   const status = document.getElementById("status");
   status.textContent = next.message;
@@ -203,7 +200,7 @@ function render(next) {
   traceToolbar.hidden = Boolean(next.proposal);
   updateControls(next);
   const trace = next.trace ? `${next.trace.traceId}:${next.trace.position}` : "";
-  const redraw = next.version !== drawnVersion || next.filter !== drawnFilter || trace !== drawnTrace;
+  const redraw = next.version !== drawnVersion || trace !== drawnTrace;
   state = next;
   if (redraw) drawGraph(next.graph);
   for (const node of scene.querySelectorAll(".node")) {
@@ -213,7 +210,6 @@ function render(next) {
   }
   // Loading and loaded states share a version: draw the received graph once it exists.
   drawnVersion = next.graph ? next.version : undefined;
-  drawnFilter = next.filter;
   drawnTrace = trace;
   globalThis.icodaGraphInteractions?.render(next, send);
   viewport = next.viewport;
@@ -246,7 +242,6 @@ function bindControls() {
   controls.root.addEventListener("change", () => send("root", { usr: controls.root.value || null }));
   controls.depth.addEventListener("change", () => send("depth", { depth: controls.depth.valueAsNumber }));
   controls.callers.addEventListener("change", () => send("callers", { callers: controls.callers.checked }));
-  controls.filter.addEventListener("input", () => send("filter", { text: controls.filter.value }));
   controls.zoomIn.addEventListener("click", () => zoom(1.2));
   controls.zoomOut.addEventListener("click", () => zoom(1 / 1.2));
   controls.fit.addEventListener("click", fit);

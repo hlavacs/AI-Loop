@@ -36,8 +36,7 @@ function toolbar(): string {
 <label>Root <select id="root" title="Choose a graph root; selection alone keeps the root"><option value="">Entry points</option></select></label>
 <label>Depth <input id="depth" type="number" min="0" max="12" value="3" aria-label="Call depth"></label>
 <label><input id="callers" type="checkbox"> Callers</label>
-<label>Filter <input id="filter" type="search" maxlength="256" placeholder="Name, file, status" aria-label="Filter functions (roots stay visible)"></label>
-${graphInteractionControls(false)}
+${graphInteractionControls()}
 <button id="zoomOut" title="Zoom out (−)" aria-label="Zoom out">−</button>
 <button id="fit" title="Fit graph (F)">Fit</button>
 <button id="zoomIn" title="Zoom in (+)" aria-label="Zoom in">+</button>

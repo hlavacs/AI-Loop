@@ -69,7 +69,7 @@ test("overflow keyboard", () => {
   assert.equal(get("traceMenu").hidden, true);
   assert.equal(view.document.activeElement, get("traceOverflow"));
   get("traceOverflow").emit("keydown", { key: "ArrowDown" });
-  get("traceToolbar").emit("focusout", { relatedTarget: get("filter") });
+  get("traceToolbar").emit("focusout", { relatedTarget: get("graphQuery") });
   assert.equal(get("traceMenu").hidden, true);
 });
 

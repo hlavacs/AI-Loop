@@ -40,6 +40,12 @@ guide's verification scope and the migration record for the precise limits.
 After saving source, ICODA marks the model stale; run **Analyse Project** to
 refresh it. Saves do not currently trigger automatic reanalysis.
 
+All four views use the same toolbar Filter, supporting names and expressions.
+The filter accepts exact namespaces: `namespace:vve` shows the facade,
+while `namespace:vve::*` also includes nested namespaces such as `vve::simple`.
+File and Class groups stay visible only when they contain a match. The selected
+source and Call View roots remain visible for navigation.
+
 To create a project, run **ICODA: New Project** in a trusted window. Choose an
 existing parent folder, enter the new folder/project name, choose C++ or Python,
 and enter an optional specification description. ICODA uses the shared default

@@ -11,6 +11,7 @@ export interface FileNode {
   id: string; label: string; kind: "file" | "cluster" | "external";
   x: number; y: number; width: number; height: number; expandable: boolean;
   fileCount?: number; name?: string; pinned?: boolean; renamed?: boolean; parentId?: string | null;
+  filterMembers?: string[];
   entityId?: string; file?: string | null; sourceRootId?: string; line?: number;
 }
 export interface FileViewResponse extends SessionContext {

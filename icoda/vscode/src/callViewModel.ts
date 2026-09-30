@@ -31,21 +31,17 @@ export type CallViewState = Pick<CallViewModel, "graph" | "selected" | "viewport
   | "callers" | "filter" | "trace" | "version"> & { context: SessionContext };
 
 /** Map presentation only. Coordinates, layers, roots and edge identities belong to Python. */
-export function callViewRenderData(view: CallViewResponse, filter = "", selected: string | null = null, trace?: PlaybackState) {
-  const query = filter.trim().toLocaleLowerCase();
+export function callViewRenderData(view: CallViewResponse, selected: string | null = null, trace?: PlaybackState) {
   const roots = new Set(view.roots);
-  const nodes = view.nodes.filter(node => roots.has(node.usr) || (trace && node.usr === selected)
-    || `${node.label} ${node.kind} ${node.file ?? ""} ${node.status}`.toLocaleLowerCase().includes(query));
-  const visible = new Set(nodes.map(node => node.usr));
   return {
     root: view.root, roots: view.roots, libraryMode: view.libraryMode,
     width: view.width, height: view.height,
-    nodes: nodes.map(node => ({ ...node, selected: node.usr === selected, root: roots.has(node.usr),
+    nodes: view.nodes.map(node => ({ ...node, selected: node.usr === selected, root: roots.has(node.usr),
       tooltip: `${node.label}\n${node.kind} · ${node.status}\n${node.file ?? "No project source"}:${node.line ?? "—"}`
         + (node.signature ? `\n${node.signature}` : "") + (node.brief ? `\n${node.brief}` : ""),
       change: node.added ? "added" : node.changed ? "changed" : "",
     })),
-    edges: view.edges.filter(edge => visible.has(edge.source) && visible.has(edge.target)).map(edge => trace
+    edges: view.edges.map(edge => trace
       ? { ...edge, repeatCount: edge.target === trace.currentEntityUsr ? trace.callerCounts[edge.source] ?? 0 : 0 }
       : edge),
   };
@@ -60,7 +56,9 @@ export class CallViewModel {
   root: string | null = null;
   depth = 3;
   callers = false;
-  filter = "";
+  // Retain the saved-state field while using the shared filter as the only source of truth.
+  get filter(): string { return this.interactions.text; }
+  set filter(value: string) { this.interactions.text = value; }
   version = 0;
   loading = false;
   error = "";
@@ -138,11 +136,13 @@ export class CallViewModel {
 
   async control(message: Exclude<CallViewMessage, { type: "ready" | "select" | "traceLoad" | "traceStep" | "traceReset" | "traceSeek" }>): Promise<void> {
     if (!this.accepts(message)) return;
-    if (message.type === "graphOptions") {
-      await this.interactions.control(message); this.changed(); return;
+    if (message.type === "graphOptions" || message.type === "filter") {
+      // Older webviews may still send the former quick-filter message.
+      const options = message.type === "filter"
+        ? { type: "graphOptions" as const, text: message.text, depth: this.interactions.depth } : message;
+      await this.interactions.control(options); this.persist(); this.changed(); return;
     }
     if (message.type === "viewport") { this.viewport = message.viewport; this.persist(); return; }
-    if (message.type === "filter") { this.filter = message.text; this.persist(); this.changed(); return; }
     if (message.type === "fit") { this.fit(message.width, message.height); this.persist(); return; }
     if (message.type === "root") this.root = message.usr;
     if (message.type === "depth") this.depth = message.depth;
@@ -164,7 +164,7 @@ export class CallViewModel {
       .map(node => ({ usr: node.usr, label: node.label })) ?? [];
     return { interactions: this.interactions.snapshot(this.graph, this.selected, this.trace?.traceId),
       type: "render", version: this.version, loading: this.loading,
-      graph: this.graph ? callViewRenderData(this.graph, this.filter, this.selected, this.trace) : undefined,
+      graph: this.graph ? callViewRenderData(this.graph, this.selected, this.trace) : undefined,
       selected: this.selected, viewport: this.viewport, root: this.root, choices,
       trace: this.trace, proposal: Boolean(this.candidateSourceRoot),
       depth: this.depth, callers: this.callers, filter: this.filter, message: this.status(),

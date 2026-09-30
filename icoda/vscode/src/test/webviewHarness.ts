@@ -50,7 +50,7 @@ export function callWebview() {
     createElementNS: (_namespace: string, name: string) => new TestElement(name, document),
     addEventListener() {}, fonts: { ready: Promise.resolve() },
   };
-  for (const id of ["graph", "scene", "root", "depth", "callers", "filter", "fit", "zoomIn", "zoomOut", "status",
+  for (const id of ["graph", "scene", "root", "depth", "callers", "graphQuery", "fit", "zoomIn", "zoomOut", "status",
     "traceLoad", "tracePrevious", "traceOver", "traceInto", "traceOut", "traceReset", "traceStatus",
     "traceToolbar", "traceButtons", "traceOverflow", "traceMenu"]) elements.set(id, new TestElement(id, document));
   const get = (id: string) => elements.get(id)!;

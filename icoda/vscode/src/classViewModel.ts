@@ -18,6 +18,7 @@ export interface ClassNode extends Partial<ClassSource> {
   id: string; label: string; kind: "class" | "struct" | "cluster";
   x: number; y: number; width: number; height: number; expandable: boolean;
   count?: number; members?: ClassMember[];
+  filterMembers?: string[];
 }
 export interface ClassViewResponse extends SessionContext {
   view: "class"; sourceRootId: string; clusterId: string | null; overview: boolean;

@@ -5,7 +5,10 @@ import { viewError } from "./viewErrors";
 
 export type GraphOptions = { type: "graphOptions"; text: string; depth: number };
 export interface GraphDecisions { [id: string]: { hidden: boolean; dimmed: boolean } }
-interface GraphIdentity extends SessionContext { sourceRootId: string }
+interface GraphIdentity extends SessionContext {
+  sourceRootId: string;
+  nodes?: { id?: string; usr?: string | null; filterMembers?: string[] }[];
+}
 
 /** Shared request routing only: Python owns matching, aggregate identities and graph traversal. */
 export class GraphInteractions {
@@ -38,7 +41,16 @@ export class GraphInteractions {
       this.graph = graph; this.focus = focus; this.traceId = traceId;
       void this.refresh();
     }
-    return { text: this.text, depth: this.depth, decisions: this.decisions, pending: this.pending, error: this.error };
+    const decisions = { ...this.decisions };
+    for (const node of graph?.nodes ?? []) {
+      const id = node.id ?? node.usr, members = node.filterMembers;
+      if (!id || !members?.length || !members.every(member => this.decisions[member])) continue;
+      // Python supplies the exact membership, including parent and split class groups.
+      const hidden = members.every(member => this.decisions[member]!.hidden);
+      decisions[id] = { hidden,
+        dimmed: !hidden && members.every(member => this.decisions[member]!.hidden || this.decisions[member]!.dimmed) };
+    }
+    return { text: this.text, depth: this.depth, decisions, pending: this.pending, error: this.error };
   }
 
   private async refresh(): Promise<void> {
@@ -65,12 +77,11 @@ export class GraphInteractions {
   dispose(): void { this.disposed = true; this.request++; }
 }
 
-/** Keep filtering on the toolbar; Call View already has its own inline filter. */
-export function graphInteractionControls(inlineFilter = true): string {
-  const filter = `<label>${inlineFilter ? "Filter" : "Graph filter"} <input id="graphQuery" type="search" maxlength="256" placeholder="${inlineFilter ? "Name or expression" : "namespace:app::* edge:calls"}"
- title="Name substring or name:, kind:, status:, covered:, stale:, cluster:, namespace:, edge:. namespace:app is exact; namespace:app::* includes descendants. Expandable groups, Call roots and the selection stay visible."></label>`;
-  return `${inlineFilter ? filter : ""}<details id="graphOptions"><summary>Focus</summary><div class="graph-options">
-${inlineFilter ? "" : filter}
+/** Every graph uses the same toolbar filter and compact neighborhood controls. */
+export function graphInteractionControls(): string {
+  const filter = `<label>Filter <input id="graphQuery" type="search" maxlength="256" placeholder="Name or expression"
+ title="Name substring or name:, kind:, status:, covered:, stale:, cluster:, namespace:, edge:. namespace:app is exact; namespace:app::* includes descendants. Groups containing matches, Call roots and the selection stay visible."></label>`;
+  return `${filter}<details id="graphOptions"><summary>Focus</summary><div class="graph-options">
 <label>Neighborhood <input id="graphNeighborhood" type="number" min="0" max="12" value="0"
  title="Relationship hops from the selected source node; 0 disables dimming. File/class nodes include their entities."></label>
 <button id="graphClear">Clear</button><span id="graphFeedback" role="status" aria-live="polite"></span>

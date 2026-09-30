@@ -1552,6 +1552,7 @@ def test_p01_saved_parent_drill_in_and_reveal_keep_bounded_children(clients, fil
     overview = client.ok("view.get", params)
     parent = next(node for node in overview["nodes"] if node["kind"] == "cluster")
     assert parent["id"] == "cluster:all" and parent["fileCount"] == 81 and parent["pinned"]
+    assert set(parent["filterMembers"]) == set(model.files)
     inside = client.ok("view.get", {**params, "clusterId": parent["id"]})
     assert inside["overview"] and inside["clusterPath"] == [{"id": "cluster:all", "label": "Saved parent", "pinned": True}]
     found = set()
@@ -1566,6 +1567,7 @@ def test_p01_saved_parent_drill_in_and_reveal_keep_bounded_children(clients, fil
         assert [item["id"] for item in detail["clusterPath"]] == [parent["id"], child["id"]]
         assert not detail["overview"] and len(detail["nodes"]) == child["fileCount"]
         files = {node["file"] for node in detail["nodes"]}
+        assert set(child["filterMembers"]) == files
         assert not files & found
         found |= files
         revealed = client.ok("view.revealFile", {"sourceRootId": opened["sourceRootId"], "file": min(files), "hierarchy": True})
@@ -1948,6 +1950,7 @@ def check_class_groups(client, canvas, overview):
         assert_class_layout(result, canvas.layout)
         assert_class_members(result, canvas.layout.graph)
         members = {n["usr"] for n in result["nodes"]}
+        assert set(node["filterMembers"]) == members
         assert not seen & members
         seen.update(members)
         canvas.back_to_overview()
